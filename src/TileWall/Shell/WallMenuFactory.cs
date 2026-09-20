@@ -7,12 +7,21 @@ using TileWall.Core.Configuration;
 namespace TileWall.Shell;
 
 /// <summary>
-/// 右键菜单工厂（M3 设计 §6）：
-/// 背景五项 = 设计 §3.1 原文项序，M3 仅「新建磁贴」真实生效；对象四项 = §12.3，M3 仅「取消固定」可用。
+/// 右键菜单工厂（M3 设计 §6、M4 §6.2）：
+/// 背景五项 = 设计 §3.1 原文项序，M4 起「新建磁贴」打开属性窗；
+/// 对象四项启用矩阵（§6.2）：unpin 恒可用；edit 仅独立磁贴（组置灰「需要组属性窗口」）；
+/// elevated/location 由注入的入口状态函数判定（有入口且文件存在 → 可用，否则置灰 + HelpText 原因）。
 /// 置灰项保留 AutomationId 与 Name（UIA 可断言 IsEnabled=False），原因写入 ToolTip 与 HelpText（§15.3）。
 /// </summary>
 public static class WallMenuFactory
 {
+    /// <summary>对象菜单四个命令出口（M4 §8.2；MainWindow 注入，工厂不持有服务）。</summary>
+    public sealed record ObjectMenuActions(
+        Action<string> Unpin,
+        Action<string> Edit,
+        Action<string> LaunchElevated,
+        Action<string> RevealLocation);
+
     /// <summary>背景菜单（附着 RootGrid.ContextFlyout；空白命中：边距、栏间隙、格间隙）。</summary>
     public static MenuFlyout CreateBackgroundMenu(Action onNewTile)
     {
@@ -38,12 +47,20 @@ public static class WallMenuFactory
         return menu;
     }
 
-    /// <summary>对象菜单（磁贴与组共用一份动态构建的 MenuFlyout；组从任意分块右键均为整组菜单，A12）。</summary>
-    public static void PopulateObjectMenu(MenuFlyout menu, LayoutObject target, Action<string> onUnpin)
+    /// <summary>
+    /// 对象菜单（磁贴与组共用一份动态构建的 MenuFlyout；组从任意分块右键均为整组菜单，A12）。
+    /// <paramref name="entryDisabledReason"/> 返回 null = 入口可用；否则为置灰原因（「无托管入口」/「入口文件缺失」）。
+    /// </summary>
+    public static void PopulateObjectMenu(
+        MenuFlyout menu,
+        LayoutObject target,
+        ObjectMenuActions actions,
+        Func<LayoutObject, string?> entryDisabledReason)
     {
         ArgumentNullException.ThrowIfNull(menu);
         ArgumentNullException.ThrowIfNull(target);
-        ArgumentNullException.ThrowIfNull(onUnpin);
+        ArgumentNullException.ThrowIfNull(actions);
+        ArgumentNullException.ThrowIfNull(entryDisabledReason);
         menu.Items.Clear();
         if (AutomationProperties.GetAutomationId(menu) != "menu-object")
         {
@@ -53,15 +70,24 @@ public static class WallMenuFactory
         var isGroup = target is GroupObject;
         var unpinText = isGroup ? "取消固定磁贴组" : "从磁贴墙取消固定";
         var editText = isGroup ? "编辑磁贴组" : "编辑磁贴";
+        var entryReason = entryDisabledReason(target); // §6.2：无入口或入口文件已丢失时置灰并提示
 
-        menu.Items.Add(Item("menu-object-unpin", unpinText, enabled: true, reason: null, () => onUnpin(target.Id)));
-        menu.Items.Add(Item("menu-object-edit", editText, enabled: false, reason: "属性窗（后续里程碑）", action: null));
+        menu.Items.Add(Item("menu-object-unpin", unpinText, enabled: true, reason: null, () => actions.Unpin(target.Id)));
         menu.Items.Add(Item(
-            "menu-object-elevated", "以管理员身份启动", enabled: false,
-            reason: "需要托管入口（后续里程碑）", action: null));
+            "menu-object-edit", editText,
+            enabled: !isGroup,
+            reason: isGroup ? "需要组属性窗口（后续里程碑）" : null,
+            action: isGroup ? null : () => actions.Edit(target.Id)));
         menu.Items.Add(Item(
-            "menu-object-location", "打开文件位置", enabled: false,
-            reason: "定位数据目录内的托管入口；M3 无托管入口", action: null));
+            "menu-object-elevated", "以管理员身份启动",
+            enabled: entryReason is null,
+            reason: entryReason,
+            action: entryReason is null ? () => actions.LaunchElevated(target.Id) : null));
+        menu.Items.Add(Item(
+            "menu-object-location", "打开文件位置",
+            enabled: entryReason is null,
+            reason: entryReason,
+            action: entryReason is null ? () => actions.RevealLocation(target.Id) : null));
     }
 
     private static MenuFlyoutItem Item(string automationId, string text, bool enabled, string? reason, Action? action)

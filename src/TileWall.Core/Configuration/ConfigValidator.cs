@@ -1,3 +1,4 @@
+using TileWall.Core.Entries;
 using TileWall.Core.Grid;
 
 namespace TileWall.Core.Configuration;
@@ -39,6 +40,7 @@ public static class ConfigValidator
     public const string PartitionHole = "PARTITION_HOLE";
     public const string PartitionCover = "PARTITION_COVER";
     public const string TitleTruthConflict = "TITLE_TRUTH_CONFLICT";
+    public const string EntryPathMismatch = "ENTRY_PATH_MISMATCH";
 
     public static IReadOnlyList<ConfigViolation> Validate(TileWallConfig config)
     {
@@ -113,6 +115,14 @@ public static class ConfigValidator
                     "有入口对象的名称真值在托管文件名主体，TitleText 必须为 null（设计 §16.2）。"));
             }
 
+            // M4 §4.2：正式配置以稳定标识连接布局与对象目录（C20 同名磁贴隔离的静态保证）
+            if (o.Entry is not null && !IsEntryPathWellFormed(o.Id, o.Entry.RelativePath))
+            {
+                violations.Add(new ConfigViolation(
+                    EntryPathMismatch, id,
+                    $"入口相对路径 {o.Entry.RelativePath} 不在对象目录 Objects/{o.Id}/ 下，或扩展名非 .lnk/.url。"));
+            }
+
             placedRects.Add((id, o.Bounds));
         }
 
@@ -133,6 +143,11 @@ public static class ConfigValidator
 
         return violations;
     }
+
+    /// <summary>ENTRY_PATH_MISMATCH 谓词（M4 设计 §4.2）：前缀必须为 Objects/&lt;该对象Id&gt;/，扩展名必须为 .lnk/.url。</summary>
+    private static bool IsEntryPathWellFormed(string objectId, string relativePath) =>
+        relativePath.StartsWith($"Objects/{objectId}/", StringComparison.OrdinalIgnoreCase)
+        && EntryNames.KindOfRelativePath(relativePath) != EntryKind.None;
 
     private static void ValidatePartitions(GroupObject group, List<ConfigViolation> violations)
     {

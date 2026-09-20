@@ -1,4 +1,5 @@
 using TileWall.Core.Configuration;
+using TileWall.Core.Entries;
 
 namespace TileWall.Shell;
 
@@ -8,6 +9,9 @@ public sealed record WallUndoSlot
     public required TileWallConfig Previous { get; init; }
 
     public required string ActionName { get; init; }
+
+    /// <summary>M4 §8.3：指向 Recovery/Entries/&lt;commitId&gt;/ 的回滚材料；null = 纯布局级撤销。</summary>
+    public EntryUndoMaterial? EntryMaterial { get; init; }
 }
 
 /// <summary>
@@ -33,6 +37,18 @@ public sealed class LayoutCommitService
 
     /// <summary>最近一次布局级提交的撤销槽；null = 槽空（「没有可撤销的操作」）。</summary>
     public WallUndoSlot? UndoSlot { get; private set; }
+
+    /// <summary>
+    /// M4：联合提交（EntryCommitService）成功后的接管——配置已由协议落盘（§5.5 步骤 6），
+    /// 此处仅前移 Current 并建立带入口材料的撤销槽（§8.3）。
+    /// </summary>
+    public void Adopt(TileWallConfig newConfig, string actionName, EntryUndoMaterial? entryMaterial)
+    {
+        ArgumentNullException.ThrowIfNull(newConfig);
+        ArgumentException.ThrowIfNullOrEmpty(actionName);
+        UndoSlot = new WallUndoSlot { Previous = Current, ActionName = actionName, EntryMaterial = entryMaterial };
+        Current = newConfig;
+    }
 
     /// <summary>尝试提交：成功 true 且 Current 已替换；失败 false 且 Current 不动、槽清空。</summary>
     public bool Commit(TileWallConfig newConfig, string actionName, out string? failure)

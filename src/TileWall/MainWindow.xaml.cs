@@ -7,7 +7,9 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using TileWall.Core.Configuration;
+using TileWall.Core.Entries;
 using TileWall.Core.Grid;
+using TileWall.Dialogs;
 using TileWall.Shell;
 using Windows.Graphics;
 using VirtualKey = Windows.System.VirtualKey;
@@ -20,9 +22,8 @@ namespace TileWall;
 
 /// <summary>
 /// 磁贴墙窗口：M2 的外形（无边框、不可移动、左下锚定，拍板 Q7）+ M3 的接线
-/// （M3 设计 §2.2 装配序列）：ConfigStore 状态分支、WallPresenter 渲染、GestureMachine 手势、
-/// LayoutCommitService 提交、右键菜单、取消固定与 Ctrl+Z。
-/// 本类只做「事件 → 状态机/服务 → 渲染」的薄封装，不复制任何几何/腾位/校验逻辑。
+/// （渲染/手势/布局提交/撤销）+ M4 的接线（托管入口引擎、点击启动、属性窗模态、联合提交与撤销恢复）。
+/// 本类只做「事件 → 状态机/服务 → 渲染」的薄封装，不复制任何几何/腾位/校验/入口协议逻辑。
 /// </summary>
 public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
 {
@@ -36,6 +37,12 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
     private readonly MenuFlyout _objectMenu;
     private readonly DispatcherQueueTimer _previewTimer;
     private readonly DispatcherQueueTimer _statusTimer;
+    private readonly IFileStore _files;
+    private readonly ILnkFileService _linkFiles;
+    private readonly EntryCommitService _entryCommits;
+    private readonly EntryLauncher _launcher = new();
+    private readonly ModalSessionService _modal;
+    private readonly IReadOnlyList<string> _recoveryDiagnostics;
 
     private LayoutCommitService? _commit;
     private WallGrid _wall = new(1, 1);
@@ -46,17 +53,28 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
     private DipPoint _lastPointerPos;
     private LayoutObject? _menuTarget;
 
-    public MainWindow(ConfigStore store, ConfigLoadResult loadResult, bool seedRequested)
+    public MainWindow(
+        ConfigStore store,
+        ConfigLoadResult loadResult,
+        bool seedRequested,
+        IFileStore files,
+        ILnkFileService linkFiles,
+        IReadOnlyList<string>? recoveryDiagnostics = null)
     {
         _store = store;
         _loadResult = loadResult;
         _seedRequested = seedRequested;
+        _files = files;
+        _linkFiles = linkFiles;
+        _recoveryDiagnostics = recoveryDiagnostics ?? [];
 
         InitializeComponent();
         Title = "TileWall";
         ConfigureBorderlessPresenter();
 
         _dataRoot = Path.GetDirectoryName(store.ConfigPath) ?? string.Empty;
+        _entryCommits = new EntryCommitService(_files, store, _linkFiles, new EnvironmentDataDirectoryProvider(_dataRoot));
+        _modal = new ModalSessionService(RootGrid);
         _objectMenu = new MenuFlyout();
         _objectMenu.Opening += (_, _) => PopulateObjectMenu();
         _presenter = new WallPresenter(TilesCanvas, DragLayer, _metrics) { ObjectMenu = _objectMenu };
@@ -114,10 +132,15 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
             {
                 if (_loadResult.Status == ConfigLoadStatus.RecoveredFromBackup)
                 {
-                    ShowPersistentStatus(string.Join(Environment.NewLine, _loadResult.Diagnostics));
+                    ShowPersistentStatus(ComposeStartupDiagnostics(_loadResult.Diagnostics));
                 }
 
                 EnterReadyState(_loadResult.Config!, workArea, scale, workWidthDip, workHeightDip, saveFirst: false);
+                if (_loadResult.Status == ConfigLoadStatus.Loaded && _recoveryDiagnostics.Count > 0)
+                {
+                    ShowPersistentStatus(ComposeStartupDiagnostics([])); // 启动清扫报告（回滚/清理动作）
+                }
+
                 break;
             }
             default: // Corrupt / FutureVersion：保留原文件不动（§17.2）、本次不渲染对象、禁止 Save
@@ -398,13 +421,15 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         _presenter.ClearPreview(); // T5/T7：预览失效即回原位，B4 重新计时（计时器由状态机重启）
     }
 
-    /// <summary>T9 成功 / T10：预览=提交——引擎返回的同一 ResultObjects 实例进 Save（INV-7）。</summary>
+    /// <summary>T9 成功 / T10：预览=提交——引擎返回的同一 ResultObjects 实例进 Save（INV-7）。拖动为纯布局提交，不触碰入口文件。</summary>
     public void OnCommitted(RelocationResult result)
     {
         _presenter.EndDragVisuals();
-        var newConfig = _commit!.Current with { Objects = result.ResultObjects!.ToArray() };
+        var previousMaterial = _commit!.UndoSlot?.EntryMaterial;
+        var newConfig = _commit.Current with { Objects = result.ResultObjects!.ToArray() };
         if (_commit.Commit(newConfig, "拖动", out var failure))
         {
+            DiscardPreviousEntryMaterial(previousMaterial);
             _presenter.FinalizeAll(_commit.Current.Objects);
             _machine.UpdateObjects(_commit.Current.Objects);
         }
@@ -419,7 +444,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
 
     public void OnGestureCancelled() => _presenter.AbortGesture(); // T8/T12：全量恢复，配置与磁盘零改动
 
-    /// <summary>T3 点击（§5.6）：M3 全部对象空目标 → 无动作；预留 Entry 文件存在才 ShellExecute 的 M4 出口。</summary>
+    /// <summary>T3 点击（§5.6）：M4 起 → EntryLauncher（ShellExecute/预检/收墙判定，§6.1）。</summary>
     public void OnObjectActivated(string objectId) => ActivateObject(objectId);
 
     /// <summary>
@@ -436,8 +461,17 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         ActivateObject(objectId);
     }
 
+    /// <summary>
+    /// 点击启动（M4 设计 §6.1）：空目标无动作不收墙；入口缺失/目标缺失/启动失败保留墙提示；
+    /// ShellExecute 成功 → AppWindow.Hide() 收墙（M4 边界：托盘不在范围，本会话无唤回手段，§11 风险 2）。
+    /// </summary>
     private void ActivateObject(string objectId)
     {
+        if (_modal.IsActive)
+        {
+            return; // 模态会话期主墙零命令（§7.2 出口守卫）
+        }
+
         var o = _commit?.Current.Objects.FirstOrDefault(x => x.Id == objectId);
         if (o?.Entry is null)
         {
@@ -445,19 +479,24 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         }
 
         var fullPath = Path.Combine(_dataRoot, o.Entry.RelativePath);
-        if (!File.Exists(fullPath))
+        var result = _launcher.Launch(fullPath, _linkFiles);
+        switch (result.Outcome)
         {
-            ShowTransientStatus("入口文件缺失"); // §12.1：立即失败时保留墙并提示
-            return;
-        }
-
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(fullPath) { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            ShowTransientStatus($"启动失败：{ex.Message}");
+            case LaunchOutcome.Launched:
+                AppWindow.Hide(); // C01：系统接受启动请求后收起墙
+                break;
+            case LaunchOutcome.EntryMissing:
+                ShowTransientStatus("入口文件缺失"); // §12.1：立即失败时保留墙并提示
+                break;
+            case LaunchOutcome.TargetMissing:
+                ShowTransientStatus("启动目标缺失"); // 预检拒绝，保留墙
+                break;
+            case LaunchOutcome.ElevatedDeclined:
+                ShowTransientStatus("已取消管理员启动"); // [R4]：不重试不改配置
+                break;
+            default:
+                ShowTransientStatus($"启动失败：{result.FailureReason ?? "系统拒绝启动请求"}");
+                break;
         }
     }
 
@@ -485,11 +524,82 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
     {
         if (_menuTarget is not null)
         {
-            WallMenuFactory.PopulateObjectMenu(_objectMenu, _menuTarget, OnUnpinRequested);
+            WallMenuFactory.PopulateObjectMenu(
+                _objectMenu,
+                _menuTarget,
+                new WallMenuFactory.ObjectMenuActions(OnUnpinRequested, OnEditRequested, OnElevatedRequested, OnLocationRequested),
+                EntryDisabledReason);
         }
     }
 
-    /// <summary>「新建磁贴」（§6.3 唯一真实创建入口）：CanFitRect first-fit → 空目标 1×1 TileObject → Commit。</summary>
+    /// <summary>§6.2 启用矩阵的运行时判定：null = 入口可用；否则为置灰原因。</summary>
+    private string? EntryDisabledReason(LayoutObject target)
+    {
+        if (target.Entry is null)
+        {
+            return "无托管入口";
+        }
+
+        return File.Exists(Path.Combine(_dataRoot, target.Entry.RelativePath)) ? null : "入口文件缺失";
+    }
+
+    private void OnEditRequested(string objectId)
+    {
+        if (_commit is null)
+        {
+            return;
+        }
+
+        OpenPropertyWindow(_commit.Current.Objects.FirstOrDefault(o => o.Id == objectId));
+    }
+
+    private void OnElevatedRequested(string objectId)
+    {
+        var entryPath = EntryFullPathOf(objectId);
+        if (entryPath is null)
+        {
+            return;
+        }
+
+        var result = _launcher.LaunchElevated(entryPath);
+        switch (result.Outcome)
+        {
+            case LaunchOutcome.Launched:
+                AppWindow.Hide(); // runas 成功同样收墙（§6.1）
+                break;
+            case LaunchOutcome.EntryMissing:
+                ShowTransientStatus("入口文件缺失");
+                break;
+            case LaunchOutcome.ElevatedDeclined:
+                ShowTransientStatus("已取消管理员启动"); // C42：取消后不重试不改配置
+                break;
+            default:
+                ShowTransientStatus($"启动失败：{result.FailureReason ?? "系统拒绝提权启动请求"}");
+                break;
+        }
+    }
+
+    private void OnLocationRequested(string objectId)
+    {
+        var entryPath = EntryFullPathOf(objectId);
+        if (entryPath is null)
+        {
+            return;
+        }
+
+        _launcher.RevealInExplorer(entryPath); // C29：explorer /select 定位托管文件
+    }
+
+    private string? EntryFullPathOf(string objectId)
+    {
+        var o = _commit?.Current.Objects.FirstOrDefault(x => x.Id == objectId);
+        return o?.Entry is null ? null : Path.Combine(_dataRoot, o.Entry.RelativePath);
+    }
+
+    /// <summary>
+    /// 「新建磁贴」（§8.1 升级）：不再直接建空磁贴，打开属性窗（创建模式，遮罩阻塞主墙）；
+    /// 容量预检（firstFit）移入 DraftValidator（满墙 → 就地提示、窗口不关、零写入）。
+    /// </summary>
     private void OnNewTileRequested()
     {
         if (!_layoutReady || _commit is null)
@@ -504,31 +614,121 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
             return;
         }
 
-        var occupied = OccupancyMap.Build(_wall, _commit.Current.Objects.Select(o => o.Bounds));
-        if (!GridPlacement.CanFitRect(_wall, new GridSize(1, 1), occupied, out var firstFit))
+        OpenPropertyWindow(null);
+    }
+
+    /// <summary>打开属性窗（创建/编辑共用；模态会话阻塞主墙，§7.2）。</summary>
+    private void OpenPropertyWindow(LayoutObject? target)
+    {
+        if (_modal.IsActive || !_layoutReady || _commit is null)
         {
-            ShowTransientStatus("墙面已满，无法新建磁贴"); // A06/A17：不提交、不部分创建
+            return; // §3.3「重复请求只聚焦」由 ModalSessionService 处理；此处拦截新会话创建
+        }
+
+        if (_adaptationMode)
+        {
+            ShowTransientStatus("已保存布局超出当前工作区，请先调整布局（设计 §17.1 不裁切不删）。");
             return;
         }
 
-        var tile = new TileObject
+        var otherRects = _commit.Current.Objects
+            .Where(o => target is null || o.Id != target.Id)
+            .Select(o => o.Bounds)
+            .ToArray();
+        string? currentEntryFullPath = null;
+        string? currentEntryDisplay = null;
+        if (target?.Entry is { } entry)
         {
-            Id = StableId.NewId(),
-            Bounds = firstFit,
-            Entry = null, // 空目标 1×1（§6.3）
-            Visual = new ObjectVisual { ShowTitle = true },
-        };
-        var newConfig = _commit.Current with { Objects = _commit.Current.Objects.Append(tile).ToArray() };
-        if (CommitLayout(newConfig, "新建磁贴", _ => _presenter.AddObject(tile)))
+            currentEntryFullPath = Path.Combine(_dataRoot, entry.RelativePath);
+            currentEntryDisplay = DescribeEntry(entry.RelativePath);
+        }
+
+        var context = new PropertyWindowContext(
+            _wall,
+            otherRects,
+            target,
+            currentEntryFullPath,
+            currentEntryDisplay,
+            _linkFiles,
+            draft => SaveDraft(target, draft));
+        _modal.Open(new TilePropertyWindow(context, WinRT.Interop.WindowNative.GetWindowHandle(this)));
+    }
+
+    /// <summary>属性窗保存回调：联合提交（§5.5）；异常转错误文本就地显示（窗口不关、磁盘零残留）。</summary>
+    private string? SaveDraft(LayoutObject? target, TileDraft draft)
+    {
+        if (_commit is null)
         {
-            ShowTransientStatus("已新建磁贴（空目标 1×1）");
+            return "配置不可用（损坏或版本过高），已禁用修改（设计 §17.2）。";
+        }
+
+        try
+        {
+            var isCreate = target is null;
+            var request = new EntryCommitRequest(
+                target?.Id ?? StableId.NewId(),
+                isCreate ? "新建磁贴" : "编辑磁贴",
+                draft);
+            var report = _entryCommits.Commit(_commit.Current, request);
+            AdoptEntryCommit(report, request.ActionName);
+            ShowTransientStatus(isCreate ? "已新建磁贴" : "已保存磁贴属性");
+            return null;
+        }
+        catch (Exception ex) when (ex is DraftValidationException or ConfigValidationException or IOException or InvalidOperationException or NotSupportedException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            return ex.Message;
         }
     }
 
-    /// <summary>取消固定（§7.2）：只移除配置记录、不触碰文件（M3 无托管；§16.3 恢复入口属 M4 扩展点）。</summary>
+    /// <summary>联合提交成功后：覆盖单槽时清旧材料（§8.3）、Current 前移 + 建带材料撤销槽、全量渲染。</summary>
+    private void AdoptEntryCommit(EntryCommitReport report, string actionName)
+    {
+        var previousMaterial = _commit!.UndoSlot?.EntryMaterial;
+        if (previousMaterial is not null && report.UndoMaterial?.CommitId != previousMaterial.CommitId)
+        {
+            _entryCommits.DeleteMaterial(previousMaterial.CommitId);
+        }
+
+        _commit.Adopt(report.NewConfig, actionName, report.UndoMaterial);
+        _presenter.RenderAll(_commit.Current);
+        _machine.UpdateObjects(_commit.Current.Objects);
+        UpdateEmptyHint();
+    }
+
+    /// <summary>入口显示文本（§7.1）：.lnk → 归一化目标 + 参数；IDList → 特殊项说明；.url → URL 行。</summary>
+    private string DescribeEntry(string relativePath)
+    {
+        var fullPath = Path.Combine(_dataRoot, relativePath);
+        try
+        {
+            switch (EntryNames.KindOfRelativePath(relativePath))
+            {
+                case EntryKind.Lnk:
+                    var fields = _linkFiles.Read(fullPath);
+                    if (fields.HasIdList)
+                    {
+                        return "（特殊 Shell 入口：目标不可编辑，仅可整体替换）";
+                    }
+
+                    var target = ShellLinkFileService.NormalizePath(fields.TargetPath ?? string.Empty);
+                    return string.IsNullOrEmpty(fields.Arguments) ? target : $"{target} {fields.Arguments}";
+                case EntryKind.Url:
+                    var url = UrlShortcut.ReadUrlLine(_files.ReadAllBytes(fullPath));
+                    return url ?? "（未找到 URL 行）";
+            }
+        }
+        catch (Exception ex) when (ex is IOException or FileNotFoundException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            // 读取失败（含损坏 .lnk 的 COMException）降级为文件名显示
+        }
+
+        return Path.GetFileName(relativePath);
+    }
+
+    /// <summary>取消固定（§7.2/§8.2）：有入口对象改走联合提交的 remove 路径（入口入 Recovery + 配置移除一次 Save）；空目标保持 M3 纯配置路径。</summary>
     private void OnUnpinRequested(string objectId)
     {
-        if (_commit is null)
+        if (_modal.IsActive || _commit is null)
         {
             return;
         }
@@ -539,20 +739,38 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
             return;
         }
 
-        var newConfig = _commit.Current with { Objects = _commit.Current.Objects.Where(o => o.Id != objectId).ToArray() };
         var actionName = target is GroupObject ? "取消固定磁贴组" : "从磁贴墙取消固定";
+        if (target.Entry is not null)
+        {
+            try
+            {
+                var report = _entryCommits.RemoveEntry(_commit.Current, objectId, actionName);
+                AdoptEntryCommit(report, actionName);
+                ShowTransientStatus($"已取消固定（入口副本短暂保留，§12.4）");
+            }
+            catch (Exception ex) when (ex is ConfigValidationException or IOException or InvalidOperationException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+            {
+                ShowTransientStatus($"保存失败，布局未更改：{ex.Message}");
+            }
+
+            return;
+        }
+
+        var newConfig = _commit.Current with { Objects = _commit.Current.Objects.Where(o => o.Id != objectId).ToArray() };
         CommitLayout(newConfig, actionName, _ => _presenter.RemoveObject(objectId));
     }
 
-    /// <summary>提交 + 渲染编排：增量回调（拖动/新建/取消固定）或全量 RenderAll（撤销）。</summary>
+    /// <summary>提交 + 渲染编排：增量回调（拖动/新建/取消固定）或全量 RenderAll（撤销）。纯布局提交不触碰入口文件。</summary>
     private bool CommitLayout(TileWallConfig newConfig, string actionName, Action<TileWallConfig>? incrementalRender)
     {
-        if (!_commit!.Commit(newConfig, actionName, out var failure))
+        var previousMaterial = _commit!.UndoSlot?.EntryMaterial;
+        if (!_commit.Commit(newConfig, actionName, out var failure))
         {
             ShowTransientStatus($"保存失败，布局未更改：{failure}");
             return false;
         }
 
+        DiscardPreviousEntryMaterial(previousMaterial);
         if (incrementalRender is null)
         {
             _presenter.RenderAll(_commit.Current);
@@ -567,13 +785,24 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         return true;
     }
 
+    /// <summary>§8.3：新提交覆盖单槽时删除上一份 Recovery/Entries 材料（启动清扫兜底，§5.6）。</summary>
+    private void DiscardPreviousEntryMaterial(EntryUndoMaterial? previousMaterial)
+    {
+        var currentMaterial = _commit!.UndoSlot?.EntryMaterial;
+        if (previousMaterial is not null && currentMaterial?.CommitId != previousMaterial.CommitId)
+        {
+            _entryCommits.DeleteMaterial(previousMaterial.CommitId);
+        }
+    }
+
     // ————————————————————————————— 撤销（§7.3） —————————————————————————————
 
+    /// <summary>Ctrl+Z（§7.3/§8.3）：纯布局槽走现行配置撤销；带入口材料的槽先恢复入口文件再回滚配置。</summary>
     private void UndoLast()
     {
-        if (!_layoutReady || _commit is null || _machine.State != GestureState.Idle)
+        if (!_layoutReady || _commit is null || _machine.State != GestureState.Idle || _modal.IsActive)
         {
-            return; // 仅 Idle 态响应（拖动中按 Esc 负责取消）
+            return; // 仅 Idle 态响应（拖动中按 Esc 负责取消）；模态期主墙零命令
         }
 
         if (!_commit.TryPeekUndo(out var slot))
@@ -582,10 +811,22 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
             return;
         }
 
+        var material = slot.EntryMaterial;
+        if (material is not null && !_entryCommits.RestoreMaterial(material))
+        {
+            ShowTransientStatus("撤销中止：入口文件还原失败，已保留现状（宁可不撤销，不留混合态）");
+            return; // F-12：配置不回滚、材料保留供重试
+        }
+
         var actionName = slot.ActionName;
         if (_commit.Commit(slot.Previous, "撤销", out var failure))
         {
             _commit.ClearUndoSlot(); // 撤销本身不再可重做（最小撤销范围）
+            if (material is not null)
+            {
+                _entryCommits.DeleteMaterial(material.CommitId); // 文件与配置都已还原 → 材料移交完成
+            }
+
             _presenter.RenderAll(_commit.Current);
             _machine.UpdateObjects(_commit.Current.Objects);
             UpdateEmptyHint();
@@ -610,7 +851,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         _statusTimer.Start();
     }
 
-    /// <summary>常驻诊断（恢复链/显示适配）：不清除。</summary>
+    /// <summary>常驻诊断（恢复链/显示适配/启动清扫）：不清除。</summary>
     private void ShowPersistentStatus(string message)
     {
         _statusTimer.Stop();
@@ -618,6 +859,19 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         AutomationProperties.SetName(StatusHint, message);
         StatusHint.IsClosable = false;
         StatusHint.IsOpen = true;
+    }
+
+    /// <summary>加载诊断 + M4 启动清扫报告合并（App 在 Load() 之前执行 EntryRecovery.Sweep，§5.6）。</summary>
+    private string ComposeStartupDiagnostics(IReadOnlyList<string> loadDiagnostics)
+    {
+        var lines = new List<string>(loadDiagnostics);
+        if (_recoveryDiagnostics.Count > 0)
+        {
+            lines.Add("启动清扫（EntryRecovery）：");
+            lines.AddRange(_recoveryDiagnostics);
+        }
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     private void UpdateEmptyHint()

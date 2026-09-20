@@ -21,4 +21,17 @@ public sealed class LocalFileStore : IFileStore
     public void Delete(string path) => File.Delete(path);
 
     public void CreateDirectory(string path) => Directory.CreateDirectory(path);
+
+    public IReadOnlyList<string> ListDirectories(string directoryPath) =>
+        Directory.Exists(directoryPath)
+            ? [.. Directory.EnumerateDirectories(directoryPath).Order(StringComparer.Ordinal)]
+            : [];
+
+    public void DeleteDirectory(string directoryPath)
+    {
+        if (Directory.Exists(directoryPath))
+        {
+            Directory.Delete(directoryPath, recursive: true);
+        }
+    }
 }
