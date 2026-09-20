@@ -31,9 +31,11 @@ public partial class App : Application
         var gate = SingleInstanceGate.Acquire(out var acquired);
         if (acquired != SingleInstanceAcquireResult.Acquired)
         {
-            // 二次启动：已向首实例宿主窗 PostMessage「激活」（或限时未果）→ 本进程干净退出
+            // 二次启动：已向首实例宿主窗 PostMessage「激活」（或限时未果）→ 本进程确定性退出。
+            // Environment.Exit(0)：此时未建任何窗口/未启动 XAML 消息循环，直接终程比
+            // Application.Exit（依赖调度器循环已运转）更确定——退出码恒 0、进程立即消失。
             gate.Dispose();
-            Application.Current.Exit();
+            Environment.Exit(0);
             return;
         }
 
