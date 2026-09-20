@@ -45,10 +45,15 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
     private readonly EntryLauncher _launcher = new();
     private readonly ModalSessionService _modal;
     private readonly IReadOnlyList<string> _recoveryDiagnostics;
+    private readonly TileWall.Shell.Imaging.GroupVisualHost _visuals;
+    private readonly TileWall.Shell.Imaging.ImageLoader _imageLoader = new();
+    private readonly WallVisibility _visibility;
 
-    /// <summary>M5：轮播决策状态机（§2.2 装配；无图不计时——候选枚举/计时器驱动属 M6 接线，
-    /// Core 引擎与接缝 Evaluate/CommitSwitch/ReportLoadFailure 已定形）。</summary>
+    /// <summary>M5：轮播决策状态机（§2.2 装配；无图不计时——M6 起由 CarouselCoordinator 驱动）。</summary>
     public CarouselScheduler Carousel { get; } = new(SystemClock.Instance);
+
+    private CarouselCoordinator? _carouselCoordinator;
+    private WallCarouselDriver? _carouselDriver;
 
     private LayoutCommitService? _commit;
     private WallGrid _wall = new(1, 1);
@@ -83,7 +88,9 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         _modal = new ModalSessionService(RootGrid);
         _objectMenu = new MenuFlyout();
         _objectMenu.Opening += (_, _) => PopulateObjectMenu();
-        _presenter = new WallPresenter(TilesCanvas, DragLayer, _metrics) { ObjectMenu = _objectMenu };
+        _visuals = new TileWall.Shell.Imaging.GroupVisualHost(_metrics);
+        _presenter = new WallPresenter(TilesCanvas, DragLayer, _metrics) { ObjectMenu = _objectMenu, GroupHost = _visuals };
+        _visibility = new WallVisibility(this); // M6 §8.2：墙可见性状态源（托盘/热键后续接入同一接口）
 
         _previewTimer = DispatcherQueue.CreateTimer();
         _previewTimer.Interval = TimeSpan.FromMilliseconds(GestureThresholds.PreviewHoverDelayMs); // B4：250 ms
@@ -210,6 +217,33 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         _presenter.Initialize(_wall);
         _presenter.RenderAll(_commit.Current);
         UpdateEmptyHint();
+        StartCarousel(_commit); // M6 §2.2：轮播接线（引擎/协调器/驱动器装配 + 基线建立）
+    }
+
+    /// <summary>M6 轮播装配（§2.2）：Core 协调器（决策核）+ Shell 引擎（解码/持久化/上墙）+ 驱动器（哑闹钟）。</summary>
+    private void StartCarousel(LayoutCommitService commit)
+    {
+        var engine = new WallCarouselEngine(commit, _imageLoader, _visuals, _metrics, GetRasterizationScale);
+        var coordinator = new CarouselCoordinator(SystemClock.Instance, Carousel, _files, engine, engine)
+        {
+            LayoutReady = true, // 墙可见性/模态/拖动由驱动器与指针路径维护
+        };
+        _carouselCoordinator = coordinator;
+        _carouselDriver = new WallCarouselDriver(coordinator, engine, _visibility, _modal, _presenter, DispatcherQueue);
+        _carouselDriver.Start();
+        _ = RunCarouselBaselineAsync(coordinator); // 首图/恢复显示（§8.2）
+    }
+
+    private async Task RunCarouselBaselineAsync(CarouselCoordinator coordinator)
+    {
+        try
+        {
+            await coordinator.OnConfigReadyAsync();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            // 基线建立失败不致命：组保持占位（主题兜底色），后续到期路径照常
+        }
     }
 
     private (bool Seeded, TileWallConfig Config) ApplySeedIfRequested(TileWallConfig config)
@@ -353,6 +387,11 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
             : GestureThresholds.DragStartMouseDip;
         _pointerGestureActive = true; // 本次手势派生的 Button.Click 将被抑制（激活判定归状态机 T3）
         _machine.Press(view.Object.Id, view.Object.Bounds, _commit!.Current.Objects, _lastPointerPos, threshold);
+        if (_carouselCoordinator is { } coordinator)
+        {
+            coordinator.GestureActive = true; // M6 §7.5：指针手势期间暂缓切图（Pressing/Dragging 全程）
+        }
+
         view.Root.CapturePointer(e.Pointer); // T1：捕获指针
         e.Handled = true;
     }
@@ -380,6 +419,10 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
 
         _machine.Release(new DipPoint(position.X, position.Y)); // T3 点击判定在此（≤B1），Click 已被抑制
         _pointerGestureActive = false;
+        if (_carouselCoordinator is { } coordinator)
+        {
+            coordinator.GestureActive = false; // M6 §7.5：手势结束 → 下一 tick/显式检查恢复
+        }
 
         // M5 §11.3：对象 Button 吞掉右键 pointer 事件 → ContextFlyout 自动显示失效；右键释放处显式
         // 弹出对象菜单（A12：组从任意分块右键均为整组菜单）。背景右键仍走 RootGrid.ContextFlyout。
@@ -398,6 +441,11 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
     private void OnTilesPointerLost(object sender, PointerRoutedEventArgs e)
     {
         _pointerGestureActive = false;
+        if (_carouselCoordinator is { } coordinator)
+        {
+            coordinator.GestureActive = false;
+        }
+
         _machine.PointerLost();
     }
 
@@ -774,6 +822,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
             currentEntryFullPath,
             currentEntryDisplay,
             _linkFiles,
+            _files,
             draft => SaveGroupDraft(target, draft));
         _modal.Open(new GroupPropertyWindow(context, WinRT.Interop.WindowNative.GetWindowHandle(this)));
     }

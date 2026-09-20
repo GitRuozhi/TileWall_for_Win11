@@ -27,6 +27,12 @@ public sealed class LocalFileStore : IFileStore
             ? [.. Directory.EnumerateDirectories(directoryPath).Order(StringComparer.Ordinal)]
             : [];
 
+    /// <summary>M6（§6.1）：顶层文件枚举（不递归）、Ordinal 确定性排序；目录不存在 → 空列表。</summary>
+    public IReadOnlyList<string> ListFiles(string directoryPath) =>
+        Directory.Exists(directoryPath)
+            ? [.. Directory.EnumerateFiles(directoryPath).Order(StringComparer.Ordinal)]
+            : [];
+
     public void DeleteDirectory(string directoryPath)
     {
         if (Directory.Exists(directoryPath))

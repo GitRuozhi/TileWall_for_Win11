@@ -61,6 +61,12 @@ public sealed class WallPresenter
     /// <summary>对象右键菜单（磁贴与组共用一份动态构建的 MenuFlyout）；设为 null 则元素不挂 ContextFlyout。</summary>
     public MenuFlyout? ObjectMenu { get; set; }
 
+    /// <summary>M6：组渲染宿主（共享画布 + 翻转单元）；null 时组回退 M5 骨架（装配前安全）。</summary>
+    public TileWall.Shell.Imaging.GroupVisualHost? GroupHost { get; set; }
+
+    /// <summary>M6：全量重渲染完成（驱动器据此把已解码的当前图重放到重建后的视觉树上）。</summary>
+    public event Action? RenderedAll;
+
     /// <summary>对象元素收到 ContextRequested（右键 / Shift+F10）——MainWindow 借此记录菜单目标。</summary>
     public event Action<ObjectElementView, ContextRequestedEventArgs>? ObjectContextRequested;
 
@@ -90,6 +96,8 @@ public sealed class WallPresenter
         {
             BuildAndAttach(o);
         }
+
+        RenderedAll?.Invoke(); // M6：重建后驱动器重放当前图（视觉树已换新，位图资产缓存复用）
     }
 
     /// <summary>增量：新建磁贴后追加单个元素（§3.3）。</summary>
@@ -452,8 +460,21 @@ public sealed class WallPresenter
 
     private FrameworkElement BuildGroupContent(GroupObject group, Brush brush, string? title, List<Grid> banners)
     {
-        // 组 = 单个焦点单元（P1 B10）：整组拖动/右键/点击命中体；分区纯视觉、不聚焦；
-        // 组 M3 不画前景（组前景=共享图片，属 P3），仅组底色 + 分区缝（§3.2）。
+        // 组 = 单个焦点单元（P1 B10）：整组拖动/右键/点击命中体；分区纯视觉、不聚焦。
+        // M6：共享画布渲染升级为「每分区一个翻转单元」（§5.1），委托 GroupVisualHost 构建
+        // （几何全部经 GridMetrics/SharedCanvas 派生，定位数学 p.Column·Pitch 不变 §3.1）。
+        if (GroupHost is { } host)
+        {
+            return host.BuildContent(
+                group,
+                brush,
+                title,
+                banners,
+                partitionEntered: index => ShowBanner(GetViewOrThrow(group.Id), index),
+                partitionExited: _ => HideBanners(GetViewOrThrow(group.Id)));
+        }
+
+        // 无宿主装配（理论不可达：MainWindow 恒装配）时维持 M5 分区骨架
         var canvas = new Canvas
         {
             Width = _metrics.RectWidth(group.Bounds),

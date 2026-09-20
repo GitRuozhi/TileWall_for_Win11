@@ -28,6 +28,11 @@ public sealed class ModalSessionService
     /// <summary>存在活动会话 → true（各命令出口守卫依据）。</summary>
     public bool IsActive => _sessionWindow is not null;
 
+    /// <summary>M6：会话开/关事件（轮播驱动的暂缓/恢复钩子，M6 设计 §2.2 挂接点）。</summary>
+    public event Action? SessionOpened;
+
+    public event Action? SessionClosed;
+
     /// <summary>打开会话窗口；已有活动会话时不叠开、只聚焦（§3.3「重复请求只聚焦」）。</summary>
     public void Open(Window window)
     {
@@ -51,6 +56,7 @@ public sealed class ModalSessionService
         _host.Children.Add(_mask);
         window.Closed += OnSessionClosed;
         window.Activate();
+        SessionOpened?.Invoke();
     }
 
     private void OnSessionClosed(object sender, WindowEventArgs args)
@@ -63,5 +69,6 @@ public sealed class ModalSessionService
         }
 
         _host.IsHitTestVisible = true;
+        SessionClosed?.Invoke();
     }
 }

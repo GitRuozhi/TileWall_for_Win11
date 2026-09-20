@@ -187,6 +187,16 @@ public sealed class InMemoryFileStore : IFileStore
             .Order(StringComparer.Ordinal)];
     }
 
+    /// <summary>M6（§6.1）：文件键中位于 directoryPath 直下（无更深分隔符）者，Ordinal 确定性排序。</summary>
+    public IReadOnlyList<string> ListFiles(string directoryPath)
+    {
+        var prefix = directoryPath + Path.DirectorySeparatorChar;
+        return [.. _files.Keys
+            .Where(k => k.StartsWith(prefix, StringComparison.Ordinal))
+            .Where(k => !k[prefix.Length..].Contains(Path.DirectorySeparatorChar))
+            .Order(StringComparer.Ordinal)];
+    }
+
     public void DeleteDirectory(string directoryPath)
     {
         var prefix = directoryPath + Path.DirectorySeparatorChar;

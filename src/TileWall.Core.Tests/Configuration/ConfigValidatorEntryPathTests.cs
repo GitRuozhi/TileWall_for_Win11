@@ -19,7 +19,7 @@ public class ConfigValidatorEntryPathTests
     public void 路径指错对象目录_ENTRY_PATH_MISMATCH()
     {
         var config = ConfigWithEntry("obj-a", "Objects/obj-b/浏览器.lnk");
-        var violation = Assert.Single(ConfigValidator.Validate(config).Where(v => v.Code == ConfigValidator.EntryPathMismatch));
+        var violation = Assert.Single(ConfigValidator.Validate(config), v => v.Code == ConfigValidator.EntryPathMismatch);
         Assert.Equal("obj-a", violation.ObjectId);
     }
 

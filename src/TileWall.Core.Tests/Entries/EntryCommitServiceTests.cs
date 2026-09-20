@@ -28,7 +28,7 @@ public class EntryCommitServiceTests : IDisposable
         var entryRel = EntryPaths.EntryRelativePath("obj-new", "计算器.lnk");
         var entryPath = EntryPaths.Full(_h.Root, entryRel);
         Assert.True(_h.Files.Exists(entryPath));
-        Assert.Single(_h.Files.FilePaths.Where(p => p.StartsWith(EntryPaths.ObjectsDir(_h.Root, "obj-new") + Path.DirectorySeparatorChar, StringComparison.Ordinal)));
+        Assert.Single(_h.Files.FilePaths, p => p.StartsWith(EntryPaths.ObjectsDir(_h.Root, "obj-new") + Path.DirectorySeparatorChar, StringComparison.Ordinal));
 
         // INV-E2：config 指向存在的文件
         var loaded = report.NewConfig;
@@ -127,7 +127,7 @@ public class EntryCommitServiceTests : IDisposable
         var report = _h.Service.Commit(config, _h.Request(new TileDraft { TitleText = "便签", Entry = new EntryDraft.NoneDraft() }));
 
         Assert.False(_h.Files.Exists(entryPath));
-        Assert.Empty(_h.Files.FilePaths.Where(p => p.Contains(EntryPaths.ObjectsDir(_h.Root, EntryCommitHarness.ObjectId) + Path.DirectorySeparatorChar, StringComparison.Ordinal))); // 无入口对象无目录残留（INV-E2 反向）
+        Assert.DoesNotContain(_h.Files.FilePaths, p => p.Contains(EntryPaths.ObjectsDir(_h.Root, EntryCommitHarness.ObjectId) + Path.DirectorySeparatorChar, StringComparison.Ordinal)); // 无入口对象无目录残留（INV-E2 反向）
         var obj = Assert.IsType<TileObject>(report.NewConfig.Objects.Single(o => o.Id == EntryCommitHarness.ObjectId));
         Assert.Null(obj.Entry);
         Assert.Equal("便签", obj.Visual.TitleText); // 无入口对象直写 TitleText

@@ -28,6 +28,12 @@ public interface IFileStore
     /// </summary>
     IReadOnlyList<string> ListDirectories(string directoryPath);
 
+    /// <summary>
+    /// 目录下文件全路径列表（不含子目录内容——顶层、不递归，M6 设计 §6.1；确定性排序；目录不存在 → 空列表，
+    /// 与 <see cref="ListDirectories"/> 语义对齐）。M6：ImageCatalog 文件夹候选枚举的唯一 IO 面。
+    /// </summary>
+    IReadOnlyList<string> ListFiles(string directoryPath);
+
     /// <summary>尽力递归删除目录；不存在时静默（Directory.Delete 语义）。M4：暂存区/撤销材料清理。</summary>
     void DeleteDirectory(string directoryPath);
 }

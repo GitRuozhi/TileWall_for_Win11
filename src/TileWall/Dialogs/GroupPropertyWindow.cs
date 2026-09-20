@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -6,11 +6,15 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using TileWall.Core.Carousel;
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Grid;
 using TileWall.Core.Groups;
+using TileWall.Core.Imaging;
+using TileWall.Shell.Imaging;
 using Windows.Storage.Pickers;
+using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace TileWall.Dialogs;
 
@@ -22,6 +26,7 @@ public sealed record GroupPropertyWindowContext(
     string? CurrentEntryFullPath,
     string? CurrentEntryDisplay,
     ILnkFileService LinkFiles,
+    IFileStore Files,                  // M6：图片候选枚举（ImageCatalog，文件夹来源）
     Func<GroupEditDraft, string?> SaveHandler); // 返回 null = 成功（关窗）；否则错误文本就地显示
 
 /// <summary>
@@ -41,12 +46,21 @@ public sealed class GroupPropertyWindow : Window
 
     private readonly GroupPropertyWindowContext _context;
     private readonly Grid _rootGrid;
-    private readonly StackPanel _mainPage;
+    private readonly FrameworkElement _mainPage;
     private readonly Grid _layoutPage;
 
     // —— 主页控件 ——
     private readonly TextBlock _sizeSummary;
     private readonly Canvas _previewCanvas;
+    private readonly Canvas _imagePreviewCanvas;
+    private readonly ContentControl _imagePreviewHost;
+    private readonly ComboBox _imageCurrent;
+    private readonly Button _imageZoomIn;
+    private readonly Button _imageZoomOut;
+    private readonly Button _imageFitCover;
+    private readonly Button _imageFitAll;
+    private readonly Button _imageReset;
+    private readonly TextBlock _imageStatus;
     private readonly RadioButton _imageSingle;
     private readonly RadioButton _imageMultiple;
     private readonly RadioButton _imageFolder;
@@ -82,6 +96,16 @@ public sealed class GroupPropertyWindow : Window
     private bool _strokeActive;
     private bool _forceClose;
 
+    // —— M6 图片编辑状态（§10；预览与主墙共用 SharedCanvasTransform，禁止第二套裁剪数学） ——
+    private IReadOnlyList<string> _candidates = [];
+    private string? _editImageId;
+    private PixelSize? _editPixels;
+    private ImageTransform? _editTransform;   // null = 尚未加载出可编辑对象
+    private FitMode _editFit = FitMode.CoverFill;
+    private ImageSource? _editPreviewSource;
+    private bool _imageDragActive;
+    private Windows.Foundation.Point _imageDragLast;
+
     private enum LinkSource
     {
         Untouched,
@@ -113,6 +137,46 @@ public sealed class GroupPropertyWindow : Window
             IsTabStop = false,
         };
         AutomationProperties.SetAutomationId(previewHost, "grp-preview");
+
+        // —— M6 图片编辑（§10）：变换预览画布 + 当前图下拉 + 平移/缩放/两档适配/重置 ——
+        _imagePreviewCanvas = new Canvas
+        {
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), // 命中面（拖动平移）
+        };
+        _imagePreviewHost = new ContentControl { Content = _imagePreviewCanvas, IsTabStop = false };
+        AutomationProperties.SetAutomationId(_imagePreviewHost, "grp-image-preview");
+        _imageCurrent = new ComboBox { MinWidth = 220, PlaceholderText = "（无候选）" };
+        AutomationProperties.SetAutomationId(_imageCurrent, "grp-image-current");
+        _imageCurrent.SelectionChanged += (_, _) =>
+        {
+            if (_imageCurrent.SelectedItem is ComboBoxItem item && item.Tag is string path)
+            {
+                _ = OnEditImageChangedAsync(path);
+            }
+        };
+        _imageZoomIn = new Button { Content = "＋" };
+        AutomationProperties.SetAutomationId(_imageZoomIn, "grp-image-zoom-in");
+        _imageZoomIn.Click += (_, _) => ZoomEdit(1.25);
+        _imageZoomOut = new Button { Content = "−" };
+        AutomationProperties.SetAutomationId(_imageZoomOut, "grp-image-zoom-out");
+        _imageZoomOut.Click += (_, _) => ZoomEdit(0.8);
+        _imageFitCover = new Button { Content = "居中填满" };
+        AutomationProperties.SetAutomationId(_imageFitCover, "grp-image-fit-cover");
+        _imageFitCover.Click += (_, _) => FitEdit(FitMode.CoverFill);
+        _imageFitAll = new Button { Content = "完整适应" };
+        AutomationProperties.SetAutomationId(_imageFitAll, "grp-image-fit-all");
+        _imageFitAll.Click += (_, _) => FitEdit(FitMode.FitAll);
+        _imageReset = new Button { Content = "重置" };
+        AutomationProperties.SetAutomationId(_imageReset, "grp-image-reset");
+        _imageReset.Click += (_, _) => ResetEdit();
+        _imageStatus = new TextBlock { Opacity = 0.7 };
+        AutomationProperties.SetAutomationId(_imageStatus, "grp-image-status");
+        _imagePreviewCanvas.PointerPressed += OnImagePreviewPointerPressed;
+        _imagePreviewCanvas.PointerMoved += OnImagePreviewPointerMoved;
+        _imagePreviewCanvas.PointerReleased += OnImagePreviewPointerReleased;
+        _imagePreviewCanvas.PointerCanceled += OnImagePreviewPointerLost;
+        _imagePreviewCanvas.PointerCaptureLost += OnImagePreviewPointerLost;
+        _imagePreviewCanvas.PointerWheelChanged += OnImagePreviewWheel;
 
         _imageSingle = new RadioButton { Content = "单张图片", GroupName = "grp-image-source" };
         AutomationProperties.SetAutomationId(_imageSingle, "grp-image-source-single");
@@ -174,7 +238,7 @@ public sealed class GroupPropertyWindow : Window
         AutomationProperties.SetAutomationId(enterLayout, "grp-enter-layout");
         enterLayout.Click += (_, _) => EnterLayoutPage();
 
-        _mainPage = BuildMainPage(enterLayout, previewHost, imageBrowse, folderBrowse, linkBrowse, linkClear, cancelButton);
+        _mainPage = BuildMainPage(enterLayout, previewHost, imageBrowse, folderBrowse, linkBrowse, linkClear, cancelButton, _imagePreviewHost, _imageCurrent, _imageZoomOut, _imageZoomIn, _imageFitCover, _imageFitAll, _imageReset, _imageStatus);
 
         // ——— 布局子页 ———
         _toolDraw = new RadioButton { Content = "画墙", GroupName = "grp-tool" };
@@ -256,7 +320,9 @@ public sealed class GroupPropertyWindow : Window
         LoadInitialState();
         _initialDraft = BuildDraft(); // 构造后的真实初值（含字段投影）
         RefreshSummaryAndPreview();
+        RefreshImagePreview();
         ValidateForm();
+        _ = LoadCandidatesAsync(); // M6 §10：候选枚举与当前图下拉（异步，不阻塞窗口显示）
 
         _imageSingle.Checked += (_, _) => ValidateForm();
         _imageMultiple.Checked += (_, _) => ValidateForm();
@@ -288,10 +354,10 @@ public sealed class GroupPropertyWindow : Window
 
     // ————————————————————————————— 装配 —————————————————————————————
 
-    private StackPanel BuildMainPage(Button enterLayout, FrameworkElement previewHost, Button imageBrowse, Button folderBrowse, Button linkBrowse, Button linkClear, Button cancelButton)
+    private FrameworkElement BuildMainPage(Button enterLayout, FrameworkElement previewHost, Button imageBrowse, Button folderBrowse, Button linkBrowse, Button linkClear, Button cancelButton, FrameworkElement imagePreviewHost, ComboBox imageCurrent, Button zoomOut, Button zoomIn, Button fitCover, Button fitAll, Button reset, TextBlock imageStatus)
     {
-        var grid = new Grid { Padding = new Thickness(16), RowSpacing = 8 };
-        for (var i = 0; i < 9; i++)
+        var grid = new Grid { Padding = new Thickness(16), RowSpacing = 6 };
+        for (var i = 0; i < 10; i++)
         {
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         }
@@ -312,12 +378,38 @@ public sealed class GroupPropertyWindow : Window
         Grid.SetRow(previewHost, 2);
         grid.Children.Add(previewHost);
 
+        // M6 §10：变换预览（拖动=平移，滚轮=锚点缩放）与编辑控件同行左右布局（避免主页溢出滚动）
+        var editColumn = new StackPanel { Spacing = 6 };
+        var currentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        currentRow.Children.Add(new TextBlock { Text = "当前图", VerticalAlignment = VerticalAlignment.Center, Width = 48 });
+        currentRow.Children.Add(imageCurrent);
+        editColumn.Children.Add(currentRow);
+        var editButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        editButtons.Children.Add(zoomOut);
+        editButtons.Children.Add(zoomIn);
+        editButtons.Children.Add(fitCover);
+        editButtons.Children.Add(fitAll);
+        editButtons.Children.Add(reset);
+        editColumn.Children.Add(editButtons);
+        editColumn.Children.Add(imageStatus);
+        var imageRow = new Grid { ColumnSpacing = 12 };
+        imageRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        imageRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        imagePreviewHost.HorizontalAlignment = HorizontalAlignment.Left;
+        imagePreviewHost.VerticalAlignment = VerticalAlignment.Top;
+        Grid.SetColumn(imagePreviewHost, 0);
+        imageRow.Children.Add(imagePreviewHost);
+        Grid.SetColumn(editColumn, 1);
+        imageRow.Children.Add(editColumn);
+        Grid.SetRow(imageRow, 3);
+        grid.Children.Add(imageRow);
+
         var sourceRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         sourceRow.Children.Add(new TextBlock { Text = "图片", VerticalAlignment = VerticalAlignment.Center, Width = 48 });
         sourceRow.Children.Add(_imageSingle);
         sourceRow.Children.Add(_imageMultiple);
         sourceRow.Children.Add(_imageFolder);
-        Grid.SetRow(sourceRow, 3);
+        Grid.SetRow(sourceRow, 4);
         grid.Children.Add(sourceRow);
 
         var pathsRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -325,7 +417,7 @@ public sealed class GroupPropertyWindow : Window
         _imagePathsBox.Width = 380;
         pathsRow.Children.Add(_imagePathsBox);
         pathsRow.Children.Add(imageBrowse);
-        Grid.SetRow(pathsRow, 4);
+        Grid.SetRow(pathsRow, 5);
         grid.Children.Add(pathsRow);
 
         var folderRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -333,17 +425,17 @@ public sealed class GroupPropertyWindow : Window
         _folderPathBox.Width = 380;
         folderRow.Children.Add(_folderPathBox);
         folderRow.Children.Add(folderBrowse);
-        Grid.SetRow(folderRow, 5);
+        Grid.SetRow(folderRow, 6);
         grid.Children.Add(folderRow);
 
         var backdropRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         backdropRow.Children.Add(new TextBlock { Text = "背景", VerticalAlignment = VerticalAlignment.Center, Width = 48 });
         backdropRow.Children.Add(_backdrop);
-        Grid.SetRow(backdropRow, 6);
+        Grid.SetRow(backdropRow, 7);
         grid.Children.Add(backdropRow);
 
         _backdropColorRow.Margin = new Thickness(56, 0, 0, 0);
-        Grid.SetRow(_backdropColorRow, 7);
+        Grid.SetRow(_backdropColorRow, 8);
         grid.Children.Add(_backdropColorRow);
 
         var bottom = new StackPanel { Spacing = 8 };
@@ -372,10 +464,14 @@ public sealed class GroupPropertyWindow : Window
         buttons.Children.Add(_saveButton);
         buttons.Children.Add(cancelButton);
         bottom.Children.Add(buttons);
-        Grid.SetRow(bottom, 8);
+        Grid.SetRow(bottom, 9);
         grid.Children.Add(bottom);
 
-        return new StackPanel { Children = { grid } };
+        return new ScrollViewer
+        {
+            Content = grid,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, // M6 主页增高：溢出滚动（窗口尺寸不变）
+        };
     }
 
     private Grid BuildLayoutPage(FrameworkElement canvasHost, Button confirmLayout, Button cancelLayout)
@@ -931,6 +1027,7 @@ public sealed class GroupPropertyWindow : Window
                 : GroupImageSourceKind.None,
             ImagePaths = CollectImagePaths(),
             FolderPath = _imageFolder.IsChecked == true && _folderPathBox.Text.Length > 0 ? _folderPathBox.Text : null,
+            Transforms = CollectTransforms(),
         },
         Backdrop = _backdrop.SelectedIndex switch
         {
@@ -955,6 +1052,292 @@ public sealed class GroupPropertyWindow : Window
             .Split('\n', '\r')
             .Select(line => line.Trim())
             .Where(line => line.Length > 0)];
+    }
+
+    /// <summary>M6 §10：变换进草稿——当前编辑图经 ImageTransformSet.Upsert（默认态自动剔除，XF-9）。</summary>
+    private IReadOnlyList<ImageTransformRecord> CollectTransforms()
+    {
+        var existing = _context.Target?.Images.Transforms ?? _draft.Images.Transforms;
+        if (_editImageId is null || _editTransform is not { } transform || _editPixels is not { } pixels)
+        {
+            return existing;
+        }
+
+        var canvas = SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase);
+        return ImageTransformSet.Upsert(existing, _editImageId, _editFit, transform, pixels, canvas);
+    }
+
+    // ————————————————————————————— M6 图片编辑（§10） —————————————————————————————
+
+    /// <summary>预览缩放比：显示坐标 = 画布 DIP × 该比（CanvasMetrics 换算同布局子页，§15.1 纪律）。</summary>
+    private static double PreviewRatio => PreviewCell / GridMetrics.Default.CellCore;
+
+    private static readonly GridMetrics CanvasMetricsBase = GridMetrics.Default;
+
+    private async Task LoadCandidatesAsync()
+    {
+        var images = _context.Target?.Images ?? _draft.Images;
+        if (images.Kind == GroupImageSourceKind.Folder)
+        {
+            _candidates = ImageCatalog.EnumerateCandidates(images, _context.Files);
+        }
+        else if (images.ImagePaths.Count > 0)
+        {
+            _candidates = [.. images.ImagePaths];
+        }
+        else if (!string.IsNullOrWhiteSpace(_folderPathBox.Text))
+        {
+            // 创建模式选了文件夹但未保存：即时枚举预览清单（§10 表「Folder 保存时枚举预览清单」）
+            _candidates = ImageCatalog.EnumerateCandidates(
+                new GroupImages { Kind = GroupImageSourceKind.Folder, FolderPath = _folderPathBox.Text },
+                _context.Files);
+        }
+        else
+        {
+            _candidates = CollectImagePaths();
+        }
+
+        _imageCurrent.Items.Clear();
+        foreach (var candidate in _candidates)
+        {
+            _imageCurrent.Items.Add(new ComboBoxItem { Content = Path.GetFileName(candidate), Tag = candidate });
+        }
+
+        // 当前编辑对象 = Carousel.CurrentImageId（无 → 首个候选，§10）
+        var current = _context.Target?.Carousel?.CurrentImageId;
+        var index = current is null ? 0 : _candidates.Select((c, i) => (c, i)).FirstOrDefault(x => string.Equals(x.c, current, StringComparison.OrdinalIgnoreCase)).i;
+        if (index < 0)
+        {
+            index = 0;
+        }
+
+        if (_candidates.Count == 0)
+        {
+            _editImageId = null;
+            _editPixels = null;
+            _editTransform = null;
+            _imageStatus.Text = "无图片候选：先在下方选择图片来源。";
+            AutomationProperties.SetName(_imageStatus, _imageStatus.Text);
+            return;
+        }
+
+        _imageCurrent.SelectedIndex = index;
+        await OnEditImageChangedAsync(_candidates[index], selectInCombo: false);
+    }
+
+    private async Task OnEditImageChangedAsync(string path, bool selectInCombo = true)
+    {
+        _editImageId = path;
+        _editPixels = null;
+        _editTransform = null;
+        if (selectInCombo)
+        {
+            for (var i = 0; i < _imageCurrent.Items.Count; i++)
+            {
+                if (_imageCurrent.Items[i] is ComboBoxItem { Tag: string tag } && string.Equals(tag, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    _imageCurrent.SelectedIndex = i;
+                    break;
+                }
+            }
+        }
+
+        try
+        {
+            var pixels = await ImageLoader.GetPixelSizeAsync(path); // 异步读尺寸：不阻塞 UI 线程
+            if (_editImageId != path)
+            {
+                return; // 用户已切换到别的图：丢弃过期结果
+            }
+
+            if (pixels is not { } size || !size.IsValid)
+            {
+                _imageStatus.Text = "图片加载失败（文件缺失或无法解码）。";
+                AutomationProperties.SetName(_imageStatus, _imageStatus.Text);
+                RefreshImagePreview();
+                return;
+            }
+
+            _editPixels = size;
+            _editPreviewSource = new BitmapImage(new Uri(path)) { DecodePixelWidth = 512 }; // 预览低清即可（§13 风险 7）
+            var found = ImageTransformSet.Find(_context.Target?.Images.Transforms ?? [], path);
+            _editFit = found?.Fit ?? FitMode.CoverFill;
+            _editTransform = found?.Transform
+                ?? SharedCanvasTransform.DefaultTransform(size, SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase), FitMode.CoverFill);
+            _imageStatus.Text = $"{Path.GetFileName(path)}  {size.Width:0}×{size.Height:0} px";
+            AutomationProperties.SetName(_imageStatus, _imageStatus.Text);
+        }
+        catch (Exception ex) when (ex is IOException or System.Runtime.InteropServices.COMException or UnauthorizedAccessException or ArgumentException)
+        {
+            _imageStatus.Text = $"图片加载失败：{ex.Message}";
+            AutomationProperties.SetName(_imageStatus, _imageStatus.Text);
+        }
+
+        RefreshImagePreview();
+        ValidateForm();
+    }
+
+    private void ZoomEdit(double factor)
+    {
+        if (_editTransform is not { } t || _editPixels is not { } pixels)
+        {
+            return;
+        }
+
+        var canvas = SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase);
+        var anchor = new DipPoint(canvas.Width / 2, canvas.Height / 2); // 无指针语义 → 锚点=画布中心（XF-2）
+        _editTransform = SharedCanvasTransform.ZoomAt(t, factor, anchor, SharedCanvasTransform.CoverFillScale(pixels, canvas));
+        RefreshImagePreview();
+        ValidateForm();
+    }
+
+    private void FitEdit(FitMode mode)
+    {
+        if (_editPixels is not { } pixels)
+        {
+            return;
+        }
+
+        var canvas = SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase);
+        _editFit = mode;
+        _editTransform = SharedCanvasTransform.Reset(pixels, canvas, mode); // 两档适配 = 重置到哪一档（§10）
+        RefreshImagePreview();
+        ValidateForm();
+    }
+
+    private void ResetEdit()
+    {
+        if (_editPixels is not { } pixels)
+        {
+            return;
+        }
+
+        var canvas = SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase);
+        _editTransform = SharedCanvasTransform.Reset(pixels, canvas, _editFit); // 回当前档居中初始（XF 幂等）
+        RefreshImagePreview();
+        ValidateForm();
+    }
+
+    private void OnImagePreviewPointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        if (_editTransform is null)
+        {
+            return;
+        }
+
+        _imageDragActive = true;
+        _imageDragLast = e.GetCurrentPoint(_imagePreviewCanvas).Position;
+        _imagePreviewCanvas.CapturePointer(e.Pointer);
+        e.Handled = true;
+    }
+
+    private void OnImagePreviewPointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_imageDragActive || _editTransform is not { } t)
+        {
+            return;
+        }
+
+        var position = e.GetCurrentPoint(_imagePreviewCanvas).Position;
+        var ratio = PreviewRatio;
+        _editTransform = SharedCanvasTransform.Translate(t, (position.X - _imageDragLast.X) / ratio, (position.Y - _imageDragLast.Y) / ratio);
+        _imageDragLast = position;
+        RefreshImagePreview();
+        e.Handled = true;
+    }
+
+    private void OnImagePreviewPointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        EndImageDrag(e);
+        ValidateForm();
+    }
+
+    private void OnImagePreviewPointerLost(object sender, PointerRoutedEventArgs e) => EndImageDrag(e);
+
+    private void EndImageDrag(PointerRoutedEventArgs e)
+    {
+        if (!_imageDragActive)
+        {
+            return;
+        }
+
+        _imageDragActive = false;
+        _imagePreviewCanvas.ReleasePointerCapture(e.Pointer);
+    }
+
+    private void OnImagePreviewWheel(object sender, PointerRoutedEventArgs e)
+    {
+        if (_editTransform is not { } t || _editPixels is not { } pixels)
+        {
+            return;
+        }
+
+        var point = e.GetCurrentPoint(_imagePreviewCanvas);
+        var ratio = PreviewRatio;
+        var anchor = new DipPoint(point.Position.X / ratio, point.Position.Y / ratio); // 指针下的画布点为锚（XF-2）
+        var factor = point.Properties.MouseWheelDelta > 0 ? 1.25 : 0.8;
+        var canvas = SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase);
+        _editTransform = SharedCanvasTransform.ZoomAt(t, factor, anchor, SharedCanvasTransform.CoverFillScale(pixels, canvas));
+        RefreshImagePreview();
+        e.Handled = true;
+    }
+
+    /// <summary>预览渲染：与主墙同一 ClipFor/偏移数学 × 预览比例（§10 纪律：禁止自绘第二套裁剪数学）。</summary>
+    private void RefreshImagePreview()
+    {
+        _imagePreviewCanvas.Children.Clear();
+        var ratio = PreviewRatio;
+        var canvas = SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase);
+        _imagePreviewCanvas.Width = (canvas.Width * ratio) + 2;
+        _imagePreviewCanvas.Height = (canvas.Height * ratio) + 2;
+        // 与主墙 holder 同构：预览内容限幅在画布矩形内（缩放溢出不出界）
+        _imagePreviewCanvas.Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, _imagePreviewCanvas.Width, _imagePreviewCanvas.Height) };
+
+        // 底色示意（Q6：SolidColor 模式铺配置色；BlurFill/透明透出窗底）
+        if (_backdrop.SelectedIndex == 1)
+        {
+            _imagePreviewCanvas.Children.Add(new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = (canvas.Width * ratio) + 2,
+                Height = (canvas.Height * ratio) + 2,
+                Fill = new SolidColorBrush(Microsoft.UI.Colors.Gray) { Opacity = 0.25 },
+                IsHitTestVisible = false,
+            });
+        }
+
+        // 图像：位置/尺寸 = 变换 × 比例；Clip = 预览画布（与主墙 holder 同构）
+        if (_editTransform is { } t && _editPixels is { } pixels && _editPreviewSource is { } source)
+        {
+            var image = new Microsoft.UI.Xaml.Controls.Image
+            {
+                Source = _editPreviewSource,
+                Width = pixels.Width * t.Scale * ratio,
+                Height = pixels.Height * t.Scale * ratio,
+                IsHitTestVisible = false,
+            };
+            Canvas.SetLeft(image, (t.OffsetX * ratio) + 1);
+            Canvas.SetTop(image, (t.OffsetY * ratio) + 1);
+            _imagePreviewCanvas.Children.Add(image);
+        }
+
+        // 分区缝示意：组内相对坐标 × 比例（与 grp-preview 同款语义）
+        foreach (var p in _draft.Partitions)
+        {
+            var rect = new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = ((p.Column * GridMetrics.Default.Pitch) + GridMetrics.Default.WidthOf(p.Width)) * ratio,
+                Height = 1,
+                Fill = new SolidColorBrush(Microsoft.UI.Colors.Gray) { Opacity = 0.6 },
+                IsHitTestVisible = false,
+            };
+            var lineX = (p.Column * GridMetrics.Default.Pitch) + GridMetrics.Default.WidthOf(p.Width);
+            if (lineX < canvas.Width)
+            {
+                Canvas.SetLeft(rect, (lineX * ratio) + 1);
+                Canvas.SetTop(rect, (p.Row * GridMetrics.Default.Pitch * ratio) + 1);
+                _imagePreviewCanvas.Children.Add(rect);
+            }
+        }
     }
 
     /// <summary>链接草稿推导（复用 M4 §7.1 五态与浏览菜单语义）。</summary>

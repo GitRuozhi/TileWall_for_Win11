@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using TileWall.Core.Grid;
+using TileWall.Core.Imaging;
 
 namespace TileWall.Core.Configuration;
 
@@ -104,6 +105,24 @@ public enum GroupImageSourceKind
     Folder,
 }
 
+/// <summary>
+/// 逐图变换条目（M6 设计 §9；仅偏离默认态才落盘，XF-9）。
+/// ImageId = 绝对路径字符串（与 CarouselState.CurrentImageId 同语义，§4.1）；匹配用
+/// OrdinalIgnoreCase（Windows 路径不区分大小写，§9/§13 风险 8），存储保留用户原样大小写。
+/// </summary>
+public sealed record ImageTransformRecord
+{
+    public required string ImageId { get; init; }
+
+    public FitMode Fit { get; init; } = FitMode.CoverFill;
+
+    public required double Scale { get; init; }
+
+    public required double OffsetX { get; init; }
+
+    public required double OffsetY { get; init; }
+}
+
 /// <summary>图片来源记录：全部带默认值 → 旧配置反序列化逐字段兼容（schemaVersion 保持 1）。</summary>
 public sealed record GroupImages
 {
@@ -115,11 +134,15 @@ public sealed record GroupImages
     /// <summary>Folder 来源的文件夹路径。</summary>
     public string? FolderPath { get; init; }
 
+    /// <summary>M6 新增：逐图变换（列表非字典——JSON 数组保序、schema 最简，§9）；无条目 = 默认居中填满（XF-7）。</summary>
+    public IReadOnlyList<ImageTransformRecord> Transforms { get; init; } = [];
+
     public bool Equals(GroupImages? other) =>
         other is not null
         && Kind == other.Kind
         && ImagePaths.SequenceEqual(other.ImagePaths, StringComparer.Ordinal)
-        && string.Equals(FolderPath, other.FolderPath, StringComparison.Ordinal);
+        && string.Equals(FolderPath, other.FolderPath, StringComparison.Ordinal)
+        && Transforms.SequenceEqual(other.Transforms);
 
     public override int GetHashCode()
     {
@@ -131,6 +154,11 @@ public sealed record GroupImages
         }
 
         hash.Add(FolderPath);
+        foreach (var t in Transforms)
+        {
+            hash.Add(t);
+        }
+
         return hash.ToHashCode();
     }
 }
