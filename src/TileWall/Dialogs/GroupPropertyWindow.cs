@@ -102,6 +102,13 @@ public sealed class GroupPropertyWindow : Window
     private PixelSize? _editPixels;
     private ImageTransform? _editTransform;   // null = 尚未加载出可编辑对象
     private FitMode _editFit = FitMode.CoverFill;
+
+    /// <summary>
+    /// 会话内逐图编辑草稿（当前图之外的其他图也活在草稿里，保存=整体提交、取消=全弃，
+    /// M6 设计 §10 两级草稿语义）——「当前图」下拉切换不丢任何一张未保存的平移/缩放编辑。
+    /// </summary>
+    private readonly Dictionary<string, (FitMode Fit, ImageTransform Transform, PixelSize Pixels)> _sessionEdits
+        = new(StringComparer.OrdinalIgnoreCase);
     private ImageSource? _editPreviewSource;
     private bool _imageDragActive;
     private Windows.Foundation.Point _imageDragLast;
@@ -1054,17 +1061,30 @@ public sealed class GroupPropertyWindow : Window
             .Where(line => line.Length > 0)];
     }
 
-    /// <summary>M6 §10：变换进草稿——当前编辑图经 ImageTransformSet.Upsert（默认态自动剔除，XF-9）。</summary>
+    /// <summary>把当前编辑图的未保存变更写入会话草稿（切图与保存前都会调用）。</summary>
+    private void StashSessionEdit()
+    {
+        if (_editImageId is not null && _editTransform is not null && _editPixels is not null)
+        {
+            _sessionEdits[_editImageId] = (_editFit, _editTransform.Value, _editPixels.Value);
+        }
+    }
+
+    /// <summary>
+    /// M6 §10：变换进草稿——会话内全部编辑过图（含当前图）依次经 ImageTransformSet.Upsert
+    /// （默认态自动剔除，XF-9）；保存 = 会话编辑整体提交，取消关窗 = 字典随窗口全弃。
+    /// </summary>
     private IReadOnlyList<ImageTransformRecord> CollectTransforms()
     {
-        var existing = _context.Target?.Images.Transforms ?? _draft.Images.Transforms;
-        if (_editImageId is null || _editTransform is not { } transform || _editPixels is not { } pixels)
+        StashSessionEdit();
+        var result = _context.Target?.Images.Transforms ?? _draft.Images.Transforms;
+        var canvas = SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase);
+        foreach (var (imageId, edit) in _sessionEdits)
         {
-            return existing;
+            result = ImageTransformSet.Upsert(result, imageId, edit.Fit, edit.Transform, edit.Pixels, canvas);
         }
 
-        var canvas = SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase);
-        return ImageTransformSet.Upsert(existing, _editImageId, _editFit, transform, pixels, canvas);
+        return result;
     }
 
     // ————————————————————————————— M6 图片编辑（§10） —————————————————————————————
@@ -1127,6 +1147,7 @@ public sealed class GroupPropertyWindow : Window
 
     private async Task OnEditImageChangedAsync(string path, bool selectInCombo = true)
     {
+        StashSessionEdit(); // 切走前暂存上一张的未保存编辑（切回即恢复，不静默丢弃）
         _editImageId = path;
         _editPixels = null;
         _editTransform = null;
@@ -1160,10 +1181,18 @@ public sealed class GroupPropertyWindow : Window
 
             _editPixels = size;
             _editPreviewSource = new BitmapImage(new Uri(path)) { DecodePixelWidth = 512 }; // 预览低清即可（§13 风险 7）
-            var found = ImageTransformSet.Find(_context.Target?.Images.Transforms ?? [], path);
-            _editFit = found?.Fit ?? FitMode.CoverFill;
-            _editTransform = found?.Transform
-                ?? SharedCanvasTransform.DefaultTransform(size, SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase), FitMode.CoverFill);
+            if (_sessionEdits.TryGetValue(path, out var sessionEdit))
+            {
+                _editFit = sessionEdit.Fit;
+                _editTransform = sessionEdit.Transform; // 会话内已编辑：恢复草稿值
+            }
+            else
+            {
+                var found = ImageTransformSet.Find(_context.Target?.Images.Transforms ?? [], path);
+                _editFit = found?.Fit ?? FitMode.CoverFill;
+                _editTransform = found?.Transform
+                    ?? SharedCanvasTransform.DefaultTransform(size, SharedCanvas.CanvasSize(_draft.Size, CanvasMetricsBase), FitMode.CoverFill);
+            }
             _imageStatus.Text = $"{Path.GetFileName(path)}  {size.Width:0}×{size.Height:0} px";
             AutomationProperties.SetName(_imageStatus, _imageStatus.Text);
         }

@@ -1,4 +1,4 @@
-using TileWall.Core.Animation;
+﻿using TileWall.Core.Animation;
 using TileWall.Core.Carousel;
 using TileWall.Core.Configuration;
 using TileWall.Core.Grid;
@@ -13,8 +13,12 @@ internal sealed class FakeImageGate : ICarouselImageGate
     public HashSet<string> Failing { get; } = new(StringComparer.Ordinal);
     public List<(string GroupId, string ImageId)> Calls { get; } = [];
 
+    /// <summary>每次 PrepareAsync 前触发（模拟「解码期间收起墙」等竞态时序）。</summary>
+    public Action<string>? OnPrepare { get; set; }
+
     public Task<bool> PrepareAsync(string groupId, string imageId)
     {
+        OnPrepare?.Invoke(imageId);
         Calls.Add((groupId, imageId));
         return Task.FromResult(!Failing.Contains(imageId));
     }
@@ -134,6 +138,23 @@ public sealed class CarouselCoordinatorTests
         Assert.Equal(T0, state!.LastSwitchUtc);
     }
 
+    [Fact]
+    public async Task Baseline_InvalidCurrentImage_FallsThroughToNextCandidate_AndRebuildsBenchmark()
+    {
+        var group = Group("g1") with { Carousel = new CarouselState { CurrentImageId = Candidates[0], LastSwitchUtc = T0 } };
+        var (coordinator, gate, host) = Build(_clock, _files, group);
+        gate.Failing.Add(Candidates[0]); // 当前图文件存在但解码失败（失效）
+
+        await coordinator.OnConfigReadyAsync();
+
+        Assert.Equal(["g1:" + Candidates[1]], host.Shown); // 依序试至首个可用候选
+        var state = Assert.IsType<GroupObject>(host.CurrentConfig.Objects.Single()).Carousel;
+        Assert.Equal(Candidates[1], state!.CurrentImageId);
+        Assert.Equal(T0, state.LastSwitchUtc);             // 旧基准指向失效图 → 以成功时刻重建
+        Assert.Single(host.Persisted);
+        Assert.DoesNotContain(gate.Calls, c => c.ImageId == Candidates[2] || c.ImageId == Candidates[3]);
+    }
+
     // ————————————————————————————— B14 全时间线（§8.3） —————————————————————————————
 
     [Fact]
@@ -244,6 +265,37 @@ public sealed class CarouselCoordinatorTests
 
         await coordinator.OnWallShownAsync();
         Assert.Single(host.Flips);         // 显示恢复 → 显式检查一次
+    }
+
+    // ————————————————————————————— 解码中收起（§7.6 第 1 行） —————————————————————————————
+
+    [Fact]
+    public async Task HiddenDuringDecode_SkipsFlip_AndShowsSettledNewImage()
+    {
+        var (coordinator, gate, host) = Build(_clock, _files, Group("g1"));
+        gate.OnPrepare = imageId =>
+        {
+            if (imageId != Candidates[0])
+            {
+                coordinator.OnWallHidden(); // 切换候选的解码期间收起墙（基线恢复 prepare 不触发）
+            }
+        };
+        await coordinator.OnConfigReadyAsync(); // 15:16:12 基准（Enabled=true 路径）
+
+        _clock.Advance(TimeSpan.FromSeconds(61));
+        await coordinator.TickAsync(); // 到期 → 解码中收起 → 跳过 T4–T6
+
+        Assert.Empty(host.Flips);                                   // 隐藏期不播动画
+        var switchedTo = host.Shown.Last()["g1:".Length..];         // 新图直显落定（重开即见完整新图）
+        Assert.NotEqual(Candidates[0], switchedTo);                 // 随机不紧接重复
+        Assert.DoesNotContain(coordinator.EventLog, l => l.StartsWith("flip:", StringComparison.Ordinal));
+        var state = Assert.IsType<GroupObject>(host.CurrentConfig.Objects.Single()).Carousel;
+        Assert.Equal(switchedTo, state!.CurrentImageId);            // T2/T3 照常提交与落盘
+        Assert.Equal(T0 + TimeSpan.FromSeconds(61), state.LastSwitchUtc);
+
+        // 重开：基准刚建立未到期 → 不补切
+        await coordinator.OnWallShownAsync();
+        Assert.Empty(host.Flips);
     }
 
     // ————————————————————————————— 失败链（§6.2/B18） —————————————————————————————

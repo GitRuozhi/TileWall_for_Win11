@@ -49,7 +49,9 @@ public sealed class WallCarouselEngine : ICarouselImageGate, ICarouselDriveHost
         var assets = await _loader.LoadAsync(imageId, canvas, _rasterScale());
         if (assets is null)
         {
-            _prepared.Remove(groupId); // 旧资产作废：组保持占位/旧图（§6.2）
+            // 加载失败保留既有缓存资产（§6.2/B19「失败保留旧图」的 UI 侧）：缓存条目恒为最近一次
+            // 成功上墙的图，失败链后任何 RenderAll → ReapplyRenderedImages 仍能重放当前显示图，
+            // 而不是整组跌回兜底底色
             return false;
         }
 
@@ -74,6 +76,9 @@ public sealed class WallCarouselEngine : ICarouselImageGate, ICarouselDriveHost
             _visuals.StartFlip(groupId, imageId, assets); // T4：组内全部块同帧启动
         }
     }
+
+    /// <summary>M6 设计 §7.6 第 2 行：动画中收起 → 全组跳终态（front=新图，不从半张翻转继续）。</summary>
+    public void SettleFlips() => _visuals.SettleAll();
 
     private bool TryGetPrepared(string groupId, string imageId, out GroupImageAssets assets)
     {

@@ -14,9 +14,17 @@ public sealed record FlipTimeline
     /// <summary>A1：绕 Y 轴 0→180°。</summary>
     public const double MaxAngleDeg = 180;
 
-    /// <summary>A4（拍板 Q4）：透视距离 1000 DIP——以常量透传渲染层；Core 不做投影数学。
-    /// 当前渲染实现走设计 §7.3 备胎 B（PlaneProjection 固定透视），此常量保留为 A4 的记录值与
-    /// 备胎 A/主路径回归时的单一校准点。</summary>
+    /// <summary>
+    /// A4（拍板 Q4）：透视距离 1000 DIP——G0 裁决记录与校准点（Core 不做投影数学）。
+    /// G0 结论（2026-09-21 实现期）：渲染落地走 M6 设计 §7.3 备胎 B「XAML PlaneProjection 固定透视」
+    /// （GroupVisualHost 双面 PlaneProjection），A4 的 1000 DIP 未直接生效——PlaneProjection 无深度
+    /// 参数，透视距离为系统固定值，与拍板 Q4 存在偏差。该偏差待人类裁决：接受备胎 B 观感，
+    /// 或回主路径（PerspectiveTransform3D{Depth=1000} + CompositeTransform3D，需真机验证其
+    /// Storyboard 可动画性）或备胎 A（关键帧联动 Scale 近似弱透视）——三者均只需改
+    /// GroupVisualHost.BuildFlipStoryboard/BuildUnit，本常量即唯一校准输入。
+    /// 设计 §14 S0 要求的 G0 裁决文档回写（技术设计 §13 风险 1）因 docs/ 目录对实现侧只读，
+    /// 由主代理负责落盘。
+    /// </summary>
     public const double PerspectiveDepthDip = 1000;
 
     /// <summary>面切换点 = 时间线中点（90°，块侧对观众）；按时间线判定、非渲染帧（T4/T5 可单测）。</summary>

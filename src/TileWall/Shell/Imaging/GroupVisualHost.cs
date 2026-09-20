@@ -1,4 +1,4 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -56,6 +56,9 @@ public sealed class GroupVisualState
     public required IReadOnlyList<FlipUnitView> Units { get; init; }
 
     public string? CurrentImageId { get; set; }
+
+    /// <summary>当前图的位图资产（SettleToCurrent 跳终态重放 front 面所需）。</summary>
+    public GroupImageAssets? CurrentAssets { get; set; }
 
     public Storyboard? ActiveFlip { get; set; }
 }
@@ -240,6 +243,28 @@ public sealed class GroupVisualHost
 
     // ————————————————————————————— 贴图与翻转 —————————————————————————————
 
+    /// <summary>
+    /// 全组跳终态（M6 设计 §7.6 第 2 行「动画中收起」）：停止所有活动翻转 Storyboard，
+    /// front 面 = 新图（重放 CurrentAssets），投影/透明度经 Stop 回本地值——重开不从半张翻转继续。
+    /// </summary>
+    public void SettleAll()
+    {
+        foreach (var state in _states.Values)
+        {
+            if (state.ActiveFlip is null)
+            {
+                continue;
+            }
+
+            state.ActiveFlip.Stop(); // 不触发 Completed：由本方法负责落定
+            state.ActiveFlip = null;
+            if (state.CurrentImageId is { } imageId && state.CurrentAssets is { } assets)
+            {
+                ApplyImage(state.GroupId, imageId, assets);
+            }
+        }
+    }
+
     /// <summary>该组当前应显示的变换（有条目用条目，无条目 = CoverFill 居中，XF-7）。</summary>
     public static ImageTransform TransformOf(GroupVisualState state, PixelSize pixels)
     {
@@ -259,6 +284,7 @@ public sealed class GroupVisualHost
         state.ActiveFlip?.Stop();
         state.ActiveFlip = null;
         state.CurrentImageId = imageId;
+        state.CurrentAssets = assets;
         var transform = TransformOf(state, assets.SourcePixels);
         foreach (var unit in state.Units)
         {
@@ -280,6 +306,7 @@ public sealed class GroupVisualHost
 
         state.ActiveFlip?.Stop();
         state.CurrentImageId = imageId;
+        state.CurrentAssets = assets;
         var transform = TransformOf(state, assets.SourcePixels);
         foreach (var unit in state.Units)
         {

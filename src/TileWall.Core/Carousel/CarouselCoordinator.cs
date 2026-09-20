@@ -95,8 +95,9 @@ public sealed class CarouselCoordinator
 
     /// <summary>
     /// 启动装配：逐组读 Carousel——无 CurrentImageId → 首候选直显 + CommitSwitch 建基准（§11.2 表首行）；
-    /// 已有 CurrentImageId → 直显（基准保留，引擎既有裁决覆盖后续切换）。首图失败 → 依序试后续候选
-    /// （§6.2 首图失败链的启动面简化：占位=主题兜底色，全部失败则维持占位）。
+    /// 已有 CurrentImageId → 直显（基准保留）；当前图加载失败（文件缺失/损坏/解码异常）→ 依序试其余候选，
+    /// 成功者直显 + CommitSwitch(成功时刻) 重建基准（§6.2「首图失败：失败链同上」的恢复面）；
+    /// 全部候选失败 → 维持占位（主题兜底色），由后续到期路径接管。
     /// </summary>
     public async Task OnConfigReadyAsync()
     {
@@ -116,6 +117,29 @@ public sealed class CarouselCoordinator
                 if (await _loader.PrepareAsync(group.Id, state.CurrentImageId))
                 {
                     _host.ShowImage(group.Id, state.CurrentImageId); // 恢复显示，不动基准
+                    continue;
+                }
+
+                // 当前图失效：依序试其余候选，重建显示与基准（旧基准指向的图已不可用）
+                var runtime = RuntimeFor(group.Id);
+                foreach (var candidate in candidates)
+                {
+                    if (string.Equals(candidate, state.CurrentImageId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (!await _loader.PrepareAsync(group.Id, candidate))
+                    {
+                        continue;
+                    }
+
+                    var rebuilt = _scheduler.CommitSwitch(state, runtime, candidate, _clock.UtcNow);
+                    _states[group.Id] = rebuilt;
+                    Persist(group.Id, rebuilt);
+                    _host.ShowImage(group.Id, candidate);
+                    _log.Add($"show:{group.Id}:{candidate}");
+                    break;
                 }
 
                 continue;
@@ -233,9 +257,19 @@ public sealed class CarouselCoordinator
         _states[group.Id] = newState;
         _log.Add($"commit:{group.Id}:{candidate}");
         Persist(group.Id, newState); // T3：状态先于动画落盘（§7.6 一致性）
-        _host.StartFlip(group.Id, candidate); // T4：同一时刻组内全部块启动（§7.2）
-        _log.Add($"flip:{group.Id}:{candidate}");
-        NoteFlipStarted(group.Id);
+        if (Enabled)
+        {
+            _host.StartFlip(group.Id, candidate); // T4：同一时刻组内全部块启动（§7.2）
+            _log.Add($"flip:{group.Id}:{candidate}");
+            NoteFlipStarted(group.Id);
+        }
+        else
+        {
+            // §7.6 第 1 行：解码（T1）期间收起墙 → 跳过 T4–T6（墙不可见不播动画），
+            // 新图直显落定（跳终态）；T2/T3 已提交，重开即见完整新图
+            _host.ShowImage(group.Id, candidate);
+            _log.Add($"show:{group.Id}:{candidate}");
+        }
     }
 
     private void Persist(string groupId, CarouselState newState)

@@ -80,6 +80,7 @@ public sealed class WallCarouselDriver
     {
         _tickTimer.Stop(); // §14.5 隐藏期零计时任务；真实时间不作废（引擎零改动）
         _coordinator.OnWallHidden();
+        _engine.SettleFlips(); // §7.6 第 2 行：动画中收起 → 跳终态（front=新图，不从半张翻转继续）
     }
 
     private void OnModalOpened() => _coordinator.ModalActive = true; // 属性窗模态期暂缓切图（§7.5）
