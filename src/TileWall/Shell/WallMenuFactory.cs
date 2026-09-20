@@ -23,11 +23,13 @@ public static class WallMenuFactory
         Action<string> RevealLocation);
 
     /// <summary>背景菜单（附着 RootGrid.ContextFlyout；空白命中：边距、栏间隙、格间隙）。
-    /// M5 起「新建磁贴组」生效（§11.2：第二参回调 → 组属性窗创建模式）。</summary>
-    public static MenuFlyout CreateBackgroundMenu(Action onNewTile, Action onNewGroup)
+    /// M5 起「新建磁贴组」生效（§11.2：第二参回调 → 组属性窗创建模式）；
+    /// M7 起「设置」生效（§8.5：与托盘菜单两入口汇同一 Router.OpenSettings）。</summary>
+    public static MenuFlyout CreateBackgroundMenu(Action onNewTile, Action onNewGroup, Action onOpenSettings)
     {
         ArgumentNullException.ThrowIfNull(onNewTile);
         ArgumentNullException.ThrowIfNull(onNewGroup);
+        ArgumentNullException.ThrowIfNull(onOpenSettings);
         var menu = new MenuFlyout();
         AutomationProperties.SetAutomationId(menu, "menu-blank");
 
@@ -41,9 +43,7 @@ public static class WallMenuFactory
             "menu-blank-datetime", "添加时间日期", enabled: false,
             reason: "时间日期组件（后续里程碑）", action: null));
         menu.Items.Add(new MenuFlyoutSeparator());
-        menu.Items.Add(Item(
-            "menu-blank-settings", "设置", enabled: false,
-            reason: "设置窗与托盘（后续里程碑）", action: null));
+        menu.Items.Add(Item("menu-blank-settings", "设置", enabled: true, reason: null, onOpenSettings));
         return menu;
     }
 

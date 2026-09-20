@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Media;
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Grid;
+using TileWall.Core.Shell;
 using Windows.Storage.Pickers;
 
 namespace TileWall.Dialogs;
@@ -28,7 +29,7 @@ public sealed record PropertyWindowContext(
 /// 有改动关闭经 AppWindow.Closing 确认（§3.5）；保存经注入回调走 EntryCommitService 联合提交（§5.5）。
 /// M4 简化记录：前景默认占位/手动图片（图标提取顺延）；后景图像只存路径不复制进数据目录。
 /// </summary>
-public sealed class TilePropertyWindow : Window
+public sealed class TilePropertyWindow : Window, IExitParticipant
 {
     private const int GwlHwndParent = -8;
 
@@ -430,12 +431,23 @@ public sealed class TilePropertyWindow : Window
         _saveButton.IsEnabled = false;
     }
 
-    private void Save()
+    private void Save() => _ = ((IExitParticipant)this).TrySaveNow();
+
+    // ————————————————————————————— IExitParticipant（M7 §9 退出三分支参与面） —————————————————————————————
+
+    /// <summary>退出流程草稿判定：与「取消关窗确认」同一脏检查。</summary>
+    bool IExitParticipant.HasUnsavedDraft => IsDirty();
+
+    /// <summary>
+    /// 同步保存（退出流程「保存后退出」分支）：成功则本窗自行关闭（_forceClose 免确认）并返回 null；
+    /// 失败就地显示错误、窗口保持、磁盘零残留，返回错误文本——ExitCoordinator 据此中止退出。
+    /// </summary>
+    string? IExitParticipant.TrySaveNow()
     {
         ValidateForm();
         if (!_saveButton.IsEnabled)
         {
-            return;
+            return "表单尚未通过校验，无法保存";
         }
 
         var error = _context.SaveHandler(BuildDraft()); // 防御性复核（遮罩期墙面不会变，仍按 §7.1 保存时复核）
@@ -448,7 +460,12 @@ public sealed class TilePropertyWindow : Window
         {
             ShowValidation(error); // 提交层错误（IO/校验）就地显示，窗口不关、零残留
         }
+
+        return error;
     }
+
+    /// <summary>退出流程「放弃退出」分支：丢弃草稿（此后关闭不再弹确认）。</summary>
+    void IExitParticipant.DiscardDraft() => _forceClose = true;
 
     // ————————————————————————————— 关闭确认（§3.5） —————————————————————————————
 

@@ -12,6 +12,7 @@ using TileWall.Core.Entries;
 using TileWall.Core.Grid;
 using TileWall.Core.Groups;
 using TileWall.Core.Imaging;
+using TileWall.Core.Shell;
 using TileWall.Shell.Imaging;
 using Windows.Storage.Pickers;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -36,7 +37,7 @@ public sealed record GroupPropertyWindowContext(
 /// ——「文字取消了，墙也不会被拆」（B08）。主墙在保存回调成功前零变化（INV-P12/B07）。
 /// 窗口形态复用 M4 模式：不可调、GWLP_HWNDPARENT 设为墙 HWND 的 owned window。
 /// </summary>
-public sealed class GroupPropertyWindow : Window
+public sealed class GroupPropertyWindow : Window, IExitParticipant
 {
     private const int GwlHwndParent = -8;
 
@@ -1457,12 +1458,28 @@ public sealed class GroupPropertyWindow : Window
         _saveButton.IsEnabled = false;
     }
 
-    private void Save()
+    private void Save() => _ = ((IExitParticipant)this).TrySaveNow();
+
+    // ————————————————————————————— IExitParticipant（M7 §9 退出三分支参与面） —————————————————————————————
+
+    /// <summary>退出流程草稿判定：主页脏检查之外，布局子页会话进行中也算未保存状态。</summary>
+    bool IExitParticipant.HasUnsavedDraft => IsDirty() || _session is not null;
+
+    /// <summary>
+    /// 同步保存（退出流程「保存后退出」分支）：布局子页进行中时拒绝保存并给出原因（先确认/取消布局编辑）；
+    /// 成功则本窗自行关闭（_forceClose 免确认）并返回 null；失败就地显示、窗口保持、返回错误文本。
+    /// </summary>
+    string? IExitParticipant.TrySaveNow()
     {
+        if (_session is not null)
+        {
+            return "正在编辑分区布局：请先确认或取消布局编辑，再执行退出保存。";
+        }
+
         ValidateForm();
         if (!_saveButton.IsEnabled)
         {
-            return;
+            return "表单尚未通过校验，无法保存";
         }
 
         var error = _context.SaveHandler(BuildDraft()); // 提交层错误就地显示，窗口不关、零残留
@@ -1475,7 +1492,12 @@ public sealed class GroupPropertyWindow : Window
         {
             ShowValidation(error);
         }
+
+        return error;
     }
+
+    /// <summary>退出流程「放弃退出」分支：丢弃全部草稿（此后关闭不再弹确认）。</summary>
+    void IExitParticipant.DiscardDraft() => _forceClose = true;
 
     private bool IsDirty() => !BuildDraft().Equals(_initialDraft);
 

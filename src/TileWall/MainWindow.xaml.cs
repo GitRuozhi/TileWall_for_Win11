@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
@@ -11,6 +12,8 @@ using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Grid;
 using TileWall.Core.Groups;
+using TileWall.Core.Settings;
+using TileWall.Core.Shell;
 using TileWall.Dialogs;
 using TileWall.Shell;
 using Windows.Graphics;
@@ -24,10 +27,11 @@ namespace TileWall;
 
 /// <summary>
 /// 磁贴墙窗口：M2 的外形（无边框、不可移动、左下锚定，拍板 Q7）+ M3 的接线
-/// （渲染/手势/布局提交/撤销）+ M4 的接线（托管入口引擎、点击启动、属性窗模态、联合提交与撤销恢复）。
+/// （渲染/手势/布局提交/撤销）+ M4 的接线（托管入口引擎、点击启动、属性窗模态、联合提交与撤销恢复）
+/// + M7 的接线（Shell 命令路由、显隐状态机宿主、退出编排宿主、失焦收起与 Alt+F4 转接）。
 /// 本类只做「事件 → 状态机/服务 → 渲染」的薄封装，不复制任何几何/腾位/校验/入口协议逻辑。
 /// </summary>
-public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
+public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IWallShowHost, IExitHost
 {
     private readonly ConfigStore _store;
     private readonly ConfigLoadResult _loadResult;
@@ -48,6 +52,12 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
     private readonly TileWall.Shell.Imaging.GroupVisualHost _visuals;
     private readonly TileWall.Shell.Imaging.ImageLoader _imageLoader = new();
     private readonly WallVisibility _visibility;
+    private readonly ShellHostContext _shell;
+    private readonly ShowHideAnimator _animator;
+    private readonly WallShowMachine _showMachine;
+    private readonly ExitCoordinator _exit;
+    private bool _exitInFlight;
+    private bool _activatedOnce; // --background 首显判定（延迟 Activate，§2.2 第 8 步）
 
     /// <summary>M5：轮播决策状态机（§2.2 装配；无图不计时——M6 起由 CarouselCoordinator 驱动）。</summary>
     public CarouselScheduler Carousel { get; } = new(SystemClock.Instance);
@@ -70,6 +80,8 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         bool seedRequested,
         IFileStore files,
         ILnkFileService linkFiles,
+        ShellHostContext shell,
+        bool startHidden,
         IReadOnlyList<string>? recoveryDiagnostics = null)
     {
         _store = store;
@@ -77,6 +89,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         _seedRequested = seedRequested;
         _files = files;
         _linkFiles = linkFiles;
+        _shell = shell;
         _recoveryDiagnostics = recoveryDiagnostics ?? [];
 
         InitializeComponent();
@@ -86,11 +99,16 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         _dataRoot = Path.GetDirectoryName(store.ConfigPath) ?? string.Empty;
         _entryCommits = new EntryCommitService(_files, store, _linkFiles, new EnvironmentDataDirectoryProvider(_dataRoot));
         _modal = new ModalSessionService(RootGrid);
+        _animator = new ShowHideAnimator(RootGrid, GetRasterizationScale);
+        _showMachine = new WallShowMachine(startHidden ? WallShowState.Hidden : WallShowState.Visible, this);
+        _exit = new ExitCoordinator(this);
+        _modal.SessionOpened += () => _showMachine.InputGateClosed = true; // W3：模态期状态机防御行
+        _modal.SessionClosed += () => _showMachine.InputGateClosed = false;
         _objectMenu = new MenuFlyout();
         _objectMenu.Opening += (_, _) => PopulateObjectMenu();
         _visuals = new TileWall.Shell.Imaging.GroupVisualHost(_metrics);
         _presenter = new WallPresenter(TilesCanvas, DragLayer, _metrics) { ObjectMenu = _objectMenu, GroupHost = _visuals };
-        _visibility = new WallVisibility(this); // M6 §8.2：墙可见性状态源（托盘/热键后续接入同一接口）
+        _visibility = new WallVisibility(this); // M6 §8.2：墙可见性状态源（M7 起显隐终态经状态机→AppWindow，事件链零改动）
 
         _previewTimer = DispatcherQueue.CreateTimer();
         _previewTimer.Interval = TimeSpan.FromMilliseconds(GestureThresholds.PreviewHoverDelayMs); // B4：250 ms
@@ -104,7 +122,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         _statusTimer.IsRepeating = false;
         _statusTimer.Tick += (_, _) => StatusHint.IsOpen = false;
 
-        _backgroundMenu = WallMenuFactory.CreateBackgroundMenu(OnNewTileRequested, OnNewGroupRequested);
+        _backgroundMenu = WallMenuFactory.CreateBackgroundMenu(OnNewTileRequested, OnNewGroupRequested, OpenSettings);
         RootGrid.ContextFlyout = _backgroundMenu;
         _presenter.ObjectContextRequested += (view, _) => _menuTarget = view.Object;
         _presenter.ObjectActivated += OnObjectInvokeActivated;
@@ -112,6 +130,8 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         ((FrameworkElement)Content).Loaded += OnContentLoaded;
         HookPointerEvents();
         RootGrid.KeyDown += OnRootKeyDown;
+        Activated += OnWindowDeactivated; // 失焦收起单机制（§6.4：墙外点击/切应用/开始菜单三场景合一）
+        AppWindow.Closing += OnAppWindowClosingExit; // Alt+F4 → 统一退出流程（§9.1）
     }
 
     // ————————————————————————————— 启动装配（§2.2） —————————————————————————————
@@ -125,6 +145,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         var workWidthDip = workArea.Width / scale;
         var workHeightDip = workArea.Height / scale;
 
+        var hotkeyLine = HotKeyStatusLine(); // C09：注册失败就地真实状态（墙内 InfoBar 呈现点之一）
         switch (_loadResult.Status)
         {
             case ConfigLoadStatus.Fresh:
@@ -132,12 +153,12 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
                 var (columns, rows) = WallSizing.InitialForWorkArea(workWidthDip, workHeightDip, _metrics);
                 if (columns < 1 || rows < 1)
                 {
-                    ShowPersistentStatus("工作区容不下一栏八格，磁贴墙无法显示（设计 §4.5、A18）。");
+                    ShowStartupStatus("工作区容不下一栏八格，磁贴墙无法显示（设计 §4.5、A18）。", hotkeyLine);
                     return;
                 }
 
                 var config = TileWallConfig.CreateInitial(columns, rows);
-                EnterReadyState(config, workArea, scale, workWidthDip, workHeightDip, saveFirst: true);
+                EnterReadyState(config, workArea, scale, workWidthDip, workHeightDip, saveFirst: true, hotkeyStatusLine: hotkeyLine);
                 break;
             }
             case ConfigLoadStatus.Loaded:
@@ -145,13 +166,13 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
             {
                 if (_loadResult.Status == ConfigLoadStatus.RecoveredFromBackup)
                 {
-                    ShowPersistentStatus(ComposeStartupDiagnostics(_loadResult.Diagnostics));
+                    ShowPersistentStatus(ComposeStartupDiagnostics(_loadResult.Diagnostics, hotkeyLine));
                 }
 
-                EnterReadyState(_loadResult.Config!, workArea, scale, workWidthDip, workHeightDip, saveFirst: false);
+                EnterReadyState(_loadResult.Config!, workArea, scale, workWidthDip, workHeightDip, saveFirst: false, hotkeyStatusLine: hotkeyLine);
                 if (_loadResult.Status == ConfigLoadStatus.Loaded && _recoveryDiagnostics.Count > 0)
                 {
-                    ShowPersistentStatus(ComposeStartupDiagnostics([])); // 启动清扫报告（回滚/清理动作）
+                    ShowPersistentStatus(ComposeStartupDiagnostics([], hotkeyLine)); // 启动清扫报告（回滚/清理动作）
                 }
 
                 break;
@@ -167,10 +188,12 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
                 }
 
                 UpdateEmptyHint();
-                ShowPersistentStatus(string.Join(Environment.NewLine, _loadResult.Diagnostics));
+                ShowStartupStatus(string.Join(Environment.NewLine, _loadResult.Diagnostics), hotkeyLine);
                 return;
             }
         }
+
+        ShowStartupStatus(hotkeyLine); // 正常路径唯一可能的常驻提示：快捷键未注册（C09 真实状态）
     }
 
     /// <summary>Fresh / Loaded 共用：种子注入（#if DEBUG）→ 首启/种子保存 → 窗口定位 → 渲染。</summary>
@@ -180,7 +203,8 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         double scale,
         double workWidthDip,
         double workHeightDip,
-        bool saveFirst)
+        bool saveFirst,
+        string? hotkeyStatusLine = null)
     {
         var (seeded, configToUse) = ApplySeedIfRequested(config);
         if (saveFirst || seeded)
@@ -206,8 +230,9 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         {
             _adaptationMode = true;
             PlaceWindow(workArea, scale, clampToWorkArea: true);
-            ShowPersistentStatus(
-                $"已保存布局需要 {_wall.Columns} 栏 × {_wall.Rows} 行，当前放不下；未渲染任何对象，配置未修改（设计 §17.1）。");
+            ShowStartupStatus(
+                $"已保存布局需要 {_wall.Columns} 栏 × {_wall.Rows} 行，当前放不下；未渲染任何对象，配置未修改（设计 §17.1）。",
+                hotkeyStatusLine);
             return;
         }
 
@@ -550,7 +575,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         switch (result.Outcome)
         {
             case LaunchOutcome.Launched:
-                AppWindow.Hide(); // C01：系统接受启动请求后收起墙
+                HideAfterLaunch(); // C01：系统接受启动请求后收起墙（M7 起经状态机走 A7 统一路径）
                 break;
             case LaunchOutcome.EntryMissing:
                 ShowTransientStatus("入口文件缺失"); // §12.1：立即失败时保留墙并提示
@@ -575,6 +600,16 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
             && _machine.State is GestureState.Dragging or GestureState.DraggingWithPreview or GestureState.Pressing)
         {
             _machine.Escape(); // T8：全量恢复（B11：菜单打开时 MenuFlyout 先消费 Esc）
+            e.Handled = true;
+            return;
+        }
+
+        // B11 下一层级：Idle 可见态 Esc 收起（模态期墙收不到 Esc——焦点在会话窗）
+        if (e.Key == VirtualKey.Escape
+            && !_modal.IsActive
+            && _showMachine.State == WallShowState.Visible)
+        {
+            _showMachine.Request(WallShowTrigger.Hide);
             e.Handled = true;
         }
     }
@@ -639,7 +674,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         switch (result.Outcome)
         {
             case LaunchOutcome.Launched:
-                AppWindow.Hide(); // runas 成功同样收墙（§6.1）
+                HideAfterLaunch(); // runas 成功同样收墙（§6.1；M7 起经状态机）
                 break;
             case LaunchOutcome.EntryMissing:
                 ShowTransientStatus("入口文件缺失");
@@ -1019,14 +1054,52 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         StatusHint.IsOpen = true;
     }
 
+    /// <summary>M7：多段常驻启动提示合并（避免后段覆盖前段——InfoBar 单条消息）。</summary>
+    private void ShowStartupStatus(params string?[] parts)
+    {
+        var lines = parts.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
+        if (lines.Length > 0)
+        {
+            ShowPersistentStatus(string.Join(Environment.NewLine, lines));
+        }
+    }
+
+    /// <summary>M7（§5.3 C09）：快捷键注册状态的墙内 InfoBar 文案；null = 已注册（无提示）。</summary>
+    private string? HotKeyStatusLine()
+    {
+        if (_shell.HotKeys.IsRegistered)
+        {
+            return null;
+        }
+
+        var configured = _shell.ConfiguredHotKey;
+        if (configured is null)
+        {
+            return "未配置显示磁贴墙的快捷键；可在「设置」中录入（托盘图标右键 → 设置）。";
+        }
+
+        if (HotKeyGesture.TryParse(configured, out var gesture, out _) && gesture is not null)
+        {
+            return $"快捷键 {gesture.ToDisplayString()} 注册失败：{_shell.HotKeys.LastFailureReason ?? "组合可能被占用"}；"
+                + "可在「设置」中更换（托盘图标右键 → 设置）。";
+        }
+
+        return $"快捷键配置无效（{configured}），未注册；可在「设置」中录入（托盘图标右键 → 设置）。";
+    }
+
     /// <summary>加载诊断 + M4 启动清扫报告合并（App 在 Load() 之前执行 EntryRecovery.Sweep，§5.6）。</summary>
-    private string ComposeStartupDiagnostics(IReadOnlyList<string> loadDiagnostics)
+    private string ComposeStartupDiagnostics(IReadOnlyList<string> loadDiagnostics, string? hotkeyLine = null)
     {
         var lines = new List<string>(loadDiagnostics);
         if (_recoveryDiagnostics.Count > 0)
         {
             lines.Add("启动清扫（EntryRecovery）：");
             lines.AddRange(_recoveryDiagnostics);
+        }
+
+        if (!string.IsNullOrWhiteSpace(hotkeyLine))
+        {
+            lines.Add(hotkeyLine);
         }
 
         return string.Join(Environment.NewLine, lines);
@@ -1036,6 +1109,322 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
     {
         var empty = _commit is null || _commit.Current.Objects.Count == 0;
         EmptyHint.Visibility = empty ? Visibility.Visible : Visibility.Collapsed; // §4：对象数 > 0 → wall-empty-hint 消失
+    }
+
+    // ————————————————————————————— M7：Shell 命令路由（§6.2 输入路由表） —————————————————————————————
+
+    /// <summary>呼出热键（WM_HOTKEY → 唯一汇聚点）。模态期只聚焦会话不切显隐（§14.4）。</summary>
+    public void ToggleWall()
+    {
+        if (_exitInFlight)
+        {
+            return;
+        }
+
+        if (_modal.IsActive)
+        {
+            FocusTopSession(); // 录入态由窗内 Esc 处理；热键只负责聚焦（§6.2 录入中行）
+            return;
+        }
+
+        CancelGestureIfAny(); // 拖动中：先取消拖动（T12 零改动）再切换（设计决策注记 1）
+        _showMachine.Request(WallShowTrigger.Toggle);
+    }
+
+    /// <summary>托盘左双击 / 二次启动汇入（§3.3 同一条命令）：显示或聚焦现有模态，绝不收起。</summary>
+    public void ShowOrFocus()
+    {
+        if (_exitInFlight)
+        {
+            return;
+        }
+
+        if (_modal.IsActive)
+        {
+            FocusTopSession(); // §14.2：主墙仍不可交互，只聚焦会话
+            return;
+        }
+
+        CancelGestureIfAny(); // 防御（指针被墙捕获时该输入实际不可达，§6.2 表注）
+        _showMachine.Request(WallShowTrigger.Show);
+    }
+
+    /// <summary>
+    /// 打开设置（§8.5 两入口汇同一路径）：托盘菜单 / 墙面右键 menu-blank-settings。
+    /// 墙隐藏时走「预置模态」序列——Attach（ModalActive 先于墙 Shown 生效）→ 显示墙为背景 → ActivateTop。
+    /// </summary>
+    public void OpenSettings()
+    {
+        if (_exitInFlight)
+        {
+            return;
+        }
+
+        if (_modal.IsActive)
+        {
+            FocusTopSession(); // 设置窗已开→聚焦；属性窗会话在→聚焦属性窗（先聚焦当前会话）
+            return;
+        }
+
+        var settings = CreateSettingsWindow();
+        if (_showMachine.State is WallShowState.Hidden or WallShowState.Hiding)
+        {
+            CancelGestureIfAny();
+            _modal.Attach(settings); // ModalActive=true → 显式检查被 CanSwitchNow=false 短路（§3.4）
+            _showMachine.Request(WallShowTrigger.Show); // 恢复背景（顺带把 Hiding 打断落 Visible）
+            _modal.ActivateTop(); // owned 关系保证恒在墙之上
+        }
+        else
+        {
+            _modal.Open(settings);
+        }
+    }
+
+    /// <summary>退出入口（托盘菜单 / 墙窗 Alt+F4）；重入防御。</summary>
+    public void RequestExit()
+    {
+        if (_exitInFlight)
+        {
+            return;
+        }
+
+        _exitInFlight = true;
+        _ = RequestExitCoreAsync();
+    }
+
+    private async Task RequestExitCoreAsync()
+    {
+        try
+        {
+            var participant = _modal.CurrentSessionWindow as IExitParticipant;
+            if (participant is not null)
+            {
+                if (_exit.ShouldConfirmDraft(participant))
+                {
+                    var decision = await ShowExitDecisionDialogAsync(); // 草稿三分支（§9.1）
+                    if (!_exit.ApplyDecision(participant, decision))
+                    {
+                        return; // 取消/保存失败：原窗口与阻塞状态均不变（§3.5 / §14.4）
+                    }
+                }
+                else
+                {
+                    _exit.CloseDraftlessSession(); // 设置窗：已自动保存项不重复确认，直接关闭会话
+                }
+            }
+
+            _exit.RunTeardown(); // 固定释放序 → Application.Exit（进程结束）
+        }
+        finally
+        {
+            _exitInFlight = false;
+        }
+    }
+
+    private async Task<ExitDecision> ShowExitDecisionDialogAsync()
+    {
+        var sessionWindow = _modal.CurrentSessionWindow!;
+        var dialog = new ContentDialog
+        {
+            XamlRoot = ((FrameworkElement)sessionWindow.Content).XamlRoot,
+            Title = "退出 TileWall",
+            Content = "有未保存的草稿。退出前如何处理？",
+            PrimaryButtonText = "保存后退出",
+            SecondaryButtonText = "放弃更改并退出",
+            CloseButtonText = "取消退出",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        AutomationProperties.SetAutomationId(dialog, "exit-draft-dialog");
+        var result = await dialog.ShowAsync();
+        return result switch
+        {
+            ContentDialogResult.Primary => ExitDecision.SaveAndExit,
+            ContentDialogResult.Secondary => ExitDecision.DiscardAndExit,
+            _ => ExitDecision.CancelExit,
+        };
+    }
+
+    private void FocusTopSession() => _modal.CurrentSessionWindow?.Activate();
+
+    /// <summary>收起类输入的统一前置：拖动进行中先 T12 全量恢复（配置零改动），返回是否有手势被取消。</summary>
+    private bool CancelGestureIfAny()
+    {
+        if (_machine.State == GestureState.Idle)
+        {
+            return false;
+        }
+
+        _machine.PointerLost();
+        _pointerGestureActive = false;
+        if (_carouselCoordinator is { } coordinator)
+        {
+            coordinator.GestureActive = false;
+        }
+
+        return true;
+    }
+
+    /// <summary>点击启动收墙（两处 LaunchOutcome.Launched 出口）：M7 起经状态机走 A7 统一收起路径（§6.2 注 3）。</summary>
+    private void HideAfterLaunch() => _showMachine.Request(WallShowTrigger.Hide);
+
+    // ————————————————————————————— M7：失焦收起与 Alt+F4 转接 —————————————————————————————
+
+    /// <summary>
+    /// 失焦收起单机制（§6.4）：墙外点击 / 切应用 / 系统开始菜单三场景统一为 Window.Deactivated。
+    /// 「不干扰新前景」= 收起路径只 AppWindow.Hide()，绝不 Activate/SetForegroundWindow 墙窗。
+    /// </summary>
+    private void OnWindowDeactivated(object sender, WindowActivatedEventArgs args)
+    {
+        if (args.WindowActivationState != WindowActivationState.Deactivated)
+        {
+            return;
+        }
+
+        if (_exitInFlight || _modal.IsActive)
+        {
+            return; // §14.4：模态保留——失焦不关窗不藏墙，不向其他应用抢焦点
+        }
+
+        if (_showMachine.State != WallShowState.Visible)
+        {
+            return; // Hidden 忽略重复 Hide（与点击启动收起幂等收敛，§6.2 注 3）
+        }
+
+        CancelGestureIfAny(); // 先取消拖动（T12 语义）再收起
+        _showMachine.Request(WallShowTrigger.Hide);
+    }
+
+    /// <summary>Alt+F4 → 统一退出流程（§9.1 / §14 风险 8）；取消退出则窗保持。程序化 Close 不触发本事件，无递归再入。</summary>
+    private void OnAppWindowClosingExit(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        args.Cancel = true;
+        RequestExit();
+    }
+
+    // ————————————————————————————— M7：IWallShowHost（显隐状态机出口） —————————————————————————————
+
+    void IWallShowHost.BeginShowAnimation() => _animator.BeginShow(); // A6：200ms 淡入上移（物理已可见）
+
+    void IWallShowHost.BeginHideAnimation() => _animator.BeginHide(); // A7：150ms 淡出（物理仍可见）
+
+    void IWallShowHost.CancelAnimations() => _animator.Cancel(); // A8 打断
+
+    void IWallShowHost.SnapShow()
+    {
+        _animator.ResetVisual();
+        if (_activatedOnce)
+        {
+            AppWindow.Show(); // 物理终态唯一出口（WallVisibility.Shown → 轮播恢复，M6 钩子零改动）
+            return;
+        }
+
+        _activatedOnce = true;
+        Activate(); // --background 首显：延迟 Activate 补跑 Loaded→Bootstrap（§2.2 第 8 步；§14 风险 4）
+    }
+
+    void IWallShowHost.SnapHide()
+    {
+        _animator.ResetVisual();
+        AppWindow.Hide(); // 渲染停止点唯一（W2）；驱动器停表 + SettleFlips（M6 既有）
+    }
+
+    void IWallShowHost.FocusWall() => Activate(); // Visible 态托盘双击：聚焦不收起
+
+    // ————————————————————————————— M7：IExitHost（退出序列宿主动作，§10 固定释放序） —————————————————————————————
+
+    IExitParticipant? IExitHost.TopParticipant => _modal.CurrentSessionWindow as IExitParticipant;
+
+    void IExitHost.CloseTopSession() => _modal.CurrentSessionWindow?.Close();
+
+    void IExitHost.CancelTransientState()
+    {
+        CancelGestureIfAny(); // Fallout 兜底：在飞手势全量恢复
+        _backgroundMenu.Hide();
+        _objectMenu.Hide();
+    }
+
+    void IExitHost.SnapHideWall()
+    {
+        _animator.ResetVisual();
+        AppWindow.Hide(); // 无动画直达（退出序列的 Hidden 化）
+    }
+
+    void IExitHost.UnregisterHotKey() => _shell.HotKeys.Unregister(); // R5：先于托盘/宿主窗销毁（C11）
+
+    void IExitHost.RemoveTrayIcon() => _shell.Tray.Dispose(); // R1+R2：NIM_DELETE + DestroyIcon
+
+    void IExitHost.DestroyShellHostWindow() => _shell.MessageHost.Dispose(); // R4
+
+    void IExitHost.ReleaseSingleInstanceMutex() => _shell.SingleInstance.Release(); // R7：显式双保险
+
+    void IExitHost.ExitApplication() => Application.Current.Exit();
+
+    // ————————————————————————————— M7：设置窗装配与换绑（§3.4 / §5.4 / §8） —————————————————————————————
+
+    private SettingsWindow CreateSettingsWindow() => new(
+        new SettingsWindowContext(
+            CurrentHotKeyText: _commit?.Current.Settings.HotKey ?? _loadResult.Config?.Settings.HotKey ?? new AppSettings().HotKey,
+            Registrar: _shell.HotKeys,
+            ApplyHotKey: ApplyHotKeyBinding,
+            LoginStartup: _shell.LoginStartup,
+            VersionText: AppVersionText()),
+        WinRT.Interop.WindowNative.GetWindowHandle(this));
+
+    /// <summary>
+    /// 换绑（§5.4 不变量）：注册+保存双成功才替换；任一失败回滚到旧有效值——
+    /// 注册失败 → TryRegister(旧)；保存失败 → 回滚注册（配置不动，下次启动仍尝试旧组合）；
+    /// 回滚也失败 → 如实呈现「未注册」（C09：托盘双击与设置入口无条件可用）。保存走 SaveWithoutUndo 不产生撤销槽。
+    /// </summary>
+    private string? ApplyHotKeyBinding(string configText)
+    {
+        if (_commit is null)
+        {
+            return "配置不可用（损坏或版本过高），已禁用修改（设计 §17.2）。";
+        }
+
+        if (!HotKeyGesture.TryParse(configText, out var newGesture, out var parseFailure) || newGesture is null)
+        {
+            return parseFailure ?? "无效的快捷键组合";
+        }
+
+        var oldGesture = HotKeyGesture.TryParse(_commit.Current.Settings.HotKey, out var parsedOld, out _)
+            ? parsedOld
+            : null;
+        if (!_shell.HotKeys.TryRegister(newGesture))
+        {
+            RestoreOldBinding(oldGesture);
+            return _shell.HotKeys.LastFailureReason ?? "注册失败";
+        }
+
+        var newConfig = _commit.Current with { Settings = _commit.Current.Settings with { HotKey = configText } };
+        if (!_commit.SaveWithoutUndo(newConfig, out var saveFailure))
+        {
+            RestoreOldBinding(oldGesture); // 设置变更不是布局操作：不产生撤销槽（§5.4）
+            return $"已回滚到原组合：保存失败（{saveFailure}）";
+        }
+
+        return null;
+    }
+
+    private void RestoreOldBinding(HotKeyGesture? oldGesture)
+    {
+        if (oldGesture is not null && HotKeyGesture.IsValid(oldGesture))
+        {
+            _ = _shell.HotKeys.TryRegister(oldGesture); // 回滚旧组合（旧也失败 → 未注册，如实呈现）
+        }
+        else
+        {
+            _shell.HotKeys.Unregister(); // 配置本无有效组合 → 回到未注册态
+        }
+    }
+
+    private static string AppVersionText()
+    {
+        var assembly = typeof(MainWindow).Assembly;
+        var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        return string.IsNullOrWhiteSpace(informational)
+            ? assembly.GetName().Version?.ToString(3) ?? "0.0.0"
+            : informational;
     }
 
     // ————————————————————————————— IPreviewTimer（B4 计时） —————————————————————————————
