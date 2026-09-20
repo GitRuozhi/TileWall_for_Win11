@@ -8,27 +8,36 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     Title="TileWall"
     mc:Ignorable="d">
-    <Window.SystemBackdrop>
-        <MicaBackdrop />
-    </Window.SystemBackdrop>
+    <!--
+        磁贴墙主窗口（M2 接线阶段，仅消费 TileWall.Core）：
+        - 无边框无标题栏、不可移动，固定锚定主显示器工作区左下角、不覆盖任务栏（拍板 Q7、设计 §4.1）
+        - 窗口尺寸 = Core WallSizing.InitialForWorkArea 作用于真实工作区的吸附结果（拍板 Q3）
+        - 竖栏网格底（八格宽竖栏 + 栏间距 + 墙外边距 + 基础格网格线）为纯色/线条占位，观感不作验收项（P1 §1.1 常量经 GridMetrics 换算）
+        - 空墙状态提示按 P1 §3.6：纯文字、无按钮、居中偏上
+    -->
+    <Grid x:Name="RootGrid" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <Grid.Resources>
+            <SolidColorBrush x:Key="ColumnFillBrush" Opacity="0.08" Color="{ThemeResource SystemAccentColor}" />
+            <SolidColorBrush x:Key="ColumnStrokeBrush" Opacity="0.45" Color="{ThemeResource SystemAccentColor}" />
+            <SolidColorBrush x:Key="GridLineBrush" Opacity="0.18" Color="{ThemeResource SystemAccentColor}" />
+        </Grid.Resources>
+        <!-- 竖栏网格底（代码经 GridMetrics 绘制，Canvas 坐标即 DIP） -->
+        <Canvas x:Name="WallCanvas" />
 
-    <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
-
-        <TitleBar x:Name="AppTitleBar" Title="TileWall">
-            <TitleBar.IconSource>
-                <ImageIconSource ImageSource="Assets/AppIcon.ico" />
-            </TitleBar.IconSource>
-        </TitleBar>
-
-        <!--
-            The Frame hosts pages for your application content. Add your UI to
-            MainPage.xaml rather than here so you can use Page features such as
-            navigation events and the Loaded lifecycle.
-        -->
-        <Frame x:Name="RootFrame" Grid.Row="1" />
+        <!-- 空墙状态提示（P1 §3.6 文案原文；无任何按钮/入口） -->
+        <TextBlock
+            x:Name="EmptyHint"
+            Margin="0,140,0,0"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Top"
+            FontSize="14"
+            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+            LineHeight="22"
+            TextAlignment="Center">
+            <Run Text="尚无任何磁贴" /><LineBreak />
+            <Run Text="右击空白处，选择「新建磁贴」或" /><LineBreak />
+            <Run Text="「从开始菜单导入」开始布置" /><LineBreak />
+            <Run Text="（设置可在托盘图标右键中打开）" />
+        </TextBlock>
     </Grid>
 </Window>
