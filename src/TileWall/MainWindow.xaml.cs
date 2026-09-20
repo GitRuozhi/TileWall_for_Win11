@@ -6,9 +6,11 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using TileWall.Core.Carousel;
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Grid;
+using TileWall.Core.Groups;
 using TileWall.Dialogs;
 using TileWall.Shell;
 using Windows.Graphics;
@@ -43,6 +45,10 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
     private readonly EntryLauncher _launcher = new();
     private readonly ModalSessionService _modal;
     private readonly IReadOnlyList<string> _recoveryDiagnostics;
+
+    /// <summary>M5：轮播决策状态机（§2.2 装配；无图不计时——候选枚举/计时器驱动属 M6 接线，
+    /// Core 引擎与接缝 Evaluate/CommitSwitch/ReportLoadFailure 已定形）。</summary>
+    public CarouselScheduler Carousel { get; } = new(SystemClock.Instance);
 
     private LayoutCommitService? _commit;
     private WallGrid _wall = new(1, 1);
@@ -91,7 +97,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         _statusTimer.IsRepeating = false;
         _statusTimer.Tick += (_, _) => StatusHint.IsOpen = false;
 
-        _backgroundMenu = WallMenuFactory.CreateBackgroundMenu(OnNewTileRequested);
+        _backgroundMenu = WallMenuFactory.CreateBackgroundMenu(OnNewTileRequested, OnNewGroupRequested);
         RootGrid.ContextFlyout = _backgroundMenu;
         _presenter.ObjectContextRequested += (view, _) => _menuTarget = view.Object;
         _presenter.ObjectActivated += OnObjectInvokeActivated;
@@ -365,7 +371,8 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
 
     private void OnTilesPointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        var position = e.GetCurrentPoint(TilesCanvas).Position;
+        var point = e.GetCurrentPoint(TilesCanvas);
+        var position = point.Position;
         if (FindView(e.OriginalSource as DependencyObject) is { } view)
         {
             view.Root.ReleasePointerCapture(e.Pointer);
@@ -373,6 +380,18 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
 
         _machine.Release(new DipPoint(position.X, position.Y)); // T3 点击判定在此（≤B1），Click 已被抑制
         _pointerGestureActive = false;
+
+        // M5 §11.3：对象 Button 吞掉右键 pointer 事件 → ContextFlyout 自动显示失效；右键释放处显式
+        // 弹出对象菜单（A12：组从任意分块右键均为整组菜单）。背景右键仍走 RootGrid.ContextFlyout。
+        if (point.Properties.PointerUpdateKind == PointerUpdateKind.RightButtonReleased
+            && FindView(e.OriginalSource as DependencyObject) is { } menuView
+            && !_modal.IsActive)
+        {
+            _menuTarget = menuView.Object;
+            _objectMenu.ShowAt(menuView.Root, e.GetCurrentPoint(menuView.Root).Position);
+            return;
+        }
+
         e.Handled = true;
     }
 
@@ -550,7 +569,14 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
             return;
         }
 
-        OpenPropertyWindow(_commit.Current.Objects.FirstOrDefault(o => o.Id == objectId));
+        var target = _commit.Current.Objects.FirstOrDefault(o => o.Id == objectId);
+        if (target is GroupObject group)
+        {
+            OpenGroupPropertyWindow(group); // M5 §11.3：组的「编辑磁贴组」→ 组属性窗编辑模式
+            return;
+        }
+
+        OpenPropertyWindow(target);
     }
 
     private void OnElevatedRequested(string objectId)
@@ -693,6 +719,89 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer
         _presenter.RenderAll(_commit.Current);
         _machine.UpdateObjects(_commit.Current.Objects);
         UpdateEmptyHint();
+    }
+
+    // ————————————————————————————— 组属性窗（M5 §11.2/§11.3/§8.3） —————————————————————————————
+
+    /// <summary>「新建磁贴组」右键生效（B02）：守卫链与新建磁贴同构；创建模式默认 4×4 十六块 1×1、链接空。</summary>
+    private void OnNewGroupRequested()
+    {
+        if (!_layoutReady || _commit is null)
+        {
+            ShowTransientStatus("配置不可用（损坏或版本过高），已禁用布局修改（设计 §17.2）。");
+            return;
+        }
+
+        if (_adaptationMode)
+        {
+            ShowTransientStatus("已保存布局超出当前工作区，请先调整布局（设计 §17.1 不裁切不删）。");
+            return;
+        }
+
+        OpenGroupPropertyWindow(null);
+    }
+
+    /// <summary>打开组属性窗（创建/编辑共用；模态会话阻塞主墙；满墙无位由 GroupDraftValidator 就地 GROUP_NO_FIT、零写入，A17）。</summary>
+    private void OpenGroupPropertyWindow(GroupObject? target)
+    {
+        if (_modal.IsActive || !_layoutReady || _commit is null)
+        {
+            return; // §3.3「重复请求只聚焦」由 ModalSessionService 处理；此处拦截新会话创建
+        }
+
+        if (_adaptationMode)
+        {
+            ShowTransientStatus("已保存布局超出当前工作区，请先调整布局（设计 §17.1 不裁切不删）。");
+            return;
+        }
+
+        var otherRects = _commit.Current.Objects
+            .Where(o => target is null || o.Id != target.Id)
+            .Select(o => o.Bounds)
+            .ToArray();
+        string? currentEntryFullPath = null;
+        string? currentEntryDisplay = null;
+        if (target?.Entry is { } entry)
+        {
+            currentEntryFullPath = Path.Combine(_dataRoot, entry.RelativePath);
+            currentEntryDisplay = DescribeEntry(entry.RelativePath);
+        }
+
+        var context = new GroupPropertyWindowContext(
+            _wall,
+            otherRects,
+            target,
+            currentEntryFullPath,
+            currentEntryDisplay,
+            _linkFiles,
+            draft => SaveGroupDraft(target, draft));
+        _modal.Open(new GroupPropertyWindow(context, WinRT.Interop.WindowNative.GetWindowHandle(this)));
+    }
+
+    /// <summary>组属性窗保存回调：CommitGroup 联合提交（§8.3）；异常转错误文本就地显示（窗口不关、磁盘零残留）。</summary>
+    private string? SaveGroupDraft(GroupObject? target, GroupEditDraft draft)
+    {
+        if (_commit is null)
+        {
+            return "配置不可用（损坏或版本过高），已禁用修改（设计 §17.2）。";
+        }
+
+        try
+        {
+            var isCreate = target is null;
+            var request = new GroupCommitRequest(
+                target?.Id ?? StableId.NewId(),
+                isCreate ? "新建磁贴组" : "编辑磁贴组",
+                draft);
+            var report = _entryCommits.CommitGroup(_commit.Current, request);
+            AdoptEntryCommit(report, request.ActionName); // 主墙 Ctrl+Z 可整体回滚这次组保存（§8.4）
+            ShowTransientStatus(isCreate ? "已新建磁贴组" : "已保存磁贴组属性");
+            return null;
+        }
+        catch (Exception ex) when (ex is DraftValidationException or ConfigValidationException or IOException or InvalidOperationException or NotSupportedException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            return ex.Message;
+        }
     }
 
     /// <summary>入口显示文本（§7.1）：.lnk → 归一化目标 + 参数；IDList → 特殊项说明；.url → URL 行。</summary>

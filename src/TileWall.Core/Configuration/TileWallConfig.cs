@@ -69,7 +69,7 @@ public sealed record TileObject : LayoutObject
 
 /// <summary>
 /// 磁贴组（设计 §2.3：整体位置、总行列、矩形分区；默认 4×4 十六块 1×1，§7.1）。
-/// 分区（组内相对坐标矩形列表）为权威表示，「墙」为派生视图（§4.4 决策；画墙/拆墙留 P3）。
+/// 分区（组内相对坐标矩形列表）为权威表示，「墙」为派生视图（§4.4 决策；M5 起引擎在 Core Grid）。
 /// </summary>
 public sealed record GroupObject : LayoutObject
 {
@@ -83,6 +83,64 @@ public sealed record GroupObject : LayoutObject
 
     /// <summary>§16.2：当前图片 + 上次实际切换时间；M2 仅占位字段。</summary>
     public CarouselState? Carousel { get; init; }
+
+    /// <summary>M5 新增：图片来源三选一记录（设计 §7.2；M5 仅记录不做共享画布/解码，M6 接线）。</summary>
+    public GroupImages Images { get; init; } = new();
+}
+
+/// <summary>组图片来源（P1 §3.3 三选一；M5 §12 仅记录，候选枚举与加载属 M6）。</summary>
+public enum GroupImageSourceKind
+{
+    /// <summary>未设置。</summary>
+    None,
+
+    /// <summary>单张图片。</summary>
+    Single,
+
+    /// <summary>多张图片（轮播候选）。</summary>
+    Multiple,
+
+    /// <summary>本机文件夹（M6 切换时枚举候选）。</summary>
+    Folder,
+}
+
+/// <summary>图片来源记录：全部带默认值 → 旧配置反序列化逐字段兼容（schemaVersion 保持 1）。</summary>
+public sealed record GroupImages
+{
+    public GroupImageSourceKind Kind { get; init; } = GroupImageSourceKind.None;
+
+    /// <summary>Single/Multiple：绝对路径清单。</summary>
+    public IReadOnlyList<string> ImagePaths { get; init; } = [];
+
+    /// <summary>Folder 来源的文件夹路径。</summary>
+    public string? FolderPath { get; init; }
+
+    public bool Equals(GroupImages? other) =>
+        other is not null
+        && Kind == other.Kind
+        && ImagePaths.SequenceEqual(other.ImagePaths, StringComparer.Ordinal)
+        && string.Equals(FolderPath, other.FolderPath, StringComparison.Ordinal);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Kind);
+        foreach (var p in ImagePaths)
+        {
+            hash.Add(p, StringComparer.Ordinal);
+        }
+
+        hash.Add(FolderPath);
+        return hash.ToHashCode();
+    }
+}
+
+/// <summary>组背景形态（拍板 Q6：模糊补底（默认）/纯色/透明；M5 记录选择，纯色即时映射渲染，模糊真渲染属 M6）。</summary>
+public enum BackdropKind
+{
+    BlurFill,
+    SolidColor,
+    Transparent,
 }
 
 /// <summary>
@@ -102,12 +160,15 @@ public sealed record ObjectVisual
     /// <summary>仅无入口对象承载标题真值；有入口对象必须为 null（§16.2 名称真值在托管文件名主体）。</summary>
     public string? TitleText { get; init; }
 
-    /// <summary>null=跟随系统；"#RRGGBB"。</summary>
+    /// <summary>null=跟随系统；"#RRGGBB"。Backdrop=SolidColor 时承载纯色（拍板 Q6）。</summary>
     public string? BackgroundColor { get; init; }
 
     public string? BackgroundImagePath { get; init; }
 
     public string? ForegroundIconPath { get; init; }
+
+    /// <summary>M5 新增：组背景形态（Q6 下拉；默认模糊补底，带默认值 → 旧配置兼容）。</summary>
+    public BackdropKind Backdrop { get; init; } = BackdropKind.BlurFill;
 }
 
 /// <summary>轮播状态（设计 §11.2 唯一时间基准：只存当前图片与上次实际切换时间）。</summary>

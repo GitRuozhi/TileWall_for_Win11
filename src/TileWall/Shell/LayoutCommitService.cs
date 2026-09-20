@@ -86,6 +86,29 @@ public sealed class LayoutCommitService
         return false;
     }
 
+    /// <summary>
+    /// M5：非布局状态（轮播基准等）的静默持久化缝隙（M5 设计 §9.5）——Save 成功才前移 Current，
+    /// 不触碰撤销槽（切图不是布局操作：不得覆盖用户待撤销项，也不得产生可 Ctrl+Z 的「操作」）。
+    /// 失败 → false、Current 不动、槽不动（M2 既有 ConfigStore 原子语义：失败保旧）。
+    /// </summary>
+    public bool SaveWithoutUndo(TileWallConfig newConfig, out string? failure)
+    {
+        ArgumentNullException.ThrowIfNull(newConfig);
+        try
+        {
+            _store.Save(newConfig);
+        }
+        catch (Exception ex) // ConfigValidationException 与 IO 失败同路：磁盘零改动，当前配置保持原状
+        {
+            failure = ex.Message;
+            return false;
+        }
+
+        Current = newConfig;
+        failure = null;
+        return true;
+    }
+
     /// <summary>撤销成功后清空槽（撤销本身不再可重做，§7.3）。</summary>
     public void ClearUndoSlot() => UndoSlot = null;
 }

@@ -7,9 +7,9 @@ using TileWall.Core.Configuration;
 namespace TileWall.Shell;
 
 /// <summary>
-/// 右键菜单工厂（M3 设计 §6、M4 §6.2）：
-/// 背景五项 = 设计 §3.1 原文项序，M4 起「新建磁贴」打开属性窗；
-/// 对象四项启用矩阵（§6.2）：unpin 恒可用；edit 仅独立磁贴（组置灰「需要组属性窗口」）；
+/// 右键菜单工厂（M3 设计 §6、M4 §6.2、M5 §11.2/§11.3）：
+/// 背景五项 = 设计 §3.1 原文项序，「新建磁贴」「新建磁贴组」M5 起均打开属性窗；
+/// 对象四项启用矩阵（§6.2）：unpin 恒可用；edit 恒可用（M5 起组由 MainWindow 分派到组属性窗）；
 /// elevated/location 由注入的入口状态函数判定（有入口且文件存在 → 可用，否则置灰 + HelpText 原因）。
 /// 置灰项保留 AutomationId 与 Name（UIA 可断言 IsEnabled=False），原因写入 ToolTip 与 HelpText（§15.3）。
 /// </summary>
@@ -22,17 +22,17 @@ public static class WallMenuFactory
         Action<string> LaunchElevated,
         Action<string> RevealLocation);
 
-    /// <summary>背景菜单（附着 RootGrid.ContextFlyout；空白命中：边距、栏间隙、格间隙）。</summary>
-    public static MenuFlyout CreateBackgroundMenu(Action onNewTile)
+    /// <summary>背景菜单（附着 RootGrid.ContextFlyout；空白命中：边距、栏间隙、格间隙）。
+    /// M5 起「新建磁贴组」生效（§11.2：第二参回调 → 组属性窗创建模式）。</summary>
+    public static MenuFlyout CreateBackgroundMenu(Action onNewTile, Action onNewGroup)
     {
         ArgumentNullException.ThrowIfNull(onNewTile);
+        ArgumentNullException.ThrowIfNull(onNewGroup);
         var menu = new MenuFlyout();
         AutomationProperties.SetAutomationId(menu, "menu-blank");
 
         menu.Items.Add(Item("menu-blank-new-tile", "新建磁贴", enabled: true, reason: null, onNewTile));
-        menu.Items.Add(Item(
-            "menu-blank-new-group", "新建磁贴组", enabled: false,
-            reason: "需要组属性窗口（后续里程碑）", action: null));
+        menu.Items.Add(Item("menu-blank-new-group", "新建磁贴组", enabled: true, reason: null, onNewGroup));
         menu.Items.Add(new MenuFlyoutSeparator());
         menu.Items.Add(Item(
             "menu-blank-import", "从开始菜单导入", enabled: false,
@@ -73,11 +73,8 @@ public static class WallMenuFactory
         var entryReason = entryDisabledReason(target); // §6.2：无入口或入口文件已丢失时置灰并提示
 
         menu.Items.Add(Item("menu-object-unpin", unpinText, enabled: true, reason: null, () => actions.Unpin(target.Id)));
-        menu.Items.Add(Item(
-            "menu-object-edit", editText,
-            enabled: !isGroup,
-            reason: isGroup ? "需要组属性窗口（后续里程碑）" : null,
-            action: isGroup ? null : () => actions.Edit(target.Id)));
+        // M5：组的「编辑磁贴组」启用（§11.3；MainWindow 按 ObjectKind 分派到组属性窗）
+        menu.Items.Add(Item("menu-object-edit", editText, enabled: true, reason: null, () => actions.Edit(target.Id)));
         menu.Items.Add(Item(
             "menu-object-elevated", "以管理员身份启动",
             enabled: entryReason is null,

@@ -23,6 +23,23 @@ public readonly record struct GridRect(int Column, int Row, int Width, int Heigh
     /// <summary>平移（不改变尺寸）。</summary>
     public GridRect Translate(int dColumn, int dRow) =>
         new(Column + dColumn, Row + dRow, Width, Height);
+
+    /// <summary>other 完整位于本矩形内（边界可重合；M5 拆墙合并集判定）。</summary>
+    public bool Contains(GridRect other) =>
+        Column <= other.Column && Row <= other.Row &&
+        other.Right <= Right && other.Bottom <= Bottom;
+
+    /// <summary>两矩形的轴对齐包围盒（同时覆盖两者的最小矩形；M5 拆墙扩张循环）。</summary>
+    public static GridRect BoundingBox(GridRect a, GridRect b)
+    {
+        var column = Math.Min(a.Column, b.Column);
+        var row = Math.Min(a.Row, b.Row);
+        return new GridRect(
+            column,
+            row,
+            Math.Max(a.Right, b.Right) - column,
+            Math.Max(a.Bottom, b.Bottom) - row);
+    }
 }
 
 /// <summary>基础格容量尺寸（列数 × 行数）。</summary>

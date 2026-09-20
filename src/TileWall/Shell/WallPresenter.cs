@@ -331,7 +331,9 @@ public sealed class WallPresenter
     private void BuildAndAttach(LayoutObject o)
     {
         var title = DisplayTitleOf(o);
-        var brush = BackgroundBrushFor(o.Visual.BackgroundColor);
+        // M5 §11.1：组底色按 Q6 Backdrop 映射（SolidColor→配置色；BlurFill→主题兜底（真模糊 M6）；
+        // Transparent→透明画刷）；磁贴维持既有配置色路径。
+        var brush = o is GroupObject groupObject ? GroupBackdropBrush(groupObject) : BackgroundBrushFor(o.Visual.BackgroundColor);
         var width = _metrics.RectWidth(o.Bounds);
         var height = _metrics.RectHeight(o.Bounds);
         var transform = new TranslateTransform();
@@ -368,12 +370,18 @@ public sealed class WallPresenter
             root.ContextFlyout = ObjectMenu; // §6.2：右键具体对象只弹对象菜单
         }
 
+        // M5 §11.3：ButtonBase 会吞掉右键 pointer 事件（右键 press 被标记 handled）→ ContextFlyout 的
+        // 自动显示与 RightTapped 在对象按钮上永远不触发（探测证实）。因此 ContextRequested（键盘
+        // Shift+F10 / 触控长按仍会触发）显式 ShowAt，指针右键由 MainWindow 在右键释放处补发。
         root.ContextRequested += (_, args) =>
         {
+            args.Handled = true;
             if (_views.TryGetValue(o.Id, out var sender))
             {
                 ObjectContextRequested?.Invoke(sender, args);
             }
+
+            ObjectMenu?.ShowAt(root);
         };
         root.Click += (_, _) => ObjectActivated?.Invoke(o.Id); // UIA Invoke / Enter·空格 → 点击出口（§5.6）
         root.GotFocus += (_, _) =>
@@ -463,10 +471,9 @@ public sealed class WallPresenter
                 IsHitTestVisible = true, // 支撑「悬停哪个分块、横幅落在哪个分块」（§7.3）
             };
             AutomationProperties.SetAutomationId(partition, $"tile-{group.Id}-part-{i}"); // §4：仅几何定位用
-            if (!string.IsNullOrWhiteSpace(title))
-            {
-                AutomationProperties.SetName(partition, title);
-            }
+            // UIA peer 只有在设置了 Name 等标识属性时才会为非控件元素创建（Border 无内建 peer）；
+            // 无标题组也必须可被 UIA 几何定位（§4 契约对无标题组同样成立）
+            AutomationProperties.SetName(partition, string.IsNullOrWhiteSpace(title) ? $"分块 {i}" : title);
 
             if (title is not null)
             {
@@ -508,6 +515,15 @@ public sealed class WallPresenter
         });
         return banner;
     }
+
+    /// <summary>组背景映射（M5 §11.1 / 拍板 Q6）：SolidColor → 既有 BackgroundBrushFor 路径（即时映射）；
+    /// Transparent → 透明画刷；BlurFill → M5 记录选择、渲染退化为主题兜底色（真模糊补底 = M6）。</summary>
+    private Brush GroupBackdropBrush(GroupObject group) => group.Visual.Backdrop switch
+    {
+        BackdropKind.SolidColor => BackgroundBrushFor(group.Visual.BackgroundColor),
+        BackdropKind.Transparent => new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+        _ => BackgroundBrushFor(null),
+    };
 
     /// <summary>标题真值（§16.2 单一真值）：有入口=托管文件名主体；无入口=TitleText；ShowTitle=false → 无横幅。</summary>
     private static string? DisplayTitleOf(LayoutObject o)

@@ -1,10 +1,14 @@
 using TileWall.Core.Configuration;
 using TileWall.Core.Grid;
+using TileWall.Core.Groups;
 
 namespace TileWall.Core.Entries;
 
 /// <summary>联合提交请求（M4 设计 §5.5）。新建时 <paramref name="ObjectId"/> 由调用方经 StableId.NewId() 生成。</summary>
 public sealed record EntryCommitRequest(string ObjectId, string ActionName, TileDraft Draft);
+
+/// <summary>组联合提交请求（M5 设计 §8.3）：与磁贴提交同协议，仅草稿与对象构造分支不同。</summary>
+public sealed record GroupCommitRequest(string ObjectId, string ActionName, GroupEditDraft Draft);
 
 /// <summary>撤销槽的入口材料（§8.3）：指向 Recovery/Entries/&lt;commitId&gt;/ 的日志与备份；撤销不跨会话。</summary>
 public sealed record EntryUndoMaterial(string CommitId, IReadOnlyList<string> ObjectIds);
@@ -88,10 +92,47 @@ public sealed class EntryCommitService
         return new EntryCommitReport(newConfig, newObject, new EntryUndoMaterial(commitId, [request.ObjectId]));
     }
 
-    /// <summary>撤销的文件还原半步与材料删除的透传（§8.3；实现在 <see cref="EntryRecovery"/>）。</summary>
-    public bool RestoreMaterial(EntryUndoMaterial material) => _recovery.RestoreMaterial(material);
+    /// <summary>
+    /// 组联合提交（M5 设计 §8.3）：复用磁贴提交的全部协议机制（staging→日志→备份→入口生效→
+    /// ConfigStore.Save→收尾→失败回滚），仅对象构造与校验分支不同。
+    /// 校验失败抛 <see cref="DraftValidationException"/> / <see cref="ConfigValidationException"/>（零写入）；
+    /// 纯布局/属性改动（Entry 为 KeepCurrent 且无改名）退化为「预检 + Save」，不触碰入口文件（§6.5 同款退化）。
+    /// 组唯一入口不变式与失败矩阵（F-1…F-6/F-8/F-11…F-14）由同一协议代码路径保证。
+    /// </summary>
+    public EntryCommitReport CommitGroup(TileWallConfig current, GroupCommitRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrEmpty(request.ObjectId);
+        ArgumentException.ThrowIfNullOrEmpty(request.ActionName);
 
-    public void DeleteMaterial(string commitId) => _recovery.DeleteMaterial(commitId);
+        var (newObject, planned) = PlanGroupCommit(current, request);
+        var isCreate = current.Objects.All(o => o.Id != request.ObjectId);
+        var newConfig = isCreate
+            ? current with { Objects = [.. current.Objects, newObject] }
+            : current with { Objects = ReplaceById(current.Objects, newObject) };
+
+        // 预检（纯读零写入）：新配置整体过结构校验（分区落盘闸门在此复跑）
+        var violations = ConfigValidator.Validate(newConfig);
+        if (violations.Count > 0)
+        {
+            throw new ConfigValidationException(violations);
+        }
+
+        if (planned.Count == 0)
+        {
+            // 退化路径：纯属性/布局提交——不产生任何入口文件操作（§6.5 同款）
+            _store.Save(newConfig);
+            return new EntryCommitReport(newConfig, newObject, null);
+        }
+
+        var commitId = StableId.NewId();
+        ExecuteProtocol(newConfig, planned, commitId);
+        return new EntryCommitReport(newConfig, newObject, new EntryUndoMaterial(commitId, [request.ObjectId]));
+    }
+
+    /// <summary>撤销的文件还原半步与材料删除的透传（§8.3；实现在 <see cref="EntryRecovery"/>）。</summary>
+    public bool RestoreMaterial(EntryUndoMaterial material) => _recovery.RestoreMaterial(material);    public void DeleteMaterial(string commitId) => _recovery.DeleteMaterial(commitId);
 
     /// <summary>取消固定有入口对象（§8.2）：入口 Move → Recovery/…/removed/ + 配置移除对象一次 Save。</summary>
     public EntryCommitReport RemoveEntry(TileWallConfig current, string objectId, string actionName)
@@ -130,7 +171,7 @@ public sealed class EntryCommitService
         var isCreate = currentObject is null;
         if (currentObject is GroupObject)
         {
-            throw new NotSupportedException("磁贴组属性窗不在 M4 范围（M4 设计 §11 风险 9）；组仅支持取消固定与启动类操作。");
+            throw new InvalidOperationException("磁贴组属性提交请走 CommitGroup（M5 设计 §8.3）；Commit 仅受理独立磁贴。");
         }
 
         var wall = new WallGrid(current.Wall.Columns, current.Wall.Rows);
@@ -173,13 +214,13 @@ public sealed class EntryCommitService
 
             case EntryDraft.KeepCurrent:
                 finalEntryRelativePath = currentEntryRelativePath is not null
-                    ? AppendRenameOp(planned, request.ObjectId, draft, currentEntryRelativePath)
+                    ? AppendRenameOp(planned, request.ObjectId, draft.TitleText, currentEntryRelativePath)
                     : null;
                 break;
 
             case EntryDraft.CopyFromFile copy:
                 {
-                    var finalRel = ResolveFinalRelativePath(request.ObjectId, draft, currentEntryRelativePath, copy.SourcePath, targetIsDirectory: false, finalKind);
+                    var finalRel = ResolveFinalRelativePath(request.ObjectId, draft.TitleText, currentEntryRelativePath, copy.SourcePath, targetIsDirectory: false, finalKind);
                     finalEntryRelativePath = finalRel;
                     var stagedName = EntryPaths.FileNameOf(finalRel);
                     planned.Add(new PlannedOp(
@@ -190,7 +231,7 @@ public sealed class EntryCommitService
 
             case EntryDraft.CreateForPath createForPath:
                 {
-                    var finalRel = ResolveFinalRelativePath(request.ObjectId, draft, currentEntryRelativePath, createForPath.TargetPath, Directory.Exists(createForPath.TargetPath), EntryKind.Lnk);
+                    var finalRel = ResolveFinalRelativePath(request.ObjectId, draft.TitleText, currentEntryRelativePath, createForPath.TargetPath, Directory.Exists(createForPath.TargetPath), EntryKind.Lnk);
                     finalEntryRelativePath = finalRel;
                     var workingDirectory = ResolveWorkingDirectory(createForPath.TargetPath);
                     var target = createForPath.TargetPath;
@@ -203,7 +244,7 @@ public sealed class EntryCommitService
 
             case EntryDraft.CreateFromUrl createFromUrl:
                 {
-                    var finalRel = ResolveFinalRelativePath(request.ObjectId, draft, currentEntryRelativePath, createFromUrl.Url, targetIsDirectory: false, EntryKind.Url);
+                    var finalRel = ResolveFinalRelativePath(request.ObjectId, draft.TitleText, currentEntryRelativePath, createFromUrl.Url, targetIsDirectory: false, EntryKind.Url);
                     finalEntryRelativePath = finalRel;
                     var content = UrlShortcut.CreateContent(createFromUrl.Url);
                     var stagedName = EntryPaths.FileNameOf(finalRel);
@@ -221,7 +262,7 @@ public sealed class EntryCommitService
                         new JournalOp(OpEdit, request.ObjectId, null, currentEntryRelativePath, oldTarget, editLnkTarget.NewTargetPath),
                         null));
                     // 改名 × 改目标并存（§6.3「修改非空文字在最终保存时执行文件重命名」）：先在旧名上改目标，再就地改名
-                    finalEntryRelativePath = AppendRenameOp(planned, request.ObjectId, draft, currentEntryRelativePath!);
+                    finalEntryRelativePath = AppendRenameOp(planned, request.ObjectId, draft.TitleText, currentEntryRelativePath!);
                     break;
                 }
 
@@ -235,7 +276,7 @@ public sealed class EntryCommitService
                         new JournalOp(OpReplace, request.ObjectId, currentEntryRelativePath, currentEntryRelativePath, null, null),
                         stagingDirectory => _files.WriteAllBytes(Path.Combine(stagingDirectory, stagedName), newBytes)));
                     // 改名 × 改 URL 行并存：先以新字节覆盖旧名，再就地改名
-                    finalEntryRelativePath = AppendRenameOp(planned, request.ObjectId, draft, currentEntryRelativePath!);
+                    finalEntryRelativePath = AppendRenameOp(planned, request.ObjectId, draft.TitleText, currentEntryRelativePath!);
                     break;
                 }
         }
@@ -309,24 +350,24 @@ public sealed class EntryCommitService
     /// 改名 op 生成（§6.3「修改非空文字在最终保存时执行文件重命名」）：
     /// 文字非空且 ≠ 当前主体名 → 追加 rename op 并返回新相对路径；否则原路径原样返回。
     /// 与 EditLnkTarget/EditUrlLine 并存时：生效顺序 edit/replace 先于 rename（先改内容后改名），
-    /// 回放逆序恰好先撤销改名再撤销内容修改。
+    /// 回放逆序恰好先撤销改名再撤销内容修改。M5 起以 titleText 为参（磁贴与组共用）。
     /// </summary>
-    private static string? AppendRenameOp(List<PlannedOp> planned, string objectId, TileDraft draft, string currentEntryRelativePath)
+    private static string? AppendRenameOp(List<PlannedOp> planned, string objectId, string? titleText, string currentEntryRelativePath)
     {
         var finalRelativePath = currentEntryRelativePath;
-        if (string.IsNullOrWhiteSpace(draft.TitleText))
+        if (string.IsNullOrWhiteSpace(titleText))
         {
             return finalRelativePath; // 空白 = 隐藏标题，入口保留原合法名（§6.3）
         }
 
         var currentBase = EntryNames.BaseNameOf(currentEntryRelativePath);
-        if (string.Equals(draft.TitleText, currentBase, StringComparison.Ordinal))
+        if (string.Equals(titleText, currentBase, StringComparison.Ordinal))
         {
             return finalRelativePath;
         }
 
         finalRelativePath = EntryPaths.EntryRelativePath(
-            objectId, EntryNames.CombineName(draft.TitleText, EntryNames.KindOfRelativePath(currentEntryRelativePath)));
+            objectId, EntryNames.CombineName(titleText, EntryNames.KindOfRelativePath(currentEntryRelativePath)));
         planned.Add(new PlannedOp(
             new JournalOp(OpRename, objectId, currentEntryRelativePath, finalRelativePath, null, null), null));
         return finalRelativePath;
@@ -335,14 +376,14 @@ public sealed class EntryCommitService
     /// <summary>§5.5 步骤 0：替换/新建类直接以 finalName 落 Staging（一步到位，无「先复制旧名再改名」中间态）。</summary>
     private static string ResolveFinalRelativePath(
         string objectId,
-        TileDraft draft,
+        string? titleText,
         string? currentEntryRelativePath,
         string fallbackSource,
         bool targetIsDirectory,
         EntryKind kind)
     {
-        var baseName = !string.IsNullOrWhiteSpace(draft.TitleText)
-            ? draft.TitleText
+        var baseName = !string.IsNullOrWhiteSpace(titleText)
+            ? titleText
             : currentEntryRelativePath is not null
                 ? EntryNames.BaseNameOf(currentEntryRelativePath)
                 : EntryNames.SuggestBaseName(fallbackSource, targetIsDirectory);
@@ -368,6 +409,173 @@ public sealed class EntryCommitService
 
     private static IReadOnlyList<LayoutObject> ReplaceById(IReadOnlyList<LayoutObject> objects, LayoutObject replacement) =>
         [.. objects.Select(o => o.Id == replacement.Id ? replacement : o)];
+
+    // ————————————————————————————— 组路径（M5 设计 §8.3；新增私有分支，不改磁贴步骤序列） —————————————————————————————
+
+    /// <summary>组提交计划（步骤 0/1，纯读零写入）：GroupDraftValidator → 锚定/firstFit → 入口计划 → 组对象构造。</summary>
+    private (LayoutObject NewObject, IReadOnlyList<PlannedOp> Planned) PlanGroupCommit(TileWallConfig current, GroupCommitRequest request)
+    {
+        var draft = request.Draft;
+        var currentObject = current.Objects.FirstOrDefault(o => o.Id == request.ObjectId);
+        if (currentObject is not null and not GroupObject)
+        {
+            throw new InvalidOperationException($"对象 {request.ObjectId} 已存在且不是磁贴组，组提交请求不成立。");
+        }
+
+        var currentGroup = currentObject as GroupObject;
+        var wall = new WallGrid(current.Wall.Columns, current.Wall.Rows);
+        var otherRects = current.Objects.Where(o => o.Id != request.ObjectId).Select(o => o.Bounds).ToArray();
+        var currentEntryRelativePath = currentGroup?.Entry?.RelativePath;
+        var currentEntryFullPath = currentEntryRelativePath is null ? null : EntryPaths.Full(_rootPath, currentEntryRelativePath);
+
+        // 步骤 1 预检：组草稿校验（错误 → DraftValidationException，零写入；F-7/F-9/F-10 同语义）
+        var validation = GroupDraftValidator.Validate(draft, currentGroup, wall, otherRects);
+        if (!validation.IsValid)
+        {
+            throw new DraftValidationException(validation.Errors);
+        }
+
+        // 尺寸与边界（校验已过：新建用 firstFit；编辑为锚定原点的新矩形，§9.1）
+        var bounds = currentGroup is null
+            ? validation.SuggestedRect!.Value
+            : new GridRect(
+                currentGroup.Bounds.Column,
+                currentGroup.Bounds.Row,
+                draft.Size.Columns,
+                draft.Size.Rows);
+
+        var planned = new List<PlannedOp>(1);
+        var finalEntryRelativePath = PlanGroupEntries(request.ObjectId, draft, currentEntryRelativePath, currentEntryFullPath, planned);
+
+        // 最终名合法性兜底（推导名不过校验 → 就地报错，不静默替换，§5.1）
+        if (finalEntryRelativePath is not null)
+        {
+            var nameErrors = EntryNames.Validate(EntryNames.BaseNameOf(finalEntryRelativePath));
+            if (nameErrors.Count > 0)
+            {
+                throw new DraftValidationException(nameErrors);
+            }
+        }
+
+        var newObject = BuildGroupObject(request.ObjectId, bounds, draft, finalEntryRelativePath);
+        return (newObject, planned);
+    }
+
+    /// <summary>组入口草稿计划（与磁贴 PlanCommit 同一套机制：remove→rename→staging 替换；顺序与回滚语义逐字一致）。</summary>
+    private string? PlanGroupEntries(
+        string objectId,
+        GroupEditDraft draft,
+        string? currentEntryRelativePath,
+        string? currentEntryFullPath,
+        List<PlannedOp> planned)
+    {
+        switch (draft.Entry)
+        {
+            case null:
+            case EntryDraft.NoneDraft:
+                // 空目标 / 清空链接
+                if (currentEntryRelativePath is not null)
+                {
+                    planned.Add(new PlannedOp(new JournalOp(OpRemove, objectId, currentEntryRelativePath, null, null, null), null));
+                    return null;
+                }
+
+                return null;
+
+            case EntryDraft.KeepCurrent:
+                return currentEntryRelativePath is not null
+                    ? AppendRenameOp(planned, objectId, draft.TitleText, currentEntryRelativePath)
+                    : null;
+
+            case EntryDraft.CopyFromFile copy:
+                {
+                    var finalKind = EntryNames.KindOfRelativePath(copy.SourcePath);
+                    var finalRel = ResolveFinalRelativePath(objectId, draft.TitleText, currentEntryRelativePath, copy.SourcePath, targetIsDirectory: false, finalKind);
+                    var stagedName = EntryPaths.FileNameOf(finalRel);
+                    planned.Add(new PlannedOp(
+                        new JournalOp(currentEntryRelativePath is null ? OpAdd : OpReplace, objectId, currentEntryRelativePath, finalRel, null, null),
+                        stagingDirectory => _files.Copy(copy.SourcePath, Path.Combine(stagingDirectory, stagedName), overwrite: true)));
+                    return finalRel;
+                }
+
+            case EntryDraft.CreateForPath createForPath:
+                {
+                    var finalRel = ResolveFinalRelativePath(objectId, draft.TitleText, currentEntryRelativePath, createForPath.TargetPath, Directory.Exists(createForPath.TargetPath), EntryKind.Lnk);
+                    var workingDirectory = ResolveWorkingDirectory(createForPath.TargetPath);
+                    var stagedName = EntryPaths.FileNameOf(finalRel);
+                    planned.Add(new PlannedOp(
+                        new JournalOp(currentEntryRelativePath is null ? OpAdd : OpReplace, objectId, currentEntryRelativePath, finalRel, null, null),
+                        stagingDirectory => _linkFiles.Create(Path.Combine(stagingDirectory, stagedName), createForPath.TargetPath, arguments: string.Empty, workingDirectory)));
+                    return finalRel;
+                }
+
+            case EntryDraft.CreateFromUrl createFromUrl:
+                {
+                    var finalRel = ResolveFinalRelativePath(objectId, draft.TitleText, currentEntryRelativePath, createFromUrl.Url, targetIsDirectory: false, EntryKind.Url);
+                    var content = UrlShortcut.CreateContent(createFromUrl.Url);
+                    var stagedName = EntryPaths.FileNameOf(finalRel);
+                    planned.Add(new PlannedOp(
+                        new JournalOp(currentEntryRelativePath is null ? OpAdd : OpReplace, objectId, currentEntryRelativePath, finalRel, null, null),
+                        stagingDirectory => _files.WriteAllBytes(Path.Combine(stagingDirectory, stagedName), content)));
+                    return finalRel;
+                }
+
+            case EntryDraft.EditLnkTarget editLnkTarget:
+                {
+                    // 现入口为普通路径 .lnk（校验已拒 HasIdList/非 .lnk）；正式路径就地 Load→SetTarget→Save（探针 C）
+                    var oldTarget = _linkFiles.Read(currentEntryFullPath!).TargetPath;
+                    planned.Add(new PlannedOp(
+                        new JournalOp(OpEdit, objectId, null, currentEntryRelativePath, oldTarget, editLnkTarget.NewTargetPath),
+                        null));
+                    // 改名 × 改目标并存：先在旧名上改目标，再就地改名（生效顺序 edit 先于 rename）
+                    return AppendRenameOp(planned, objectId, draft.TitleText, currentEntryRelativePath!);
+                }
+
+            case EntryDraft.EditUrlLine editUrlLine:
+                {
+                    // 现入口必须是 .url（校验已拒其余形态）；同一提交内随协议走 staging，不就地改正式文件（§5.3）
+                    var bytes = _files.ReadAllBytes(currentEntryFullPath!);
+                    var newBytes = UrlShortcut.RewriteUrlLine(bytes, editUrlLine.NewUrl);
+                    var stagedName = EntryPaths.FileNameOf(currentEntryRelativePath!);
+                    planned.Add(new PlannedOp(
+                        new JournalOp(OpReplace, objectId, currentEntryRelativePath, currentEntryRelativePath, null, null),
+                        stagingDirectory => _files.WriteAllBytes(Path.Combine(stagingDirectory, stagedName), newBytes)));
+                    // 改名 × 改 URL 行并存：先以新字节覆盖旧名，再就地改名
+                    return AppendRenameOp(planned, objectId, draft.TitleText, currentEntryRelativePath!);
+                }
+
+            default:
+                return currentEntryRelativePath;
+        }
+    }
+
+    /// <summary>组对象构造（§8.3 步骤 1）：单一真值规则与磁贴同构（有入口 → TitleText=null）；纯色 Q6 即时映射 BackgroundColor。</summary>
+    private static GroupObject BuildGroupObject(
+        string objectId,
+        GridRect bounds,
+        GroupEditDraft draft,
+        string? finalEntryRelativePath)
+    {
+        var titleEmpty = string.IsNullOrWhiteSpace(draft.TitleText);
+        var visual = new ObjectVisual
+        {
+            ShowTitle = finalEntryRelativePath is not null ? !titleEmpty : true,
+            TitleText = finalEntryRelativePath is null && !titleEmpty ? draft.TitleText : null,
+            BackgroundColor = draft.Backdrop == BackdropKind.SolidColor ? draft.BackdropColorHex : null,
+            Backdrop = draft.Backdrop,
+        };
+
+        return new GroupObject
+        {
+            Id = objectId,
+            Bounds = bounds,
+            Partitions = [.. draft.Partitions],
+            Visual = visual,
+            Entry = finalEntryRelativePath is null ? null : new EntryReference { RelativePath = finalEntryRelativePath },
+            Images = draft.Images,
+            Carousel = draft.Carousel,
+        };
+    }
 
     // ————————————————————————————— 协议（步骤 2–7） —————————————————————————————
 
