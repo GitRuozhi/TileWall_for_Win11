@@ -8,3 +8,6 @@ native-winui-control/
 .zcode/
 .scratch/
 nul
+docs/
+AGENTS.md
+Reference/
