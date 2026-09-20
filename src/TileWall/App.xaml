@@ -10,7 +10,34 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
                 <!-- Other merged dictionaries here -->
             </ResourceDictionary.MergedDictionaries>
-            <!-- Other app resources here -->
+            <!--
+                M3 渲染资源：
+                - TileBackgroundFallbackBrush：Visual.BackgroundColor == null 的主题实色兜底（深/浅两档；
+                  占位色值随拍板 Q2 校准轮定，WallPresenter.BackgroundBrushFor 按主题取用）
+                - TileButtonStyle：对象根 Button 的裸模板——去掉按钮默认视觉、保留原生
+                  UIA Name/AutomationId/Invoke/键盘焦点（M3 设计 §3.1 要点 1）
+            -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="TileBackgroundFallbackBrush" Color="#F2F2F2" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="TileBackgroundFallbackBrush" Color="#2E2E2E" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+            <Style x:Key="TileButtonStyle" TargetType="Button">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="UseSystemFocusVisuals" Value="True" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <ContentPresenter />
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

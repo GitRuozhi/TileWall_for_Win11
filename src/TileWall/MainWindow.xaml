@@ -9,27 +9,48 @@
     Title="TileWall"
     mc:Ignorable="d">
     <!--
-        磁贴墙主窗口（M2 接线阶段，仅消费 TileWall.Core）：
-        - 无边框无标题栏、不可移动，固定锚定主显示器工作区左下角、不覆盖任务栏（拍板 Q7、设计 §4.1）
-        - 窗口尺寸 = Core WallSizing.InitialForWorkArea 作用于真实工作区的吸附结果（拍板 Q3）
-        - 竖栏网格底（八格宽竖栏 + 栏间距 + 墙外边距 + 基础格网格线）为纯色/线条占位，观感不作验收项（P1 §1.1 常量经 GridMetrics 换算）
-        - 空墙状态提示按 P1 §3.6：纯文字、无按钮、居中偏上
+        磁贴墙窗口（M3 控件树，M3 设计 §3.1）：
+        - 无边框无标题栏、不可移动，左下锚定主显示器工作区（拍板 Q7）；窗口尺寸来源改为配置 Wall（M3 §2.2）
+        - WallCanvas：竖栏网格底（M2 既有）；TilesCanvas：对象层（WallPresenter 代码构建）；DragLayer：ghost/不可放置标记
+        - AutomationId 契约（§4）：wall-root / wall-empty-hint / wall-status / tile-*（对象层内）
+        - 背景右键菜单经 RootGrid.ContextFlyout（代码构建 menu-blank）
     -->
-    <Grid x:Name="RootGrid" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+    <Grid
+        x:Name="RootGrid"
+        AutomationProperties.AutomationId="wall-root"
+        Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <Grid.KeyboardAccelerators>
+            <!-- Ctrl+Z：单槽撤销（§7.3）；仅手势 Idle 态响应（代码侧守卫） -->
+            <KeyboardAccelerator
+                Key="Z"
+                Invoked="OnUndoAcceleratorInvoked"
+                Modifiers="Control" />
+        </Grid.KeyboardAccelerators>
         <Grid.Resources>
             <SolidColorBrush x:Key="ColumnFillBrush" Opacity="0.08" Color="{ThemeResource SystemAccentColor}" />
             <SolidColorBrush x:Key="ColumnStrokeBrush" Opacity="0.45" Color="{ThemeResource SystemAccentColor}" />
             <SolidColorBrush x:Key="GridLineBrush" Opacity="0.18" Color="{ThemeResource SystemAccentColor}" />
         </Grid.Resources>
+
         <!-- 竖栏网格底（代码经 GridMetrics 绘制，Canvas 坐标即 DIP） -->
         <Canvas x:Name="WallCanvas" />
 
-        <!-- 空墙状态提示（P1 §3.6 文案原文；无任何按钮/入口） -->
+        <!-- 对象层：每个 LayoutObject 一个元素（WallPresenter 维护 Id → 元素映射） -->
+        <Canvas x:Name="TilesCanvas" />
+
+        <!-- 拖动层：ghost [drag-ghost] 与「不可放置」标记 [drag-invalid]（不接收命中） -->
+        <Canvas
+            x:Name="DragLayer"
+            AutomationProperties.AutomationId="drag-layer"
+            IsHitTestVisible="False" />
+
+        <!-- 空墙状态提示（P1 §3.6 文案原文；对象数 > 0 时隐藏——UIA 断言其消失） -->
         <TextBlock
             x:Name="EmptyHint"
             Margin="0,140,0,0"
             HorizontalAlignment="Center"
             VerticalAlignment="Top"
+            AutomationProperties.AutomationId="wall-empty-hint"
             FontSize="14"
             Foreground="{ThemeResource TextFillColorSecondaryBrush}"
             LineHeight="22"
@@ -39,5 +60,14 @@
             <Run Text="「从开始菜单导入」开始布置" /><LineBreak />
             <Run Text="（设置可在托盘图标右键中打开）" />
         </TextBlock>
+
+        <!-- 状态提示：顶部一次性提示（容量拒绝/撤销/失败原因），非模态、自动消失；
+             常驻诊断（恢复链/显示适配）时不清除。Name = 提示文本（§4） -->
+        <InfoBar
+            x:Name="StatusHint"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Top"
+            AutomationProperties.AutomationId="wall-status"
+            IsOpen="False" />
     </Grid>
 </Window>

@@ -122,7 +122,8 @@ internal static class RelocationInvariants
             }
         }
 
-        // INV-5 组整体移动、分区等距平移、永不拆分
+        // INV-5 组整体移动、永不拆分：分区为 Bounds 相对坐标（TileWallConfig「坐标相对 Bounds 左上角」、设计 §2.4），
+        // Bounds 平移即整体刚性平移——分区列表逐字段不变（若随墙格位移平移，提交配置必触发 PARTITION_OUT_OF_BOUNDS）
         foreach (var o in output)
         {
             if (o is not GroupObject g || inputById[g.Id] is not GroupObject ig)
@@ -131,11 +132,9 @@ internal static class RelocationInvariants
             }
 
             Assert.Equal(ig.Partitions.Count, g.Partitions.Count);
-            var dColumn = g.Bounds.Column - ig.Bounds.Column;
-            var dRow = g.Bounds.Row - ig.Bounds.Row;
             for (var k = 0; k < ig.Partitions.Count; k++)
             {
-                Assert.Equal(ig.Partitions[k].Translate(dColumn, dRow), g.Partitions[k]);
+                Assert.Equal(ig.Partitions[k], g.Partitions[k]);
             }
         }
 

@@ -112,7 +112,7 @@ public class RelocationEngineTests
         Assert.Equal(16, movedGroup.Partitions.Count);
         foreach (var (before, after) in group.Partitions.Zip(movedGroup.Partitions))
         {
-            Assert.Equal(before.Translate(0, 3), after); // 等距刚性平移
+            Assert.Equal(before, after); // 分区为 Bounds 相对坐标（§2.4）：随 Bounds 刚性平移、列表不变
         }
 
         Assert.Equal(new GridRect(1, 1, 2, 2), result.ResultObjects!.Single(o => o.Id == "D").Bounds);
@@ -188,7 +188,7 @@ public class RelocationEngineTests
         Assert.Equal(new GridRect(0, 7, 2, 2), group.Bounds);
         foreach (var (before, after) in draggedGroup.Partitions.Zip(group.Partitions))
         {
-            Assert.Equal(before.Translate(0, 7), after);
+            Assert.Equal(before, after); // 分区为 Bounds 相对坐标（§2.4）：随 Bounds 刚性平移、列表不变
         }
 
         RelocationInvariants.AssertAll(objects, Wall1x9, "G", new GridRect(0, 7, 2, 2), result);
@@ -214,6 +214,59 @@ public class RelocationEngineTests
         Assert.True(result.Moves[0].From.Intersects(new GridRect(0, 4, 1, 1)));
         Assert.True(result.Moves[1].From.Intersects(result.Moves[0].To));
         Assert.True(result.Moves[2].From.Intersects(result.Moves[1].To));
+    }
+
+    // —— 回归：组移动的结果配置必须过 ConfigValidator 并能经 ConfigStore.Save 落盘
+    //    （分区相对坐标语义 × 提交链路；评审实证用例固化：旧实现对位移 ≠ 0 的组移动产出
+    //      PARTITION_OUT_OF_BOUNDS，LayoutCommitService.Commit → Save 抛 ConfigValidationException） ——
+
+    [Fact]
+    public void S9_MovedGroup_ResultingConfigPassesValidator()
+    {
+        // 评审复现：种子组 (8,0,4,4) 整体下移一格 → 旧实现产出 5 个 PARTITION_OUT_OF_BOUNDS（保存必败）
+        var wall = new WallGrid(2, 5);
+        var group = Layouts.Group("seed-group-1", new GridRect(8, 0, 4, 4));
+        var result = RelocationEngine.Relocate([group], wall, "seed-group-1", new GridRect(8, 1, 4, 4));
+
+        Assert.True(result.Success);
+        var config = Layouts.Config(wall, result.ResultObjects!);
+        Assert.Empty(ConfigValidator.Validate(config)); // 提交 → ConfigStore.Save 校验必须零违规
+    }
+
+    [Fact]
+    public void S9b_MovedGroup_ConfigStoreSaveSucceeds()
+    {
+        // 提交链终点（LayoutCommitService.Commit → ConfigStore.Save）：组移动结果必须可落盘、不抛校验异常
+        var wall = new WallGrid(2, 5);
+        var group = Layouts.Group("seed-group-1", new GridRect(8, 0, 4, 4));
+        var initial = Layouts.Config(wall, [group]);
+        var result = RelocationEngine.Relocate(initial.Objects, wall, "seed-group-1", new GridRect(8, 1, 4, 4));
+        Assert.True(result.Success);
+
+        var store = new ConfigStore(
+            new InMemoryFileStore(),
+            new FakeDataDirectoryProvider(@"\\fake\root"));
+        store.Save(initial); // 首存基线
+
+        var report = store.Save(Layouts.Config(wall, result.ResultObjects!)); // 旧实现在此抛 ConfigValidationException
+        Assert.True(report.BackupCreated);
+    }
+
+    [Fact]
+    public void S10_EvictedGroup_ResultingConfigPassesValidator()
+    {
+        // 磁贴拖入组区把组挤出：被平移组的分区同样不得越出组 Bounds
+        var wall = new WallGrid(2, 9);
+        var group = Layouts.Group("G", new GridRect(0, 0, 4, 4));
+        var dragged = Layouts.Tile("D", new GridRect(8, 6, 2, 2));
+        var objects = new List<LayoutObject> { group, dragged };
+
+        var result = RelocationEngine.Relocate(objects, wall, "D", new GridRect(1, 1, 2, 2));
+
+        Assert.True(result.Success);
+        Assert.NotEqual(group.Bounds, result.ResultObjects!.Single(o => o.Id == "G").Bounds); // 组确实被平移
+        var config = Layouts.Config(wall, result.ResultObjects!);
+        Assert.Empty(ConfigValidator.Validate(config));
     }
 
     // —— 参考布局上的性质测试：L2 满屏 1×1 上腾位结果确定且满足全部不变式 ——
@@ -370,7 +423,7 @@ public class RelocationEngineTests
         Assert.Equal(200, movedGroup.Partitions.Count);
         foreach (var (before, after) in group.Partitions.Zip(movedGroup.Partitions))
         {
-            Assert.Equal(before.Translate(8, 0), after); // 二百分块等距刚性平移（INV-5，B23）
+            Assert.Equal(before, after); // 分区为 Bounds 相对坐标（§2.4）：随 Bounds 刚性平移、列表不变
         }
 
         // 每块磁贴都落入条带 0（基础格列 0–7）

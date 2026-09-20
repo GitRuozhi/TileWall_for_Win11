@@ -229,22 +229,17 @@ public static class RelocationEngine
         return false;
     }
 
-    /// <summary>组同时平移其 Partitions（等距刚性平移，永不拆分——INV-5）。</summary>
-    private static LayoutObject WithBounds(LayoutObject o, GridRect bounds)
+    /// <summary>
+    /// 组整体平移 = 仅改 Bounds：分区是 Bounds 的相对坐标（TileWallConfig.cs「坐标相对 Bounds 左上角」、设计 §2.4，
+    /// ConfigValidator.ValidatePartitions 按 [0,W)×[0,H) 强制），Bounds 平移即整体刚性平移、分区永不拆分（INV-5）。
+    /// 若按墙格位移平移分区，任何位移 ≠ 0 的组移动都会产出 PARTITION_OUT_OF_BOUNDS 的非法配置（保存必败）。
+    /// </summary>
+    private static LayoutObject WithBounds(LayoutObject o, GridRect bounds) => o switch
     {
-        var dColumn = bounds.Column - o.Bounds.Column;
-        var dRow = bounds.Row - o.Bounds.Row;
-        return o switch
-        {
-            GroupObject g => g with
-            {
-                Bounds = bounds,
-                Partitions = g.Partitions.Select(p => p.Translate(dColumn, dRow)).ToArray(),
-            },
-            TileObject t => t with { Bounds = bounds },
-            _ => throw new InvalidOperationException($"未知布局对象类型：{o.GetType().Name}"),
-        };
-    }
+        GroupObject g => g with { Bounds = bounds },
+        TileObject t => t with { Bounds = bounds },
+        _ => throw new InvalidOperationException($"未知布局对象类型：{o.GetType().Name}"),
+    };
 
     /// <summary>target 与任何其他对象的原位都不相交 → 零移动直接成功。</summary>
     private static bool TargetIsFree(OccupancyMap placed, LayoutObject[] others)
