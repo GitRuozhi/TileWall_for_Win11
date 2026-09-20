@@ -101,6 +101,10 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         _modal = new ModalSessionService(RootGrid);
         _animator = new ShowHideAnimator(RootGrid, GetRasterizationScale);
         _showMachine = new WallShowMachine(startHidden ? WallShowState.Hidden : WallShowState.Visible, this);
+        // §6.1 完成回调接线：A6/A7 动画自然完成 → 状态机转移（缺此接线机器将永久卡在 Showing/Hiding，
+        // SnapHide/AppWindow.Hide 永不执行——所有收起路径失效；打断路径经 Cancel 即 Stop，不触发 Completed）
+        _animator.ShowCompleted += () => _showMachine.ShowAnimationCompleted();
+        _animator.HideCompleted += () => _showMachine.HideAnimationCompleted();
         _exit = new ExitCoordinator(this);
         _modal.SessionOpened += () => _showMachine.InputGateClosed = true; // W3：模态期状态机防御行
         _modal.SessionClosed += () => _showMachine.InputGateClosed = false;
@@ -1321,6 +1325,10 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         _activatedOnce = true;
         Activate(); // --background 首显：延迟 Activate 补跑 Loaded→Bootstrap（§2.2 第 8 步；§14 风险 4）
     }
+
+    /// <summary>手动启动的首显标记（App 调 Activate 后调用）：此后隐藏→唤回走 AppWindow.Show 直达——
+    /// Activate 不能可靠撤销 AppWindow.Hide 的隐藏（失焦收起后托盘/热键/二次启动唤回的正确路径）。</summary>
+    public void MarkInitialActivation() => _activatedOnce = true;
 
     void IWallShowHost.SnapHide()
     {

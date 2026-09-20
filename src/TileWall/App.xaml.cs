@@ -83,6 +83,7 @@ public partial class App : Application
             if (!background)
             {
                 _window.Activate(); // 手动启动：显示墙（Bootstrap 经 Loaded 执行）
+                _window.MarkInitialActivation(); // 此后隐藏→唤回走 AppWindow.Show 直达（SnapShow 语义）
             }
 
             // ———— 5. 系统输入 → Router（唯一命令汇聚点；UI 线程收敛，§3.1） ————

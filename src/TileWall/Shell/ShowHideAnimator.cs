@@ -29,6 +29,12 @@ public sealed class ShowHideAnimator
 
     private Storyboard? _active;
 
+    /// <summary>A6 动画自然完成（宿主须转调 WallShowMachine.ShowAnimationCompleted，§6.1 完成回调）。</summary>
+    public event Action? ShowCompleted;
+
+    /// <summary>A7 动画自然完成（宿主须转调 WallShowMachine.HideAnimationCompleted——此处才允许 SnapHide 撤销物理可见，W2）。</summary>
+    public event Action? HideCompleted;
+
     public ShowHideAnimator(UIElement target, Func<double> rasterizationScale)
     {
         ArgumentNullException.ThrowIfNull(target);
@@ -70,8 +76,7 @@ public sealed class ShowHideAnimator
         Storyboard.SetTargetProperty(slide, "(UIElement.RenderTransform).(TranslateTransform.Y)");
         storyboard.Children.Add(slide);
 
-        _active = storyboard;
-        storyboard.Begin();
+        BeginInternal(storyboard, isShow: true);
     }
 
     /// <summary>A7：淡出（收起只淡出，无位移——A7 仅规定时长与淡出）。</summary>
@@ -89,6 +94,28 @@ public sealed class ShowHideAnimator
         Storyboard.SetTargetProperty(opacity, "Opacity");
         storyboard.Children.Add(opacity);
 
+        BeginInternal(storyboard, isShow: false);
+    }
+
+    /// <summary>统一启动：完成回调转事件（打断即 Stop，Stop 后 Completed 不触发——A8 打断格不误报完成）。</summary>
+    private void BeginInternal(Storyboard storyboard, bool isShow)
+    {
+        storyboard.Completed += (sender, e) =>
+        {
+            if (ReferenceEquals(_active, storyboard))
+            {
+                _active = null;
+            }
+
+            if (isShow)
+            {
+                ShowCompleted?.Invoke();
+            }
+            else
+            {
+                HideCompleted?.Invoke();
+            }
+        };
         _active = storyboard;
         storyboard.Begin();
     }
