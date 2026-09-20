@@ -1,0 +1,10 @@
+bin/
+obj/
+.vs/
+*.user
+temp/
+Design/
+native-winui-control/
+.zcode/
+.scratch/
+nul

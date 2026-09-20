@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "TileWall (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "TileWall (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
