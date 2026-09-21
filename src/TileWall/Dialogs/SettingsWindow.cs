@@ -248,11 +248,17 @@ public sealed class SettingsWindow : Window, IExitParticipant
 
         var configText = gesture.ToConfigString();
         var error = _context.ApplyHotKey(configText); // 注册+保存双成功才替换（内部含回滚，§3.4）
-        _currentHotKeyText = configText; // 展示与配置同步（失败时 MainWindow 已回滚注册，配置仍为旧值）
-        EndCapture();
+        if (error is null)
+        {
+            _currentHotKeyText = configText; // 双成功才更新「当前组合」呈现
+        }
+        // 失败（注册失败已回滚旧组合 / 保存失败已回滚）：「当前组合」保持旧值——
+        // 否则界面会呈现「当前组合=新组合 + 状态=已注册（实为旧组合）」的虚假成功（C39/C40）
+
+        EndCapture(); // 状态行经 RegistrationChanged 回到真实注册状态；「当前组合」刷新用旧值
         if (error is not null)
         {
-            ShowError(error); // 就地报错；状态行经 RegistrationChanged 已回到真实注册状态
+            ShowError(error); // 就地报错（不把失败渲染为已生效，§15.2）
         }
     }
 

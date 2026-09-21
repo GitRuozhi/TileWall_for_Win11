@@ -61,15 +61,21 @@ public sealed class WallShowMachine
 
     public WallShowState State { get; private set; }
 
-    /// <summary>W3 防御行：置真时一切输入忽略（模态会话期由路由器同步置位）。</summary>
+    /// <summary>
+    /// W3 防御行：置真时 Toggle/Hide 输入忽略（模态会话期由路由器同步置位）。
+    /// 设计 §6.1 原文只列「Router 不向状态机投递 Toggle/Hide」；Show 必须放行——
+    /// 「预置模态」序列（§8.5：Attach 置 ModalActive → 显示墙为背景 → ActivateTop）是路由器
+    /// 自有的同步编排，墙恢复背景正是该序列的第 2 步，若被门控吞掉则设置窗无墙背景（§3.4）。
+    /// 用户输入无任何路径在模态期投递 Show（热键=Toggle、双击/二次启动在路由器层已转聚焦）。
+    /// </summary>
     public bool InputGateClosed { get; set; }
 
     /// <summary>投递触发（热键/托盘/失焦/Esc 统一入口）。幂等格与防御格零宿主动作。</summary>
     public void Request(WallShowTrigger trigger)
     {
-        if (InputGateClosed)
+        if (InputGateClosed && trigger != WallShowTrigger.Show)
         {
-            return; // W3：模态防御行
+            return; // W3：模态防御行（只挡 Toggle/Hide）
         }
 
         switch (State)

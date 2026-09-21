@@ -220,15 +220,33 @@ public sealed class WallShowMachineTests
     // ————————————————————————————— W3 模态防御行 —————————————————————————————
 
     [Fact]
-    public void InputGateClosed_AllRequestsIgnored()
+    public void InputGateClosed_ToggleAndHideIgnored()
     {
         var m = New(WallShowState.Visible, out var host);
         m.InputGateClosed = true;
         m.Request(WallShowTrigger.Toggle);
         m.Request(WallShowTrigger.Hide);
-        m.Request(WallShowTrigger.Show);
         Assert.Equal(WallShowState.Visible, m.State);
         Assert.Empty(host.Calls);
+    }
+
+    [Fact]
+    public void InputGateClosed_ShowPassesForPresetModalSequence()
+    {
+        // §8.5 预置模态：Attach（ModalActive=true → 门关）→ Request(Show) 恢复墙为背景 → ActivateTop。
+        // 门控行吞掉 Show 会让设置窗弹出却无墙背景（评审修复回归点）。
+        var m = New(WallShowState.Hidden, out var host);
+        m.InputGateClosed = true;
+        m.Request(WallShowTrigger.Show);
+        Assert.Equal(WallShowState.Showing, m.State);
+        Assert.Equal(["SnapShow", "BeginShow"], host.Calls);
+        m.ShowAnimationCompleted();
+        Assert.Equal(WallShowState.Visible, m.State);
+
+        // 门关期间 Hide 依旧被挡（设置窗为背景的墙不得被失焦等输入收起）
+        m.Request(WallShowTrigger.Hide);
+        Assert.Equal(WallShowState.Visible, m.State);
+        Assert.DoesNotContain("BeginHide", host.Calls);
     }
 
     // ————————————————————————————— W4 背景启动 / 初始态 —————————————————————————————
