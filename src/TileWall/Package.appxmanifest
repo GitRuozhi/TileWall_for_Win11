@@ -18,7 +18,7 @@
   <Identity
     Name="TileWall"
     Publisher="CN=TileWall Dev Test"
-    Version="1.0.0.0" />
+    Version="0.1.0.0" />
 
   <mp:PhoneIdentity PhoneProductId="1A027D37-1D32-492F-ACD2-E456FB4E670C" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
