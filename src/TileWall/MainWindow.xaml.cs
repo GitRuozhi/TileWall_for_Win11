@@ -69,6 +69,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
     private AdaptationAdjustWindow? _adaptAdjustWindow;
     private bool _exitInFlight;
     private bool _activatedOnce; // --background 首显判定（延迟 Activate，§2.2 第 8 步）
+    private bool _everActivated; // 收到过非 Deactivated 态的激活事件（真前台过；M9 packaged 激活前台竞态防御）
     private readonly ExplorerAddQueue _addQueue = new(); // M9 §4.5：会话期暂存 Explorer 添加批次（SessionClosed 排空）
     private ExplorerAddMessage? _pendingExplorerAdd; // M9 §4.4：冷启动 Bootstrap 就绪前到达的批次（EnterReadyState 后补处理）
 
@@ -1892,12 +1893,21 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
     /// <summary>
     /// 失焦收起单机制（§6.4）：墙外点击 / 切应用 / 系统开始菜单三场景统一为 Window.Deactivated。
     /// 「不干扰新前景」= 收起路径只 AppWindow.Hide()，绝不 Activate/SetForegroundWindow 墙窗。
+    /// M9 防御（安装态实测）：packaged 经 explorer 中转激活时若未抢到前台，首个 Window.Activated
+    /// 事件直接以 Deactivated 状态到达——墙从未显示即被本机制收起，安装态首启「无窗口」。
+    /// 该事件不是「失焦」（三场景的墙都已显示且曾聚焦），故真激活过之前一律忽略。
     /// </summary>
     private void OnWindowDeactivated(object sender, WindowActivatedEventArgs args)
     {
         if (args.WindowActivationState != WindowActivationState.Deactivated)
         {
+            _everActivated = true;
             return;
+        }
+
+        if (!_everActivated)
+        {
+            return; // 从未真前台过：不收起（冷启动显示形态 = 显示墙，§2.2/§4.4）
         }
 
         if (_exitInFlight || _modal.IsActive)
