@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
+using TileWall.Core.Import;
 using TileWall.Core.Settings;
 using TileWall.Shell;
 using TileWall.Shell.Interop;
@@ -50,6 +51,7 @@ public partial class App : Application
             var directoryProvider = CreateDataDirectoryProvider();
             var store = new ConfigStore(files, directoryProvider);
             store.CleanupTempFiles(); // ConfigStore.cs:169：清残留 .tmp（尽力）
+            new IconCache(files, directoryProvider.GetDefault().RootPath).Clear(); // M8 §2.2：尽力清理 Cache/Icons/ 残留（缓存可整体重建，绝不权威）
 
             var linkFiles = new ShellLinkFileService();
             var recoveryReport = new EntryRecovery(files, linkFiles, directoryProvider.GetDefault()).Sweep();
@@ -79,6 +81,8 @@ public partial class App : Application
                     ConfiguredHotKey = configuredHotKey,
                 },
                 startHidden: background,
+                new KnownFolderPaths(),          // M8 §5.1：SHGetKnownFolderPath 真身（失败 → null 来源隐藏）
+                new ShortcutIconExtractor(),     // M8 §5.4：SHGetFileInfoW 真身（失败 → 占位字形）
                 recoveryReport.Actions);
             if (!background)
             {

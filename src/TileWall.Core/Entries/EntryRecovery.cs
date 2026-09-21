@@ -133,6 +133,8 @@ public sealed class EntryRecovery
     /// 日志逆序重放（Rollback / RestoreMaterial / Sweep 共用的同一份代码）：
     /// add → 删新文件；replace → 从备份还原旧文件、删新路径；rename → 新名移回旧名；
     /// remove → 从 removed/ 还原；edit → 恢复旧目标。逐条做存在性检查，重复执行结果一致。
+    /// 备份查找（M8）：优先 &lt;objectId&gt;/[removed/]&lt;名&gt;（新提交按对象分目录，同名条目互不覆盖），
+    /// 回退扁平 [removed/]&lt;名&gt;（M4–M7 既有材料/手制夹具语义不变）。
     /// </summary>
     private void ReplayReverse(CommitJournal journal, string materialDirectory)
     {
@@ -148,7 +150,7 @@ public sealed class EntryRecovery
                 case "replace":
                     if (op.From is not null)
                     {
-                        var backupPath = Path.Combine(materialDirectory, EntryPaths.FileNameOf(op.From));
+                        var backupPath = FindBackup(materialDirectory, op, isRemove: false);
                         if (_files.Exists(backupPath))
                         {
                             _files.Copy(backupPath, EntryPaths.Full(_rootPath, op.From), overwrite: true);
@@ -173,7 +175,7 @@ public sealed class EntryRecovery
                     break;
 
                 case "remove":
-                    var removedCopy = Path.Combine(materialDirectory, EntryPaths.RemovedDirName, EntryPaths.FileNameOf(op.From!));
+                    var removedCopy = FindBackup(materialDirectory, op, isRemove: true);
                     if (_files.Exists(removedCopy))
                     {
                         _files.Copy(removedCopy, EntryPaths.Full(_rootPath, op.From!), overwrite: true);
@@ -191,6 +193,26 @@ public sealed class EntryRecovery
                     break;
             }
         }
+    }
+
+    /// <summary>备份定位：&lt;objectId&gt;/[removed/]&lt;名&gt; 存在则用之；否则回退扁平 [removed/]&lt;名&gt;（M4 旧材料兼容）。</summary>
+    private string FindBackup(string materialDirectory, JournalOp op, bool isRemove)
+    {
+        var fileName = EntryPaths.FileNameOf(op.From!);
+        if (!string.IsNullOrEmpty(op.ObjectId))
+        {
+            var scoped = isRemove
+                ? Path.Combine(materialDirectory, op.ObjectId, EntryPaths.RemovedDirName, fileName)
+                : Path.Combine(materialDirectory, op.ObjectId, fileName);
+            if (_files.Exists(scoped))
+            {
+                return scoped;
+            }
+        }
+
+        return isRemove
+            ? Path.Combine(materialDirectory, EntryPaths.RemovedDirName, fileName)
+            : Path.Combine(materialDirectory, fileName);
     }
 
     /// <summary>当前 config.json 的指纹；缺失 → null（与任何日志指纹不等 → 判未完成回滚）。</summary>

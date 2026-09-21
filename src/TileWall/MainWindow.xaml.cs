@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Input;
@@ -12,6 +13,7 @@ using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Grid;
 using TileWall.Core.Groups;
+using TileWall.Core.Import;
 using TileWall.Core.Settings;
 using TileWall.Core.Shell;
 using TileWall.Dialogs;
@@ -28,10 +30,11 @@ namespace TileWall;
 /// <summary>
 /// 磁贴墙窗口：M2 的外形（无边框、不可移动、左下锚定，拍板 Q7）+ M3 的接线
 /// （渲染/手势/布局提交/撤销）+ M4 的接线（托管入口引擎、点击启动、属性窗模态、联合提交与撤销恢复）
-/// + M7 的接线（Shell 命令路由、显隐状态机宿主、退出编排宿主、失焦收起与 Alt+F4 转接）。
+/// + M7 的接线（Shell 命令路由、显隐状态机宿主、退出编排宿主、失焦收起与 Alt+F4 转接）
+/// + M8 的接线（时间日期组件、开始菜单导入、显示适配状态机与提示/调整窗）。
 /// 本类只做「事件 → 状态机/服务 → 渲染」的薄封装，不复制任何几何/腾位/校验/入口协议逻辑。
 /// </summary>
-public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IWallShowHost, IExitHost
+public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IWallShowHost, IExitHost, IAdaptationHost
 {
     private readonly ConfigStore _store;
     private readonly ConfigLoadResult _loadResult;
@@ -56,6 +59,14 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
     private readonly ShowHideAnimator _animator;
     private readonly WallShowMachine _showMachine;
     private readonly ExitCoordinator _exit;
+    private readonly IKnownFolderPaths _knownFolders;
+    private readonly IShortcutIconExtractor _iconExtractor;
+    private readonly ClockTickDriver _clockDriver;
+    private readonly AdaptationMachine _adaptationMachine;
+    private readonly DispatcherQueueTimer _displayDebounceTimer; // 显示变化 500 ms 单发防抖（连发合并为一次评估）
+    private double _lastRasterScale; // 栅格缩放变化检测基线（XamlRoot.Changed 不带旧值）
+    private AdaptationPromptWindow? _adaptPromptWindow;
+    private AdaptationAdjustWindow? _adaptAdjustWindow;
     private bool _exitInFlight;
     private bool _activatedOnce; // --background 首显判定（延迟 Activate，§2.2 第 8 步）
 
@@ -82,6 +93,8 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         ILnkFileService linkFiles,
         ShellHostContext shell,
         bool startHidden,
+        IKnownFolderPaths knownFolders,
+        IShortcutIconExtractor iconExtractor,
         IReadOnlyList<string>? recoveryDiagnostics = null)
     {
         _store = store;
@@ -90,6 +103,8 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         _files = files;
         _linkFiles = linkFiles;
         _shell = shell;
+        _knownFolders = knownFolders;
+        _iconExtractor = iconExtractor;
         _recoveryDiagnostics = recoveryDiagnostics ?? [];
 
         InitializeComponent();
@@ -108,6 +123,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         _exit = new ExitCoordinator(this);
         _modal.SessionOpened += () => _showMachine.InputGateClosed = true; // W3：模态期状态机防御行
         _modal.SessionClosed += () => _showMachine.InputGateClosed = false;
+        _modal.SessionClosed += OnModalSessionClosedForAdaptation; // M8：调整窗提交成功/会话结束 → 适配重评估（deferred 补弹）
         _objectMenu = new MenuFlyout();
         _objectMenu.Opening += (_, _) => PopulateObjectMenu();
         _visuals = new TileWall.Shell.Imaging.GroupVisualHost(_metrics);
@@ -126,10 +142,21 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         _statusTimer.IsRepeating = false;
         _statusTimer.Tick += (_, _) => StatusHint.IsOpen = false;
 
-        _backgroundMenu = WallMenuFactory.CreateBackgroundMenu(OnNewTileRequested, OnNewGroupRequested, OpenSettings);
+        _backgroundMenu = WallMenuFactory.CreateBackgroundMenu(
+            OnNewTileRequested, OnNewGroupRequested, OpenSettings, OpenImport, OpenClockCreator);
+        _backgroundMenu.Opening += (_, _) => UpdateBackgroundMenuForAdaptation(); // §8：适配期两新增项置灰 + 原因
         RootGrid.ContextFlyout = _backgroundMenu;
         _presenter.ObjectContextRequested += (view, _) => _menuTarget = view.Object;
         _presenter.ObjectActivated += OnObjectInvokeActivated;
+
+        // M8 §2.2：适配状态机 + 显示变化防抖 + 时钟驱动（C16，与轮播同一 WallVisibility 钩子）
+        _adaptationMachine = new AdaptationMachine(this);
+        _displayDebounceTimer = DispatcherQueue.CreateTimer();
+        _displayDebounceTimer.Interval = TimeSpan.FromMilliseconds(500);
+        _displayDebounceTimer.IsRepeating = false;
+        _displayDebounceTimer.Tick += (_, _) => EvaluateAdaptationNow();
+        _clockDriver = new ClockTickDriver(
+            _presenter, _visibility, SystemClock.Instance, CultureInfo.CurrentCulture, DispatcherQueue);
 
         ((FrameworkElement)Content).Loaded += OnContentLoaded;
         HookPointerEvents();
@@ -140,7 +167,66 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
 
     // ————————————————————————————— 启动装配（§2.2） —————————————————————————————
 
-    private void OnContentLoaded(object sender, RoutedEventArgs e) => Bootstrap();
+    private void OnContentLoaded(object sender, RoutedEventArgs e)
+    {
+        Bootstrap();
+        HookDisplayChanges(); // M8 §2.2 第 5 步：WM_DISPLAYCHANGE/WM_SETTINGCHANGE + DpiChanged → 防抖评估
+        _clockDriver.Start(); // M8 §2.2 第 6 步：时钟 1 Hz 驱动（仅墙可见时走表，C16）
+    }
+
+    /// <summary>M8 §6.2：显示变化触发源挂接（WndProc 分发 + 主窗栅格缩放变化——与 DisplayInformation.DpiChanged
+    /// 同一栅格缩放信号，经 XamlRoot.Changed 自比对实现，XamlRoot 就绪后挂接）。不可得时静默——仍有兜底评估。</summary>
+    private void HookDisplayChanges()
+    {
+        _shell.MessageHost.DisplayChanged += OnDisplayEnvironmentChanged;
+        if ((Content as FrameworkElement)?.XamlRoot is { } xamlRoot)
+        {
+            _lastRasterScale = GetRasterizationScale();
+            xamlRoot.Changed += (_, _) =>
+            {
+                var current = GetRasterizationScale();
+                if (Math.Abs(current - _lastRasterScale) > 0.001)
+                {
+                    _lastRasterScale = current;
+                    OnDisplayEnvironmentChanged(); // 每显示器缩放变化（§6.2 第三路触发源）
+                }
+            };
+        }
+    }
+
+    private void OnDisplayEnvironmentChanged()
+    {
+        _displayDebounceTimer.Stop(); // 500 ms 单发计时器合并连发（§6.2）
+        _displayDebounceTimer.Start();
+    }
+
+    /// <summary>适配评估入口（四路触发 + 兜底统一汇入）：读取当前工作区 → 状态机 Evaluate。</summary>
+    private void EvaluateAdaptationNow()
+    {
+        if (!_layoutReady && !_adaptationMode)
+        {
+            return; // 配置损坏/版本过高路径：无布局可评估（保留原文件不动，§17.2）
+        }
+
+        var scale = GetRasterizationScale();
+        var workArea = DisplayArea.Primary.WorkArea;
+        var snapshot = AdaptationEvaluator.Snapshot(
+            _wall, workArea.Width / scale, workArea.Height / scale, _metrics);
+        _adaptationMachine.Evaluate(snapshot);
+        if (_adaptAdjustWindow is { } adjust)
+        {
+            adjust.UpdateWorkArea(workArea.Width / scale, workArea.Height / scale); // F-A2：草稿按新容量刷新
+        }
+    }
+
+    private void OnModalSessionClosedForAdaptation()
+    {
+        if (_adaptationMode)
+        {
+            _displayDebounceTimer.Stop();
+            EvaluateAdaptationNow(); // 调整窗确认/会话结束 → 立即重评估（Fit 恢复显示；NoFit 且无会话 → 补弹提示）
+        }
+    }
 
     private void Bootstrap()
     {
@@ -228,15 +314,16 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         _machine.UpdateWall(_wall);
         _machine.UpdateObjects(_commit.Current.Objects);
 
-        // 显示适配最小行为（M3 设计 §2.2）：墙超工作区 → 不渲染对象、窗口取工作区上限、配置不动
-        if (_metrics.WallWidth(_wall.Columns) > workWidthDip + 0.5
-            || _metrics.WallHeight(_wall.Rows) > workHeightDip + 0.5)
+        // 显示适配（M8 §6.1：判定与运行时同一条规则；容差与 M3 既有分支逐字一致）
+        // 超工作区 → 状态机 Fitted→AdaptationNeeded：不渲染对象、窗口钳到工作区、配置不动、弹提示窗（U-5）
+        if (!AdaptationEvaluator.Fits(_wall, workWidthDip, workHeightDip, _metrics))
         {
             _adaptationMode = true;
             PlaceWindow(workArea, scale, clampToWorkArea: true);
             ShowStartupStatus(
                 $"已保存布局需要 {_wall.Columns} 栏 × {_wall.Rows} 行，当前放不下；未渲染任何对象，配置未修改（设计 §17.1）。",
                 hotkeyStatusLine);
+            EvaluateAdaptationNow(); // → HideWallForAdaptation（墙可见则收起）+ ShowPrompt（需求 vs 容量）
             return;
         }
 
@@ -663,6 +750,12 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
             return;
         }
 
+        if (target is ClockObject clock)
+        {
+            OpenClockWindow(clock); // M8 §4.3：时钟的「编辑时间日期」→ 组件属性窗编辑模式
+            return;
+        }
+
         OpenPropertyWindow(target);
     }
 
@@ -892,6 +985,386 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         }
     }
 
+    // ————————————————————————————— M8：时间日期组件（§4） —————————————————————————————
+
+    /// <summary>「添加时间日期」右键生效（§4.3）：守卫链与 OpenPropertyWindow 同构——适配期不允许新增对象（会加剧不容）。</summary>
+    private void OpenClockCreator()
+    {
+        if (!_layoutReady || _commit is null)
+        {
+            ShowTransientStatus("配置不可用（损坏或版本过高），已禁用布局修改（设计 §17.2）。");
+            return;
+        }
+
+        if (_adaptationMode)
+        {
+            ShowTransientStatus("已保存布局超出当前工作区，请先调整布局（设计 §17.1 不裁切不删）。");
+            return;
+        }
+
+        OpenClockWindow(null);
+    }
+
+    /// <summary>组件属性窗（创建/编辑共用；模态会话阻塞主墙）。</summary>
+    private void OpenClockWindow(ClockObject? target)
+    {
+        if (_modal.IsActive || !_layoutReady || _commit is null)
+        {
+            return; // §3.3「重复请求只聚焦」由 ModalSessionService 处理；此处拦截新会话创建
+        }
+
+        if (_adaptationMode)
+        {
+            ShowTransientStatus("已保存布局超出当前工作区，请先调整布局（设计 §17.1 不裁切不删）。");
+            return;
+        }
+
+        var otherRects = _commit.Current.Objects
+            .Where(o => target is null || o.Id != target.Id)
+            .Select(o => o.Bounds)
+            .ToArray();
+        var context = new ClockPropertyWindowContext(
+            _wall,
+            otherRects,
+            target,
+            (bounds, draft) => SaveClock(target, bounds, draft));
+        _modal.Open(new ClockPropertyWindow(context, WinRT.Interop.WindowNative.GetWindowHandle(this)));
+    }
+
+    /// <summary>
+    /// 组件保存回调（§3.3 提交路径）：纯配置路径——ClockObject 追加/替换进 Current → LayoutCommitService.Commit
+    /// （校验失败零落盘）。零入口文件操作，天然满足「不创建空 .lnk」。
+    /// </summary>
+    private string? SaveClock(ClockObject? target, GridRect bounds, ClockDraft draft)
+    {
+        if (_commit is null)
+        {
+            return "配置不可用（损坏或版本过高），已禁用修改（设计 §17.2）。";
+        }
+
+        var isCreate = target is null;
+        var clock = new ClockObject
+        {
+            Id = target?.Id ?? StableId.NewId(),
+            Bounds = bounds,
+            Entry = null,
+            Visual = new ObjectVisual
+            {
+                ShowTitle = !string.IsNullOrWhiteSpace(draft.TitleText),
+                TitleText = string.IsNullOrWhiteSpace(draft.TitleText) ? null : draft.TitleText,
+            },
+        };
+        var actionName = isCreate ? "添加时间日期" : "编辑时间日期";
+        var newConfig = isCreate
+            ? _commit.Current with { Objects = [.. _commit.Current.Objects, clock] }
+            : _commit.Current with { Objects = [.. _commit.Current.Objects.Select(o => o.Id == clock.Id ? clock : o)] };
+
+        if (!CommitLayout(newConfig, actionName, incrementalRender: null))
+        {
+            return "保存失败：尺寸无法放置或校验未通过（布局未更改）。"; // CommitLayout 已就地显示具体原因
+        }
+
+        ShowTransientStatus(isCreate ? "已添加时间日期" : "已保存时间日期属性");
+        return null;
+    }
+
+    // ————————————————————————————— M8：开始菜单导入（§5） —————————————————————————————
+
+    /// <summary>「从开始菜单导入」右键生效（§5.3）：模态单槽会话；来源查询全失败 → 如实提示不弹空窗。</summary>
+    private void OpenImport()
+    {
+        if (_modal.IsActive || !_layoutReady || _commit is null)
+        {
+            return;
+        }
+
+        if (_adaptationMode)
+        {
+            ShowTransientStatus("已保存布局超出当前工作区，请先调整布局（设计 §17.1 不裁切不删）。");
+            return;
+        }
+
+        var roots = new List<(string Path, SourceKind Source)>();
+        if (_knownFolders.UserPrograms is { } userPrograms)
+        {
+            roots.Add((userPrograms, SourceKind.User));
+        }
+
+        if (_knownFolders.CommonPrograms is { } commonPrograms)
+        {
+            roots.Add((commonPrograms, SourceKind.Common));
+        }
+
+        if (roots.Count == 0)
+        {
+            ShowTransientStatus("无法定位开始菜单程序目录（已知文件夹查询失败，[R6] 不硬编码回退）。");
+            return;
+        }
+
+        var context = new ImportWindowContext(
+            roots,
+            _wall,
+            [.. _commit.Current.Objects.Select(o => o.Bounds)],
+            new IconCache(_files, _dataRoot),
+            _iconExtractor,
+            ImportSelected);
+        _modal.Open(new ImportWindow(context, WinRT.Interop.WindowNative.GetWindowHandle(this)));
+    }
+
+    /// <summary>导入确认（§7.1 时序）：N 候选一次 CommitBatch 协议执行；异常转错误文本就地显示（窗不关、勾选保留）。</summary>
+    private string? ImportSelected(IReadOnlyList<StartMenuCandidate> selected)
+    {
+        if (_commit is null)
+        {
+            return "配置不可用（损坏或版本过高），已禁用修改（设计 §17.2）。";
+        }
+
+        try
+        {
+            var requests = selected.Select(c => new EntryCommitRequest(
+                StableId.NewId(),
+                "开始菜单导入",
+                new TileDraft
+                {
+                    Size = new GridSize(1, 1), // 导入磁贴逐个 1×1 入墙（§5.5）
+                    Entry = new EntryDraft.CopyFromFile(c.FullPath),
+                })).ToList();
+            var report = _entryCommits.CommitBatch(_commit.Current, requests, "开始菜单导入");
+            AdoptEntryBatch(report);
+            ShowTransientStatus($"已导入 {report.CommittedObjects.Count} 个磁贴");
+            return null;
+        }
+        catch (Exception ex) when (ex is DraftValidationException or ConfigValidationException or IOException or InvalidOperationException or NotSupportedException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            return ex.Message;
+        }
+    }
+
+    /// <summary>批量提交采纳（§5.7）：覆盖单槽时清旧材料、Current 前移 + 整批撤销材料、一次 RenderAll 全量重渲染。</summary>
+    private void AdoptEntryBatch(EntryBatchCommitReport report)
+    {
+        var previousMaterial = _commit!.UndoSlot?.EntryMaterial;
+        if (previousMaterial is not null && report.UndoMaterial.CommitId != previousMaterial.CommitId)
+        {
+            _entryCommits.DeleteMaterial(previousMaterial.CommitId);
+        }
+
+        _commit.Adopt(report.NewConfig, "开始菜单导入", report.UndoMaterial);
+        _presenter.RenderAll(_commit.Current);
+        _machine.UpdateObjects(_commit.Current.Objects);
+        UpdateEmptyHint();
+    }
+
+    // ————————————————————————————— M8：显示适配接线（§6） —————————————————————————————
+
+    /// <summary>「调整布局…」（提示窗按钮 → 模态单槽会话）：草稿编辑零提交；确认经 CommitAdaptation 单事务。</summary>
+    private void OpenAdaptationAdjustWindow()
+    {
+        if (_exitInFlight || _commit is null || !_adaptationMode)
+        {
+            return;
+        }
+
+        if (_modal.IsActive)
+        {
+            FocusTopSession(); // 调整窗已开 → 聚焦（模态单槽语义）
+            return;
+        }
+
+        var scale = GetRasterizationScale();
+        var workArea = DisplayArea.Primary.WorkArea;
+        var context = new AdaptationAdjustWindowContext(
+            _commit.Current,
+            _wall,
+            _metrics,
+            workArea.Width / scale,
+            workArea.Height / scale,
+            CommitAdaptationDraft);
+        var adjust = new AdaptationAdjustWindow(context, WinRT.Interop.WindowNative.GetWindowHandle(this));
+        _adaptAdjustWindow = adjust;
+        adjust.Closed += (_, _) => _adaptAdjustWindow = null;
+        _modal.Open(adjust);
+    }
+
+    /// <summary>
+    /// 调整确认（§6.6/§7.2）：CommitAdaptation 单事务（N remove + 最终配置）→ 成功即经状态机
+    /// <see cref="AdaptationMachine.AdjustmentCommitted"/> 退出适配态——RestoreWallAfterAdaptation
+    /// 以新配置同步墙基线、重渲染并 Request(Show)（「确认 → 退出适配态 → 墙按新布局显示」）。
+    /// 此后调整窗关闭的 SessionClosed 钩子再评估为幂等（Fitted + Fit 无宿主动作）。
+    /// </summary>
+    private string? CommitAdaptationDraft(IReadOnlyList<string> removedObjectIds, TileWallConfig finalConfig)
+    {
+        if (_commit is null)
+        {
+            return "配置不可用（损坏或版本过高），已禁用修改（设计 §17.2）。";
+        }
+
+        try
+        {
+            var report = _entryCommits.CommitAdaptation(_commit.Current, removedObjectIds, finalConfig, "调整布局以适配显示");
+            var previousMaterial = _commit.UndoSlot?.EntryMaterial;
+            if (previousMaterial is not null && report.UndoMaterial?.CommitId != previousMaterial.CommitId)
+            {
+                _entryCommits.DeleteMaterial(previousMaterial.CommitId);
+            }
+
+            _commit.Adopt(report.NewConfig, "调整布局以适配显示", report.UndoMaterial);
+            // 修复（评审①）：确认成功必须经状态机退出适配态——AdjustmentCommitted → DismissPrompt +
+            // RestoreWallAfterAdaptation（内部以 _commit.Current 重建 _wall 并整墙重渲染）。
+            // 缺此调用时评估仍读旧 _wall（缩小前的墙）恒 NoFit，适配态永不退出。
+            _adaptationMachine.AdjustmentCommitted();
+            ShowTransientStatus("已按新布局适配显示");
+            return null;
+        }
+        catch (Exception ex) when (ex is ConfigValidationException or IOException or InvalidOperationException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            return ex.Message; // F-A1：提交失败全回滚（原布局配置不动），错误就地显示
+        }
+    }
+
+    /// <summary>§6.3：适配期 Show 类输入改弹/聚焦提示窗（墙本体不渲染被裁切内容）；先兜底评估——已恢复则直接显示。</summary>
+    private void ShowOrFocusDuringAdaptation()
+    {
+        EvaluateAdaptationNow(); // 每次墙将显示前强制评估（兜底，R-2）；Fit 时 Restore 内已 Request(Show)
+        if (!_adaptationMode)
+        {
+            return;
+        }
+
+        if (_modal.IsActive)
+        {
+            FocusTopSession(); // 调整窗开着 → 聚焦
+            return;
+        }
+
+        if (_adaptPromptWindow is { } prompt)
+        {
+            prompt.Activate();
+            return;
+        }
+
+        // 曾「稍后处理」：热键/托盘 → 重开提示窗（机器仍在 AdaptationNeeded，快照为最近一次 NoFit）
+        if (_adaptationMachine.LastNoFitSnapshot is { } snapshot)
+        {
+            ((IAdaptationHost)this).ShowPrompt(snapshot);
+        }
+    }
+
+    /// <summary>§8：适配期背景菜单两新增项置灰 + 原因（菜单结构不动，HelpText 供 UIA 断言）。</summary>
+    private void UpdateBackgroundMenuForAdaptation()
+    {
+        foreach (var item in _backgroundMenu.Items.OfType<MenuFlyoutItem>())
+        {
+            var id = AutomationProperties.GetAutomationId(item);
+            if (id is not "menu-blank-import" and not "menu-blank-datetime")
+            {
+                continue;
+            }
+
+            if (_adaptationMode)
+            {
+                const string reason = "显示适配期不允许新增对象（当前布局放不下，请先调整布局）";
+                item.IsEnabled = false;
+                ToolTipService.SetToolTip(item, reason);
+                AutomationProperties.SetHelpText(item, reason);
+            }
+            else if (!item.IsEnabled)
+            {
+                item.IsEnabled = true;
+                ToolTipService.SetToolTip(item, null);
+                AutomationProperties.SetHelpText(item, null);
+            }
+        }
+    }
+
+    // ————————————————————————————— M8：IAdaptationHost（适配状态机出口） —————————————————————————————
+
+    void IAdaptationHost.ShowPrompt(AdaptationSnapshot snapshot)
+    {
+        if (_adaptPromptWindow is { } existing)
+        {
+            existing.UpdateSnapshot(snapshot);
+            existing.Activate();
+            return;
+        }
+
+        var prompt = new AdaptationPromptWindow(snapshot, WinRT.Interop.WindowNative.GetWindowHandle(this));
+        prompt.AdjustRequested += OpenAdaptationAdjustWindow;
+        prompt.Closed += (_, _) =>
+        {
+            if (!ReferenceEquals(_adaptPromptWindow, prompt))
+            {
+                return;
+            }
+
+            _adaptPromptWindow = null;
+            _adaptationMachine.PromptDismissed(); // 「稍后处理」/手动关闭：墙保持隐藏，Show 类输入重开提示窗
+        };
+        _adaptPromptWindow = prompt;
+        prompt.Activate();
+    }
+
+    void IAdaptationHost.DismissPrompt()
+    {
+        var prompt = _adaptPromptWindow;
+        _adaptPromptWindow = null;
+        prompt?.Close();
+    }
+
+    void IAdaptationHost.RefreshPrompt(AdaptationSnapshot snapshot) => _adaptPromptWindow?.UpdateSnapshot(snapshot);
+
+    bool IAdaptationHost.HasActiveSession => _modal.IsActive;
+
+    bool IAdaptationHost.IsPromptVisible => _adaptPromptWindow is not null;
+
+    void IAdaptationHost.HideWallForAdaptation()
+    {
+        CancelGestureIfAny(); // T12：在飞手势全量恢复（§6.3 host.OnEnterAdaptation）
+        _adaptationMode = true;
+        _layoutReady = false; // 全部墙命令出口既有守卫生效
+        if (_showMachine.State is not (WallShowState.Hidden or WallShowState.Hiding))
+        {
+            _showMachine.Request(WallShowTrigger.Hide); // 经状态机走 A7 统一路径 → ClockTickDriver/轮播停表
+        }
+    }
+
+    void IAdaptationHost.RestoreWallAfterAdaptation()
+    {
+        _adaptationMode = false;
+        _layoutReady = true;
+        if (_commit is not null)
+        {
+            _wall = new WallGrid(_commit.Current.Wall.Columns, _commit.Current.Wall.Rows);
+            _machine.UpdateWall(_wall);
+            _machine.UpdateObjects(_commit.Current.Objects);
+            _presenter.Initialize(_wall);
+        }
+
+        PlaceWindow(DisplayArea.Primary.WorkArea, GetRasterizationScale(), clampToWorkArea: false);
+        DrawWallGridBase();
+        if (_commit is not null)
+        {
+            _presenter.RenderAll(_commit.Current); // §6.5：按（原/新）布局重渲染，无任何自动修改（A14）
+            if (_carouselDriver is null)
+            {
+                StartCarousel(_commit); // 启动即适配、运行中恢复的补装配（轮播驱动此前未建）
+            }
+        }
+
+        UpdateEmptyHint();
+        _showMachine.Request(WallShowTrigger.Show); // 恢复显示必经状态机（R-6，M7 W3 门控语义不变）
+    }
+
+    /// <summary>撤销后重评估：恢复的旧配置若超出当前工作区 → 重新进入适配态（不渲染被裁切墙）。</summary>
+    private void EvaluateAfterUndo()
+    {
+        if (_layoutReady)
+        {
+            EvaluateAdaptationNow();
+        }
+    }
+
+
     /// <summary>入口显示文本（§7.1）：.lnk → 归一化目标 + 参数；IDList → 特殊项说明；.url → URL 行。</summary>
     private string DescribeEntry(string relativePath)
     {
@@ -1024,10 +1497,19 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
                 _entryCommits.DeleteMaterial(material.CommitId); // 文件与配置都已还原 → 材料移交完成
             }
 
-            _presenter.RenderAll(_commit.Current);
+            // 修复（评审②）：墙维度可能随适配提交的撤销而回退（如 Ctrl+Z 撤销「调整布局」）——
+            // 必须先以恢复后的配置同步墙基线并重摆窗/重画网格底，再渲染对象；
+            // 否则大墙配置按缩小后的旧 _wall 渲染即被裁切（违反 §17.1），且下方重评估会读旧墙失真。
+            _wall = new WallGrid(_commit.Current.Wall.Columns, _commit.Current.Wall.Rows);
+            _machine.UpdateWall(_wall);
             _machine.UpdateObjects(_commit.Current.Objects);
+            _presenter.Initialize(_wall);
+            PlaceWindow(DisplayArea.Primary.WorkArea, GetRasterizationScale(), clampToWorkArea: false);
+            DrawWallGridBase();
+            _presenter.RenderAll(_commit.Current);
             UpdateEmptyHint();
             ShowTransientStatus($"已撤销：{actionName}");
+            EvaluateAfterUndo(); // 以同步后的 _wall 重评估：恢复的大墙放不下 → 重新进入适配态（§17.1）
         }
         else
         {
@@ -1117,11 +1599,17 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
 
     // ————————————————————————————— M7：Shell 命令路由（§6.2 输入路由表） —————————————————————————————
 
-    /// <summary>呼出热键（WM_HOTKEY → 唯一汇聚点）。模态期只聚焦会话不切显隐（§14.4）。</summary>
+    /// <summary>呼出热键（WM_HOTKEY → 唯一汇聚点）。模态期只聚焦会话不切显隐（§14.4）；适配期改弹提示窗（§6.3）。</summary>
     public void ToggleWall()
     {
         if (_exitInFlight)
         {
+            return;
+        }
+
+        if (_adaptationMode)
+        {
+            ShowOrFocusDuringAdaptation(); // §6.3：Show 类输入改弹/聚焦适配提示窗，墙本体不渲染被裁切内容
             return;
         }
 
@@ -1135,11 +1623,17 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         _showMachine.Request(WallShowTrigger.Toggle);
     }
 
-    /// <summary>托盘左双击 / 二次启动汇入（§3.3 同一条命令）：显示或聚焦现有模态，绝不收起。</summary>
+    /// <summary>托盘左双击 / 二次启动汇入（§3.3 同一条命令）：显示或聚焦现有模态，绝不收起；适配期改弹提示窗。</summary>
     public void ShowOrFocus()
     {
         if (_exitInFlight)
         {
+            return;
+        }
+
+        if (_adaptationMode)
+        {
+            ShowOrFocusDuringAdaptation(); // §6.3：与热键同路（重开/聚焦提示窗）
             return;
         }
 
@@ -1349,6 +1843,9 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         CancelGestureIfAny(); // Fallout 兜底：在飞手势全量恢复
         _backgroundMenu.Hide();
         _objectMenu.Hide();
+        var prompt = _adaptPromptWindow; // 适配提示窗不占模态槽，退出序列就地收口
+        _adaptPromptWindow = null;
+        prompt?.Close();
     }
 
     void IExitHost.SnapHideWall()

@@ -31,13 +31,32 @@ public sealed class ObjectElementView
 /// 唯一的渲染出入口（M3 设计 §3）：读配置 → 摆控件，几何全部经 GridMetrics 换算，不自行推算。
 /// AutomationId 契约（§4）：tile-&lt;Id&gt; / tile-&lt;Id&gt;-part-&lt;i&gt; / drag-ghost / drag-invalid。
 /// 横幅规则（§3.4）：悬停/聚焦显示、底部 28 DIP 黑 50% 白字 12、空标题整体不创建、拖动中隐藏。
+/// M8 §4.2：ClockObject 分支——两行文本常驻（时间大字 + 日期小字，单一默认样式），
+/// 可选标题沿用悬停/聚焦横幅；文本经 <see cref="UpdateClockText"/> 由 ClockTickDriver 1 Hz 刷新（仅墙可见时）。
 /// </summary>
 public sealed class WallPresenter
 {
+    /// <summary>M8：时间/日期字号两档（常量集中，随 Q2 网格校准轮同批拍板——R-7）。</summary>
+    internal const double ClockTimeFontSize = 32;
+
+    internal const double ClockDateFontSize = 13;
+
+    internal const double ClockLineSpacing = 4;
+
+    /// <summary>小字号降档（min 边 < 96 DIP 的一格宽时用；R-7 占位值）。</summary>
+    internal const double ClockTimeFontSizeSmall = 20;
+
+    internal const double ClockDateFontSizeSmall = 11;
+
+    /// <summary>无标题时钟的可访问名（恒定文本，避免 UIA 树每分钟抖动，§4.2）。</summary>
+    public const string ClockAccessibleName = "时间日期";
+
     private readonly Canvas _tilesCanvas;
     private readonly Canvas _dragLayer;
     private readonly GridMetrics _metrics;
     private readonly Dictionary<string, ObjectElementView> _views = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (Microsoft.UI.Xaml.Controls.TextBlock Time, Microsoft.UI.Xaml.Controls.TextBlock Date)> _clockTexts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string Time, string Date)> _clockLastText = new(StringComparer.Ordinal);
 
     private WallGrid _wall = new(1, 1);
     private Border? _ghost;
@@ -92,6 +111,8 @@ public sealed class WallPresenter
         StopPreviewStoryboard();
         _tilesCanvas.Children.Clear();
         _views.Clear();
+        _clockTexts.Clear();
+        _clockLastText.Clear();
         foreach (var o in config.Objects)
         {
             BuildAndAttach(o);
@@ -117,7 +138,43 @@ public sealed class WallPresenter
         {
             _tilesCanvas.Children.Remove(view.Root);
             _views.Remove(objectId);
+            _clockTexts.Remove(objectId);
+            _clockLastText.Remove(objectId);
         }
+    }
+
+    /// <summary>
+    /// M8：时钟文本刷新（ClockTickDriver 调用，仅墙可见时）。与上次相同则不动 UI
+    /// （秒级信号、分钟级变化，避免无效重绘——§4.1 C16 实现要点 2）。对象不存在时静默（渲染树刚重建的竞态）。
+    /// </summary>
+    public void UpdateClockText(string objectId, string timeLine, string dateLine)
+    {
+        if (_clockTexts.TryGetValue(objectId, out var texts))
+        {
+            if (_clockLastText.TryGetValue(objectId, out var last) && last.Time == timeLine && last.Date == dateLine)
+            {
+                return;
+            }
+
+            texts.Time.Text = timeLine;
+            texts.Date.Text = dateLine;
+            _clockLastText[objectId] = (timeLine, dateLine);
+        }
+    }
+
+    /// <summary>M8：当前渲染树中的时钟对象 Id（ClockTickDriver 的刷新目标集）。</summary>
+    public IReadOnlyList<string> ClockIds => [.. _clockTexts.Keys];
+
+    /// <summary>M8：时钟对象立即重算两行文本（Shown 即时求值一次的复用入口）。</summary>
+    public IReadOnlyList<string> RefreshClocks(Func<DateTimeOffset> utcNow, System.Globalization.CultureInfo culture)
+    {
+        foreach (var id in _clockTexts.Keys)
+        {
+            var (timeLine, dateLine) = TileWall.Core.Components.ClockTextFormatter.Format(utcNow(), culture);
+            UpdateClockText(id, timeLine, dateLine);
+        }
+
+        return ClockIds;
     }
 
     /// <summary>提交终位化（§3.3）：Canvas.Left/Top 固定为引擎结果、Transform 归零。</summary>
@@ -355,15 +412,28 @@ public sealed class WallPresenter
             IsTabStop = true, // P1 B10：对象可 Tab/方向键聚焦，Enter/空格 → Invoke 走点击出口
         };
         AutomationProperties.SetAutomationId(root, $"tile-{o.Id}"); // §4：断言跨会话稳定
-        if (!string.IsNullOrWhiteSpace(title))
+        // M8 §4.2：时钟可访问名 = 标题；无标题 → 恒定「时间日期」（不随时间变化，避免 UIA 树每分钟抖动）
+        if (o is ClockObject)
+        {
+            AutomationProperties.SetName(root, string.IsNullOrWhiteSpace(title) ? ClockAccessibleName : title);
+        }
+        else if (!string.IsNullOrWhiteSpace(title))
         {
             AutomationProperties.SetName(root, title); // 完整文本可访问（长标题省略在横幅内）
+        }
+
+        if (!string.IsNullOrWhiteSpace(title))
+        {
             ToolTipService.SetToolTip(root, title);
         }
 
         var banners = new List<Grid>();
         FrameworkElement content;
-        if (o is GroupObject group)
+        if (o is ClockObject clock)
+        {
+            content = BuildClockContent(clock, brush, title, banners);
+        }
+        else if (o is GroupObject group)
         {
             content = BuildGroupContent(group, brush, title, banners);
         }
@@ -453,6 +523,65 @@ public sealed class WallPresenter
             banners.Add(banner);
             chrome.PointerEntered += (_, _) => ShowBanner(GetViewOrThrow(o.Id), 0);
             chrome.PointerExited += (_, _) => HideBanners(GetViewOrThrow(o.Id));
+        }
+
+        return chrome;
+    }
+
+    /// <summary>
+    /// M8 §4.2：时间日期组件内容——两行文本常驻（时间大字 + 日期小字，居中堆叠），可选标题走横幅
+    /// （仅标题遵循悬停/聚焦规则，主体不隐藏）。字号两档：min 边 ≥ 96 DIP 用大档，否则降档（R-7 占位值）。
+    /// 初始文本即构建时刻的当前值；此后由 ClockTickDriver 刷新（墙可见时）。
+    /// </summary>
+    private FrameworkElement BuildClockContent(ClockObject clock, Brush brush, string? title, List<Grid> banners)
+    {
+        var chrome = new Grid
+        {
+            Width = _metrics.RectWidth(clock.Bounds),
+            Height = _metrics.RectHeight(clock.Bounds),
+            Background = brush,
+        };
+
+        var minWidth = _metrics.RectWidth(clock.Bounds);
+        var minHeight = _metrics.RectHeight(clock.Bounds);
+        var largeTier = Math.Min(minWidth, minHeight) >= GridMetrics.DefaultCellCore;
+        var timeBlock = new Microsoft.UI.Xaml.Controls.TextBlock
+        {
+            FontSize = largeTier ? ClockTimeFontSize : ClockTimeFontSizeSmall,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiLight,
+            TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var dateBlock = new Microsoft.UI.Xaml.Controls.TextBlock
+        {
+            FontSize = largeTier ? ClockDateFontSize : ClockDateFontSizeSmall,
+            Opacity = 0.8,
+            TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var stack = new StackPanel
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = ClockLineSpacing,
+        };
+        stack.Children.Add(timeBlock);
+        stack.Children.Add(dateBlock);
+        chrome.Children.Add(stack);
+
+        var (timeLine, dateLine) = TileWall.Core.Components.ClockTextFormatter.Format(DateTimeOffset.UtcNow, System.Globalization.CultureInfo.CurrentCulture);
+        timeBlock.Text = timeLine;
+        dateBlock.Text = dateLine;
+        _clockTexts[clock.Id] = (timeBlock, dateBlock);
+        _clockLastText[clock.Id] = (timeLine, dateLine);
+
+        if (title is not null)
+        {
+            var banner = CreateBanner(title);
+            chrome.Children.Add(banner);
+            banners.Add(banner);
+            chrome.PointerEntered += (_, _) => ShowBanner(GetViewOrThrow(clock.Id), 0);
+            chrome.PointerExited += (_, _) => HideBanners(GetViewOrThrow(clock.Id));
         }
 
         return chrome;

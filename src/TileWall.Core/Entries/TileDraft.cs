@@ -121,7 +121,10 @@ public static partial class DraftValidator
         return new DraftValidation(errors, suggestedRect);
     }
 
-    private static void ValidateSize(
+    /// <summary>
+    /// 尺寸两分支校验（新建 firstFit / 编辑原点锚定；M8 起也服务 ComponentDraftValidator——同一份代码）。
+    /// </summary>
+    internal static void ValidateSize(
         GridSize size,
         LayoutObject? current,
         WallGrid wall,

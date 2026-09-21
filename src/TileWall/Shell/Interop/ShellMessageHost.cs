@@ -58,6 +58,13 @@ public sealed class ShellMessageHost : IDisposable
     /// <summary>二次启动汇入 → Router.ShowOrFocus（与托盘双击同一条命令）。</summary>
     public event Action? ActivateRequested;
 
+    /// <summary>
+    /// M8 显示环境变化广播（§6.2）：WM_DISPLAYCHANGE（分辨率/显示器变更）与 WM_SETTINGCHANGE
+    /// （SPI_SETWORKAREA 等系统设置广播同路）→ 事件；路由器侧 500 ms 防抖合并连发后统一评估。
+    /// 个别驱动/虚拟机漏报不影响正确性：每次墙显示前的兜底评估（R-2）保证「显示出的墙必适配」。
+    /// </summary>
+    public event Action? DisplayChanged;
+
     public ShellMessageHost()
     {
         TrayCallbackMessage = Win32Api.RegisterWindowMessageW("TileWall.Tray.Callback");
@@ -123,6 +130,12 @@ public sealed class ShellMessageHost : IDisposable
             if (msg == self.SingleInstanceActivateMessage)
             {
                 self.ActivateRequested?.Invoke();
+                return IntPtr.Zero;
+            }
+
+            if (msg == Win32Api.WmDisplaychange || msg == Win32Api.WmSettingchange)
+            {
+                self.DisplayChanged?.Invoke();
                 return IntPtr.Zero;
             }
         }

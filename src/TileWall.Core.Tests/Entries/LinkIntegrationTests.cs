@@ -170,7 +170,7 @@ public class LinkIntegrationTests : IDisposable
         Assert.True(File.Exists(newUrl));
         Assert.Contains("URL=https://tilewall.example/home", File.ReadAllText(newUrl));
         Assert.False(report.UndoMaterial is null);
-        Assert.True(File.Exists(Path.Combine(EntryPaths.RecoveryEntriesDir(_bed.Root, report.UndoMaterial!.CommitId), "探针.lnk"))); // 旧链保留
+        Assert.True(File.Exists(Path.Combine(EntryPaths.RecoveryEntriesDir(_bed.Root, report.UndoMaterial!.CommitId), LinkTestBed.ObjectId, "探针.lnk"))); // 旧链保留（M8 按对象分目录）
 
         // 失败半：导入源不可读（真实文件系统注入）→ 旧 .url 完好
         var urlBefore = File.ReadAllBytes(newUrl);

@@ -41,6 +41,7 @@ public static class ConfigValidator
     public const string PartitionCover = "PARTITION_COVER";
     public const string TitleTruthConflict = "TITLE_TRUTH_CONFLICT";
     public const string EntryPathMismatch = "ENTRY_PATH_MISMATCH";
+    public const string ClockEntryForbidden = "CLOCK_ENTRY_FORBIDDEN";
 
     public static IReadOnlyList<ConfigViolation> Validate(TileWallConfig config)
     {
@@ -92,14 +93,23 @@ public static class ConfigValidator
 
             switch (o)
             {
-                case TileObject when o.Bounds.Width > WallGrid.TileMaxCells:
-                    violations.Add(new ConfigViolation(TileTooWide, id, $"独立磁贴宽 {o.Bounds.Width} 超过一栏八格。"));
+                // M8 §3.1：宽超一格栏的检查从「仅 TileObject」扩为「TileObject 或 ClockObject」（唯一增量）
+                case TileObject or ClockObject when o.Bounds.Width > WallGrid.TileMaxCells:
+                    violations.Add(new ConfigViolation(TileTooWide, id, $"磁贴/时间日期宽 {o.Bounds.Width} 超过一栏八格。"));
                     break;
                 case GroupObject when !GridPlacement.IsGroupSizeInRange(o.Bounds.Size):
                     violations.Add(new ConfigViolation(
                         GroupSizeOutOfRange, id,
                         $"组尺寸 {o.Bounds.Width}×{o.Bounds.Height} 超出界限（列 {WallGrid.GroupMinColumns}—{WallGrid.GroupMaxColumns}，行 {WallGrid.GroupMinRows}—{WallGrid.GroupMaxRows}）。"));
                     break;
+            }
+
+            // M8 §3.1 防御性增量：时间日期组件不允许携带托管入口（Entry 恒 null）
+            if (o is ClockObject && o.Entry is not null)
+            {
+                violations.Add(new ConfigViolation(
+                    ClockEntryForbidden, id,
+                    "时间日期组件不允许绑定托管入口（设计 §15.1：不创建空 .lnk，点击无动作）。"));
             }
 
             if (o is GroupObject group)

@@ -46,6 +46,7 @@ public sealed record AppSettings
                  UnknownDerivedTypeHandling = JsonUnknownDerivedTypeHandling.FailSerialization)]
 [JsonDerivedType(typeof(TileObject), "tile")]
 [JsonDerivedType(typeof(GroupObject), "group")]
+[JsonDerivedType(typeof(ClockObject), "clock")]
 public abstract record LayoutObject
 {
     /// <summary>稳定标识：不随标题/文件名/位置变化（设计 §2.1）；配置内唯一（C20）。</summary>
@@ -87,6 +88,21 @@ public sealed record GroupObject : LayoutObject
 
     /// <summary>M5 新增：图片来源三选一记录（设计 §7.2；M5 仅记录不做共享画布/解码，M6 接线）。</summary>
     public GroupImages Images { get; init; } = new();
+}
+
+/// <summary>
+/// 时间日期组件（M8 设计 §3.1、设计 §15.1、拍板 Q9）：
+/// 无入口、无点击动作（Entry 恒 null——不建入口文件、点击无动作）；
+/// 主体两行常驻（时间大字 + 日期小字，ClockTextFormatter 单一默认样式），可选标题走 Visual.TitleText/ShowTitle。
+/// 稳定标识与 Bounds 语义与磁贴一致；宽 ≤ 一栏八格（ConfigValidator 同 TileObject 检查）。
+/// schemaVersion 保持 1（M5/M6 增量先例）；代价为前向不兼容：旧二进制读 "clock" 判别式走恢复链（ConfigJson 既有定义）。
+/// </summary>
+public sealed record ClockObject : LayoutObject
+{
+    /// <summary>恒 null：组件无目标（§15.1「不创建空 .lnk」）；非 null 为配置级错误（CLOCK_ENTRY_FORBIDDEN）。</summary>
+    public override EntryReference? Entry { get; init; } = null;
+
+    public override ObjectVisual Visual { get; init; } = new();
 }
 
 /// <summary>组图片来源（P1 §3.3 三选一；M5 §12 仅记录，候选枚举与加载属 M6）。</summary>

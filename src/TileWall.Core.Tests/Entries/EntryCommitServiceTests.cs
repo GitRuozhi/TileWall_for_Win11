@@ -110,10 +110,10 @@ public class EntryCommitServiceTests : IDisposable
         var obj = Assert.IsType<TileObject>(report.NewConfig.Objects.Single(o => o.Id == EntryCommitHarness.ObjectId));
         Assert.Equal(newRel, obj.Entry!.RelativePath);
 
-        // 旧入口短暂保留（§12.4）：Recovery/Entries/<cid>/<旧名> + journal.json
+        // 旧入口短暂保留（§12.4）：Recovery/Entries/<cid>/<objectId>/<旧名>（M8 按对象分目录） + journal.json
         Assert.NotNull(report.UndoMaterial);
         var materialDir = EntryPaths.RecoveryEntriesDir(_h.Root, report.UndoMaterial!.CommitId);
-        Assert.True(_h.Files.Exists(Path.Combine(materialDir, $"{EntryCommitHarness.EntryBaseName}.lnk")));
+        Assert.True(_h.Files.Exists(Path.Combine(materialDir, EntryCommitHarness.ObjectId, $"{EntryCommitHarness.EntryBaseName}.lnk")));
         Assert.True(_h.Files.Exists(Path.Combine(materialDir, CommitJournalFile.UndoFileName)));
         _h.AssertNoStagingResidue();
     }

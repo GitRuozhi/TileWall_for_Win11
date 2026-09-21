@@ -81,6 +81,8 @@ internal static class Win32Api
     internal const uint WmLbuttonup = 0x0202;
     internal const uint WmLbuttondblclk = 0x0203;
     internal const uint WmHotkey = 0x0312;
+    internal const uint WmSettingchange = 0x001A;   // WM_SETTINGCHANGE（SPI_SETWORKAREA 广播同路，M8 §6.2）
+    internal const uint WmDisplaychange = 0x007E;   // WM_DISPLAYCHANGE（分辨率/显示器变更，M8 §6.2）
 
     // ————————————————————————————— user32：托盘菜单（§4.2，即建即毁） —————————————————————————————
 
@@ -197,4 +199,99 @@ internal static class Win32Api
     internal static uint LowWord(IntPtr value) => (uint)((long)value & 0xFFFF);
 
     internal static uint HighWord(IntPtr value) => (uint)(((long)value >> 16) & 0xFFFF);
+
+    // ————————————————————————————— shell32/user32/gdi32：候选图标提取（M8 §5.4） —————————————————————————————
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern IntPtr SHGetFileInfoW(string pszPath, uint dwFileAttributes, ref ShFileInfoW psfi, uint cbFileInfo, uint uFlags);
+
+    internal const uint ShgfiIcon = 0x000000100;
+    internal const uint ShgfiLargeicon = 0x000000000;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct ShFileInfoW
+    {
+        public IntPtr hIcon;
+        public int iIcon;
+        public uint dwAttributes;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szDisplayName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
+        public string szTypeName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct IconInfoW
+    {
+        public bool fIcon;
+        public uint xHotspot;
+        public uint yHotspot;
+        public IntPtr hbmMask;
+        public IntPtr hbmColor;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool GetIconInfo(IntPtr hIcon, ref IconInfoW piconinfo);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BitmapW
+    {
+        public int bmType;
+        public int bmWidth;
+        public int bmHeight;
+        public int bmWidthBytes;
+        public ushort bmPlanes;
+        public ushort bmBitsPixel;
+        public IntPtr bmBits;
+    }
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern int GetObjectW(IntPtr hgdiobj, int cbBuffer, out BitmapW lpvObject);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern int GetDIBits(IntPtr hdc, IntPtr hbm, uint start, uint cLines, IntPtr lpvBits, ref BitmapInfoW lpbmi, uint usage);
+
+    internal const uint DibRgbColors = 0;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BitmapInfoHeaderW
+    {
+        public uint biSize;
+        public int biWidth;
+        public int biHeight;
+        public ushort biPlanes;
+        public ushort biBitCount;
+        public uint biCompression;
+        public uint biSizeImage;
+        public int biXPelsPerMeter;
+        public int biYPelsPerMeter;
+        public uint biClrUsed;
+        public uint biClrImportant;
+
+        public static BitmapInfoHeaderW BgraTopDown(int width, int height) => new()
+        {
+            biSize = (uint)Marshal.SizeOf<BitmapInfoHeaderW>(),
+            biWidth = width,
+            biHeight = -height, // 负高 = 自上而下行序
+            biPlanes = 1,
+            biBitCount = 32,
+            biCompression = 0, // BI_RGB
+        };
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BitmapInfoW
+    {
+        public BitmapInfoHeaderW bmiHeader;
+        public uint bmiColors; // BI_RGB 32bpp 不用调色板，占位一个 DWORD
+    }
 }

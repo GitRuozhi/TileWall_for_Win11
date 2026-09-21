@@ -24,24 +24,28 @@ public static class WallMenuFactory
 
     /// <summary>背景菜单（附着 RootGrid.ContextFlyout；空白命中：边距、栏间隙、格间隙）。
     /// M5 起「新建磁贴组」生效（§11.2：第二参回调 → 组属性窗创建模式）；
-    /// M7 起「设置」生效（§8.5：与托盘菜单两入口汇同一 Router.OpenSettings）。</summary>
-    public static MenuFlyout CreateBackgroundMenu(Action onNewTile, Action onNewGroup, Action onOpenSettings)
+    /// M7 起「设置」生效（§8.5：与托盘菜单两入口汇同一 Router.OpenSettings）；
+    /// M8 起「从开始菜单导入」「添加时间日期」生效（§3.1 五项菜单全部接线，菜单结构不动）。</summary>
+    public static MenuFlyout CreateBackgroundMenu(
+        Action onNewTile,
+        Action onNewGroup,
+        Action onOpenSettings,
+        Action onImport,
+        Action onAddClock)
     {
         ArgumentNullException.ThrowIfNull(onNewTile);
         ArgumentNullException.ThrowIfNull(onNewGroup);
         ArgumentNullException.ThrowIfNull(onOpenSettings);
+        ArgumentNullException.ThrowIfNull(onImport);
+        ArgumentNullException.ThrowIfNull(onAddClock);
         var menu = new MenuFlyout();
         AutomationProperties.SetAutomationId(menu, "menu-blank");
 
         menu.Items.Add(Item("menu-blank-new-tile", "新建磁贴", enabled: true, reason: null, onNewTile));
         menu.Items.Add(Item("menu-blank-new-group", "新建磁贴组", enabled: true, reason: null, onNewGroup));
         menu.Items.Add(new MenuFlyoutSeparator());
-        menu.Items.Add(Item(
-            "menu-blank-import", "从开始菜单导入", enabled: false,
-            reason: "需要 .lnk 托管与导入窗（后续里程碑）", action: null));
-        menu.Items.Add(Item(
-            "menu-blank-datetime", "添加时间日期", enabled: false,
-            reason: "时间日期组件（后续里程碑）", action: null));
+        menu.Items.Add(Item("menu-blank-import", "从开始菜单导入", enabled: true, reason: null, onImport));
+        menu.Items.Add(Item("menu-blank-datetime", "添加时间日期", enabled: true, reason: null, onAddClock));
         menu.Items.Add(new MenuFlyoutSeparator());
         menu.Items.Add(Item("menu-blank-settings", "设置", enabled: true, reason: null, onOpenSettings));
         return menu;
@@ -68,8 +72,10 @@ public static class WallMenuFactory
         }
 
         var isGroup = target is GroupObject;
+        var isClock = target is ClockObject;
         var unpinText = isGroup ? "取消固定磁贴组" : "从磁贴墙取消固定";
-        var editText = isGroup ? "编辑磁贴组" : "编辑磁贴";
+        // M8 §4.3：时间日期的编辑项文案（「编辑时间日期」）；磁贴/组沿用既有文案
+        var editText = isGroup ? "编辑磁贴组" : isClock ? "编辑时间日期" : "编辑磁贴";
         var entryReason = entryDisabledReason(target); // §6.2：无入口或入口文件已丢失时置灰并提示
 
         menu.Items.Add(Item("menu-object-unpin", unpinText, enabled: true, reason: null, () => actions.Unpin(target.Id)));

@@ -19,6 +19,12 @@ public sealed record EntryUndoMaterial(string CommitId, IReadOnlyList<string> Ob
 /// </summary>
 public sealed record EntryCommitReport(TileWallConfig NewConfig, LayoutObject CommittedObject, EntryUndoMaterial? UndoMaterial);
 
+/// <summary>批量导入提交结果（M8 设计 §5.7）：N 对象 + N 托管副本一次协议生效；整批一个 commitId 的撤销材料（INV-I4）。</summary>
+public sealed record EntryBatchCommitReport(
+    TileWallConfig NewConfig,
+    IReadOnlyList<LayoutObject> CommittedObjects,
+    EntryUndoMaterial UndoMaterial);
+
 /// <summary>提交协议内部的计划项：日志条目 + 把新入口文件生成进暂存区的动作（edit 类无暂存文件）。</summary>
 internal sealed record PlannedOp(JournalOp Journal, Action<string>? StageIntoStaging);
 
@@ -134,6 +140,137 @@ public sealed class EntryCommitService
     /// <summary>撤销的文件还原半步与材料删除的透传（§8.3；实现在 <see cref="EntryRecovery"/>）。</summary>
     public bool RestoreMaterial(EntryUndoMaterial material) => _recovery.RestoreMaterial(material);    public void DeleteMaterial(string commitId) => _recovery.DeleteMaterial(commitId);
 
+    /// <summary>
+    /// 批量导入提交（M8 设计 §5.6/§5.7，C26 核心）：N 候选一次协议执行——
+    /// 计划段（纯读零写入，INV-I1）：逐候选走 <see cref="PlanCommit"/> 创建分支，第 i 个候选的
+    /// otherRects = 现有对象 ∪ 前 i−1 个已排位候选 → 顺序 first-fit（确定性 → 预检结论 == 提交结果，A15）；
+    /// 任一候选草稿校验失败 → <see cref="DraftValidationException"/>（在任何 IO 之前，零写入）。
+    /// 合并全部 PlannedOp（导入场景全为 add）→ 一次 ExecuteProtocol：一次 Staging(N 文件)/一份提交日志/
+    /// 一次 Recovery 备份/一次入口生效/一次 ConfigStore.Save——失败走 <see cref="EntryRecovery.Rollback"/>
+    /// （INV-I2：正式区 == 操作前、配置未保存、暂存已清）；崩溃由配置指纹 Sweep 收敛（INV-I3）。
+    /// 成功 → 单 commitId 整批撤销材料，Ctrl+Z 一次整体撤销整批（INV-I4）。
+    /// </summary>
+    public EntryBatchCommitReport CommitBatch(TileWallConfig current, IReadOnlyList<EntryCommitRequest> requests, string actionName)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(requests);
+        ArgumentException.ThrowIfNullOrEmpty(actionName);
+        if (requests.Count == 0)
+        {
+            throw new ArgumentException("批量导入至少需要一个候选。", nameof(requests));
+        }
+
+        // 计划段：对累积配置逐候选规划（同函数同序的重放式排位；零写入）
+        var workingConfig = current;
+        var planned = new List<PlannedOp>(requests.Count);
+        var newObjects = new List<LayoutObject>(requests.Count);
+        foreach (var request in requests)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(request.ObjectId);
+            if (workingConfig.Objects.Any(o => o.Id == request.ObjectId))
+            {
+                throw new InvalidOperationException($"批量导入的对象 Id 重复或已存在：{request.ObjectId}。");
+            }
+
+            var (newObject, plannedForRequest) = PlanCommit(workingConfig, request);
+            planned.AddRange(plannedForRequest);
+            newObjects.Add(newObject);
+            workingConfig = workingConfig with { Objects = [.. workingConfig.Objects, newObject] }; // 后续候选的排位基线
+        }
+
+        // 步骤 1（预检，纯读零写入）：整批新配置整体过结构校验
+        var violations = ConfigValidator.Validate(workingConfig);
+        if (violations.Count > 0)
+        {
+            throw new ConfigValidationException(violations);
+        }
+
+        var commitId = StableId.NewId();
+        ExecuteProtocol(workingConfig, planned, commitId);
+        return new EntryBatchCommitReport(
+            workingConfig,
+            newObjects,
+            new EntryUndoMaterial(commitId, [.. requests.Select(r => r.ObjectId)]));
+    }
+
+    /// <summary>
+    /// 适配确认提交（M8 设计 §6.6）：N 个入口移除 + 最终配置（草稿墙收敛、保留对象 Bounds 已缩放）单事务。
+    /// 计划段（纯读零写入）：对每个移除对象生成 OpRemove（有入口者；纯对象仅从 finalConfig 消失）；
+    /// 保留对象入口文件零触碰（只改 Bounds——防御性校验：现存对象的 Entry 相对路径在 finalConfig 中必须不变）。
+    /// ConfigValidator.Validate(finalConfig) 通过后一次 ExecuteProtocol（日志含 N 条 remove + 新配置指纹）；
+    /// 回滚/崩溃语义与 INV-I2/I3 同源；撤销材料 = EntryUndoMaterial(commitId, 全部移除 Id)，Ctrl+Z 一次整体回滚。
+    /// 无入口移除（纯布局收敛）退化为「预检 + Save」，撤销材料 null（§6.5 同款退化，撤销走布局级单槽）。
+    /// </summary>
+    public EntryCommitReport CommitAdaptation(
+        TileWallConfig current,
+        IReadOnlyList<string> removeObjectIds,
+        TileWallConfig finalConfig,
+        string actionName)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(removeObjectIds);
+        ArgumentNullException.ThrowIfNull(finalConfig);
+        ArgumentException.ThrowIfNullOrEmpty(actionName);
+
+        var planned = new List<PlannedOp>(removeObjectIds.Count);
+        var removedObjects = new List<LayoutObject>(removeObjectIds.Count);
+        foreach (var objectId in removeObjectIds)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(objectId);
+            var target = current.Objects.FirstOrDefault(o => o.Id == objectId)
+                ?? throw new InvalidOperationException($"适配移除失败：对象 {objectId} 不存在。");
+            if (finalConfig.Objects.Any(o => o.Id == objectId))
+            {
+                throw new InvalidOperationException($"适配提交不成立：对象 {objectId} 在移除列表中但仍存在于最终配置。");
+            }
+
+            removedObjects.Add(target);
+            if (target.Entry is { } entry)
+            {
+                planned.Add(new PlannedOp(new JournalOp(OpRemove, objectId, entry.RelativePath, null, null, null), null));
+            }
+        }
+
+        // 防御性校验：保留对象的入口引用不得被适配提交改写（§6.6「保留对象的入口文件零触碰，只改 Bounds」）
+        foreach (var retained in finalConfig.Objects)
+        {
+            var original = current.Objects.FirstOrDefault(o => o.Id == retained.Id);
+            if (original is null)
+            {
+                throw new InvalidOperationException($"适配提交不成立：最终配置含当前配置不存在的对象 {retained.Id}。");
+            }
+
+            var originalPath = original.Entry?.RelativePath;
+            var retainedPath = retained.Entry?.RelativePath;
+            if (!string.Equals(originalPath, retainedPath, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"适配提交不成立：对象 {retained.Id} 的托管入口被改变（只允许改 Bounds/外观）。");
+            }
+        }
+
+        var violations = ConfigValidator.Validate(finalConfig);
+        if (violations.Count > 0)
+        {
+            throw new ConfigValidationException(violations);
+        }
+
+        if (planned.Count == 0)
+        {
+            // 退化路径：无入口移除（纯布局收敛）——零入口文件操作（§6.5 同款）
+            _store.Save(finalConfig);
+            var representative = removedObjects.FirstOrDefault()
+                ?? finalConfig.Objects.FirstOrDefault()
+                ?? throw new InvalidOperationException("适配提交不成立：移除列表与最终配置均为空。");
+            return new EntryCommitReport(finalConfig, representative, null);
+        }
+
+        var commitId = StableId.NewId();
+        ExecuteProtocol(finalConfig, planned, commitId);
+        return new EntryCommitReport(
+            finalConfig,
+            removedObjects[0],
+            new EntryUndoMaterial(commitId, [.. removeObjectIds]));
+    }
     /// <summary>取消固定有入口对象（§8.2）：入口 Move → Recovery/…/removed/ + 配置移除对象一次 Save。</summary>
     public EntryCommitReport RemoveEntry(TileWallConfig current, string objectId, string actionName)
     {
@@ -225,7 +362,7 @@ public sealed class EntryCommitService
                     var stagedName = EntryPaths.FileNameOf(finalRel);
                     planned.Add(new PlannedOp(
                         new JournalOp(currentEntryRelativePath is null ? OpAdd : OpReplace, request.ObjectId, currentEntryRelativePath, finalRel, null, null),
-                        stagingDirectory => _files.Copy(copy.SourcePath, Path.Combine(stagingDirectory, stagedName), overwrite: true)));
+                        stagingDirectory => _files.Copy(copy.SourcePath, StagedFile(stagingDirectory, request.ObjectId, stagedName), overwrite: true)));
                     break;
                 }
 
@@ -238,7 +375,7 @@ public sealed class EntryCommitService
                     var stagedName = EntryPaths.FileNameOf(finalRel);
                     planned.Add(new PlannedOp(
                         new JournalOp(currentEntryRelativePath is null ? OpAdd : OpReplace, request.ObjectId, currentEntryRelativePath, finalRel, null, null),
-                        stagingDirectory => _linkFiles.Create(Path.Combine(stagingDirectory, stagedName), target, arguments: string.Empty, workingDirectory)));
+                        stagingDirectory => _linkFiles.Create(StagedFile(stagingDirectory, request.ObjectId, stagedName), target, arguments: string.Empty, workingDirectory)));
                     break;
                 }
 
@@ -250,7 +387,7 @@ public sealed class EntryCommitService
                     var stagedName = EntryPaths.FileNameOf(finalRel);
                     planned.Add(new PlannedOp(
                         new JournalOp(currentEntryRelativePath is null ? OpAdd : OpReplace, request.ObjectId, currentEntryRelativePath, finalRel, null, null),
-                        stagingDirectory => _files.WriteAllBytes(Path.Combine(stagingDirectory, stagedName), content)));
+                        stagingDirectory => _files.WriteAllBytes(StagedFile(stagingDirectory, request.ObjectId, stagedName), content)));
                     break;
                 }
 
@@ -274,7 +411,7 @@ public sealed class EntryCommitService
                     var stagedName = EntryPaths.FileNameOf(currentEntryRelativePath!);
                     planned.Add(new PlannedOp(
                         new JournalOp(OpReplace, request.ObjectId, currentEntryRelativePath, currentEntryRelativePath, null, null),
-                        stagingDirectory => _files.WriteAllBytes(Path.Combine(stagingDirectory, stagedName), newBytes)));
+                        stagingDirectory => _files.WriteAllBytes(StagedFile(stagingDirectory, request.ObjectId, stagedName), newBytes)));
                     // 改名 × 改 URL 行并存：先以新字节覆盖旧名，再就地改名
                     finalEntryRelativePath = AppendRenameOp(planned, request.ObjectId, draft.TitleText, currentEntryRelativePath!);
                     break;
@@ -494,7 +631,7 @@ public sealed class EntryCommitService
                     var stagedName = EntryPaths.FileNameOf(finalRel);
                     planned.Add(new PlannedOp(
                         new JournalOp(currentEntryRelativePath is null ? OpAdd : OpReplace, objectId, currentEntryRelativePath, finalRel, null, null),
-                        stagingDirectory => _files.Copy(copy.SourcePath, Path.Combine(stagingDirectory, stagedName), overwrite: true)));
+                        stagingDirectory => _files.Copy(copy.SourcePath, StagedFile(stagingDirectory, objectId, stagedName), overwrite: true)));
                     return finalRel;
                 }
 
@@ -505,7 +642,7 @@ public sealed class EntryCommitService
                     var stagedName = EntryPaths.FileNameOf(finalRel);
                     planned.Add(new PlannedOp(
                         new JournalOp(currentEntryRelativePath is null ? OpAdd : OpReplace, objectId, currentEntryRelativePath, finalRel, null, null),
-                        stagingDirectory => _linkFiles.Create(Path.Combine(stagingDirectory, stagedName), createForPath.TargetPath, arguments: string.Empty, workingDirectory)));
+                        stagingDirectory => _linkFiles.Create(StagedFile(stagingDirectory, objectId, stagedName), createForPath.TargetPath, arguments: string.Empty, workingDirectory)));
                     return finalRel;
                 }
 
@@ -516,7 +653,7 @@ public sealed class EntryCommitService
                     var stagedName = EntryPaths.FileNameOf(finalRel);
                     planned.Add(new PlannedOp(
                         new JournalOp(currentEntryRelativePath is null ? OpAdd : OpReplace, objectId, currentEntryRelativePath, finalRel, null, null),
-                        stagingDirectory => _files.WriteAllBytes(Path.Combine(stagingDirectory, stagedName), content)));
+                        stagingDirectory => _files.WriteAllBytes(StagedFile(stagingDirectory, objectId, stagedName), content)));
                     return finalRel;
                 }
 
@@ -539,7 +676,7 @@ public sealed class EntryCommitService
                     var stagedName = EntryPaths.FileNameOf(currentEntryRelativePath!);
                     planned.Add(new PlannedOp(
                         new JournalOp(OpReplace, objectId, currentEntryRelativePath, currentEntryRelativePath, null, null),
-                        stagingDirectory => _files.WriteAllBytes(Path.Combine(stagingDirectory, stagedName), newBytes)));
+                        stagingDirectory => _files.WriteAllBytes(StagedFile(stagingDirectory, objectId, stagedName), newBytes)));
                     // 改名 × 改 URL 行并存：先以新字节覆盖旧名，再就地改名
                     return AppendRenameOp(planned, objectId, draft.TitleText, currentEntryRelativePath!);
                 }
@@ -579,6 +716,14 @@ public sealed class EntryCommitService
 
     // ————————————————————————————— 协议（步骤 2–7） —————————————————————————————
 
+    /// <summary>
+    /// 暂存文件路径：Staging/&lt;commitId&gt;/&lt;objectId&gt;/&lt;名&gt;——按对象隔离（M8 §5.6 INV-I6）。
+    /// 批量提交（CommitBatch）中同名候选各自 Objects/&lt;id&gt;/ 生效，扁平暂存会互相覆盖 → 以 objectId 分目录；
+    /// objectId 为空（理论不可达）退化为扁平名，M4 单提交语义不变。
+    /// </summary>
+    private static string StagedFile(string stagingDirectory, string objectId, string fileName) =>
+        Path.Combine(stagingDirectory, objectId ?? string.Empty, fileName);
+
     private void ExecuteProtocol(TileWallConfig newConfig, IReadOnlyList<PlannedOp> planned, string commitId)
     {
         var stagingDirectory = EntryPaths.StagingDir(_rootPath, commitId);
@@ -586,13 +731,20 @@ public sealed class EntryCommitService
         var stagingJournalPath = Path.Combine(stagingDirectory, CommitJournalFile.StagingFileName);
         try
         {
-            // 步骤 2：Staging——新入口文件全部生成到暂存区；失败 → 清暂存，正式区零改动
+            // 步骤 2：Staging——新入口文件全部生成到暂存区；失败 → 清暂存，正式区零改动。
+            // M8：暂存按对象分目录（Staging/<commitId>/<objectId>/<名>），批量提交同名候选互不覆盖
             _files.CreateDirectory(_rootPath);
             _files.CreateDirectory(EntryPaths.StagingRoot(_rootPath));
             _files.CreateDirectory(stagingDirectory);
             foreach (var op in planned)
             {
-                op.StageIntoStaging?.Invoke(stagingDirectory);
+                if (op.StageIntoStaging is null)
+                {
+                    continue;
+                }
+
+                _files.CreateDirectory(Path.Combine(stagingDirectory, op.Journal.ObjectId));
+                op.StageIntoStaging(stagingDirectory);
             }
 
             // 步骤 3：提交日志落盘（先于一切正式区操作——无日志即必然未动过正式区）。
@@ -635,6 +787,12 @@ public sealed class EntryCommitService
         _files.DeleteDirectory(stagingDirectory); // 尽力而为：残余目录不影响一致性（Sweep 兜底）
     }
 
+    /// <summary>回滚材料内备份路径：&lt;commitId&gt;/&lt;objectId&gt;/[removed/]&lt;名&gt;（M8 按对象隔离；与 EntryRecovery 回放查找同构）。</summary>
+    private static string BackupPathOf(string recoveryDirectory, JournalOp op, bool isRemove) =>
+        isRemove
+            ? Path.Combine(recoveryDirectory, op.ObjectId, EntryPaths.RemovedDirName, EntryPaths.FileNameOf(op.From!))
+            : Path.Combine(recoveryDirectory, op.ObjectId, EntryPaths.FileNameOf(op.From!));
+
     private void BackupOldEntries(IReadOnlyList<PlannedOp> planned, string recoveryDirectory)
     {
         var backedUp = new HashSet<string>(StringComparer.Ordinal);
@@ -651,9 +809,9 @@ public sealed class EntryCommitService
                 continue; // 旧入口本就缺失：视为已清理，生效阶段同样跳过
             }
 
-            var destination = op.Journal.Kind == OpRemove
-                ? Path.Combine(recoveryDirectory, EntryPaths.RemovedDirName, EntryPaths.FileNameOf(op.Journal.From))
-                : Path.Combine(recoveryDirectory, EntryPaths.FileNameOf(op.Journal.From));
+            // M8：备份按对象分目录（Recovery/Entries/<commitId>/<objectId>/…）——批量提交中
+            // 同名条目互不覆盖（CommitBatch 多 add / CommitAdaptation 多 remove 的撤销材料各自成立）
+            var destination = BackupPathOf(recoveryDirectory, op.Journal, isRemove: op.Journal.Kind == OpRemove);
             if (!backedUp.Add(destination))
             {
                 continue;
@@ -675,7 +833,7 @@ public sealed class EntryCommitService
                     var destination = EntryPaths.Full(_rootPath, op.Journal.To!);
                     _files.CreateDirectory(Path.GetDirectoryName(destination)!); // 真实文件系统：对象目录可能尚不存在（新建首入口）
                     _files.Move(
-                        Path.Combine(stagingDirectory, EntryPaths.FileNameOf(op.Journal.To!)),
+                        StagedFile(stagingDirectory, op.Journal.ObjectId, EntryPaths.FileNameOf(op.Journal.To!)),
                         destination,
                         overwrite: true);
                     if (op.Journal.Kind == OpReplace
@@ -686,7 +844,7 @@ public sealed class EntryCommitService
                         var oldPath = EntryPaths.Full(_rootPath, op.Journal.From);
                         if (_files.Exists(oldPath))
                         {
-                            _files.Move(oldPath, Path.Combine(recoveryDirectory, EntryPaths.FileNameOf(op.Journal.From)), overwrite: true);
+                            _files.Move(oldPath, BackupPathOf(recoveryDirectory, op.Journal, isRemove: false), overwrite: true);
                         }
                     }
 
@@ -703,11 +861,8 @@ public sealed class EntryCommitService
                     var removeSource = EntryPaths.Full(_rootPath, op.Journal.From!);
                     if (_files.Exists(removeSource))
                     {
-                        _files.CreateDirectory(Path.Combine(recoveryDirectory, EntryPaths.RemovedDirName));
-                        _files.Move(
-                            removeSource,
-                            Path.Combine(recoveryDirectory, EntryPaths.RemovedDirName, EntryPaths.FileNameOf(op.Journal.From!)),
-                            overwrite: true);
+                        _files.CreateDirectory(Path.GetDirectoryName(BackupPathOf(recoveryDirectory, op.Journal, isRemove: true))!);
+                        _files.Move(removeSource, BackupPathOf(recoveryDirectory, op.Journal, isRemove: true), overwrite: true);
                     }
 
                     break;
