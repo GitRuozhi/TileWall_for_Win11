@@ -3,6 +3,7 @@ using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Import;
 using TileWall.Core.Settings;
+using TileWall.Core.Shell;
 using TileWall.Shell;
 using TileWall.Shell.Interop;
 
@@ -28,6 +29,7 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        var addRequest = ParseAddRequest(); // M9 §4.4：--add 负载（冷启动进添加流程 / 二次启动转投首实例）
         // ———— 1. 单实例（§7.1：Local\ 按会话隔离；先于任何文件/窗口副作用） ————
         var gate = SingleInstanceGate.Acquire(out var acquired);
         if (acquired != SingleInstanceAcquireResult.Acquired)
@@ -35,6 +37,15 @@ public partial class App : Application
             // 二次启动：已向首实例宿主窗 PostMessage「激活」（或限时未果）→ 本进程确定性退出。
             // Environment.Exit(0)：此时未建任何窗口/未启动 XAML 消息循环，直接终程比
             // Application.Exit（依赖调度器循环已运转）更确定——退出码恒 0、进程立即消失。
+            if (acquired == SingleInstanceAcquireResult.NotifiedExisting && addRequest.Paths.Count > 0)
+            {
+                // M9 §4.4：携带 --add 的二次启动改投路径批次；投递失败回退纯激活（至少墙面唤回，不静默）
+                if (!gate.PostPaths(addRequest.Paths))
+                {
+                    gate.PostActivate();
+                }
+            }
+
             gate.Dispose();
             Environment.Exit(0);
             return;
@@ -51,7 +62,9 @@ public partial class App : Application
             var directoryProvider = CreateDataDirectoryProvider();
             var store = new ConfigStore(files, directoryProvider);
             store.CleanupTempFiles(); // ConfigStore.cs:169：清残留 .tmp（尽力）
-            new IconCache(files, directoryProvider.GetDefault().RootPath).Clear(); // M8 §2.2：尽力清理 Cache/Icons/ 残留（缓存可整体重建，绝不权威）
+            // M9 §3.2：图标缓存根按模式选择（packaged=LocalCacheFolder，系统管理清理语义；unpackaged=数据根）
+            var iconCacheRoot = CreateIconCacheRoot(directoryProvider.GetDefault().RootPath);
+            new IconCache(files, iconCacheRoot).Clear(); // M8 §2.2：尽力清理缓存残留（缓存可整体重建，绝不权威）
 
             var linkFiles = new ShellLinkFileService();
             var recoveryReport = new EntryRecovery(files, linkFiles, directoryProvider.GetDefault()).Sweep();
@@ -66,8 +79,7 @@ public partial class App : Application
             hotkeys = CreateHotKeyRegistration(host, configuredHotKey);
             tray = new ShellNotifyIconHost(host, Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"));
 
-            var login = new RegistryLoginStartup(new RegistryRunKeyStore(), Environment.ProcessPath
-                ?? throw new InvalidOperationException("无法取得进程可执行文件路径"));
+            var login = CreateLoginStartup();
 
             // ———— 4. 主窗与启动形态（§2.2 第 7–8 步） ————
             _window = new MainWindow(
@@ -76,7 +88,7 @@ public partial class App : Application
                 IsSeedRequested(),
                 files,
                 linkFiles,
-                new ShellHostContext(host, hotkeys, tray, login, gate)
+                new ShellHostContext(host, hotkeys, tray, login, gate, iconCacheRoot)
                 {
                     ConfiguredHotKey = configuredHotKey,
                 },
@@ -97,8 +109,16 @@ public partial class App : Application
             tray.SettingsRequested += _window.OpenSettings;
             tray.ExitRequested += _window.RequestExit;
             gate.Activated += _window.ShowOrFocus;
+            gate.PathsReceived += _window.HandleExplorerAdd; // M9 §4.5：Explorer 添加批次 → 暂存/直处理
             UpdateTrayTooltip(tray, hotkeys);
             hotkeys.RegistrationChanged += () => UpdateTrayTooltip(tray, hotkeys); // C09：tooltip 反映真实注册状态
+
+            if (addRequest.Paths.Count > 0 || addRequest.Truncated)
+            {
+                // M9 §4.4 冷启动：因添加流程启动 → 启动形态 = 显示墙（同手动启动）；此刻无会话，
+                // 布局就绪后即处理；绝不自动执行被添加目标（§14.1）。--background 登录态不该携带 --add。
+                _window.HandleExplorerAdd(addRequest);
+            }
         }
         catch
         {
@@ -138,8 +158,56 @@ public partial class App : Application
             string.Equals(a, RegistryLoginStartup.BackgroundArgument, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// 数据目录：DEBUG 且设了 TILEWALL_DATA_DIR → 环境目录（UIA 测试隔离）；
-    /// 否则 M2 既有 %LOCALAPPDATA%\TileWall。Release 构建无环境判定（编译期剔除）。
+    /// M9 §4.4：解析 --add 负载（`--add "路径1" …` + 可选截断标记）。
+    /// Environment.GetCommandLineArgs 已按引号拆分；路径条目不含引号字符（Windows 文件名禁止）。
+    /// </summary>
+    private static ExplorerAddMessage ParseAddRequest()
+    {
+        var argv = Environment.GetCommandLineArgs();
+        var index = Array.FindIndex(argv, a => string.Equals(a, ExplorerAddCommandLine.AddArgument, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            return ExplorerAddMessage.Empty;
+        }
+
+        var paths = argv.Skip(index + 1)
+            .Where(a => !a.StartsWith("--", StringComparison.Ordinal))
+            .ToArray(); // 其余开关（--background 等）不并入路径
+        var truncated = Array.Exists(argv, a => string.Equals(a, ExplorerAddCommandLine.TruncatedMarker, StringComparison.OrdinalIgnoreCase));
+        return new ExplorerAddMessage(paths, truncated);
+    }
+
+    /// <summary>登录启动开关按模式注入（M9 §5.1）：packaged=StartupTask（卸载零残留）；unpackaged=HKCU Run 键（既有）。</summary>
+    private static ILoginStartup CreateLoginStartup()
+    {
+#if TILEWALL_PACKAGED
+        return new StartupTaskLoginStartup();
+#else
+        return new RegistryLoginStartup(new RegistryRunKeyStore(), Environment.ProcessPath
+            ?? throw new InvalidOperationException("无法取得进程可执行文件路径"));
+#endif
+    }
+
+    /// <summary>
+    /// 图标缓存根（M9 §3.2）：packaged → LocalCacheFolder（升级/卸载清理语义由系统管理，§16.1）；
+    /// unpackaged → 数据根（M8 既有 &lt;root&gt;/Cache/Icons 布局）。
+    /// </summary>
+    private static string CreateIconCacheRoot(string dataRootPath)
+    {
+#if TILEWALL_PACKAGED
+        return DataDirectoryResolver.SelectIconCacheRoot(
+            packaged: true,
+            Windows.Storage.ApplicationData.Current.LocalCacheFolder.Path,
+            dataRootPath);
+#else
+        return DataDirectoryResolver.SelectIconCacheRoot(packaged: false, null, dataRootPath);
+#endif
+    }
+
+    /// <summary>
+    /// 数据目录（M9 §3.1 三级判定）：DEBUG 且设了 TILEWALL_DATA_DIR → 环境目录（UIA 测试隔离，最高优先）；
+    /// TILEWALL_PACKAGED → ApplicationData.Current.LocalFolder（落盘 Packages\&lt;PFN&gt;\LocalState）；
+    /// 否则 M2 既有 %LOCALAPPDATA%\TileWall。解析逻辑见 DataDirectoryResolver（两分支有单测）。
     /// </summary>
     private static IDataDirectoryProvider CreateDataDirectoryProvider()
     {
@@ -150,7 +218,11 @@ public partial class App : Application
             return new EnvironmentDataDirectoryProvider(dataDir);
         }
 #endif
+#if TILEWALL_PACKAGED
+        return new PackagedDataDirectoryProvider();
+#else
         return new LocalAppDataDirectoryProvider();
+#endif
     }
 
     /// <summary>开发种子触发：TILEWALL_SEED == "1"（仅 DEBUG；Core 的 DemoSeed 不读环境，M3 设计 §8.1）。</summary>

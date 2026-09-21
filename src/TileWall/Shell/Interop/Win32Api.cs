@@ -73,6 +73,22 @@ internal static class Win32Api
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
+    // ———— user32：WM_COPYDATA（M9 §4.3：携带路径负载的单实例通道；数据由系统跨进程封送） ————
+
+    internal const uint WmCopydata = 0x004A;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct CopyDataStruct
+    {
+        public IntPtr DwData;
+        public int CbData;
+        public IntPtr LpData;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SendMessageTimeoutW(
+        IntPtr hWnd, uint msg, IntPtr wParam, ref CopyDataStruct lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
     internal const uint WmNull = 0x0000;
     internal const uint WmDestroy = 0x0002;
     internal const uint WmContextmenu = 0x007B;

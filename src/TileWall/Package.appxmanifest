@@ -4,25 +4,33 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  xmlns:systemai="http://schemas.microsoft.com/appx/manifest/systemai/windows10"
-  IgnorableNamespaces="uap rescap systemai">
+  IgnorableNamespaces="uap com desktop desktop4 desktop5 rescap">
 
+  <!--
+    Identity 一经发布即冻结（M9 设计 §2.2/§16.6）：改名/改 Publisher = 新 PFN = 全新身份与新数据目录。
+    Publisher 必须与测试证书主体（CN=TileWall Dev Test）逐字符一致，否则 signtool 报 0x8007000B（P5/P6 实测）。
+  -->
   <Identity
-    Name="1A027D37-1D32-492F-ACD2-E456FB4E670C"
-    Publisher="CN=AppPublisher"
+    Name="TileWall"
+    Publisher="CN=TileWall Dev Test"
     Version="1.0.0.0" />
 
   <mp:PhoneIdentity PhoneProductId="1A027D37-1D32-492F-ACD2-E456FB4E670C" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
   <Properties>
     <DisplayName>TileWall</DisplayName>
-    <PublisherDisplayName>AppPublisher</PublisherDisplayName>
+    <PublisherDisplayName>TileWall Dev Test</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
 
   <Dependencies>
-    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26226.0" />
+    <!-- 仅 Desktop（模板的 Windows.Universal 条目删除；WindowsAppSDK 桌面应用无跨设备语义）。
+         MinVersion 17763 与 TargetPlatformMinVersion/拍板基线一致；desktop4 扩展要求 17134，被覆盖。 -->
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26226.0" />
   </Dependencies>
 
@@ -36,18 +44,49 @@
       EntryPoint="$targetentrypoint$">
       <uap:VisualElements
         DisplayName="TileWall"
-        Description="TileWall"
+        Description="TileWall 磁贴墙"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png">
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
         <uap:SplashScreen Image="Assets\SplashScreen.png" />
       </uap:VisualElements>
+      <Extensions>
+        <!-- (1) COM 服务器：主 exe 兼任（com:ExeServer，M9 设计 §4.1——不用 SurrogateServer+DLL，
+             避免原生垫层工程破坏单工程 MSIX）。Explorer 菜单构建/Invoke 以 TileWall.exe -Embedding 拉起独立进程。 -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer Executable="TileWall.exe" DisplayName="TileWall">
+              <com:Class Id="cb391e98-9cf2-4a54-abea-fbc529ca2d44" DisplayName="TileWall Explorer Command" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+        <!-- (2) Explorer 右键「添加到 TileWall」：文件/程序/快捷方式（Type="*"）与文件夹（Type="Directory"）。
+             文件项用 desktop4:ItemType（min OS 1803；Type 仅允许 */.ext）；文件夹项必须用 desktop5:ItemType
+             （ST_FileTypeOrStarWithDirectory 才含 Directory；min OS 1809=17763 恰为产品基线；其父元素
+             desktop4:FileExplorerContextMenus 官方 schema 允许 desktop5:ItemType 子元素）。
+             实测：desktop4:ItemType Type="Directory" 被 MakeAppx 拒（C00CE169 pattern 校验失败）。 -->
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop4:ItemType Type="*">
+              <desktop4:Verb Id="AddToTileWall" Clsid="cb391e98-9cf2-4a54-abea-fbc529ca2d44" />
+            </desktop4:ItemType>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb Id="AddToTileWall" Clsid="cb391e98-9cf2-4a54-abea-fbc529ca2d44" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+        <!-- (3) packaged 登录启动（M9 设计 §5.1）：替代 Run 键——版本化 WindowsApps 路径升级即失效、卸载即残留；
+             StartupTask 由系统随卸载自动回收，零残留。TaskId 与 StartupTaskLoginStartup.TaskId 一致。 -->
+        <desktop:Extension Category="windows.startupTask" Executable="TileWall.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="TileWallLoginStartup" Enabled="false" DisplayName="TileWall" />
+        </desktop:Extension>
+      </Extensions>
     </Application>
   </Applications>
 
   <Capabilities>
     <rescap:Capability Name="runFullTrust" />
-    <systemai:Capability Name="systemAIModels"/>
+    <!-- 模板的 systemai:Capability Name="systemAIModels" 删除：产品无 AI 能力消费，缩小清单校验面（S2 冒烟验证） -->
   </Capabilities>
 </Package>

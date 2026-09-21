@@ -19,6 +19,19 @@
     <EnableMsixTooling>true</EnableMsixTooling>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- M9：自有 Main（-Embedding → COM 服务器分支；否则原序列启动 WinUI）。
+         生成文件 App.g.i.cs 的 #if !DISABLE_XAML_GENERATED_MAIN 分支实证该开关存在。 -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+
+  <!--
+    M9 打包模式编译开关：仅当命令行/CI 以 -p:WindowsPackageType=MSIX 全局属性覆盖本工程的
+    WindowsPackageType=None 时生效（全局属性优先级高于工程内默认）。TILEWALL_PACKAGED 只被
+    应用工程消费（数据目录/单实例身份/登录启动后端/Explorer COM 扩展的编译期分支）；
+    Core 工程零 WinRT 引用的基线不破坏。出包还须显式 -p:PublishAppxPackage=true（publish 链）。
+  -->
+  <PropertyGroup Condition="'$(WindowsPackageType)'=='MSIX'">
+    <DefineConstants>$(DefineConstants);TILEWALL_PACKAGED</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>

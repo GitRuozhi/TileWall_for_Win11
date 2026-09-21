@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using TileWall.Core.Shell;
 
 namespace TileWall.Shell.Interop;
 
@@ -26,7 +27,12 @@ public sealed class ShellMessageHost : IDisposable
 {
     public const string WindowClassName = "TileWall_ShellHost_Class";
 
+#if TILEWALL_PACKAGED
+    /// <summary>宿主窗名（packaged 带 .pkg 后缀，M9 设计 §3.3）：dev unpackaged 实例与 packaged 实例互不误寻。</summary>
+    public const string WindowName = "TileWall.ShellHost.pkg.1";
+#else
     public const string WindowName = "TileWall.ShellHost.1";
+#endif
 
     private static ShellMessageHost? _instance; // WNDPROC 为静态委托：进程内仅一例，经它回查实例
 
@@ -57,6 +63,12 @@ public sealed class ShellMessageHost : IDisposable
 
     /// <summary>二次启动汇入 → Router.ShowOrFocus（与托盘双击同一条命令）。</summary>
     public event Action? ActivateRequested;
+
+    /// <summary>
+    /// M9 §4.3：WM_COPYDATA 负载到达（已校验解码、逐条过滤后的添加消息）。
+    /// 解码/拷贝在 WndProc 内同步完成（数据仅投递期间有效），随即转事件；WndProc 立即返回不阻塞发送方。
+    /// </summary>
+    public event Action<ExplorerAddMessage>? PathsReceived;
 
     /// <summary>
     /// M8 显示环境变化广播（§6.2）：WM_DISPLAYCHANGE（分辨率/显示器变更）与 WM_SETTINGCHANGE
@@ -115,6 +127,18 @@ public sealed class ShellMessageHost : IDisposable
                 return IntPtr.Zero;
             }
 
+            if (msg == Win32Api.WmCopydata)
+            {
+                // M9 §4.3：负载只在本次投递期间有效——先同步拷贝并解码，再转 UI 线程事件；返回 1 表示已处理
+                if (TryReceiveCopyData(lParam, out var message))
+                {
+                    self.PathsReceived?.Invoke(message);
+                    return (IntPtr)1;
+                }
+
+                return IntPtr.Zero;
+            }
+
             if (msg == self.TrayCallbackMessage)
             {
                 self.TrayNotified?.Invoke(new TrayNotification(msg, wParam, lParam));
@@ -141,6 +165,26 @@ public sealed class ShellMessageHost : IDisposable
         }
 
         return Win32Api.DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    /// <summary>M9 §4.3：从 COPYDATASTRUCT 同步拷出字节并解码校验（v/逐条绝对路径+存在性），失败按协议错误丢弃。</summary>
+    private static bool TryReceiveCopyData(IntPtr lParam, out ExplorerAddMessage message)
+    {
+        message = ExplorerAddMessage.Empty;
+        if (lParam == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var cds = Marshal.PtrToStructure<Win32Api.CopyDataStruct>(lParam);
+        if (cds.CbData <= 0 || cds.LpData == IntPtr.Zero || cds.CbData > ExplorerAddPayload.MaxPayloadBytes)
+        {
+            return false;
+        }
+
+        var payload = new byte[cds.CbData];
+        Marshal.Copy(cds.LpData, payload, 0, cds.CbData);
+        return ExplorerAddPayload.TryDecode(payload, out message);
     }
 
     /// <summary>销毁宿主窗（R4；须在 UI 线程调用——退出序列保证）。类随进程注销，无需显式 Unregister。</summary>

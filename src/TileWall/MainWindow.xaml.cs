@@ -69,6 +69,8 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
     private AdaptationAdjustWindow? _adaptAdjustWindow;
     private bool _exitInFlight;
     private bool _activatedOnce; // --background 首显判定（延迟 Activate，§2.2 第 8 步）
+    private readonly ExplorerAddQueue _addQueue = new(); // M9 §4.5：会话期暂存 Explorer 添加批次（SessionClosed 排空）
+    private ExplorerAddMessage? _pendingExplorerAdd; // M9 §4.4：冷启动 Bootstrap 就绪前到达的批次（EnterReadyState 后补处理）
 
     /// <summary>M5：轮播决策状态机（§2.2 装配；无图不计时——M6 起由 CarouselCoordinator 驱动）。</summary>
     public CarouselScheduler Carousel { get; } = new(SystemClock.Instance);
@@ -124,6 +126,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         _modal.SessionOpened += () => _showMachine.InputGateClosed = true; // W3：模态期状态机防御行
         _modal.SessionClosed += () => _showMachine.InputGateClosed = false;
         _modal.SessionClosed += OnModalSessionClosedForAdaptation; // M8：调整窗提交成功/会话结束 → 适配重评估（deferred 补弹）
+        _modal.SessionClosed += DrainExplorerAddQueue; // M9 §4.5：会话结束 → FIFO 排空暂存的 Explorer 添加批次
         _objectMenu = new MenuFlyout();
         _objectMenu.Opening += (_, _) => PopulateObjectMenu();
         _visuals = new TileWall.Shell.Imaging.GroupVisualHost(_metrics);
@@ -279,6 +282,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
 
                 UpdateEmptyHint();
                 ShowStartupStatus(string.Join(Environment.NewLine, _loadResult.Diagnostics), hotkeyLine);
+                FlushPendingExplorerAdd(); // 配置损坏/版本过高：补处理的批次就地降级为「配置不可用」提示，不静默
                 return;
             }
         }
@@ -334,6 +338,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         _presenter.RenderAll(_commit.Current);
         UpdateEmptyHint();
         StartCarousel(_commit); // M6 §2.2：轮播接线（引擎/协调器/驱动器装配 + 基线建立）
+        FlushPendingExplorerAdd(); // M9 §4.4：冷启动 --add 批次此刻补处理（布局已就绪、此刻无会话）
     }
 
     /// <summary>M6 轮播装配（§2.2）：Core 协调器（决策核）+ Shell 引擎（解码/持久化/上墙）+ 驱动器（哑闹钟）。</summary>
@@ -1105,7 +1110,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
             roots,
             _wall,
             [.. _commit.Current.Objects.Select(o => o.Bounds)],
-            new IconCache(_files, _dataRoot),
+            new IconCache(_files, _shell.IconCacheRoot), // M9 §3.2：缓存根按模式（packaged=LocalCacheFolder）
             _iconExtractor,
             ImportSelected);
         _modal.Open(new ImportWindow(context, WinRT.Interop.WindowNative.GetWindowHandle(this)));
@@ -1130,7 +1135,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
                     Entry = new EntryDraft.CopyFromFile(c.FullPath),
                 })).ToList();
             var report = _entryCommits.CommitBatch(_commit.Current, requests, "开始菜单导入");
-            AdoptEntryBatch(report);
+            AdoptEntryBatch(report, "开始菜单导入");
             ShowTransientStatus($"已导入 {report.CommittedObjects.Count} 个磁贴");
             return null;
         }
@@ -1141,7 +1146,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
     }
 
     /// <summary>批量提交采纳（§5.7）：覆盖单槽时清旧材料、Current 前移 + 整批撤销材料、一次 RenderAll 全量重渲染。</summary>
-    private void AdoptEntryBatch(EntryBatchCommitReport report)
+    private void AdoptEntryBatch(EntryBatchCommitReport report, string actionName)
     {
         var previousMaterial = _commit!.UndoSlot?.EntryMaterial;
         if (previousMaterial is not null && report.UndoMaterial.CommitId != previousMaterial.CommitId)
@@ -1149,10 +1154,125 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
             _entryCommits.DeleteMaterial(previousMaterial.CommitId);
         }
 
-        _commit.Adopt(report.NewConfig, "开始菜单导入", report.UndoMaterial);
+        _commit.Adopt(report.NewConfig, actionName, report.UndoMaterial);
         _presenter.RenderAll(_commit.Current);
         _machine.UpdateObjects(_commit.Current.Objects);
         UpdateEmptyHint();
+    }
+
+    // ————————————————————————————— M9：Explorer「添加到 TileWall」（§4.5） —————————————————————————————
+
+    /// <summary>Explorer 添加批次入口（UI 线程；WM_COPYDATA 解包与冷启动 --add 共用）。</summary>
+    public void HandleExplorerAdd(ExplorerAddMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (_exitInFlight)
+        {
+            return; // 退出在飞：丢弃（RequestExit 已清空队列，防御迟到投递）
+        }
+
+        if (!_adaptationMode && !_layoutReady)
+        {
+            // 冷启动：App 在 Activate 后立即投递，Bootstrap（Loaded）尚未跑 → 布局就绪后补处理。
+            // 不在此处要求 _commit 非 null——它此刻必然为 null。
+            _pendingExplorerAdd = message;
+            return;
+        }
+
+        if (_modal.IsActive || _adaptationMode)
+        {
+            // 会话门（§13.4/§17.2）：暂存 FIFO，SessionClosed / 适配恢复后排空——
+            // 不覆盖草稿、不提前改墙、不新建第二实例
+            _addQueue.Enqueue(message);
+            ShowTransientStatus($"已暂存 {message.Paths.Count} 项，将在当前会话结束后处理");
+            return;
+        }
+
+        ProcessExplorerAdd(message);
+    }
+
+    /// <summary>冷启动补处理挂点（EnterReadyState 末尾调用）：布局就绪后处理 Bootstrap 前到达的批次。</summary>
+    private void FlushPendingExplorerAdd()
+    {
+        if (_pendingExplorerAdd is not { } pending)
+        {
+            return;
+        }
+
+        _pendingExplorerAdd = null;
+        HandleExplorerAdd(pending);
+    }
+
+    /// <summary>会话结束 / 适配恢复后的排空（§4.5：FIFO、逐批复检容量；会话期/退出期不动队列——防重入回环）。</summary>
+    private void DrainExplorerAddQueue()
+    {
+        if (_modal.IsActive || _adaptationMode || _exitInFlight)
+        {
+            return; // 排空调用可能发生在新会话已打开 / 适配未恢复的时点：此时保持暂存
+        }
+
+        while (_addQueue.TryDequeue() is { } batch)
+        {
+            ProcessExplorerAdd(batch); // 直接处理：容量复检不足 → 整批拒绝并提示，不做部分提交
+        }
+    }
+
+    /// <summary>
+    /// 单批处理（§4.5 六步）：过滤 → 分类（.lnk/.url 复制、其余新建 .lnk）→ 统一容量检查
+    /// （N×1×1 不足整批拒绝零写入）→ CommitBatch 一次提交（整批一个 commitId、全成全败）→ 反馈。
+    /// 全程不 ShellExecute 任何被添加目标（§14.1、§16.7）。
+    /// </summary>
+    private void ProcessExplorerAdd(ExplorerAddMessage message)
+    {
+        var addable = ExplorerAddPathClassifier.FilterExisting(message.Paths.Cast<string?>());
+        if (addable.Count == 0)
+        {
+            ShowTransientStatus("所选对象不含可添加的文件或文件夹");
+            return;
+        }
+
+        if (_commit is null || !_layoutReady)
+        {
+            ShowTransientStatus("配置不可用（损坏或版本过高），已禁用布局修改（设计 §17.2）。");
+            return;
+        }
+
+        var requests = new List<EntryCommitRequest>(addable.Count);
+        foreach (var path in addable)
+        {
+            EntryDraft entry = ExplorerAddPathClassifier.Classify(path) == ExplorerAddKind.CopyShortcut
+                ? new EntryDraft.CopyFromFile(path)     // .lnk/.url：托管副本完整复制（原字节不改写）
+                : new EntryDraft.CreateForPath(path);   // 其余文件/程序/文件夹：新建 .lnk 指向原对象（§13.3）
+            requests.Add(new EntryCommitRequest(
+                StableId.NewId(),
+                "添加到 TileWall",
+                new TileDraft
+                {
+                    Size = new GridSize(1, 1), // Explorer 添加恒 1×1（§13.3，与导入同规）
+                    Entry = entry,
+                }));
+        }
+
+        // 统一容量检查（与 M8 导入同款判定）：不足 → 整批拒绝、零写入（§13.2）
+        var existingRects = _commit.Current.Objects.Select(o => o.Bounds).ToArray();
+        if (!GridPlacement.CanPlaceBatch(
+                _wall, existingRects, Enumerable.Repeat(new GridSize(1, 1), requests.Count).ToList()))
+        {
+            ShowTransientStatus("磁贴墙容量不足，请减少选择或整理墙面");
+            return;
+        }
+
+        try
+        {
+            var report = _entryCommits.CommitBatch(_commit.Current, requests, "添加到 TileWall");
+            AdoptEntryBatch(report, "添加到 TileWall");
+            var truncatedSuffix = message.Truncated ? "；其余对象请分批添加" : string.Empty;
+            ShowTransientStatus($"已添加 {report.CommittedObjects.Count} 个磁贴{truncatedSuffix}");
+        }
+        catch (Exception ex) when (ex is DraftValidationException or ConfigValidationException or IOException or InvalidOperationException or NotSupportedException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            ShowTransientStatus($"添加失败：{ex.Message}"); // 任何失败保留现有墙面（§13.2）
+        }
     }
 
     // ————————————————————————————— M8：显示适配接线（§6） —————————————————————————————
@@ -1353,6 +1473,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
 
         UpdateEmptyHint();
         _showMachine.Request(WallShowTrigger.Show); // 恢复显示必经状态机（R-6，M7 W3 门控语义不变）
+        DrainExplorerAddQueue(); // M9：适配态恢复 → 排空暂存批次（此处会话仍开则守卫保持暂存）
     }
 
     /// <summary>撤销后重评估：恢复的旧配置若超出当前工作区 → 重新进入适配态（不渲染被裁切墙）。</summary>
@@ -1687,6 +1808,7 @@ public sealed partial class MainWindow : Window, IGestureHost, IPreviewTimer, IW
         }
 
         _exitInFlight = true;
+        _addQueue.Discard(); // M9 T4：退出在飞 → 暂存的 Explorer 批次整体丢弃（不跨会话持久化）
         _ = RequestExitCoreAsync();
     }
 

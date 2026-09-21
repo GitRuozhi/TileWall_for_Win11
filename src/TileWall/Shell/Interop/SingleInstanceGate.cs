@@ -1,10 +1,11 @@
 using System.Runtime.InteropServices;
+using TileWall.Core.Shell;
 
 namespace TileWall.Shell.Interop;
 
 /// <summary>
-/// 二次启动信号通道（M7 设计 §7.2）：M8 的 Explorer「添加到 TileWall」需携带负载时，
-/// 换成命名管道实现，首实例代码（只依赖本接口）不改。
+/// 二次启动信号通道（M7 设计 §7.2）：M9 扩面而非替换——新增携带路径负载的 WM_COPYDATA 投递
+/// （Explorer「添加到 TileWall」，M9 设计 §4.3；否决命名管道：无新增常驻 accept 线程，发现机制复用）。
 /// </summary>
 public interface ISingleInstanceChannel
 {
@@ -13,6 +14,12 @@ public interface ISingleInstanceChannel
 
     /// <summary>首实例收到激活信号。</summary>
     event Action? Activated;
+
+    /// <summary>M9：向首实例投递路径批次（WM_COPYDATA）；找不到宿主窗/投递失败 → false。</summary>
+    bool PostPaths(IReadOnlyList<string> paths);
+
+    /// <summary>M9：首实例收到路径批次（宿主窗解包校验后触发，UI 线程）。</summary>
+    event Action<ExplorerAddMessage>? PathsReceived;
 }
 
 /// <summary>Acquire 结果：本进程成为首实例 / 已通知既有实例 / 限时未果（静默退出）。</summary>
@@ -32,7 +39,12 @@ public enum SingleInstanceAcquireResult
 /// </summary>
 public sealed class SingleInstanceGate : ISingleInstanceChannel, IDisposable
 {
+#if TILEWALL_PACKAGED
+    /// <summary>互斥体名（packaged 带 .pkg 后缀，M9 设计 §3.3）：两模式数据目录不同，身份必须隔离防互串。</summary>
+    public const string MutexName = @"Local\TileWall.SingleInstance.pkg.v1";
+#else
     public const string MutexName = @"Local\TileWall.SingleInstance.v1";
+#endif
 
     private static readonly TimeSpan LocateWaitBudget = TimeSpan.FromSeconds(2);
 
@@ -50,6 +62,9 @@ public sealed class SingleInstanceGate : ISingleInstanceChannel, IDisposable
 
     /// <summary>首实例收到二次启动信号（App 转接 Router.ShowOrFocus）。</summary>
     public event Action? Activated;
+
+    /// <summary>首实例收到 Explorer 添加批次（App 转接 MainWindow.HandleExplorerAdd，M9 §4.5）。</summary>
+    public event Action<ExplorerAddMessage>? PathsReceived;
 
     /// <summary>
     /// 抢占单实例身份。必须在任何文件/窗口副作用之前调用（§2.2 第 1 步）：
@@ -124,16 +139,27 @@ public sealed class SingleInstanceGate : ISingleInstanceChannel, IDisposable
     /// <inheritdoc cref="ISingleInstanceChannel.PostActivate"/>
     public void PostActivate() => NotifyExisting();
 
+    /// <inheritdoc cref="ISingleInstanceChannel.PostPaths"/>
+    public bool PostPaths(IReadOnlyList<string> paths)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        return ExplorerAddChannel.TryFindHostWindow(out var hwnd)
+            && ExplorerAddChannel.TryPostPaths(hwnd, paths);
+    }
+
     /// <summary>
-    /// 首实例装配：把宿主窗的激活消息转接为本通道的 Activated 事件
-    /// （宿主窗在身份确定后才创建——二次启动进程不得创建同名宿主窗干扰 FindWindow）。
+    /// 首实例装配：把宿主窗的激活消息转接为本通道的 Activated 事件，WM_COPYDATA 负载转接为
+    /// PathsReceived（宿主窗在身份确定后才创建——二次启动进程不得创建同名宿主窗干扰 FindWindow）。
     /// </summary>
     public void BindHost(ShellMessageHost host)
     {
         ArgumentNullException.ThrowIfNull(host);
         void OnActivated() => Activated?.Invoke();
+        void OnPathsReceived(ExplorerAddMessage message) => PathsReceived?.Invoke(message);
         host.ActivateRequested += OnActivated;
+        host.PathsReceived += OnPathsReceived;
         _subscriptions.Add(new Subscription(() => host.ActivateRequested -= OnActivated));
+        _subscriptions.Add(new Subscription(() => host.PathsReceived -= OnPathsReceived));
     }
 
     /// <summary>显式释放互斥体（ExitCoordinator 释放序的成对收口；异常/超时路径由内核兜底）。</summary>

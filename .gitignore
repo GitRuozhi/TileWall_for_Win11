@@ -3,6 +3,8 @@ obj/
 .vs/
 *.user
 temp/
+# M9：MSIX 出包产物（dotnet publish -p:PublishAppxPackage=true 的落点，不入库）
+src/TileWall/AppPackages/
 Design/
 native-winui-control/
 .zcode/
