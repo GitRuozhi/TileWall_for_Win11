@@ -160,7 +160,7 @@ public sealed class EntryBatchCommitTests : IDisposable
         ], "开始菜单导入"));
 
         _harness.AssertFormalAreaUnchanged(snapshot); // F-B2：前 k−1 个副本不留在正式区（回滚）
-        Assert.Equal(0, _harness.LoadConfig().Objects.Count); // 配置无该批对象
+        Assert.Empty(_harness.LoadConfig().Objects); // 配置无该批对象
     }
 
     [Fact]
@@ -176,12 +176,12 @@ public sealed class EntryBatchCommitTests : IDisposable
         _harness.Files.InjectedFault = FaultPoint.None;
 
         _harness.AssertFormalAreaUnchanged(snapshot); // F-B3：日志已写但配置未生效 → 回滚入口
-        Assert.Equal(0, _harness.LoadConfig().Objects.Count);
+        Assert.Empty(_harness.LoadConfig().Objects);
 
         // 重开窗重试成功（新 id 新候选）
         var report = _harness.Service.CommitBatch(_harness.LoadConfig(), [Request("obj-retry", "A.lnk")], "开始菜单导入");
         Assert.Single(report.CommittedObjects);
-        Assert.Equal(1, _harness.LoadConfig().Objects.Count);
+        Assert.Single(_harness.LoadConfig().Objects);
     }
 
     [Fact]

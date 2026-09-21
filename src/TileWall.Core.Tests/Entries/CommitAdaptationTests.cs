@@ -52,7 +52,7 @@ public sealed class CommitAdaptationTests : IDisposable
 
         // 配置一次生效：剩余 1 对象、墙 1×1
         var saved = _harness.LoadConfig();
-        Assert.Equal(1, saved.Objects.Count);
+        Assert.Single(saved.Objects);
         Assert.Equal(1, saved.Wall.Columns);
         Assert.Equal(1, saved.Wall.Rows);
 
