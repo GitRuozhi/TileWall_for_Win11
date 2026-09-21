@@ -16,3 +16,7 @@ Reference/
 Origin/
 tools/
 assets/
+private/
+artifacts/
+build/
+*.lnk
