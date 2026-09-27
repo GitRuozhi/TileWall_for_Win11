@@ -31,16 +31,16 @@ public sealed record StartMenuCandidate(
     public bool IsImportable => NotImportableReasons.Count == 0;
 }
 
-/// <param name="SkippedDirectories">逐目录 try/catch 跳过的不可读目录计数（含不可读根；「无声失败禁令」提示依据）。</param>
+/// <param name="SkippedDirectories">跳过的不可读、reparse、越界或重复目录计数；缺失来源根不计。</param>
 public sealed record StartMenuScanResult(IReadOnlyList<StartMenuCandidate> Candidates, int SkippedDirectories);
 
 /// <summary>
 /// 开始菜单候选枚举流水线（M8 设计 §5.2；纯 Core 逻辑，经 IFileStore 可测）：
-/// 逐根 BFS 递归（ListDirectories/ListFiles）→ 仅收 .lnk/.url（EntryNames.KindOfRelativePath，OrdinalIgnoreCase）
+/// 逐根 BFS 递归（GetPathInfo 检查根界与 reparse；ListDirectories/ListFiles 枚举）→ 仅收 .lnk/.url（EntryNames.KindOfRelativePath，OrdinalIgnoreCase）
 /// → 去重键 = 归一化完整路径（OrdinalIgnoreCase；不按名称/EXE 合并——C06 的实现即「去重键与目标无关」）
 /// → 名称不过 EntryNames.Validate 的候选标记 NotImportable（保留显示、禁止勾选）。
 /// 目录不可读（IOException | UnauthorizedAccessException）→ 该目录整体跳过、计数、其余继续。
-/// 不读任何候选文件内容、不执行（IFileStore 只调目录/文件名枚举）。
+/// 不读任何候选文件内容、不执行（IFileStore 只检查路径元信息和枚举目录/文件名）。
 /// </summary>
 public static class StartMenuScanner
 {
@@ -67,14 +67,46 @@ public static class StartMenuScanner
             }
 
             var pending = new Queue<string>();
+            var scheduled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             pending.Enqueue(rootFullPath);
+            scheduled.Add(rootFullPath);
             while (pending.Count > 0)
             {
                 var directory = pending.Dequeue();
+                if (!IsWithinRoot(rootFullPath, directory))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (!visited.Add(directory))
+                {
+                    skipped++; // 防止异常枚举器重复返回目录或形成循环
+                    continue;
+                }
+
                 IReadOnlyList<string> subDirectories;
                 IReadOnlyList<string> directoryFiles;
                 try
                 {
+                    var pathInfo = files.GetPathInfo(directory);
+                    if (!pathInfo.Exists)
+                    {
+                        if (!string.Equals(directory, rootFullPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            skipped++; // 子目录在枚举后消失
+                        }
+
+                        continue;
+                    }
+
+                    if (!pathInfo.IsDirectory || pathInfo.IsReparsePoint)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
                     subDirectories = files.ListDirectories(directory);
                     directoryFiles = files.ListFiles(directory);
                 }
@@ -86,7 +118,35 @@ public static class StartMenuScanner
 
                 foreach (var subDirectory in subDirectories)
                 {
-                    pending.Enqueue(NormalizePath(subDirectory));
+                    var normalizedSubDirectory = NormalizePath(subDirectory);
+                    if (!IsWithinRoot(rootFullPath, normalizedSubDirectory))
+                    {
+                        skipped++; // 不跟随从 Programs 根外返回的路径
+                        continue;
+                    }
+
+                    try
+                    {
+                        var pathInfo = files.GetPathInfo(normalizedSubDirectory);
+                        if (!pathInfo.Exists || !pathInfo.IsDirectory || pathInfo.IsReparsePoint)
+                        {
+                            skipped++;
+                            continue;
+                        }
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    if (!scheduled.Add(normalizedSubDirectory))
+                    {
+                        skipped++; // 包括回指祖先目录的循环边
+                        continue;
+                    }
+
+                    pending.Enqueue(normalizedSubDirectory);
                 }
 
                 foreach (var file in directoryFiles)
@@ -98,6 +158,11 @@ public static class StartMenuScanner
                     }
 
                     var normalized = NormalizePath(file);
+                    if (!IsWithinRoot(rootFullPath, normalized))
+                    {
+                        continue; // 防御异常文件枚举器返回根外路径
+                    }
+
                     if (!seen.Add(normalized))
                     {
                         continue; // 同一原快捷方式只出现一次（全路径去重，不按显示名/EXE 合并）
@@ -139,6 +204,23 @@ public static class StartMenuScanner
         {
             return path;
         }
+    }
+
+    /// <summary>只接受根本身或根目录分隔符边界内的路径，避免把 C:\Programs2 当作 C:\Programs 子树。</summary>
+    private static bool IsWithinRoot(string root, string path)
+    {
+        var normalizedRoot = Path.TrimEndingDirectorySeparator(root);
+        var normalizedPath = Path.TrimEndingDirectorySeparator(path);
+        if (string.Equals(normalizedRoot, normalizedPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var rootPrefix = normalizedRoot.EndsWith(Path.DirectorySeparatorChar)
+            || normalizedRoot.EndsWith(Path.AltDirectorySeparatorChar)
+            ? normalizedRoot
+            : normalizedRoot + Path.DirectorySeparatorChar;
+        return normalizedPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>来源根下的相对目录（根本身 → 空串；根外 → 原样，防御）。</summary>

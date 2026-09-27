@@ -80,6 +80,31 @@ public sealed class ExplorerAddPayloadTests : IDisposable
 
         Assert.True(ExplorerAddPayload.TryDecode(json, out var message));
         Assert.Equal([file], [.. message.Paths]);
+        Assert.True(message.Truncated); // 非法路径被丢弃时，接收侧把筛除事实反馈给主应用
+    }
+
+    [Fact]
+    public void TryDecode_DropsDriveRelativeRootedAndLocalDriveRootPaths()
+    {
+        var file = ExistingFile();
+        var json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+            new { v = 1, truncated = false, paths = new[] { file, @"C:relative\file.txt", @"\rooted\file.txt", @"C:\" } });
+
+        Assert.True(ExplorerAddPayload.TryDecode(json, out var message));
+        Assert.Equal([file], [.. message.Paths]);
+        Assert.False(ExplorerAddPayload.IsAddableExistingPath(@"C:\"));
+        Assert.True(message.Truncated);
+    }
+
+    [Fact]
+    public void TryDecode_FiltersAllInvalidPaths_AndKeepsEmptyMessageWithTruncatedFlag()
+    {
+        var json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+            new { v = 1, truncated = false, paths = new[] { "相对/路径.txt", @"C:relative\file.txt", @"\rooted\file.txt" } });
+
+        Assert.True(ExplorerAddPayload.TryDecode(json, out var message));
+        Assert.Empty(message.Paths);
+        Assert.True(message.Truncated);
     }
 
     [Fact]

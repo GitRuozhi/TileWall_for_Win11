@@ -3,6 +3,18 @@ namespace TileWall.Core.Configuration;
 /// <summary>System.IO 直通包装（设计 §5.2）；WriteAllBytes 落盘刷新后才算写入成功（§5.3 原子保存第 3 步）。</summary>
 public sealed class LocalFileStore : IFileStore
 {
+    public FileStorePathInfo GetPathInfo(string path)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            return new FileStorePathInfo(true,
+                attributes.HasFlag(FileAttributes.Directory),
+                attributes.HasFlag(FileAttributes.ReparsePoint));
+        }
+        catch (FileNotFoundException) { return new FileStorePathInfo(false, false, false); }
+        catch (DirectoryNotFoundException) { return new FileStorePathInfo(false, false, false); }
+    }
     public bool Exists(string path) => File.Exists(path);
 
     public byte[] ReadAllBytes(string path) => File.ReadAllBytes(path);

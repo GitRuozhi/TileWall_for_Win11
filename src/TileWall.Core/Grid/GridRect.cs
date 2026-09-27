@@ -45,7 +45,7 @@ public readonly record struct GridRect(int Column, int Row, int Width, int Heigh
 /// <summary>基础格容量尺寸（列数 × 行数）。</summary>
 public readonly record struct GridSize(int Columns, int Rows);
 
-/// <summary>DIP 坐标点（相对墙窗口客户区左上角；仅由 <see cref="GridMetrics"/> 换算）。</summary>
+/// <summary>DIP 坐标点（相对墙窗口客户区左上角；由当前 WallMetrics 换算）。</summary>
 public readonly record struct DipPoint(double X, double Y);
 
 /// <summary>DIP 矩形（相对墙窗口客户区左上角）。</summary>

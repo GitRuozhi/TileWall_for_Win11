@@ -29,12 +29,13 @@ public static class EntryNames
     /// <summary>主体名长度上限：给 Objects/&lt;稳定标识&gt;/ 目录前缀留出 MAX_PATH 余量（M4 设计 §5.1）。</summary>
     public const int MaxBaseNameLength = 200;
 
-    /// <summary>保留设备名（[R10] 官方规则：作用于首个 '.' 之前的主体名，大小写不敏感；COM1–9/LPT1–9 不含两位数）。</summary>
+    /// <summary>保留设备名：作用于首个 '.' 之前的主体名，大小写不敏感；含 Windows 视为数字的 ¹/²/³。</summary>
     private static readonly string[] ReservedDeviceNames =
     [
         "CON", "PRN", "AUX", "NUL",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³",
     ];
 
     public static IReadOnlyList<string> Validate(string? baseName)

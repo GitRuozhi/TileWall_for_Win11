@@ -1,5 +1,6 @@
 using TileWall.Core.Grid;
 using TileWall.Core.Imaging;
+using TileWall.Core.Wall;
 using Xunit;
 
 namespace TileWall.Core.Tests.Imaging;
@@ -14,7 +15,7 @@ namespace TileWall.Core.Tests.Imaging;
 /// </summary>
 public sealed class TransformAlignmentTests
 {
-    private static readonly GridMetrics M = GridMetrics.Default;
+    private static readonly WallMetrics M = new();
     private static readonly PixelSize Source = new(400, 300);
 
     /// <summary>方向性测试图（解析、无随机）：20 DIP 网格纹 + |x−y|&lt;12 的对角线条带。</summary>
@@ -62,12 +63,12 @@ public sealed class TransformAlignmentTests
         var before = new List<GridRect> { new(0, 0, 1, 1), new(1, 0, 1, 1), new(0, 1, 1, 1), new(1, 1, 1, 1) };
         var after = new List<GridRect> { new(0, 0, 2, 1), new(0, 1, 1, 1), new(1, 1, 1, 1) };
         var size = new GridSize(2, 2);
-        var canvas = SharedCanvas.CanvasSize(size, M);
+        var canvas = CanvasSize(size);
         var t = RandomTransform(canvas, new Random(7));
 
-        var oldA = SharedCanvas.PartitionRect(before[0], M);
-        var oldB = SharedCanvas.PartitionRect(before[1], M);
-        var merged = SharedCanvas.PartitionRect(after[0], M);
+        var oldA = PartitionRect(before[0]);
+        var oldB = PartitionRect(before[1]);
+        var merged = PartitionRect(after[0]);
         Assert.NotNull(SharedCanvasTransform.ClipFor(t, Source, merged));
 
         // XF-6：新块 R 的采样点集 ⊇ 旧 A∪B 的采样点集，且源坐标逐点相等（同一唯一正向映射）
@@ -101,9 +102,9 @@ public sealed class TransformAlignmentTests
 
     private static void AssertIsAligned(GridSize size, IReadOnlyList<GridRect> partitions)
     {
-        var canvas = SharedCanvas.CanvasSize(size, M);
+        var canvas = CanvasSize(size);
         var t = RandomTransform(canvas, new Random(size.Columns * 100 + size.Rows));
-        var rects = partitions.Select(p => SharedCanvas.PartitionRect(p, M)).ToList();
+        var rects = partitions.Select(p => PartitionRect(p)).ToList();
         var clips = rects.Select(r => SharedCanvasTransform.ClipFor(t, Source, r)).ToList();
 
         // ① 任意画布点经任意所在分块映射到同一源像素（网格步进采样）
@@ -277,6 +278,9 @@ public sealed class TransformAlignmentTests
         var bottom = partitions.Max(p => p.Bottom);
         return new GridSize(right, bottom);
     }
+
+    private static DipSize CanvasSize(GridSize size) => new(M.WidthOf(size.Columns), M.HeightOf(size.Rows));
+    private static DipRect PartitionRect(GridRect rect) => M.MemberRect(rect, 0, 0);
 
     private static bool Contains(DipRect r, DipPoint p) =>
         r.X <= p.X && p.X < r.X + r.Width && r.Y <= p.Y && p.Y < r.Y + r.Height;

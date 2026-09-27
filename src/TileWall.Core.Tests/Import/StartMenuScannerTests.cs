@@ -16,7 +16,11 @@ public sealed class StartMenuScannerTests
     /// <summary>包装夹具：对含标记的目录抛 IOException（模拟不可读）+ ReadAllBytes 调用计数。</summary>
     private sealed class ProbeFileStore(IFileStore inner) : IFileStore
     {
+        public IFileStore Inner => inner;
+        public FileStorePathInfo GetPathInfo(string path) => inner.GetPathInfo(path);
         public const string UnreadableMarker = "unreadable";
+
+        public Dictionary<string, List<string>> AdditionalDirectories { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         public int ReadAllBytesCalls { get; private set; }
 
@@ -45,7 +49,10 @@ public sealed class StartMenuScannerTests
                 throw new IOException($"注入：目录不可读 {directoryPath}");
             }
 
-            return inner.ListDirectories(directoryPath);
+            var directories = inner.ListDirectories(directoryPath);
+            return AdditionalDirectories.TryGetValue(directoryPath, out var additional)
+                ? directories.Concat(additional).Order(StringComparer.Ordinal).ToArray()
+                : directories;
         }
 
         public IReadOnlyList<string> ListFiles(string directoryPath)
@@ -175,5 +182,31 @@ public sealed class StartMenuScannerTests
         var result = StartMenuScanner.Enumerate(files, [(Dir("C:", "does", "not", "exist"), SourceKind.User)]);
         Assert.Empty(result.Candidates);
         Assert.Equal(0, result.SkippedDirectories); // 目录不存在 → 空列表（IFileStore 契约），非「不可读」
+    }
+
+    [Fact]
+    public void Enumerate_SkipsReparseOutsideRootAndDirectoryCycles()
+    {
+        var (files, userRoot, commonRoot) = BuildTree();
+        var inner = (InMemoryFileStore)files.Inner;
+        var junction = Dir(userRoot, "Junction");
+        var outsideRoot = Dir("C:", "outside", "Programs");
+        var outsideFile = Dir(outsideRoot, "不得越界.lnk");
+        var junctionFile = Dir(junction, "不得跟随.lnk");
+        inner.CreateDirectory(junction);
+        inner.ReparsePaths.Add(junction);
+        inner.CreateDirectory(outsideRoot);
+        inner.WriteAllBytes(outsideFile, [0x4C]);
+        inner.WriteAllBytes(junctionFile, [0x4C]);
+
+        // 模拟异常目录枚举器给出根外路径与指回祖先的目录边；真实 reparse 目录由 GetPathInfo 拦截。
+        files.AdditionalDirectories[userRoot] = [outsideRoot];
+        files.AdditionalDirectories[Dir(userRoot, "Sub")] = [userRoot];
+
+        var result = StartMenuScanner.Enumerate(files, [(userRoot, SourceKind.User), (commonRoot, SourceKind.Common)]);
+
+        Assert.DoesNotContain(result.Candidates, candidate => candidate.DisplayName is "不得越界" or "不得跟随");
+        Assert.Contains(result.Candidates, candidate => candidate.DisplayName == "工具A"); // 跳过异常路径后继续两根合法枚举
+        Assert.Equal(4, result.SkippedDirectories); // 外根、junction、循环边及原有不可读目录
     }
 }

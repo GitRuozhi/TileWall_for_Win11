@@ -1,73 +1,25 @@
-<?xml version="1.0" encoding="utf-8" ?>
+<?xml version="1.0" encoding="utf-8"?>
 <Window
     x:Class="TileWall.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-    xmlns:local="using:TileWall"
-    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    Title="TileWall"
-    mc:Ignorable="d">
-    <!--
-        磁贴墙窗口（M3 控件树，M3 设计 §3.1）：
-        - 无边框无标题栏、不可移动，左下锚定主显示器工作区（拍板 Q7）；窗口尺寸来源改为配置 Wall（M3 §2.2）
-        - WallCanvas：竖栏网格底（M2 既有）；TilesCanvas：对象层（WallPresenter 代码构建）；DragLayer：ghost/不可放置标记
-        - AutomationId 契约（§4）：wall-root / wall-empty-hint / wall-status / tile-*（对象层内）
-        - 背景右键菜单经 RootGrid.ContextFlyout（代码构建 menu-blank）
-    -->
-    <Grid
-        x:Name="RootGrid"
-        AutomationProperties.AutomationId="wall-root"
-        Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
-        <Grid.KeyboardAccelerators>
-            <!-- Ctrl+Z：单槽撤销（§7.3）；仅手势 Idle 态响应（代码侧守卫） -->
-            <KeyboardAccelerator
-                Key="Z"
-                Invoked="OnUndoAcceleratorInvoked"
-                Modifiers="Control" />
-        </Grid.KeyboardAccelerators>
-        <Grid.Resources>
-            <SolidColorBrush x:Key="ColumnFillBrush" Opacity="0.08" Color="{ThemeResource SystemAccentColor}" />
-            <SolidColorBrush x:Key="ColumnStrokeBrush" Opacity="0.45" Color="{ThemeResource SystemAccentColor}" />
-            <SolidColorBrush x:Key="GridLineBrush" Opacity="0.18" Color="{ThemeResource SystemAccentColor}" />
-        </Grid.Resources>
-
-        <!-- 竖栏网格底（代码经 GridMetrics 绘制，Canvas 坐标即 DIP） -->
-        <Canvas x:Name="WallCanvas" />
-
-        <!-- 对象层：每个 LayoutObject 一个元素（WallPresenter 维护 Id → 元素映射） -->
-        <Canvas x:Name="TilesCanvas" />
-
-        <!-- 拖动层：ghost [drag-ghost] 与「不可放置」标记 [drag-invalid]（不接收命中） -->
-        <Canvas
-            x:Name="DragLayer"
-            AutomationProperties.AutomationId="drag-layer"
-            IsHitTestVisible="False" />
-
-        <!-- 空墙状态提示（P1 §3.6 文案原文；对象数 > 0 时隐藏——UIA 断言其消失） -->
-        <TextBlock
-            x:Name="EmptyHint"
-            Margin="0,140,0,0"
-            HorizontalAlignment="Center"
-            VerticalAlignment="Top"
-            AutomationProperties.AutomationId="wall-empty-hint"
-            FontSize="14"
-            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-            LineHeight="22"
-            TextAlignment="Center">
-            <Run Text="尚无任何磁贴" /><LineBreak />
-            <Run Text="右击空白处，选择「新建磁贴」或" /><LineBreak />
-            <Run Text="「从开始菜单导入」开始布置" /><LineBreak />
-            <Run Text="（设置可在托盘图标右键中打开）" />
-        </TextBlock>
-
-        <!-- 状态提示：顶部一次性提示（容量拒绝/撤销/失败原因），非模态、自动消失；
-             常驻诊断（恢复链/显示适配）时不清除。Name = 提示文本（§4） -->
-        <InfoBar
-            x:Name="StatusHint"
-            HorizontalAlignment="Stretch"
-            VerticalAlignment="Top"
-            AutomationProperties.AutomationId="wall-status"
-            IsOpen="False" />
+    xmlns:views="using:TileWall.Views"
+    Title="TileWall">
+    <Grid x:Name="WallRoot" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" AutomationProperties.AutomationId="wall-root">
+        <views:WallSurface x:Name="Surface" HorizontalAlignment="Left" VerticalAlignment="Top" />
+        <Canvas x:Name="DragOverlay" IsHitTestVisible="False" />
+        <Thumb x:Name="ResizeGrip" Width="18" Height="18" Background="#40909090"
+               HorizontalAlignment="Right" VerticalAlignment="Top"
+               AutomationProperties.AutomationId="wall-resize-grip"
+               DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
+        <Border x:Name="StatusPanel" Background="#DC263445" Visibility="Collapsed"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="8" Padding="8,5">
+            <StackPanel Spacing="4">
+                <TextBlock x:Name="StatusText" Foreground="White" TextWrapping="Wrap" />
+                <Button x:Name="RetryViewButton" Content="从已保存状态重建墙面"
+                        Visibility="Collapsed" Click="OnRetryViewClicked" />
+                <Button x:Name="AdaptationButton" Visibility="Collapsed" Click="OnAdaptationClicked" />
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>

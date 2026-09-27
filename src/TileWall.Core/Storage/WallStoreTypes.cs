@@ -1,0 +1,35 @@
+using TileWall.Core.Wall;
+
+namespace TileWall.Core.Storage;
+
+public enum WallOpenStatus
+{
+    Fresh, Loaded, RecoveredPrevious, LegacyResetRequired,
+    CorruptBlocked, FutureVersionBlocked, RecoveryBlocked
+}
+
+public sealed record WallOpenResult(WallOpenStatus Status, WallDocument? Document,
+    IReadOnlyList<string> Diagnostics);
+
+public abstract record EntryChange(string MemberId)
+{
+    public sealed record Keep(string MemberId) : EntryChange(MemberId);
+    public sealed record CopyShortcut(string MemberId, string SourcePath) : EntryChange(MemberId);
+    public sealed record CreateLink(string MemberId, string TargetPath) : EntryChange(MemberId);
+    public sealed record CreateUrl(string MemberId, string Url) : EntryChange(MemberId);
+    public sealed record ChangeTarget(string MemberId, string TargetPathOrUrl) : EntryChange(MemberId);
+    public sealed record Rename(string MemberId) : EntryChange(MemberId);
+    public sealed record Remove(string MemberId) : EntryChange(MemberId);
+}
+
+public sealed record WallCommitRequest(long ExpectedGeneration, WallDocument Proposed,
+    IReadOnlyList<EntryChange> EntryChanges);
+
+public enum WallCommitStatus { Rejected, Committed, CommittedNeedsCleanup, RecoveryBlocked }
+
+public sealed record WallCommitResult(WallCommitStatus Status, WallDocument? CommittedDocument,
+    WallUndoToken? Undo, IReadOnlyList<string> Diagnostics);
+
+public sealed record WallUndoToken(string CommitId, long CommittedGeneration);
+
+public sealed record WallPlanResult(WallCommitRequest? Request, IReadOnlyList<string> Diagnostics);

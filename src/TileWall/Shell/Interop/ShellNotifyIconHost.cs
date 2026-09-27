@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using TileWall.Core.Shell;
+using TileWall.Resources;
 
 namespace TileWall.Shell.Interop;
 
@@ -22,6 +24,8 @@ public sealed class ShellNotifyIconHost : IDisposable
     private const int MenuIdExit = 2;
 
     private readonly ShellMessageHost _host;
+    private readonly bool _trace;
+    private int _tracedMoves;
 
     private IntPtr _icon;
 
@@ -43,11 +47,12 @@ public sealed class ShellNotifyIconHost : IDisposable
     /// <summary>NIM_ADD 是否成功（极端 shell 状态下为 false：托盘缺席但热键/右键入口仍可用，§4.2 失真路径）。</summary>
     public bool IsAdded => _added;
 
-    public ShellNotifyIconHost(ShellMessageHost host, string iconFilePath)
+    public ShellNotifyIconHost(ShellMessageHost host, string iconFilePath, bool trace = false)
     {
         ArgumentNullException.ThrowIfNull(host);
         ArgumentException.ThrowIfNullOrEmpty(iconFilePath);
         _host = host;
+        _trace = trace;
         _icon = LoadIconHandle(iconFilePath);
         _host.TrayNotified += OnTrayNotified;
         _host.TaskbarCreated += OnTaskbarCreated;
@@ -63,10 +68,12 @@ public sealed class ShellNotifyIconHost : IDisposable
         data.hIcon = _icon;
         data.szTip = TooltipText;
         _added = Win32Api.Shell_NotifyIconW(Win32Api.NimAdd, ref data);
+        Trace($"NIM_ADD success={_added} hwnd={_host.Hwnd} id={IconId} callback=0x{_host.TrayCallbackMessage:X} icon={_icon}");
         if (_added)
         {
             data.uVersion = Win32Api.NotifyIconVersion4;
-            _ = Win32Api.Shell_NotifyIconW(Win32Api.NimSetversion, ref data);
+            var versionSet = Win32Api.Shell_NotifyIconW(Win32Api.NimSetversion, ref data);
+            Trace($"NIM_SETVERSION success={versionSet} version={data.uVersion}");
         }
     }
 
@@ -91,9 +98,16 @@ public sealed class ShellNotifyIconHost : IDisposable
 
     private void OnTrayNotified(TrayNotification notification)
     {
+        if (_trace)
+        {
+            if (notification.Event != Win32Api.WmMousemove || ++_tracedMoves <= 16)
+                Trace($"Notification event=0x{notification.Event:X} id={Win32Api.HighWord(notification.LParam)} anchor={notification.AnchorX},{notification.AnchorY} message=0x{notification.Message:X} wParam=0x{notification.WParam.ToInt64():X} lParam=0x{notification.LParam.ToInt64():X}");
+            else if (_tracedMoves == 17) Trace("Further WM_MOUSEMOVE notification traces suppressed");
+        }
         switch (notification.Event)
         {
             case Win32Api.WmLbuttondblclk:
+                Trace($"ShowOrFocusRequested subscriber={ShowOrFocusRequested is not null}");
                 ShowOrFocusRequested?.Invoke();
                 break;
             case Win32Api.WmContextmenu:
@@ -108,12 +122,14 @@ public sealed class ShellNotifyIconHost : IDisposable
     /// <summary>托盘右键菜单：固定两项、即建即毁（R3）；KB135788 时序硬验收（T-MANUAL-④）。</summary>
     private void ShowMenu(int anchorX, int anchorY)
     {
+        Trace($"Menu requested anchor={anchorX},{anchorY}");
         var x = anchorX;
         var y = anchorY;
         if (x < 0 || y < 0)
         {
             if (!Win32Api.GetCursorPos(out var point)) // 键盘（Shift+F10）触发：坐标为 -1，退回光标处
             {
+                Trace("Menu canceled: cursor unavailable");
                 return;
             }
 
@@ -124,23 +140,28 @@ public sealed class ShellNotifyIconHost : IDisposable
         var menu = Win32Api.CreatePopupMenu();
         if (menu == IntPtr.Zero)
         {
+            Trace("Menu canceled: CreatePopupMenu failed");
             return;
         }
 
         try
         {
-            _ = Win32Api.AppendMenuW(menu, Win32Api.MfString, (UIntPtr)MenuIdSettings, "设置");
+            _ = Win32Api.AppendMenuW(menu, Win32Api.MfString, (UIntPtr)MenuIdSettings, ProductStrings.Get("Wall.Settings"));
             _ = Win32Api.AppendMenuW(menu, Win32Api.MfSeparator, UIntPtr.Zero, null);
-            _ = Win32Api.AppendMenuW(menu, Win32Api.MfString, (UIntPtr)MenuIdExit, "退出 TileWall");
+            _ = Win32Api.AppendMenuW(menu, Win32Api.MfString, (UIntPtr)MenuIdExit, ProductStrings.Get("Wall.Exit"));
 
-            _ = Win32Api.SetForegroundWindow(_host.Hwnd); // 经典 KB135788：缺此步点外不消失
+            var foreground = Win32Api.SetForegroundWindow(_host.Hwnd); // 经典 KB135788：缺此步点外不消失
+            Trace($"Menu track position={x},{y} foregroundAccepted={foreground}");
             var command = Win32Api.TrackPopupMenuEx(menu, Win32Api.TpmReturncmd | Win32Api.TpmRightbutton, x, y, _host.Hwnd, IntPtr.Zero);
+            Trace($"Menu command={command}");
             switch (command)
             {
                 case MenuIdSettings:
+                    Trace($"SettingsRequested subscriber={SettingsRequested is not null}");
                     SettingsRequested?.Invoke();
                     break;
                 case MenuIdExit:
+                    Trace($"ExitRequested subscriber={ExitRequested is not null}");
                     ExitRequested?.Invoke();
                     break;
             }
@@ -155,10 +176,16 @@ public sealed class ShellNotifyIconHost : IDisposable
 
     private void OnTaskbarCreated()
     {
-        if (!_added)
-        {
-            Add(); // Explorer 重启自愈（重建时带上最新 tooltip 文本）
-        }
+        Trace("TaskbarCreated: re-add icon");
+        _added = false;
+        Add();
+    }
+
+    private void Trace(string message)
+    {
+        if (!_trace) return;
+        AppLog.Warn("Phase4Tray", message);
+        AppLog.Flush();
     }
 
     private IntPtr LoadIconHandle(string iconFilePath)

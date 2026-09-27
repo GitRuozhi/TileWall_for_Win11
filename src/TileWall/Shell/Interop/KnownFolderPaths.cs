@@ -10,7 +10,7 @@ namespace TileWall.Shell.Interop;
 /// </summary>
 public sealed class KnownFolderPaths : IKnownFolderPaths
 {
-    internal static readonly Guid FolderIdPrograms = new("905e63b6-c1bf-494e-b29c-65b732d3d21a");
+    internal static readonly Guid FolderIdPrograms = new("A77F5D77-2E2B-44C3-A6A2-ABA601054A51");
 
     internal static readonly Guid FolderIdCommonPrograms = new("0139D44E-6AFE-49F2-8690-3DAFCAE6FFB8");
 

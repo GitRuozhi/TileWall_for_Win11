@@ -8,11 +8,12 @@ namespace TileWall.Core.Entries;
 /// 声明与 temp/m4-probe 同款（net10.0 + EnableNETAnalyzers + TreatWarningsAsErrors 零告警实证）：
 /// 不调用 Marshal.ReleaseComObject 等平台注解 API（CA1416），RCW 交 GC 终结器释放；
 /// IPersistFile.Save 返回即已落盘，正确性不受释放时机影响。
-/// GetPath(SLGP_RAWPATH) 对长路径目录可能返回 8.3 短路径（探针实测）：显示/比较前经 <see cref="NormalizePath"/> 归一化。
+/// GetPath 使用 SLGP_RAWPATH (0x4) 读取原始目标路径；SLGP_SHORTPATH (0x1) 会请求 8.3 短路径。
+/// <see cref="NormalizePath"/> 仍供其它可能带 8.3 别名的输入归一化。
 /// </summary>
 public sealed class ShellLinkFileService : ILnkFileService
 {
-    private const uint SlgpRawpath = 1;
+    private const uint SlgpRawpath = 0x4;
     private const int PathBufferChars = 1024;
     private const int ArgumentsBufferChars = 2048;
     private const uint StgmRead = 0;

@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Text;
+
 using TileWall.Core.Shell;
 
 namespace TileWall.Shell.Interop;
@@ -69,6 +71,7 @@ public sealed class ShellMessageHost : IDisposable
     /// 解码/拷贝在 WndProc 内同步完成（数据仅投递期间有效），随即转事件；WndProc 立即返回不阻塞发送方。
     /// </summary>
     public event Action<ExplorerAddMessage>? PathsReceived;
+    internal Func<ExplorerAddMessage, bool>? AcceptPaths { get; set; }
 
     /// <summary>
     /// M8 显示环境变化广播（§6.2）：WM_DISPLAYCHANGE（分辨率/显示器变更）与 WM_SETTINGCHANGE
@@ -77,7 +80,7 @@ public sealed class ShellMessageHost : IDisposable
     /// </summary>
     public event Action? DisplayChanged;
 
-    public ShellMessageHost()
+    public ShellMessageHost(string windowName)
     {
         TrayCallbackMessage = Win32Api.RegisterWindowMessageW("TileWall.Tray.Callback");
         SingleInstanceActivateMessage = Win32Api.RegisterWindowMessageW("TileWall.SingleInstance.Activate");
@@ -105,7 +108,7 @@ public sealed class ShellMessageHost : IDisposable
         Hwnd = Win32Api.CreateWindowExW(
             Win32Api.WsExToolWindow | Win32Api.WsExNoActivate,
             WindowClassName,
-            WindowName,
+            windowName,
             Win32Api.WsPopup, // WS_POPUP 且从不 ShowWindow：隐藏的顶层窗，广播可达
             0, 0, 0, 0,
             IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
@@ -129,9 +132,11 @@ public sealed class ShellMessageHost : IDisposable
 
             if (msg == Win32Api.WmCopydata)
             {
-                // M9 §4.3：负载只在本次投递期间有效——先同步拷贝并解码，再转 UI 线程事件；返回 1 表示已处理
-                if (TryReceiveCopyData(lParam, out var message))
+                // M9 §4.3：负载只在本次投递期间有效——先同步拷贝并解码，再转 UI 线程事件；返回 1 表示已处理。
+                // C1/F-01：先双重鉴权（dwData 私有魔数 + 发送方进程映像），拒绝 → 返回 0 不处理（不崩不弹）。
+                if (TryReceiveCopyData(wParam, lParam, out var message))
                 {
+                    if (self.AcceptPaths is not null && !self.AcceptPaths(message)) return IntPtr.Zero;
                     self.PathsReceived?.Invoke(message);
                     return (IntPtr)1;
                 }
@@ -167,8 +172,11 @@ public sealed class ShellMessageHost : IDisposable
         return Win32Api.DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 
-    /// <summary>M9 §4.3：从 COPYDATASTRUCT 同步拷出字节并解码校验（v/逐条绝对路径+存在性），失败按协议错误丢弃。</summary>
-    private static bool TryReceiveCopyData(IntPtr lParam, out ExplorerAddMessage message)
+    /// <summary>
+    /// M9 §4.3 + C1/F-01：先鉴权（dwData 魔数 'TWL1' + wParam 反查发送方进程映像 == 本进程），
+    /// 通过才从 COPYDATASTRUCT 同步拷出字节并解码校验；任一步失败按拒绝丢弃（返回 0，记 WARN 可追溯）。
+    /// </summary>
+    private static bool TryReceiveCopyData(IntPtr senderHwnd, IntPtr lParam, out ExplorerAddMessage message)
     {
         message = ExplorerAddMessage.Empty;
         if (lParam == IntPtr.Zero)
@@ -177,6 +185,16 @@ public sealed class ShellMessageHost : IDisposable
         }
 
         var cds = Marshal.PtrToStructure<Win32Api.CopyDataStruct>(lParam);
+
+        // C1 双重鉴权：判定逻辑在 Core（ExplorerAddAuth），本层只做 Win32 解值与接日志
+        var senderImage = TryGetWindowImagePath(senderHwnd, out var senderDescribe);
+        var verdict = ExplorerAddAuth.Verify(unchecked((uint)cds.DwData.ToInt64()), senderImage, Environment.ProcessPath);
+        if (verdict != ExplorerAddAuthVerdict.Accept)
+        {
+            AppLog.Warn("IpcAuth", $"WM_COPYDATA 拒绝（{verdict}）：{senderDescribe}");
+            return false;
+        }
+
         if (cds.CbData <= 0 || cds.LpData == IntPtr.Zero || cds.CbData > ExplorerAddPayload.MaxPayloadBytes)
         {
             return false;
@@ -185,6 +203,42 @@ public sealed class ShellMessageHost : IDisposable
         var payload = new byte[cds.CbData];
         Marshal.Copy(cds.LpData, payload, 0, cds.CbData);
         return ExplorerAddPayload.TryDecode(payload, out message);
+    }
+
+    /// <summary>
+    /// C1：发送方窗口句柄 → 所属进程 ID → 进程映像路径。任一步失败返回 null（保守拒绝）。
+    /// 拒绝时返回 0 不处理，绝不因鉴权失败崩溃或弹窗。
+    /// </summary>
+    private static string? TryGetWindowImagePath(IntPtr hwnd, out string describe)
+    {
+        describe = $"hwnd=0x{hwnd.ToInt64():X}";
+        if (hwnd == IntPtr.Zero)
+        {
+            return null; // 发送方未提供窗口句柄：无从归属进程
+        }
+
+        if (Win32Api.GetWindowThreadProcessId(hwnd, out var pid) == 0 || pid == 0)
+        {
+            return null; // 句柄已失效或非窗口
+        }
+
+        describe += $" pid={pid}";
+        var process = Win32Api.OpenProcess(Win32Api.ProcessQueryLimitedInformation, bInheritHandle: false, pid);
+        if (process == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            var buffer = new StringBuilder(1024);
+            var size = (uint)buffer.Capacity;
+            return Win32Api.QueryFullProcessImageNameW(process, 0, buffer, ref size) ? buffer.ToString() : null;
+        }
+        finally
+        {
+            _ = Win32Api.CloseHandle(process);
+        }
     }
 
     /// <summary>销毁宿主窗（R4；须在 UI 线程调用——退出序列保证）。类随进程注销，无需显式 Unregister。</summary>

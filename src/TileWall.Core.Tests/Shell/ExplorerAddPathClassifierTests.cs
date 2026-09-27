@@ -47,6 +47,17 @@ public sealed class ExplorerAddPathClassifierTests : IDisposable
     }
 
     [Theory]
+    [InlineData(".lnk")]
+    [InlineData(".url")]
+    public void Classify_DirectoryWithShortcutExtension_UsesCreateLinkChannel(string extension)
+    {
+        var directory = Path.Combine(_tempDir, "資料夾" + extension);
+        Directory.CreateDirectory(directory);
+
+        Assert.Equal(ExplorerAddKind.CreateLink, ExplorerAddPathClassifier.Classify(directory));
+    }
+
+    [Theory]
     [InlineData(@"C:\不存在_单测\never.bin")]
     [InlineData("相对/路径.txt")]
     [InlineData("")]
@@ -60,6 +71,16 @@ public sealed class ExplorerAddPathClassifierTests : IDisposable
     public void Classify_Null_Drop()
     {
         Assert.Equal(ExplorerAddKind.Drop, ExplorerAddPathClassifier.Classify(null));
+    }
+
+    [Fact]
+    public void Classify_DropsDriveRelativeRootedAndBareDriveRootPaths()
+    {
+        Assert.False(Path.IsPathFullyQualified(@"C:relative\file.txt"));
+        Assert.False(Path.IsPathFullyQualified(@"\rooted\file.txt"));
+        Assert.Equal(ExplorerAddKind.Drop, ExplorerAddPathClassifier.Classify(@"C:relative\file.txt"));
+        Assert.Equal(ExplorerAddKind.Drop, ExplorerAddPathClassifier.Classify(@"\rooted\file.txt"));
+        Assert.Equal(ExplorerAddKind.Drop, ExplorerAddPathClassifier.Classify(@"C:\"));
     }
 
     [Fact]
@@ -80,11 +101,16 @@ public sealed class ExplorerAddPathClassifierTests : IDisposable
     public void PrepareForRouting_DropsBareDriveRoots_KeepsSubPaths()
     {
         // 纯逻辑（零 IO）：裸本地盘符根在投递侧剔除（本机盘符不可添加，§4.2）；子路径与 UNC 共享根照常保留
-        var kept = ExplorerAddPathClassifier.PrepareForRouting([@"C:\", @"C:\Windows", @"\\server\share", "relative.txt", null]);
+        var kept = ExplorerAddPathClassifier.PrepareForRouting([@"C:\", @"C:\Windows", @"C:\Windows\..", @"\\?\C:\", @"\\?\C:\Windows", @"\\?\C:\Windows\..", @"C:relative\file.txt", @"\rooted\file.txt", @"\\server\share", "relative.txt", null]);
 
-        Assert.Equal([@"C:\Windows", @"\\server\share"], [.. kept]);
+        Assert.Equal([@"C:\Windows", @"\\?\C:\Windows", @"\\server\share"], [.. kept]);
         Assert.False(ExplorerAddPathClassifier.IsRoutablePath(@"C:\"));
+        Assert.False(ExplorerAddPathClassifier.IsRoutablePath(@"C:\Windows\.."));
+        Assert.False(ExplorerAddPathClassifier.IsRoutablePath(@"\\?\C:\"));
+        Assert.False(ExplorerAddPathClassifier.IsRoutablePath(@"\\?\C:\Windows\.."));
         Assert.False(ExplorerAddPathClassifier.IsRoutablePath("Q:"));
+        Assert.False(ExplorerAddPathClassifier.IsRoutablePath(@"C:relative\file.txt"));
+        Assert.False(ExplorerAddPathClassifier.IsRoutablePath(@"\rooted\file.txt"));
         Assert.True(ExplorerAddPathClassifier.IsRoutablePath(@"C:\Windows"));
         Assert.True(ExplorerAddPathClassifier.IsRoutablePath(@"\\server\share"));
     }

@@ -2,13 +2,10 @@ using System.Runtime.InteropServices;
 
 namespace TileWall.Shell.Interop;
 
-#pragma warning disable SYSLIB1096 // InterfaceIsIInspectable 的弃用告警（M9 设计 R-E）：CCW 声明仍须精确复刻
-                                 // IInspectable 派生接口的 vtable 槽位，应用工程未开 TreatWarningsAsErrors。
-
 /// <summary>
 /// M9 Explorer 右键扩展的全部 COM 互操作声明（shobjidl_core / objidl / combase）：
 /// com:ExeServer 路线下主 exe 兼任 COM 服务器——CoRegisterClassObject 注册类对象（§4.1），
-/// IExplorerCommand 的 CCW 必须显式补齐 IInspectable 三槽否则 vtable 错位崩 Explorer（§4.2 约束 1）。
+/// IExplorerCommand 是 IUnknown 派生接口，方法顺序必须与 Windows SDK vtable 一致。
 /// 常量数值来源：Windows SDK 头文件 shobjidl_core.idl / objidl.idl / combaseapi.h。
 /// </summary>
 internal static class ExplorerCommandInterop
@@ -29,6 +26,9 @@ internal static class ExplorerCommandInterop
     [DllImport("ole32.dll")]
     internal static extern int CoRevokeClassObject(uint dwRegister);
 
+    [DllImport("ole32.dll")]
+    internal static extern int CoDisconnectObject([MarshalAs(UnmanagedType.IUnknown)] object pUnk, uint dwReserved);
+
     internal const uint CoinitApartmentthreaded = 0x2; // COINIT_APARTMENTTHREADED
     internal const int RpcEChangedMode = unchecked((int)0x80010106); // 线程已按另一套间模型初始化
     internal const int SFalse = 1; // 已初始化（同模式）
@@ -41,12 +41,13 @@ internal static class ExplorerCommandInterop
     internal const uint SigdnFilesysPath = 0x80058000; // SIGDN_FILESYSPATH（ Invoke 取文件系统路径）
     internal const uint EcfDefault = 0;                // EXPCMDFLAGS ECF_DEFAULT（GetFlags 恒值）
     internal const uint EcsEnabled = 0;                // EXPCMDSTATE ECS_ENABLED（GetState 恒值，零 IO）
-    internal const int ENotimpl = unchecked((int)0x80004001);  // IInspectable 三槽的占位返回
+    internal const int ENotimpl = unchecked((int)0x80004001);
     internal const int Enointerface = unchecked((int)0x80004002);
     internal const int ClsEnoaggregation = unchecked((int)0x80040110);
+    internal const uint ExtconnStrong = 0x1;
 
     internal static readonly Guid IidIUnknown = new("00000000-0000-0000-C000-000000000046");
-    internal static readonly Guid IidIExplorerCommand = new("A08CE4D0-FA25-44AB-B57C-30302FF98CAE");
+    internal static readonly Guid IidIExplorerCommand = new("A08CE4D0-FA25-44AB-B57C-C7B1C323E0B9");
 
     // ———— user32：STA 消息泵（COM 类对象来电的派发通道；MwmoInputavailable 保证超时前有电即返回） ————
 
@@ -90,7 +91,18 @@ internal interface IClassFactory
     int CreateInstance(IntPtr pUnkOuter, ref Guid riid, out IntPtr ppvObject);
 
     [PreserveSig]
-    int LockServer(bool fLock);
+    int LockServer([MarshalAs(UnmanagedType.Bool)] bool fLock);
+}
+
+/// <summary>IExternalConnection (objidlbase.h): tracks remote proxies to a command object.</summary>
+[ComImport, Guid("00000019-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IExternalConnection
+{
+    [PreserveSig]
+    uint AddConnection(uint extconn, uint reserved);
+
+    [PreserveSig]
+    uint ReleaseConnection(uint extconn, uint reserved, [MarshalAs(UnmanagedType.Bool)] bool fLastReleaseCloses);
 }
 
 /// <summary>IBindCtx（objidl.idl）：仅作为 Invoke 的参数类型出现，本实现从不解引用。</summary>
@@ -154,44 +166,35 @@ internal interface IShellItemArray
 }
 
 /// <summary>
-/// IExplorerCommand（shobjidl_core.idl，IID A08CE4D0-FA25-44AB-B57C-30302FF98CAE，IInspectable 派生）。
-/// C# ComImport 声明必须显式补 IInspectable 三槽（GetIids/GetRuntimeClassName/GetTrustLevel，E_NOTIMPL 可接受）
-/// 再列八个命令方法——缺槽即 vtable 错位，Explorer 进程当场崩溃（M9 设计 §4.2 约束 1）。
+/// IExplorerCommand（shobjidl_core.h，IID A08CE4D0-FA25-44AB-B57C-C7B1C323E0B9，IUnknown 派生）。
+/// 八个方法按原生 vtable 顺序声明；LPWSTR* 通过 COM 字符串封送交给调用方。
 /// </summary>
-[ComImport, Guid("A08CE4D0-FA25-44AB-B57C-30302FF98CAE"), InterfaceType(ComInterfaceType.InterfaceIsIInspectable)]
+[ComImport, Guid("A08CE4D0-FA25-44AB-B57C-C7B1C323E0B9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IExplorerCommand
 {
-    // —— IInspectable 三槽（IUnknown 三槽由运行时自动供给） ——
     [PreserveSig]
-    int GetIids(out uint iidCount, IntPtr iids);
+    int GetTitle(IShellItemArray? psiItemArray, [MarshalAs(UnmanagedType.LPWStr)] out string ppszName);
 
     [PreserveSig]
-    int GetRuntimeClassName(out IntPtr className);
+    int GetIcon(IShellItemArray? psiItemArray, [MarshalAs(UnmanagedType.LPWStr)] out string ppszIcon);
 
     [PreserveSig]
-    int GetTrustLevel(out int trustLevel);
+    int GetToolTip(IShellItemArray? psiItemArray, [MarshalAs(UnmanagedType.LPWStr)] out string ppszInfotip);
 
-    // —— IExplorerCommand 八法 ——
     [PreserveSig]
     int GetCanonicalName(out Guid guidCommandName);
+
+    [PreserveSig]
+    int GetState(IShellItemArray? psiItemArray, [MarshalAs(UnmanagedType.Bool)] bool fOkToBeSlow, out uint pCmdState);
+
+    [PreserveSig]
+    int Invoke(IShellItemArray? psiItemArray, IBindCtx? pbc);
 
     [PreserveSig]
     int GetFlags(out uint pFlags);
 
     [PreserveSig]
-    int GetTitle(IShellItemArray psiItemArray, [MarshalAs(UnmanagedType.LPWStr)] out string ppszName);
-
-    [PreserveSig]
-    int GetIcon(IShellItemArray psiItemArray, [MarshalAs(UnmanagedType.LPWStr)] out string ppszIcon);
-
-    [PreserveSig]
-    int GetToolTip(IShellItemArray psiItemArray, [MarshalAs(UnmanagedType.LPWStr)] out string ppszInfotip);
-
-    [PreserveSig]
-    int GetState(IShellItemArray psiItemArray, bool fOkToBeSlow, out uint pCmdState);
-
-    [PreserveSig]
-    int Invoke(IShellItemArray psiItemArray, IBindCtx pbc);
+    int EnumSubCommands(out IntPtr ppEnum);
 }
 
 /// <summary>

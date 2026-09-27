@@ -9,34 +9,53 @@ namespace TileWall.Shell.Interop;
 /// 菜单构建线程上绝不允许磁盘探测（多选 N 项的存在性检查是明令禁止的重活）；
 /// 不可添加对象在 Invoke 时过滤并给出结果反馈，菜单项恒可用。
 /// </summary>
-internal sealed class TileWallExplorerCommand : IExplorerCommand
+internal sealed class TileWallExplorerCommand : IExplorerCommand, IExternalConnection
 {
-    // —— IInspectable 三槽：占位返回 E_NOTIMPL（槽位本身必须存在，否则 vtable 错位崩 Explorer） ——
+    private readonly ExplorerCommandClassFactory _factory;
+    private int _strongConnections;
+    private int _disconnected;
 
-    public int GetIids(out uint iidCount, IntPtr iids)
+    public TileWallExplorerCommand(ExplorerCommandClassFactory factory) => _factory = factory;
+
+    // —— IExplorerCommand 八法，顺序与 shobjidl_core.h 的 vtable 一致 ——
+
+    public int GetTitle(IShellItemArray? psiItemArray, out string ppszName)
     {
-        iidCount = 0;
-        return ExplorerCommandInterop.ENotimpl;
+        ppszName = ExplorerCommandIds.MenuTitle;
+        return 0;
     }
 
-    public int GetRuntimeClassName(out IntPtr className)
+    public int GetIcon(IShellItemArray? psiItemArray, out string ppszIcon)
     {
-        className = IntPtr.Zero;
-        return ExplorerCommandInterop.ENotimpl;
+        ppszIcon = ExplorerCommandIds.MenuIcon;
+        return 0;
     }
 
-    public int GetTrustLevel(out int trustLevel)
+    public int GetToolTip(IShellItemArray? psiItemArray, out string ppszInfotip)
     {
-        trustLevel = 0; // BaseTrust
-        return ExplorerCommandInterop.ENotimpl;
+        ppszInfotip = string.Empty;
+        return 0;
     }
-
-    // —— IExplorerCommand 八法 ——
 
     public int GetCanonicalName(out Guid guidCommandName)
     {
         guidCommandName = ExplorerCommandIds.CanonicalName;
         return 0;
+    }
+
+    public int GetState(IShellItemArray? psiItemArray, bool fOkToBeSlow, out uint pCmdState)
+    {
+        pCmdState = ExplorerCommandInterop.EcsEnabled; // 恒可用：不做存在性/可用性检查（零 IO）
+        return 0;
+    }
+
+    public int Invoke(IShellItemArray? psiItemArray, IBindCtx? pbc)
+    {
+        // Invoke 只允许三类系统调用（§4.2 约束 4）：IShellItemArray 计数/取项、IShellItem 取
+        // FILESYSPATH、末尾的一次路由投递。非文件系统项（取不到路径/裸盘符根）就地丢弃。
+        var paths = ExplorerCommandSelection.FilesystemPathsOf(psiItemArray);
+        ExplorerAddRouter.Route(paths);
+        return 0; // S_OK：路由尽力而为，不让 Explorer 弹通用错误 UI
     }
 
     public int GetFlags(out uint pFlags)
@@ -45,37 +64,49 @@ internal sealed class TileWallExplorerCommand : IExplorerCommand
         return 0;
     }
 
-    public int GetTitle(IShellItemArray psiItemArray, out string ppszName)
+    public int EnumSubCommands(out IntPtr ppEnum)
     {
-        ppszName = ExplorerCommandIds.MenuTitle;
-        return 0;
+        ppEnum = IntPtr.Zero;
+        return ExplorerCommandInterop.ENotimpl; // ECF_DEFAULT：没有子命令
     }
 
-    public int GetIcon(IShellItemArray psiItemArray, out string ppszIcon)
+    public uint AddConnection(uint extconn, uint reserved)
     {
-        ppszIcon = ExplorerCommandIds.MenuIcon;
-        return 0;
+        if ((extconn & ExplorerCommandInterop.ExtconnStrong) == 0)
+        {
+            return (uint)Volatile.Read(ref _strongConnections);
+        }
+
+        var count = Interlocked.Increment(ref _strongConnections);
+        _factory.ExternalConnectionAdded();
+        return (uint)count;
     }
 
-    public int GetToolTip(IShellItemArray psiItemArray, out string ppszInfotip)
+    public uint ReleaseConnection(uint extconn, uint reserved, bool fLastReleaseCloses)
     {
-        ppszInfotip = string.Empty;
-        return 0;
-    }
+        if ((extconn & ExplorerCommandInterop.ExtconnStrong) == 0)
+        {
+            return (uint)Volatile.Read(ref _strongConnections);
+        }
 
-    public int GetState(IShellItemArray psiItemArray, bool fOkToBeSlow, out uint pCmdState)
-    {
-        pCmdState = ExplorerCommandInterop.EcsEnabled; // 恒可用：不做存在性/可用性检查（零 IO）
-        return 0;
-    }
+        int count;
+        do
+        {
+            count = Volatile.Read(ref _strongConnections);
+            if (count == 0)
+            {
+                return 0;
+            }
+        }
+        while (Interlocked.CompareExchange(ref _strongConnections, count - 1, count) != count);
 
-    public int Invoke(IShellItemArray psiItemArray, IBindCtx pbc)
-    {
-        // Invoke 只允许三类系统调用（§4.2 约束 4）：IShellItemArray 计数/取项、IShellItem 取
-        // FILESYSPATH、末尾的一次路由投递。非文件系统项（取不到路径/裸盘符根）就地丢弃。
-        var paths = ExplorerCommandSelection.FilesystemPathsOf(psiItemArray);
-        ExplorerAddRouter.Route(paths);
-        return 0; // S_OK：路由尽力而为，不让 Explorer 弹通用错误 UI
+        _factory.ExternalConnectionReleased();
+        if (count == 1 && fLastReleaseCloses && Interlocked.Exchange(ref _disconnected, 1) == 0)
+        {
+            _ = ExplorerCommandInterop.CoDisconnectObject(this, 0);
+        }
+
+        return (uint)(count - 1);
     }
 }
 

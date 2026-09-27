@@ -56,8 +56,14 @@ public sealed class SingleInstanceGate : ISingleInstanceChannel, IDisposable
 
     private bool _disposed;
 
-    private SingleInstanceGate()
+    private readonly string _mutexName;
+    private readonly string _windowName;
+    private readonly bool _activateExisting;
+    private SingleInstanceGate(string mutexName, string windowName, bool activateExisting)
     {
+        _mutexName = mutexName;
+        _windowName = windowName;
+        _activateExisting = activateExisting;
     }
 
     /// <summary>首实例收到二次启动信号（App 转接 Router.ShowOrFocus）。</summary>
@@ -70,9 +76,10 @@ public sealed class SingleInstanceGate : ISingleInstanceChannel, IDisposable
     /// 抢占单实例身份。必须在任何文件/窗口副作用之前调用（§2.2 第 1 步）：
     /// NotifiedExisting 的进程不得触碰数据目录（Sweep 双跑会互相干扰 CommitJournal 语义）。
     /// </summary>
-    public static SingleInstanceGate Acquire(out SingleInstanceAcquireResult result)
+    public static SingleInstanceGate Acquire(string mutexName, string windowName, bool activateExisting,
+        out SingleInstanceAcquireResult result)
     {
-        var gate = new SingleInstanceGate();
+        var gate = new SingleInstanceGate(mutexName, windowName, activateExisting);
         if (gate.TryOwn(out result))
         {
             return gate;
@@ -110,7 +117,7 @@ public sealed class SingleInstanceGate : ISingleInstanceChannel, IDisposable
     private bool TryOwn(out SingleInstanceAcquireResult result)
     {
         CloseMutexHandle();
-        _mutex = Win32Api.CreateMutexW(IntPtr.Zero, bInitialOwner: true, MutexName);
+        _mutex = Win32Api.CreateMutexW(IntPtr.Zero, bInitialOwner: true, _mutexName);
         var error = Marshal.GetLastWin32Error();
         if (_mutex != IntPtr.Zero && error != Win32Api.ErrorAlreadyExists)
         {
@@ -126,12 +133,21 @@ public sealed class SingleInstanceGate : ISingleInstanceChannel, IDisposable
     /// <summary>找到首实例宿主窗并投递激活消息（注册消息系统级分配，跨进程同值）。</summary>
     private bool NotifyExisting()
     {
-        var hwnd = Win32Api.FindWindowW(ShellMessageHost.WindowClassName, ShellMessageHost.WindowName);
+        var hwnd = Win32Api.FindWindowW(ShellMessageHost.WindowClassName, _windowName);
         if (hwnd == IntPtr.Zero)
         {
             return false;
         }
 
+        if (!_activateExisting) return true;
+        if (Win32Api.GetWindowThreadProcessId(hwnd, out var ownerProcessId) == 0 || ownerProcessId == 0)
+            return false;
+        // A user-launched secondary process can transfer its foreground right to the existing
+        // process before that process focuses its wall or current modal. Background starts stop above.
+        if (Win32Api.AllowSetForegroundWindow(ownerProcessId))
+            AppLog.Info("SingleInstance", $"Foreground permission transferred to process {ownerProcessId}.");
+        else
+            AppLog.Warn("SingleInstance", $"Foreground permission transfer failed for process {ownerProcessId}: {Marshal.GetLastWin32Error()}.");
         var message = Win32Api.RegisterWindowMessageW("TileWall.SingleInstance.Activate");
         return Win32Api.PostMessageW(hwnd, message, IntPtr.Zero, IntPtr.Zero);
     }
@@ -143,9 +159,13 @@ public sealed class SingleInstanceGate : ISingleInstanceChannel, IDisposable
     public bool PostPaths(IReadOnlyList<string> paths)
     {
         ArgumentNullException.ThrowIfNull(paths);
-        return ExplorerAddChannel.TryFindHostWindow(out var hwnd)
+        return ExplorerAddChannel.TryFindHostWindow(_windowName, out var hwnd)
             && ExplorerAddChannel.TryPostPaths(hwnd, paths);
     }
+
+    public bool PostPaths(ExplorerAddMessage message) =>
+        ExplorerAddChannel.TryFindHostWindow(_windowName, out var hwnd) &&
+        ExplorerAddChannel.TryPostPaths(hwnd, message.Paths, message.Truncated);
 
     /// <summary>
     /// 首实例装配：把宿主窗的激活消息转接为本通道的 Activated 事件，WM_COPYDATA 负载转接为

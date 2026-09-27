@@ -1,0 +1,97 @@
+using TileWall.Core.Configuration;
+using TileWall.Core.Entries;
+using TileWall.Core.Wall;
+
+namespace TileWall.Core.Storage;
+
+internal sealed class WallStoragePaths(IFileStore files, IDataDirectory directory)
+{
+    private readonly IFileStore _files = files;
+    public string Root { get; } = RequireRoot(directory.RootPath);
+    public string Config => Under("config.json");
+    public string Previous => Under("Recovery", "config.prev.json");
+    public string Staging => Under("Staging");
+    public string RecoveryEntries => Under("Recovery", "Entries");
+    public string Objects => Under("Objects");
+
+    private static string RequireRoot(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) ||
+            !string.Equals(Path.GetFullPath(path), path.TrimEnd(Path.DirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Data root must be a normalized absolute path.", nameof(path));
+        return path.TrimEnd(Path.DirectorySeparatorChar);
+    }
+
+    public string Under(params string[] segments)
+    {
+        if (segments.Length == 0 || segments.Any(s => string.IsNullOrEmpty(s) || s is "." or ".." ||
+            s.IndexOfAny(['/', '\\', ':', '\0']) >= 0 || s.EndsWith('.') || s.EndsWith(' ')))
+            throw new IOException("Invalid managed path segment.");
+        var path = Path.GetFullPath(Path.Combine([Root, .. segments]));
+        if (!path.StartsWith(Root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Managed path escapes data root.");
+        return path;
+    }
+
+    public string Entry(ManagedEntryReference entry)
+    {
+        if (!ValidId(entry.ObjectId) || !ValidEntry(entry)) throw new IOException("Unsafe managed entry reference.");
+        var parts = entry.RelativePath.Split('/');
+        return Under(parts);
+    }
+
+    public string Entry(string memberId, string fileName, ManagedEntryKind kind) =>
+        Entry(new ManagedEntryReference(memberId, $"Objects/{memberId}/{fileName}", kind));
+
+    public static bool ValidId(string? id) =>
+        id is { Length: > 0 and <= 200 } && id != "." && id != ".." &&
+        EntryNames.Validate(id).Count == 0 && id.IndexOfAny(['/', '\\', ':']) < 0;
+
+    public static bool ValidEntry(ManagedEntryReference? entry)
+    {
+        if (entry is null || !ValidId(entry.ObjectId) || !Enum.IsDefined(entry.Kind)) return false;
+        var parts = entry.RelativePath?.Split('/');
+        if (parts is not { Length: 3 } || parts[0] != "Objects" || parts[1] != entry.ObjectId) return false;
+        var ext = entry.Kind == ManagedEntryKind.Lnk ? ".lnk" : ".url";
+        return parts[2].EndsWith(ext, StringComparison.OrdinalIgnoreCase) &&
+            EntryNames.Validate(parts[2][..^ext.Length]).Count == 0;
+    }
+
+    public void Guard(string path, bool allowExternalRead = false)
+    {
+        if (!Path.IsPathFullyQualified(path) || Path.GetFullPath(path) != path)
+            throw new IOException($"Unnormalized path: {path}");
+        if (!allowExternalRead && path != Root &&
+            !path.StartsWith(Root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new IOException($"Path escapes data root: {path}");
+
+        var full = path;
+        var cursor = Path.GetPathRoot(full)!;
+        foreach (var part in full[cursor.Length..].Split(Path.DirectorySeparatorChar,
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            cursor = Path.Combine(cursor, part);
+            var info = _files.GetPathInfo(cursor);
+            if (info.IsReparsePoint) throw new IOException($"Reparse point in managed path: {cursor}");
+            if (info.Exists && cursor != full && !info.IsDirectory)
+                throw new IOException($"File in directory path: {cursor}");
+        }
+    }
+
+    public void GuardTree(string path)
+    {
+        Guard(path);
+        var info = _files.GetPathInfo(path);
+        if (!info.Exists) return;
+        if (!info.IsDirectory) throw new IOException($"Expected directory: {path}");
+        foreach (var file in _files.ListFiles(path)) Guard(file);
+        foreach (var child in _files.ListDirectories(path)) GuardTree(child);
+    }
+
+    public void GuardTreeOrFile(string path)
+    {
+        Guard(path);
+        if (_files.GetPathInfo(path).IsDirectory) GuardTree(path);
+    }
+}

@@ -5,9 +5,15 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <UseWinUI>false</UseWinUI>
+    <!-- D2（F-06）：测试工程与 Core 同级纪律（含 xUnit 分析器警告，如 xUnit2013） -->
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\TileWall.Core\TileWall.Core.csproj" />
+    <Compile Include="..\TileWall\Application\WallSession.cs" Link="Application\WallSession.cs" />
+    <Compile Include="..\TileWall\Shell\EntryLauncher.cs" Link="Shell\EntryLauncher.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />

@@ -52,6 +52,12 @@ public class EntryNamesTests
     [InlineData("COM1")]
     [InlineData("com9")]
     [InlineData("LPT1")]
+    [InlineData("COM¹")]
+    [InlineData("COM².txt")]
+    [InlineData("COM³")]
+    [InlineData("LPT¹")]
+    [InlineData("LPT².url")]
+    [InlineData("LPT³")]
     public void Validate_保留名含主体保留_NAME_RESERVED(string name)
     {
         Assert.Contains(EntryNames.NameReserved, EntryNames.Validate(name));

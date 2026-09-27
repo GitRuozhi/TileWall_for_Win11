@@ -1,20 +1,31 @@
 using System.Globalization;
 using TileWall.Core.Components;
+using TileWall.Core.Grid;
+using TileWall.Core.Wall;
 using Xunit;
 
 namespace TileWall.Core.Tests.Components;
 
 /// <summary>
-/// T-CLOCK-FMT（M8 设计 §4.2 / 拍板 Q9）：FixedClock 矩阵——午夜 00:00、23:59、跨日、跨年、
-/// 12/24 小时文化、dddd 随文化；输出恒两行、时间恒 HH:mm。
+/// T-CLOCK-FMT：默认 HH:mm 与 yyyy/M/d dddd 格式，以及有限可选格式、文化、跨日和跨年行为。
 /// 时区确定性：用「本机时区墙钟时间 + 该时区偏移」构造 DateTimeOffset，ToLocalTime() 还原同一墙钟值。
 /// </summary>
 public sealed class ClockTextFormatterTests
 {
-    /// <summary>以本机时区的墙钟时间构造等价 DateTimeOffset（Format 的 ToLocalTime 为恒等变换）。</summary>
-    private static DateTimeOffset LocalAt(int year, int month, int day, int hour, int minute)
+    [Fact]
+    public void ClockMemberDefaults_AreSupportedProductDefaults()
     {
-        var unspecified = new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Unspecified);
+        var member = new ClockMember { Id = "clock", LocalBounds = new GridRect(0, 0, 1, 1) };
+
+        Assert.Equal(ClockFormatOptions.DefaultTimeFormat, member.TimeFormat);
+        Assert.Equal(ClockFormatOptions.DefaultDateFormat, member.DateFormat);
+        Assert.True(ClockFormatOptions.IsValid(member.TimeFormat, member.DateFormat));
+    }
+
+    /// <summary>以本机时区的墙钟时间构造等价 DateTimeOffset（Format 的 ToLocalTime 为恒等变换）。</summary>
+    private static DateTimeOffset LocalAt(int year, int month, int day, int hour, int minute, int second = 0)
+    {
+        var unspecified = new DateTime(year, month, day, hour, minute, second, DateTimeKind.Unspecified);
         return new DateTimeOffset(unspecified, TimeZoneInfo.Local.GetUtcOffset(unspecified));
     }
 
@@ -87,5 +98,69 @@ public sealed class ClockTextFormatterTests
         var (timeLine, dateLine) = ClockTextFormatter.Format(LocalAt(2026, 1, 1, 0, 0));
         Assert.False(string.IsNullOrWhiteSpace(timeLine)); // 输出恒两行（重载路径同构）
         Assert.False(string.IsNullOrWhiteSpace(dateLine));
+    }
+
+    [Theory]
+    [InlineData("HH:mm", "13:05")]
+    [InlineData("HH:mm:ss", "13:05:09")]
+    [InlineData("hh:mm tt", "01:05 PM")]
+    [InlineData("hh:mm:ss tt", "01:05:09 PM")]
+    public void Format_UsesSupportedTimePreset(string format, string expected)
+    {
+        var (timeLine, _) = ClockTextFormatter.Format(
+            LocalAt(2026, 3, 8, 13, 5, 9), format, ClockTextFormatter.DateFormat, CultureInfo.InvariantCulture);
+
+        Assert.Equal(expected, timeLine);
+        Assert.True(ClockFormatOptions.IsSupportedTimeFormat(format));
+    }
+
+    [Theory]
+    [InlineData("yyyy/M/d dddd", "2026/1/1 Thursday")]
+    [InlineData("yyyy/M/d", "2026/1/1")]
+    [InlineData("M/d dddd", "1/1 Thursday")]
+    [InlineData("yyyy年M月d日 dddd", "2026年1月1日 Thursday")]
+    public void Format_UsesSupportedDatePreset(string format, string expected)
+    {
+        var (_, dateLine) = ClockTextFormatter.Format(
+            LocalAt(2026, 1, 1, 9, 30), ClockTextFormatter.TimeFormat, format, CultureInfo.InvariantCulture);
+
+        Assert.Equal(expected, dateLine);
+        Assert.True(ClockFormatOptions.IsSupportedDateFormat(format));
+    }
+
+    [Theory]
+    [InlineData(null, "2026/1/1 Thursday")]
+    [InlineData("", "2026/1/1 Thursday")]
+    [InlineData("%", "2026/1/1 Thursday")]
+    [InlineData("yyyy-MM-dd'", "2026/1/1 Thursday")]
+    public void Format_UnsupportedDateFormat_FallsBackWithoutThrowing(string? dateFormat, string expected)
+    {
+        var (_, dateLine) = ClockTextFormatter.Format(
+            LocalAt(2026, 1, 1, 9, 30), ClockTextFormatter.TimeFormat, dateFormat, CultureInfo.InvariantCulture);
+
+        Assert.Equal(expected, dateLine);
+        Assert.False(ClockFormatOptions.IsSupportedDateFormat(dateFormat));
+    }
+
+    [Fact]
+    public void Format_UnsupportedTimeFormat_FallsBackToProductDefault()
+    {
+        var (timeLine, dateLine) = ClockTextFormatter.Format(
+            LocalAt(2026, 1, 1, 13, 5), "HH:mm'", "yyyy/M/d", CultureInfo.InvariantCulture);
+
+        Assert.Equal("13:05", timeLine);
+        Assert.Equal("2026/1/1", dateLine);
+        Assert.False(ClockFormatOptions.IsValid("HH:mm'", "yyyy/M/d"));
+    }
+
+    [Fact]
+    public void Format_StillAppliesCultureToWeekdayAndAmPm()
+    {
+        var culture = new CultureInfo("zh-CN");
+        var (timeLine, dateLine) = ClockTextFormatter.Format(
+            LocalAt(2026, 1, 1, 13, 5), "hh:mm tt", "yyyy/M/d dddd", culture);
+
+        Assert.Equal("01:05 下午", timeLine);
+        Assert.Contains("星期四", dateLine);
     }
 }

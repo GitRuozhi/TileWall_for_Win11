@@ -6,6 +6,8 @@ namespace TileWall.Core.Configuration;
 /// </summary>
 public interface IFileStore
 {
+    /// <summary>Inspect an existing path without following a reparse point. Missing paths return Exists=false.</summary>
+    FileStorePathInfo GetPathInfo(string path);
     bool Exists(string path);
 
     byte[] ReadAllBytes(string path);
@@ -37,3 +39,5 @@ public interface IFileStore
     /// <summary>尽力递归删除目录；不存在时静默（Directory.Delete 语义）。M4：暂存区/撤销材料清理。</summary>
     void DeleteDirectory(string directoryPath);
 }
+
+public sealed record FileStorePathInfo(bool Exists, bool IsDirectory, bool IsReparsePoint);

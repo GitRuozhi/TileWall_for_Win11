@@ -134,8 +134,8 @@ public sealed class PartitionFuzzTests
             }
 
             // INV-P5 尺寸界限恒成立
-            Assert.InRange(session.Current.Size.Columns, WallGrid.GroupMinColumns, WallGrid.GroupMaxColumns);
-            Assert.InRange(session.Current.Size.Rows, WallGrid.GroupMinRows, WallGrid.GroupMaxRows);
+            Assert.InRange(session.Current.Size.Columns, PartitionLimits.GroupMinColumns, PartitionLimits.GroupMaxColumns);
+            Assert.InRange(session.Current.Size.Rows, PartitionLimits.GroupMinRows, PartitionLimits.GroupMaxRows);
         }
     }
 

@@ -4,7 +4,7 @@ namespace TileWall.Core.Shell;
 /// 冷启动命令行构造（M9 设计 §4.4）：`--add "路径1" "路径2" …`。
 /// Windows 命令行整体长度上限 32767 字符——按单路径 ≤260 字符估，≥120 项才触界；
 /// 触界时按整条路径截断（绝不切半条），截断事实经标记参数在墙上提示「请分批添加」，不静默丢项。
-/// 路径不含引号字符（Windows 文件名禁止），逐条包裹引号安全。纯字符串逻辑，可单测。
+/// 按 Windows argv 引用规则编码反斜线和引号，不改变输入路径。纯字符串逻辑，可单测。
 /// </summary>
 public static class ExplorerAddCommandLine
 {
@@ -18,7 +18,7 @@ public static class ExplorerAddCommandLine
     public const int MaxArgumentsLength = 32000;
 
     /// <summary>
-    /// 构造 --add 参数串：依序整条纳入，直到达到长度上限；首条恒纳入（保证冷启动不空手）。
+    /// 构造 --add 参数串：依序整条纳入，直到达到长度上限；超限首条也整条截断。
     /// 返回参数串（不含 exe 名）、纳入条数与是否发生截断（截断 = 后续条目放不下）。
     /// </summary>
     public static (string Arguments, int SelectedCount, bool Truncated) Build(IReadOnlyList<string> paths)
@@ -28,8 +28,8 @@ public static class ExplorerAddCommandLine
         var selected = 0;
         for (var i = 0; i < paths.Count; i++)
         {
-            var candidate = $" \"{QuoteSafe(paths[i])}\"";
-            if (selected > 0 && builder.Length + candidate.Length > MaxArgumentsLength)
+            var candidate = " " + QuoteArgument(paths[i]);
+            if (builder.Length + candidate.Length > MaxArgumentsLength)
             {
                 break; // 后续条目放不下：整条截断（不切半条路径）
             }
@@ -42,5 +42,21 @@ public static class ExplorerAddCommandLine
         return (builder.ToString(), selected, truncated);
     }
 
-    private static string QuoteSafe(string path) => path.Replace("\"", string.Empty); // 文件名不含引号；防御性剥离
+    private static string QuoteArgument(string path)
+    {
+        var quoted = new System.Text.StringBuilder("\"");
+        var slashes = 0;
+        foreach (var character in path)
+        {
+            if (character == '\\') { slashes++; continue; }
+            // Before a literal quote, escape both the preceding slashes and the quote itself.
+            quoted.Append('\\', character == '"' ? slashes * 2 + 1 : slashes);
+            quoted.Append(character);
+            slashes = 0;
+        }
+        // Trailing slashes must not escape the closing delimiter or absorb the next argument.
+        quoted.Append('\\', slashes * 2);
+        quoted.Append('"');
+        return quoted.ToString();
+    }
 }

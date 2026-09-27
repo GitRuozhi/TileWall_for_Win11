@@ -14,15 +14,28 @@ public static class Program
         {
             return Shell.Interop.ExplorerCommandServer.Run();
         }
-
-        // —— 与 App.g.i.cs 生成的 Main 逐句一致（原启动序列不变，§1.2）——
         global::WinRT.ComWrappersSupport.InitializeComWrappers();
+        var startupTask = false;
+#if TILEWALL_PACKAGED
+        // Packaged activation arguments are consumable only once; read before XAML startup.
+        var activation = global::Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs();
+        startupTask = activation?.Kind == global::Microsoft.Windows.AppLifecycle.ExtendedActivationKind.StartupTask;
+        if (activation is not null && activation.Kind == global::Microsoft.Windows.AppLifecycle.ExtendedActivationKind.Launch &&
+            activation.Data is global::Windows.ApplicationModel.Activation.ILaunchActivatedEventArgs launch &&
+            !string.IsNullOrWhiteSpace(launch.Arguments))
+            args = ApplicationModel.StartupIntent.ReadLaunchArguments(launch.Arguments);
+#endif
+        var scope = ApplicationModel.RuntimeScope.FromArguments(args);
+        var intent = ApplicationModel.StartupIntent.Parse(args, startupTask);
+        Shell.AppLogSetup.InitializeForCurrentProcess(scope.LogRoot);
+
+        // Preserve the generated Main's XAML dispatcher/synchronization-context startup sequence.
         global::Microsoft.UI.Xaml.Application.Start(p =>
         {
             var context = new global::Microsoft.UI.Dispatching.DispatcherQueueSynchronizationContext(
                 global::Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
             global::System.Threading.SynchronizationContext.SetSynchronizationContext(context);
-            _ = new App(); // 丢弃赋值，非 lambda 参数 p
+            _ = new App(scope, intent);
         });
         return 0;
     }

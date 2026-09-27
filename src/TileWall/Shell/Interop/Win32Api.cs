@@ -100,6 +100,70 @@ internal static class Win32Api
     internal const uint WmSettingchange = 0x001A;   // WM_SETTINGCHANGE（SPI_SETWORKAREA 广播同路，M8 §6.2）
     internal const uint WmDisplaychange = 0x007E;   // WM_DISPLAYCHANGE（分辨率/显示器变更，M8 §6.2）
 
+    // ———— C1/F-01：WM_COPYDATA 发送方进程鉴权（wParam 句柄 → PID → 映像路径） ————
+
+    /// <summary>PROCESS_QUERY_LIMITED_INFORMATION：仅查基本信息/映像路径，权限面最小的查询权。</summary>
+    internal const uint ProcessQueryLimitedInformation = 0x1000;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool AllowSetForegroundWindow(uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+    /// <summary>dwFlags=0：返回 Win32 路径形态（与 Environment.ProcessPath 可直接比对）。</summary>
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    internal static extern bool QueryFullProcessImageNameW(IntPtr hProcess, uint dwFlags, System.Text.StringBuilder lpExeName, ref uint lpdwSize);
+
+    // ———— C2/F-03：事件日志兜底（advapi32；仅「日志初始化前失败」的最后观测通道用） ————
+
+    internal const ushort EventlogErrorType = 0x0001; // EVENTLOG_ERROR_TYPE（= managed EventLogEntryType.Error）
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    internal static extern IntPtr RegisterEventSourceW(string? lpUNCServerName, string lpSourceName);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    internal static extern bool ReportEventW(
+        IntPtr hEventLog, ushort wType, ushort wCategory, uint dwEventID, IntPtr lpUserSid,
+        ushort wNumStrings, uint dwDataSize, ref IntPtr lpStrings, IntPtr lpRawData);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    internal static extern bool DeregisterEventSource(IntPtr hEventLog);
+
+    /// <summary>向 Application 日志写一条 Error（source 须已注册，否则返回 false 由调用方跳过——创建源需管理员）。</summary>
+    internal static bool TryReportApplicationEventError(string source, string message)
+    {
+        var handle = RegisterEventSourceW(null, source);
+        if (handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var messagePtr = Marshal.StringToHGlobalUni(message);
+        try
+        {
+            var stringsPtr = Marshal.AllocHGlobal(IntPtr.Size); // LPCTSTR*：单字符串指针数组
+            Marshal.WriteIntPtr(stringsPtr, messagePtr);
+            try
+            {
+                return ReportEventW(handle, EventlogErrorType, 0, 0, IntPtr.Zero, 1, 0, ref stringsPtr, IntPtr.Zero);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(stringsPtr);
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(messagePtr);
+            _ = DeregisterEventSource(handle);
+        }
+    }
+
     // ————————————————————————————— user32：托盘菜单（§4.2，即建即毁） —————————————————————————————
 
     [DllImport("user32.dll", SetLastError = true)]

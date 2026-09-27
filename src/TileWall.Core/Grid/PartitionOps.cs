@@ -128,7 +128,7 @@ public static class PartitionOps
     public static PartitionOpResult AddColumn(PartitionLayout layout)
     {
         ArgumentNullException.ThrowIfNull(layout);
-        if (layout.Size.Columns >= WallGrid.GroupMaxColumns)
+        if (layout.Size.Columns >= PartitionLimits.GroupMaxColumns)
         {
             return PartitionOpResult.Fail(PartitionOpStatus.AtLimit);
         }
@@ -151,7 +151,7 @@ public static class PartitionOps
     public static PartitionOpResult RemoveColumn(PartitionLayout layout)
     {
         ArgumentNullException.ThrowIfNull(layout);
-        if (layout.Size.Columns <= WallGrid.GroupMinColumns)
+        if (layout.Size.Columns <= PartitionLimits.GroupMinColumns)
         {
             return PartitionOpResult.Fail(PartitionOpStatus.AtLimit);
         }
@@ -180,7 +180,7 @@ public static class PartitionOps
     public static PartitionOpResult AddRow(PartitionLayout layout)
     {
         ArgumentNullException.ThrowIfNull(layout);
-        if (layout.Size.Rows >= WallGrid.GroupMaxRows)
+        if (layout.Size.Rows >= PartitionLimits.GroupMaxRows)
         {
             return PartitionOpResult.Fail(PartitionOpStatus.AtLimit);
         }
@@ -200,7 +200,7 @@ public static class PartitionOps
     public static PartitionOpResult RemoveRow(PartitionLayout layout)
     {
         ArgumentNullException.ThrowIfNull(layout);
-        if (layout.Size.Rows <= WallGrid.GroupMinRows)
+        if (layout.Size.Rows <= PartitionLimits.GroupMinRows)
         {
             return PartitionOpResult.Fail(PartitionOpStatus.AtLimit);
         }
