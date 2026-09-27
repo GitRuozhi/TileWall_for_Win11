@@ -2,7 +2,7 @@
 
 TileWall 是面向 Windows 10 22H2 和 Windows 11 的独立磁贴启动墙。它以 Windows 10 开始菜单为视觉与分组参考，用磁贴组织程序、文件、文件夹和网址；系统开始菜单与 Win 键照常工作。
 
-**状态：0.2.1 实现及可自主执行的本机验证已完成，尚余两项人工验收；未公开发布。** 项目/包版本为 **0.2.1 / 0.2.1.0**。新 UI、分组、图像管线和事务实现已进入正式源码，旧实现已删除；Core 461/461 通过，真实编辑、拖放、恢复、适配及本机视觉范围已有证据。当前 round-6 构建零诊断，便携 ZIP、未签名 MSIX、版本、许可证及快捷方式已核验。开发包 AUMID 激活、正常 LocalState 保存重启、StartupTask 开关读回通过；Explorer 冷/热添加、模态两请求 FIFO、重启一致性与测试包清理通过。UAC 取消与真正登录尚未测试，Windows 11 按用户决定未覆盖；1×1 时钟保留完整内容但字号偏小。构建、逐项范围和未覆盖项见 [交付记录](docs/refactor-plan/delivery-report.md) 与 [验收结果](docs/refactor-plan/acceptance-results.md)。
+**状态：0.2.1 重构及本机验收完成（含用户人工验收）；未公开发布。** 项目/包版本为 **0.2.1 / 0.2.1.0**。新 UI、分组、图像管线和事务实现已进入正式源码，旧实现已删除；Core 461/461 通过，真实编辑、拖放、恢复、适配及本机视觉范围已有证据。已验收 round-6 构建零诊断，便携 ZIP、未签名 MSIX、版本、许可证及快捷方式已核验。开发包 AUMID 激活、正常 LocalState 保存重启、StartupTask 开关读回通过；Explorer 冷/热添加、模态两请求 FIFO、重启一致性与测试包清理通过。UAC 取消与真正登录由用户确认人工测试完成，Windows 11 按用户决定未覆盖；1×1 时钟保留完整内容但字号偏小。构建、逐项范围和未覆盖项见 [交付记录](docs/refactor-plan/delivery-report.md) 与 [验收结果](docs/refactor-plan/acceptance-results.md)。
 
 ## 0.2.1 的目标体验
 
@@ -17,7 +17,7 @@ TileWall 是面向 Windows 10 22H2 和 Windows 11 的独立磁贴启动墙。它
 
 ## 开发状态
 
-实现已形成新的 `WallDocument` / `WallStore` Core 存储与 `WallSession` 编排，并在 `Views/`、`Graphics/`、`Shell/` 中承载新 UI、图像与系统接线；旧 UI、旧图像引擎和旧格式存储代码已从正式源码删除，本机自动化与真实输入回归已完成，UAC 取消和实际登录仍待人工配合。新 schema 不迁移旧布局。仅能明确识别为旧 schema 1 的应用自有状态允许受限重置；schema 2 损坏、未来版本或来源不明残留必须保留并阻断，不能静默建空墙。新格式包含事务、撤销和恢复协议。日常数据根为 unpackaged `%LOCALAPPDATA%\TileWall`，packaged 使用 `ApplicationData.Current.LocalFolder`，二者不互读；外部原件只读。完整手动备份/还原须在应用退出后复制整个对应数据根，应用内备份界面不在范围内。
+实现已形成新的 `WallDocument` / `WallStore` Core 存储与 `WallSession` 编排，并在 `Views/`、`Graphics/`、`Shell/` 中承载新 UI、图像与系统接线；旧 UI、旧图像引擎和旧格式存储代码已从正式源码删除，本机自动化与真实输入回归已完成，UAC 取消和实际登录由用户确认人工测试完成。新 schema 不迁移旧布局。仅能明确识别为旧 schema 1 的应用自有状态允许受限重置；schema 2 损坏、未来版本或来源不明残留必须保留并阻断，不能静默建空墙。新格式包含事务、撤销和恢复协议。日常数据根为 unpackaged `%LOCALAPPDATA%\TileWall`，packaged 使用 `ApplicationData.Current.LocalFolder`，二者不互读；外部原件只读。完整手动备份/还原须在应用退出后复制整个对应数据根，应用内备份界面不在范围内。
 
 普通用户发行仍待正式授权文本定稿、MSIX 可信签名及安装路径验收。当前便携 ZIP 与未签名 MSIX 已构建并完成内容核验；未签名包仅用于隔离验证，不能据此声称已验证安装。Windows 11 未覆盖，不能宣称双平台验收。
 
