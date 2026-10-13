@@ -22,7 +22,8 @@ public sealed class PuzzleCanvasView : Canvas
     public bool Interactive { get; set; }
     public event Action<Button, int>? PartitionCreated;
 
-    public void SetScene(PuzzleMember member, PuzzleFrame? frame, WallMetrics metrics, double rasterScale)
+    public void SetScene(PuzzleMember member, PuzzleFrame? frame, WallMetrics metrics, double rasterScale,
+        WallVisualStyle? visualStyle = null)
     {
         Children.Clear();
         _parts.Clear();
@@ -50,6 +51,9 @@ public sealed class PuzzleCanvasView : Canvas
                     WallSurface.SystemAccentColor())),
                 Clip = new RectangleGeometry { Rect = new Rect(0, 0, width, height) },
             };
+            // Only wall callers opt into a style; the editor's existing view stays independent.
+            // Grid's rounded clip includes the full shared image plane, even without a Button.
+            if (visualStyle is { } style) content.CornerRadius = WallCornerStyle.Corners(style);
             var plane = new Canvas { Width = width, Height = height, IsHitTestVisible = false };
             content.Children.Add(plane);
             _planes.Add((plane, x, y));
@@ -65,6 +69,7 @@ public sealed class PuzzleCanvasView : Canvas
                     Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
                     Tag = $"member:{member.Id}",
                 };
+                if (visualStyle is { } buttonStyle) button.CornerRadius = WallCornerStyle.Corners(buttonStyle);
                 AutomationProperties.SetAutomationId(button, $"member-{member.Id}-partition-{index}");
                 AutomationProperties.SetName(button, $"拼图：{member.Visual.Title ?? member.Id}，分块 {index + 1}");
                 if (member.Visual.ShowTitle && !string.IsNullOrWhiteSpace(member.Visual.Title))
@@ -93,6 +98,7 @@ public sealed class PuzzleCanvasView : Canvas
             }
             var cue = new Border { BorderThickness = new Thickness(2),
                 BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.Transparent), IsHitTestVisible = false };
+            if (visualStyle is { } cueStyle) cue.CornerRadius = WallCornerStyle.Corners(cueStyle);
             content.Children.Add(cue);
             _cues.Add(cue);
             SetLeft(part, x);

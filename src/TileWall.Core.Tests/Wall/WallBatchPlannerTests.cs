@@ -10,7 +10,7 @@ public sealed class WallBatchPlannerTests
     private const double OneLaneWidth = 436;
     private const double TwoLaneWidth = 860;
     private const double ThreeLaneWidth = 1284;
-    private const double OneGroupHeight = 124;
+    private const double OneGroupHeight = 112;
 
     private static TileMember Tile(string id, int column = 0, string? title = null) => new()
     {
@@ -107,8 +107,9 @@ public sealed class WallBatchPlannerTests
     public void GroupTitleConsumesCapacity()
     {
         var empty = WallDocument.Empty(1, 1);
+        Assert.Equal(OneGroupHeight, new WallMetrics().WallHeight(2));
         var noTitleRoom = WallBatchPlanner.TryPlan(empty, [Tile("one")], null, 0,
-            "batch", OneLaneWidth, 72);
+            "batch", OneLaneWidth, OneGroupHeight - 1);
         Assert.False(noTitleRoom.Success);
         Assert.Null(noTitleRoom.Proposal);
 

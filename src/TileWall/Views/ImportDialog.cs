@@ -99,7 +99,7 @@ internal sealed class ImportDialog : IWallDialogSession
     public async Task ShowAsync()
     {
         _pending = ScanAsync();
-        try { await _dialog.ShowAsync(); }
+        try { await OwnedDialogWindow.ShowAsync(_dialog); }
         finally { StopRequests(); _lifetime.Dispose(); }
     }
 
@@ -206,6 +206,7 @@ internal sealed class ImportDialog : IWallDialogSession
         catch (OperationCanceledException) { }
     }
     public Task<ExitDecision> ConfirmExitAsync() => _exit.ConfirmAsync();
+    public void RequestDismiss() => _dialog.Hide();
     public void Close() { _discarded = true; StopRequests(); _dialog.Hide(); }
     public void DiscardDraft() { _selected.Clear(); _discarded = true; }
 

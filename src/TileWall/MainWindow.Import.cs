@@ -17,10 +17,10 @@ public sealed partial class MainWindow
     private async Task OpenImportAsync(string? groupId, int lane)
     {
         if (_modal || _viewBlocked || _adaptationBlocked || !_hasDocument) return;
-        BeginModal();
         try
         {
-            var dialog = new ImportDialog(this, _images,
+            await BeginModalAsync();
+            var dialog = new ImportDialog(DialogOwner, _images,
                 items => PlanImport(items, groupId, lane), items => SaveImport(items, groupId, lane));
             ActiveDialog = dialog;
             await dialog.ShowAsync();

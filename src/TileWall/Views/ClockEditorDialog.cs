@@ -4,7 +4,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using TileWall.Core.Carousel;
 using TileWall.Core.Components;
-using TileWall.Core.Grid;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
 using TileWall.Resources;
@@ -14,7 +13,6 @@ namespace TileWall.Views;
 internal sealed class ClockEditorDialog : IWallDialogSession
 {
     private readonly ClockMember _draft;
-    private readonly bool _creating;
     private readonly int _maxHeight;
     private readonly IClock _clock;
     private readonly Func<ClockMember, string?> _save;
@@ -27,11 +25,10 @@ internal sealed class ClockEditorDialog : IWallDialogSession
         _error = new() { TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed) };
     private bool _saved, _dirty, _allowDiscard, _discarded;
 
-    public ClockEditorDialog(Window owner, ClockMember? original, string memberId, int maxHeight,
+    public ClockEditorDialog(Window owner, ClockMember original, int maxHeight,
         IClock clock, Func<ClockMember, string?> save)
     {
-        _creating = original is null;
-        _draft = original ?? new ClockMember { Id = memberId, LocalBounds = new GridRect(0, 0, 2, 2) };
+        _draft = original;
         _maxHeight = Math.Clamp(maxHeight, _draft.LocalBounds.Height, 256); _clock = clock; _save = save;
         _title.Text = _draft.Visual.Title ?? string.Empty; _showTitle.IsChecked = _draft.Visual.ShowTitle;
         for (var i = 1; i <= 8; i++) _width.Items.Add(i.ToString());
@@ -78,11 +75,12 @@ internal sealed class ClockEditorDialog : IWallDialogSession
         };
     }
 
-    public async Task<bool> ShowAsync() { await _dialog.ShowAsync(); return _saved; }
+    public async Task<bool> ShowAsync() { await OwnedDialogWindow.ShowAsync(_dialog); return _saved; }
     public bool HasUnsavedDraft => _dirty;
     public Task WaitForPendingAsync() => Task.CompletedTask;
     public Task<ExitDecision> ConfirmExitAsync() => _exit.ConfirmAsync();
     public void DiscardDraft() { _discarded = true; _dirty = false; }
+    public void RequestDismiss() => _dialog.Hide();
     public void Close() { _discarded = true; _dialog.Hide(); }
 
     public string? TrySaveNow()
@@ -106,7 +104,7 @@ internal sealed class ClockEditorDialog : IWallDialogSession
     public void RefreshStrings()
     {
         if (_exit.IsActive) return;
-        _dialog.Title = ProductStrings.Get(_creating ? "Clock.Create" : "Clock.Edit");
+        _dialog.Title = ProductStrings.Get("Clock.Edit");
         _dialog.PrimaryButtonText = ProductStrings.Get("Common.Save");
         _dialog.CloseButtonText = ProductStrings.Get(_allowDiscard ? "Common.Discard" : "Common.Cancel");
         _title.Header = ProductStrings.Get("Common.Title"); _showTitle.Content = ProductStrings.Get("Common.ShowTitle");

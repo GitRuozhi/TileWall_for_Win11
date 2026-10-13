@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
 using TileWall.Core.Grid;
 using TileWall.Core.Wall;
 using TileWall.Core.Components;
@@ -18,6 +19,7 @@ namespace TileWall.Views;
 /// <summary>Projection of the committed document or an explicit layout proposal.</summary>
 public sealed class WallSurface : Canvas
 {
+    private const byte GridCellOpacity = 26;
     private readonly WallMetrics _metrics = new();
     private readonly Dictionary<string, Button> _buttons = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Border> _cues = new(StringComparer.Ordinal);
@@ -30,6 +32,16 @@ public sealed class WallSurface : Canvas
     private bool _dragAllowed;
     private CancellationTokenSource? _imageCancellation;
     private long _renderVersion;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _titleScrollTimer;
+    private TextBlock? _scrollingTitle;
+    private Border? _scrollingTitleBand;
+    private double _titleScrollOffset;
+    private double _titleScrollMaximum;
+    private double _titleScrollViewportWidth;
+    private int _titleScrollDirection = 1;
+    private DateTime _titleScrollPauseUntil;
+
+    private CornerRadius WallCorners => WallCornerStyle.Corners(_document!.Settings.VisualStyle);
 
     public WallImageService? Images { get; set; }
     public Func<WallMember, string?>? ResolveEntryPath { get; set; }
@@ -59,10 +71,13 @@ public sealed class WallSurface : Canvas
         XYFocusKeyboardNavigation = XYFocusKeyboardNavigationMode.Enabled;
         AutomationProperties.SetAutomationId(this, "wall-surface");
         RightTapped += OnBackgroundRightTapped;
+        AddHandler(UIElement.DoubleTappedEvent, new DoubleTappedEventHandler(OnWallDoubleTapped), true);
+        Unloaded += (_, _) => StopTitleScrolling();
     }
 
     public void Render(WallDocument document)
     {
+        StopTitleScrolling();
         _imageCancellation?.Cancel();
         _imageCancellation?.Dispose();
         _imageCancellation = new CancellationTokenSource();
@@ -81,6 +96,7 @@ public sealed class WallSurface : Canvas
         _cues.Clear();
         _titleEditors.Clear();
         _clocks.Clear();
+        if (document.Settings.ShowGrid) AddGridBackground(document.Columns, document.Rows);
         foreach (var placed in geometry.Groups)
         {
             AddAt(CreateTitle(groups[placed.GroupId], placed.TitleBounds), placed.TitleBounds);
@@ -103,6 +119,36 @@ public sealed class WallSurface : Canvas
         if (_dragMemberId is not null) ShowDragCue(_dragMemberId, _dragAllowed);
     }
 
+    private void AddGridBackground(int columns, int rows)
+    {
+        // Fill each complete lane independently of its objects, preserving the lane gaps.
+        var brush = new SolidColorBrush(Color.FromArgb(GridCellOpacity, 255, 255, 255));
+        var radius = WallCornerStyle.Radius(_document!.Settings.VisualStyle);
+        for (var lane = 0; lane < columns; lane++)
+        for (var row = 0; row < rows; row++)
+        for (var column = 0; column < 8; column++)
+        {
+            var bounds = new DipRect(
+                _metrics.Margin + lane * (_metrics.LaneWidth + _metrics.ColumnGap) + column * _metrics.Pitch,
+                _metrics.TopMargin + row * _metrics.Pitch,
+                _metrics.Cell,
+                _metrics.Cell);
+            AddAt(new Rectangle { Fill = brush, RadiusX = radius, RadiusY = radius,
+                IsHitTestVisible = false }, bounds);
+        }
+    }
+
+    private void OnWallDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        for (var node = e.OriginalSource as DependencyObject; node is not null && !ReferenceEquals(node, this);
+            node = VisualTreeHelper.GetParent(node))
+            if (node is TextBox) return;
+        var hit = Hit(e.GetPosition(this));
+        if (hit.MemberId is not null || !hit.GroupHandle || hit.GroupId is null) return;
+        BeginGroupTitleEdit(hit.GroupId);
+        e.Handled = true;
+    }
+
     public (string? MemberId, string? GroupId, bool GroupHandle) Hit(Point position)
     {
         if (Geometry is null || _document is null) return (null, null, false);
@@ -119,8 +165,11 @@ public sealed class WallSurface : Canvas
                 return (member.MemberId, placement.GroupId, false);
             }
             if (Contains(placement.TitleBounds, position))
-                return (null, placement.GroupId,
-                    position.X >= placement.TitleBounds.X + placement.TitleBounds.Width - 34);
+            {
+                var editing = _titleEditors.TryGetValue(placement.GroupId, out var editor) &&
+                    editor.Visibility == Visibility.Visible;
+                return (null, placement.GroupId, !editing);
+            }
             if (Contains(placement.Bounds, position)) return (null, placement.GroupId, false);
         }
         return (null, null, false);
@@ -160,6 +209,7 @@ public sealed class WallSurface : Canvas
 
     public void CancelImageRequests()
     {
+        StopTitleScrolling();
         _imageCancellation?.Cancel();
         _imageCancellation?.Dispose();
         _imageCancellation = null;
@@ -208,7 +258,11 @@ public sealed class WallSurface : Canvas
             SetTop(copy, item.Bounds.Y - placed.Bounds.Y);
             canvas.Children.Add(copy);
         }
-        return canvas;
+        return new Border
+        {
+            Width = placed.Bounds.Width, Height = placed.Bounds.Height,
+            CornerRadius = WallCorners, Child = canvas, IsHitTestVisible = false,
+        };
     }
 
     private PuzzleCanvasView? ClonePuzzle(string id)
@@ -217,7 +271,8 @@ public sealed class WallSurface : Canvas
             .OfType<PuzzleMember>().FirstOrDefault(p => p.Id == id);
         if (puzzle is null) return null;
         var copy = new PuzzleCanvasView { IsHitTestVisible = false };
-        copy.SetScene(puzzle, ResolvePuzzleFrame?.Invoke(id), _metrics, XamlRoot?.RasterizationScale ?? 1);
+        copy.SetScene(puzzle, ResolvePuzzleFrame?.Invoke(id), _metrics, XamlRoot?.RasterizationScale ?? 1,
+            _document!.Settings.VisualStyle);
         return copy;
     }
 
@@ -236,7 +291,8 @@ public sealed class WallSurface : Canvas
         };
         var frame = ResolvePuzzleFrame?.Invoke(member.Id);
         _puzzleFrames[member.Id] = frame;
-        view.SetScene(member, frame, _metrics, XamlRoot?.RasterizationScale ?? 1);
+        view.SetScene(member, frame, _metrics, XamlRoot?.RasterizationScale ?? 1,
+            _document!.Settings.VisualStyle);
         view.SetFlipProgress(ResolvePuzzleProgress?.Invoke(member.Id) ?? 1);
         return view;
     }
@@ -301,12 +357,15 @@ public sealed class WallSurface : Canvas
 
     private static FrameworkElement CloneMember(Button button, double width, double height)
     {
+        var content = (Grid)button.Content;
         var clone = new Grid
         {
             Width = width, Height = height,
-            Background = ((Grid)button.Content).Background,
+            Background = content.Background,
+            CornerRadius = content.CornerRadius,
+            Clip = new RectangleGeometry { Rect = new Rect(0, 0, width, height) },
         };
-        foreach (var child in ((Grid)button.Content).Children)
+        foreach (var child in content.Children)
         {
             if (child is Image image)
             {
@@ -355,7 +414,11 @@ public sealed class WallSurface : Canvas
                         Text = label.Text,
                         FontSize = label.FontSize,
                         Foreground = label.Foreground,
-                        TextTrimming = label.TextTrimming,
+                        Width = Math.Max(0, width - band.Padding.Left - band.Padding.Right),
+                        TextWrapping = TextWrapping.NoWrap,
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                        HorizontalAlignment = HorizontalAlignment.Left,
+                        VerticalAlignment = VerticalAlignment.Center,
                     },
                 });
             }
@@ -380,7 +443,11 @@ public sealed class WallSurface : Canvas
         var menu = new MenuFlyout();
         AddMenuItem(menu, ProductStrings.Get("Wall.NewTile"), () => NewTileRequested?.Invoke(hit.GroupId, lane));
         AddMenuItem(menu, ProductStrings.Get("Wall.NewPuzzle"), () => NewPuzzleRequested?.Invoke(hit.GroupId, lane));
-        AddMenuItem(menu, ProductStrings.Get("Wall.NewClock"), () => NewClockRequested?.Invoke(hit.GroupId, lane));
+        var addComponent = new MenuFlyoutSubItem { Text = ProductStrings.Get("Menu.AddComponent") };
+        var newClock = new MenuFlyoutItem { Text = ProductStrings.Get("Wall.NewClock") };
+        newClock.Click += (_, _) => NewClockRequested?.Invoke(hit.GroupId, lane);
+        addComponent.Items.Add(newClock);
+        menu.Items.Add(addComponent);
         AddMenuItem(menu, ProductStrings.Get("Wall.Import"), () => ImportRequested?.Invoke(hit.GroupId, lane));
         AddMenuItem(menu, ProductStrings.Get("Wall.Settings"), () => SettingsRequested?.Invoke());
         menu.ShowAt(this, e.GetPosition(this));
@@ -389,7 +456,7 @@ public sealed class WallSurface : Canvas
 
     private FrameworkElement CreateTitle(StartGroup group, DipRect bounds)
     {
-        var grid = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
+        var grid = new Grid { Background = new SolidColorBrush(Colors.Transparent), CornerRadius = WallCorners };
         var hoverBrush = new SolidColorBrush(Color.FromArgb(52, 0, 0, 0));
         var clearBrush = new SolidColorBrush(Colors.Transparent);
         grid.PointerEntered += (_, _) => grid.Background = hoverBrush;
@@ -400,21 +467,51 @@ public sealed class WallSurface : Canvas
             Content = new TextBlock
             {
                 Text = group.Title ?? string.Empty,
-                Width = Math.Max(0, bounds.Width - 60),
+                Width = Math.Max(0, bounds.Width - 5),
+                Height = Math.Min(24, bounds.Height),
+                VerticalAlignment = VerticalAlignment.Bottom,
                 TextWrapping = TextWrapping.NoWrap,
                 TextTrimming = TextTrimming.CharacterEllipsis,
             },
             HorizontalContentAlignment = HorizontalAlignment.Left,
-            Width = Math.Max(0, bounds.Width - 36),
+            Width = bounds.Width,
             Height = bounds.Height,
-            VerticalAlignment = VerticalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Bottom,
+            Padding = new Thickness(5, 0, 0, 0),
             Background = new SolidColorBrush(Colors.Transparent),
             BorderThickness = new Thickness(0),
             HorizontalAlignment = HorizontalAlignment.Left,
+            CornerRadius = WallCorners,
             Tag = $"title:{group.Id}",
         };
         AutomationProperties.SetName(title, string.IsNullOrEmpty(group.Title) ? ProductStrings.Get("Wall.EditUntitledGroup") : string.Format(ProductStrings.Get("Wall.EditGroup"), group.Title));
-        title.Click += (_, _) => BeginGroupTitleEdit(group.Id);
+        ToolTipService.SetToolTip(title, ProductStrings.Get("Wall.GroupTitleHint"));
+        AutomationProperties.SetHelpText(title, ProductStrings.Get("Wall.GroupTitleHint"));
+        var pointerActivation = false;
+        void ClearPointerActivationLater()
+        {
+            var dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+            if (dispatcher is null) { pointerActivation = false; return; }
+            if (!dispatcher.TryEnqueue(() => pointerActivation = false)) pointerActivation = false;
+        }
+        title.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, e) =>
+        {
+            if (e.GetCurrentPoint(title).Properties.IsLeftButtonPressed) pointerActivation = true;
+        }), true);
+        title.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => ClearPointerActivationLater()), true);
+        title.AddHandler(UIElement.PointerCanceledEvent, new PointerEventHandler((_, _) => ClearPointerActivationLater()), true);
+        title.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, _) => ClearPointerActivationLater()), true);
+        // Keep Button keyboard and automation activation as a rename command. Pointer clicks
+        // are reserved for the group drag gesture; DoubleTapped on the surface renames instead.
+        title.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler((_, e) =>
+        {
+            if (e.Key is Windows.System.VirtualKey.Enter or Windows.System.VirtualKey.Space)
+            {
+                BeginGroupTitleEdit(group.Id);
+                e.Handled = true;
+            }
+        }), true);
+        title.Click += (_, _) => { if (!pointerActivation) BeginGroupTitleEdit(group.Id); };
         title.GotFocus += (_, _) => grid.Background = hoverBrush;
         title.LostFocus += (_, _) => grid.Background = clearBrush;
         grid.Children.Add(title);
@@ -424,9 +521,14 @@ public sealed class WallSurface : Canvas
             PlaceholderText = ProductStrings.Get("Wall.GroupName"),
             IsSpellCheckEnabled = false,
             IsTextPredictionEnabled = false,
-            Width = Math.Max(0, bounds.Width - 40),
+            Width = bounds.Width,
+            Height = Math.Min(24, bounds.Height),
+            MinHeight = 0,
+            Padding = new Thickness(4, 0, 4, 0),
             HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Bottom,
             Visibility = Visibility.Collapsed,
+            CornerRadius = WallCorners,
             Tag = $"title:{group.Id}",
         };
         var original = editor.Text;
@@ -446,19 +548,6 @@ public sealed class WallSurface : Canvas
         editor.LostFocus += (_, _) => Finish(true);
         _titleEditors[group.Id] = editor;
         grid.Children.Add(editor);
-        var handle = new Button
-        {
-            Content = "⠿", Width = 34, Height = 30,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Background = new SolidColorBrush(Colors.Transparent),
-            BorderThickness = new Thickness(0),
-            Tag = $"handle:{group.Id}",
-        };
-        AutomationProperties.SetAutomationId(handle, $"group-handle-{group.Id}");
-        AutomationProperties.SetName(handle, string.Format(ProductStrings.Get("Wall.DragGroup"), group.Title ?? ProductStrings.Get("Wall.UntitledGroup")));
-        handle.GotFocus += (_, _) => grid.Background = hoverBrush;
-        handle.LostFocus += (_, _) => grid.Background = clearBrush;
-        grid.Children.Add(handle);
         return grid;
     }
 
@@ -471,7 +560,13 @@ public sealed class WallSurface : Canvas
             ClockMember => Color.FromArgb(255, 71, 77, 90),
             _ => SystemAccentColor(),
         });
-        var content = new Grid { Background = new SolidColorBrush(color) };
+        // WinUI clips Grid children to its CornerRadius, including asynchronously loaded images.
+        // Keep the rectangular viewport fixed so title scrolling never expands the tile bounds.
+        var content = new Grid
+        {
+            Background = new SolidColorBrush(color), CornerRadius = WallCorners,
+            Clip = new RectangleGeometry { Rect = new Rect(0, 0, bounds.Width, bounds.Height) },
+        };
         var main = new TextBlock
         {
             Text = member is ClockMember
@@ -519,17 +614,24 @@ public sealed class WallSurface : Canvas
                 Height = 23,
                 Visibility = Visibility.Collapsed,
                 Padding = new Thickness(5, 2, 5, 2),
+                Clip = new RectangleGeometry { Rect = new Rect(0, 0, bounds.Width, 23) },
                 Child = new TextBlock
                 {
                     Text = member.Visual.Title, FontSize = 11,
                     Foreground = new SolidColorBrush(Colors.White),
+                    Width = Math.Max(0, bounds.Width - 10),
+                    TextWrapping = TextWrapping.NoWrap,
                     TextTrimming = TextTrimming.CharacterEllipsis,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    RenderTransform = new TranslateTransform(),
                 },
             };
             content.Children.Add(titleBand);
         }
         var cue = new Border
         {
+            CornerRadius = WallCorners,
             BorderThickness = new Thickness(2),
             BorderBrush = new SolidColorBrush(Colors.Transparent),
             IsHitTestVisible = false,
@@ -540,6 +642,7 @@ public sealed class WallSurface : Canvas
         {
             Content = content, Padding = new Thickness(0),
             BorderThickness = new Thickness(0),
+            CornerRadius = WallCorners,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Stretch,
             Background = new SolidColorBrush(Colors.Transparent),
@@ -551,12 +654,24 @@ public sealed class WallSurface : Canvas
         if (titleBand is not null)
         {
             var band = titleBand;
+            var title = (TextBlock)band.Child;
+            var titleViewportWidth = Math.Max(0, bounds.Width - band.Padding.Left - band.Padding.Right);
             var hovering = false;
             var focused = false;
             void UpdateBand() => band.Visibility = hovering || focused
                 ? Visibility.Visible : Visibility.Collapsed;
-            button.PointerEntered += (_, _) => { hovering = true; UpdateBand(); };
-            button.PointerExited += (_, _) => { hovering = false; UpdateBand(); };
+            button.PointerEntered += (_, _) =>
+            {
+                hovering = true;
+                UpdateBand();
+                StartTitleScrolling(title, band, titleViewportWidth);
+            };
+            button.PointerExited += (_, _) =>
+            {
+                hovering = false;
+                StopTitleScrolling(title);
+                UpdateBand();
+            };
             button.GotFocus += (_, _) => { focused = true; UpdateBand(); };
             button.LostFocus += (_, _) => { focused = false; UpdateBand(); };
         }
@@ -570,6 +685,113 @@ public sealed class WallSurface : Canvas
             button.ContextFlyout = menu;
         }
         return button;
+    }
+
+    private void StartTitleScrolling(TextBlock title, Border band, double viewportWidth)
+    {
+        StopTitleScrolling();
+        if (viewportWidth <= 0) return;
+
+        // Measure the untrimmed text while it is hovered, then expand the label inside a
+        // clipped band. Short titles keep their normal ellipsis layout and never animate.
+        title.TextTrimming = TextTrimming.None;
+        title.Width = double.NaN;
+        title.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var textWidth = title.DesiredSize.Width;
+        if (!double.IsFinite(textWidth) || textWidth <= viewportWidth + 1)
+        {
+            title.Width = viewportWidth;
+            title.TextTrimming = TextTrimming.CharacterEllipsis;
+            if (title.RenderTransform is TranslateTransform shortTransform) shortTransform.X = 0;
+            return;
+        }
+
+        EnsureTitleScrollTimer();
+        if (_titleScrollTimer is null)
+        {
+            title.Width = viewportWidth;
+            title.TextTrimming = TextTrimming.CharacterEllipsis;
+            if (title.RenderTransform is TranslateTransform fallbackTransform) fallbackTransform.X = 0;
+            return;
+        }
+
+        title.Width = textWidth;
+        // Border arranges its child inside its own content width, which is normally just
+        // the tile title viewport. Grow the band with the text so the TextBlock gets a
+        // finite full-width layout slot; the fixed Clip still limits what is displayed.
+        band.Width = textWidth + band.Padding.Left + band.Padding.Right;
+        band.HorizontalAlignment = HorizontalAlignment.Left;
+        _scrollingTitle = title;
+        _scrollingTitleBand = band;
+        _titleScrollViewportWidth = viewportWidth;
+        _titleScrollMaximum = textWidth - viewportWidth;
+        _titleScrollOffset = 0;
+        _titleScrollDirection = 1;
+        _titleScrollPauseUntil = DateTime.UtcNow.AddMilliseconds(600);
+        if (title.RenderTransform is TranslateTransform transform) transform.X = 0;
+        _titleScrollTimer.Start();
+    }
+
+    private void StopTitleScrolling(TextBlock? expectedTitle = null)
+    {
+        if (_scrollingTitle is null || expectedTitle is not null &&
+            !ReferenceEquals(expectedTitle, _scrollingTitle)) return;
+
+        _titleScrollTimer?.Stop();
+        var title = _scrollingTitle;
+        var band = _scrollingTitleBand;
+        _scrollingTitle = null;
+        _scrollingTitleBand = null;
+        if (title.RenderTransform is TranslateTransform transform) transform.X = 0;
+        title.Width = _titleScrollViewportWidth;
+        title.TextTrimming = TextTrimming.CharacterEllipsis;
+        if (band is not null)
+        {
+            band.Width = double.NaN;
+            band.HorizontalAlignment = HorizontalAlignment.Stretch;
+        }
+        _titleScrollOffset = 0;
+        _titleScrollMaximum = 0;
+        _titleScrollViewportWidth = 0;
+        _titleScrollDirection = 1;
+    }
+
+    private void EnsureTitleScrollTimer()
+    {
+        if (_titleScrollTimer is not null) return;
+        var dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+        if (dispatcher is null) return;
+        _titleScrollTimer = dispatcher.CreateTimer();
+        _titleScrollTimer.Interval = TimeSpan.FromMilliseconds(30);
+        _titleScrollTimer.IsRepeating = true;
+        _titleScrollTimer.Tick += (_, _) => AdvanceTitleScrolling();
+    }
+
+    private void AdvanceTitleScrolling()
+    {
+        if (_scrollingTitle is not { } title ||
+            _scrollingTitleBand?.Visibility != Visibility.Visible || Visibility != Visibility.Visible)
+        {
+            StopTitleScrolling();
+            return;
+        }
+        if (DateTime.UtcNow < _titleScrollPauseUntil) return;
+
+        _titleScrollOffset += _titleScrollDirection * 1.8;
+        if (_titleScrollOffset >= _titleScrollMaximum)
+        {
+            _titleScrollOffset = _titleScrollMaximum;
+            _titleScrollDirection = -1;
+            _titleScrollPauseUntil = DateTime.UtcNow.AddMilliseconds(600);
+        }
+        else if (_titleScrollOffset <= 0)
+        {
+            _titleScrollOffset = 0;
+            _titleScrollDirection = 1;
+            _titleScrollPauseUntil = DateTime.UtcNow.AddMilliseconds(600);
+        }
+        if (title.RenderTransform is TranslateTransform transform)
+            transform.X = -_titleScrollOffset;
     }
 
     private async Task LoadBackgroundAsync(string path, Grid target, DipRect bounds,

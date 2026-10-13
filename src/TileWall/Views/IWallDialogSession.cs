@@ -10,6 +10,7 @@ internal interface IWallDialogSession : IExitParticipant
     Task<ExitDecision> ConfirmExitAsync();
     Task WaitForPendingAsync();
     void Close();
+    void RequestDismiss();
     void RefreshStrings();
 }
 

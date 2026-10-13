@@ -53,25 +53,3 @@ public static class LowResolutionBlur
         return source with { BgraPremultiplied = output };
     }
 }
-
-public readonly record struct RenderGenerationToken(long Value, string MemberId, string CandidateId);
-
-/// <summary>Cancellation saves work; this gate prevents a completed old request from reaching the wall.</summary>
-public sealed class RenderGenerationGate
-{
-    private long _value;
-
-    public RenderGenerationToken Begin(string memberId, string candidateId)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(memberId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(candidateId);
-        return new RenderGenerationToken(Interlocked.Increment(ref _value), memberId, candidateId);
-    }
-
-    public void Invalidate() => Interlocked.Increment(ref _value);
-
-    public bool CanPresent(RenderGenerationToken token, string memberId, string candidateId, bool visible) =>
-        visible && token.Value == Interlocked.Read(ref _value) &&
-        string.Equals(token.MemberId, memberId, StringComparison.Ordinal) &&
-        string.Equals(token.CandidateId, candidateId, StringComparison.Ordinal);
-}

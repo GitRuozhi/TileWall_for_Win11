@@ -84,6 +84,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
             // No Activate/Show is needed to open the committed session or register process resources.
             _window.InitializeSession();
             ProductStrings.ApplyLanguage(_window.Settings.LanguageMode);
+            _window.RefreshAppearance();
             _window.RefreshProductStrings();
             if (HotKeyGesture.TryParse(_window.Settings.HotKey, out var gesture)) _hotKey.TryRegister(gesture!);
             var login = await _login.ReadAsync();
@@ -126,7 +127,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
     private SettingsDialogState CurrentSettingsState() => new(_window.Settings,
         _hotKey.CurrentGesture?.ToConfigString(), _loginEnabled);
 
-    private async Task<SettingsDialogState> ApplySettingsAsync(WallSettings proposed)
+    private async Task<SettingsDialogState> ApplySettingsAsync(WallSettings proposed, bool restoreDefaults)
     {
         if (_settingsBusy) return CurrentSettingsState() with { Error = ProductStrings.Get("Wall.SettingsSaving") };
         if (!HotKeyGesture.TryParse(proposed.HotKey, out var nextKey, out var error))
@@ -136,7 +137,8 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         var oldKey = _hotKey.CurrentGesture;
         var oldLogin = await _login.ReadAsync();
         var hotKeyChanged = oldKey != nextKey;
-        var loginChanged = proposed.RunAtLogin != old.RunAtLogin;
+        var loginChanged = proposed.RunAtLogin != old.RunAtLogin ||
+            restoreDefaults && proposed.RunAtLogin != (oldLogin.Enabled ?? old.RunAtLogin);
         try
         {
             if (hotKeyChanged && !_hotKey.TryRegister(nextKey!))
@@ -152,6 +154,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
             error = _window.CommitSettings(proposed with { HotKey = nextKey!.ToConfigString() });
             if (error is not null) return await RollbackAsync(error, loginChanged);
             ProductStrings.ApplyLanguage(proposed.LanguageMode);
+            _window.RefreshAppearance();
             _window.RefreshProductStrings();
             UpdateTray();
             return CurrentSettingsState();

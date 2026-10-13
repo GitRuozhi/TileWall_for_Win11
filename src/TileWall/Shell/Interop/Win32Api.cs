@@ -9,6 +9,90 @@ namespace TileWall.Shell.Interop;
 /// </summary>
 internal static class Win32Api
 {
+    // Native ownership, frame suppression, and owner input gating for modal windows.
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int index);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
+    private static extern int GetWindowLong32(IntPtr hWnd, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int index, IntPtr value);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW", SetLastError = true)]
+    private static extern int SetWindowLong32(IntPtr hWnd, int index, int value);
+
+    internal static IntPtr GetWindowLongPtrW(IntPtr hWnd, int index) => IntPtr.Size == 8
+        ? GetWindowLongPtr64(hWnd, index) : new IntPtr(GetWindowLong32(hWnd, index));
+
+    internal static IntPtr SetWindowLongPtrW(IntPtr hWnd, int index, IntPtr value) => IntPtr.Size == 8
+        ? SetWindowLongPtr64(hWnd, index, value) : new IntPtr(SetWindowLong32(hWnd, index, value.ToInt32()));
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EnableWindow(IntPtr hWnd, [MarshalAs(UnmanagedType.Bool)] bool enable);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmSetWindowAttribute(IntPtr hWnd, uint attribute, ref uint value, uint size);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct DwmMargins { public int Left, Right, Top, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct DwmBlurBehind
+    {
+        public uint Flags;
+        [MarshalAs(UnmanagedType.Bool)] public bool Enable;
+        public IntPtr Region;
+        [MarshalAs(UnmanagedType.Bool)] public bool TransitionOnMaximized;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmExtendFrameIntoClientArea(IntPtr hWnd, ref DwmMargins margins);
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmEnableBlurBehindWindow(IntPtr hWnd, ref DwmBlurBehind blur);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateSolidBrush(uint color);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetClientRect(IntPtr hWnd, out NativeRect rect);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    internal static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("user32.dll")]
+    internal static extern int FillRect(IntPtr hDC, ref NativeRect rect, IntPtr brush);
+
+    internal delegate IntPtr SubclassProc(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam, nuint id, nuint data);
+
+    [DllImport("comctl32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowSubclass(IntPtr hWnd, SubclassProc callback, nuint id, nuint data);
+
+    [DllImport("comctl32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool RemoveWindowSubclass(IntPtr hWnd, SubclassProc callback, nuint id);
+
+    [DllImport("comctl32.dll")]
+    internal static extern IntPtr DefSubclassProc(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
+
+
     // ————————————————————————————— kernel32：单实例互斥体（§7.1） —————————————————————————————
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -337,8 +421,6 @@ internal static class Win32Api
     [DllImport("gdi32.dll", SetLastError = true)]
     internal static extern bool DeleteObject(IntPtr hObject);
 
-    [DllImport("gdi32.dll", SetLastError = true)]
-    internal static extern int GetDIBits(IntPtr hdc, IntPtr hbm, uint start, uint cLines, IntPtr lpvBits, ref BitmapInfoW lpbmi, uint usage);
 
     internal const uint DibRgbColors = 0;
 

@@ -59,7 +59,7 @@ public static class WallBatchPlanner
         foreach (var member in members) reservedIds.Add(member.Id);
 
         var maxCandidateRows = (int)Math.Clamp(Math.Floor(
-            (workHeightDip - 2 * metrics.Margin + metrics.Gap) / metrics.Pitch), 0, MaxRows);
+            (workHeightDip - metrics.TopMargin - metrics.Margin + metrics.Gap) / metrics.Pitch), 0, MaxRows);
         var accepted = new List<AddBatchItem>(members.Count);
         var snapshot = current;
         var activeGroupId = targetGroupId;

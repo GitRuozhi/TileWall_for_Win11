@@ -98,7 +98,7 @@ public static class WallLayoutEngine
                 rejection = RenameGroup(lanes, rename.GroupId, rename.Title);
                 break;
             case ResizeWallAction resize:
-                rejection = ResizeLanes(lanes, resize.Columns, resize.Rows);
+                rejection = ResizeLanes(lanes, resize.Columns, resize.Rows, current.Rows, metrics);
                 break;
             default:
                 rejection = WallRejection.InvalidAction;
@@ -168,8 +168,18 @@ public static class WallLayoutEngine
         if (document.Columns is < 1 or > MaxColumns || document.Rows is < 1 or > MaxRows || document.Lanes is null ||
             document.Lanes.Count != document.Columns) return [.. errors, "WALL_STRUCTURE"];
         if (document.Settings is null) errors.Add("SETTINGS_NULL");
-        else if (!Enum.IsDefined(document.Settings.AnchorCorner) || !Enum.IsDefined(document.Settings.LanguageMode))
+        else if (!Enum.IsDefined(document.Settings.AnchorCorner) || !Enum.IsDefined(document.Settings.LanguageMode)
+            || !Enum.IsDefined(document.Settings.VisualStyle) ||
+            !Enum.IsDefined(document.Settings.ThemeMode) || !Enum.IsDefined(document.Settings.BackgroundMode))
             errors.Add("SETTINGS_ENUM");
+        else
+        {
+            if (document.Settings.BackgroundTransparency is < 0 or > 100)
+                errors.Add("SETTINGS_TRANSPARENCY");
+            if (document.Settings.BackgroundMode == WallBackgroundMode.Custom &&
+                string.IsNullOrWhiteSpace(document.Settings.BackgroundImagePath))
+                errors.Add("SETTINGS_BACKGROUND_PATH");
+        }
 
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var lane in document.Lanes)
@@ -275,7 +285,7 @@ public static class WallLayoutEngine
         for (var laneIndex = 0; laneIndex < document.Lanes.Count; laneIndex++)
         {
             var x = metrics.Margin + laneIndex * (metrics.LaneWidth + metrics.ColumnGap);
-            var y = metrics.Margin;
+            var y = metrics.TopMargin;
             foreach (var group in document.Lanes[laneIndex].Groups)
             {
                 var title = new DipRect(x, y, metrics.LaneWidth, metrics.TitleHeight);
@@ -295,18 +305,16 @@ public static class WallLayoutEngine
 
     private static double RequiredHeight(WallDocument document, WallMetrics metrics)
     {
-        var maximum = metrics.Margin;
-        foreach (var lane in document.Lanes)
-        {
-            var height = metrics.Margin;
-            foreach (var group in lane.Groups)
-                height += metrics.TitleHeight + metrics.TitleToMembersGap +
-                    metrics.HeightOf(group.Members.Max(m => m.LocalBounds.Bottom)) + metrics.GroupGap;
-            if (lane.Groups.Count > 0) height -= metrics.GroupGap;
-            maximum = Math.Max(maximum, height);
-        }
+        return document.Lanes.Max(lane => RequiredLaneHeight(lane.Groups, metrics));
+    }
 
-        return maximum + metrics.Margin;
+    private static double RequiredLaneHeight(IReadOnlyList<StartGroup> groups, WallMetrics metrics)
+    {
+        var height = metrics.TopMargin + metrics.Margin;
+        foreach (var group in groups)
+            height += metrics.TitleHeight + metrics.TitleToMembersGap +
+                metrics.HeightOf(group.Members.Max(m => m.LocalBounds.Bottom)) + metrics.GroupGap;
+        return groups.Count > 0 ? height - metrics.GroupGap : height;
     }
 
     private static WallRejection ReplaceMember(List<List<StartGroup>> lanes, ReplaceMemberAction action,
@@ -394,7 +402,7 @@ public static class WallLayoutEngine
         var (targetLane, targetIndex) = groupLocation.Value;
         var group = lanes[targetLane][targetIndex];
         var currentBudget = MaxMemberRowsForGroup(lanes[targetLane], targetIndex, currentRows, metrics);
-        var maxWallRows = (int)Math.Clamp(Math.Floor((workHeightDip - 2 * metrics.Margin + metrics.Gap) /
+        var maxWallRows = (int)Math.Clamp(Math.Floor((workHeightDip - metrics.TopMargin - metrics.Margin + metrics.Gap) /
             metrics.Pitch), 0, MaxRows);
         var expandedBudget = MaxMemberRowsForGroup(lanes[targetLane], targetIndex, maxWallRows, metrics);
         var placed = TryPlaceMembers(group.Members, member, currentBudget)
@@ -514,13 +522,59 @@ public static class WallLayoutEngine
         return WallRejection.None;
     }
 
-    private static WallRejection ResizeLanes(List<List<StartGroup>> lanes, int columns, int rows)
+    private static WallRejection ResizeLanes(List<List<StartGroup>> lanes, int columns, int rows,
+        int currentRows, WallMetrics metrics)
     {
         if (columns is < 1 or > MaxColumns || rows is < 1 or > MaxRows)
             return WallRejection.InvalidAction;
-        if (columns < lanes.Count && lanes.Skip(columns).Any(l => l.Count > 0)) return WallRejection.NoSpace;
-        while (lanes.Count > columns) lanes.RemoveAt(lanes.Count - 1);
+        // Remove only the necessary empty lanes, starting at the right to move the least content.
+        for (var i = lanes.Count - 1; i >= 0 && lanes.Count > columns; i--)
+            if (lanes[i].Count == 0) lanes.RemoveAt(i);
+        if (lanes.Count > columns) return WallRejection.NoSpace;
         while (lanes.Count < columns) lanes.Add([]);
+
+        if (rows >= currentRows) return WallRejection.None;
+        var availableHeight = metrics.WallHeight(rows);
+        foreach (var lane in lanes)
+        {
+            // Wall-tail whitespace already disappears with Rows. Only move members if they do not fit.
+            var requiredHeight = RequiredLaneHeight(lane, metrics);
+            for (var g = lane.Count - 1; g >= 0 && requiredHeight > availableHeight; g--)
+            {
+                var group = lane[g];
+                var occupied = new bool[group.Members.Max(m => m.LocalBounds.Bottom)];
+                foreach (var member in group.Members)
+                    for (var row = member.LocalBounds.Row; row < member.LocalBounds.Bottom; row++)
+                        occupied[row] = true;
+
+                var removed = new bool[occupied.Length];
+                var removedCount = 0;
+                for (var row = occupied.Length - 1; row >= 0 &&
+                    requiredHeight - removedCount * metrics.Pitch > availableHeight; row--)
+                {
+                    if (occupied[row]) continue;
+                    removed[row] = true;
+                    removedCount++;
+                }
+                if (removedCount == 0) continue;
+
+                var removedBefore = new int[occupied.Length + 1];
+                for (var row = 0; row < occupied.Length; row++)
+                    removedBefore[row + 1] = removedBefore[row] + (removed[row] ? 1 : 0);
+                lane[g] = group with
+                {
+                    Members = group.Members.Select(member =>
+                    {
+                        var bounds = member.LocalBounds;
+                        var shift = removedBefore[bounds.Row];
+                        return shift == 0 ? member : WithBounds(member,
+                            new GridRect(bounds.Column, bounds.Row - shift, bounds.Width, bounds.Height));
+                    }).ToArray(),
+                };
+                requiredHeight = RequiredLaneHeight(lane, metrics);
+            }
+            if (requiredHeight > availableHeight) return WallRejection.NoSpace;
+        }
         return WallRejection.None;
     }
 

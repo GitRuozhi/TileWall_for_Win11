@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -37,7 +36,6 @@ public sealed partial class MainWindow : Window
     private bool _modal;
     private bool _viewBlocked;
     private bool _carouselCommit;
-    private bool _settingsCommit;
     private bool _hasDocument;
     private bool _adaptationBlocked;
     private bool _resizing;
@@ -46,6 +44,11 @@ public sealed partial class MainWindow : Window
     private string? _suppressClickMember;
     private uint _tracedMovePointerId;
     private GesturePhase _tracedMovePhase;
+    private readonly WallBackdrop _wallBackdrop;
+    private readonly NativeBackdropSurface _nativeBackdropSurface;
+    private bool _backdropActive = true;
+    private bool _backdropUpdateQueued;
+    private bool _windowClosing;
 
     internal MainWindow(RuntimeScope scope)
     {
@@ -69,11 +72,7 @@ public sealed partial class MainWindow : Window
         Surface.ResolveEntryPath = _session.ManagedEntryPath;
         Surface.ResolvePuzzleFrame = _puzzles.FrameFor;
         Surface.ResolvePuzzleProgress = _puzzles.ProgressFor;
-        Title = "TileWall 0.2.1";
-        SystemBackdrop = DesktopAcrylicController.IsSupported()
-            ? new DesktopAcrylicBackdrop() : null;
-        if (SystemBackdrop is not null)
-            WallRoot.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        Title = $"TileWall {typeof(MainWindow).Assembly.GetName().Version?.ToString(3)}";
         if (AppWindow.Presenter is OverlappedPresenter presenter)
         {
             presenter.SetBorderAndTitleBar(false, false);
@@ -82,6 +81,11 @@ public sealed partial class MainWindow : Window
             presenter.IsMinimizable = false;
             presenter.IsAlwaysOnTop = true;
         }
+        RemoveNativeFrame();
+        _nativeBackdropSurface = new NativeBackdropSurface(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        _wallBackdrop = new WallBackdrop(DispatcherQueue, OnMaterialFallbackChanged, scope.IsTest);
+        InitializeAppearance();
+        SystemBackdrop = _wallBackdrop;
 
         Surface.MemberInvoked += LaunchMember;
         Surface.MemberEditRequested += id => _ = EditMemberAsync(id);
@@ -122,22 +126,38 @@ public sealed partial class MainWindow : Window
         };
         Activated += (_, e) =>
         {
+            SetBackdropActive(e.WindowActivationState != WindowActivationState.Deactivated);
             TraceInput($"Activated state={e.WindowActivationState} phase={_gesture.Phase}");
             if (e.WindowActivationState == WindowActivationState.Deactivated)
             {
                 TerminateGesture();
                 CancelResize();
-                AutomaticHideRequested?.Invoke();
+                if (!_modal) AutomaticHideRequested?.Invoke();
             }
         };
         Closed += (_, _) =>
         {
+            _windowClosing = true;
+            DisposeAppearance();
+            _nativeBackdropSurface.Dispose();
             TerminateGesture();
             _puzzles.Dispose();
             _clockTimer.Stop();
             Surface.CancelImageRequests();
             _images.Dispose();
         };
+    }
+
+    private void SetBackdropActive(bool active)
+    {
+        _backdropActive = active;
+        if (_backdropUpdateQueued || _windowClosing) return;
+        _backdropUpdateQueued = DispatcherQueue.TryEnqueue(() =>
+        {
+            _backdropUpdateQueued = false;
+            if (_windowClosing) return;
+            RefreshAppearance();
+        });
     }
 
     private WallDocument Document => _session.Current;
@@ -192,8 +212,9 @@ public sealed partial class MainWindow : Window
 
     private void RenderCommitted(WallDocument document)
     {
+        RefreshAppearance();
         _puzzles.Sync(document);
-        if (_carouselCommit || _settingsCommit) Surface.RefreshPuzzlePresentation(document);
+        if (_carouselCommit) Surface.RefreshPuzzlePresentation(document);
         else Surface.Render(document);
         Surface.Visibility = Visibility.Visible;
         Surface.IsHitTestVisible = true;
@@ -312,57 +333,37 @@ public sealed partial class MainWindow : Window
 
     private async Task CreateTileAsync(string? groupId, int lane)
     {
-        if (_modal || _viewBlocked) return;
-        BeginModal();
-        try
-        {
-            var id = $"tile-{Guid.NewGuid():N}";
-            var dialog = new TileEditorDialog(this, null, id, null, false, false, null,
-                MaxMemberRows(), _images, null, submission =>
-            {
-                var insert = Document.Lanes[lane].Groups.Count;
-                var action = new AddMemberAction(Document.Generation, submission.Tile, groupId,
-                    lane, insert, groupId is null ? $"group-{Guid.NewGuid():N}" : null);
-                return Apply(action, submission.EntryChanges);
-            });
-            ActiveDialog = dialog;
-            await dialog.ShowAsync();
-        }
-        catch (Exception ex) { Status(string.Format(ProductStrings.Get("Wall.CreateFailed"), ex.Message)); }
-        finally { EndModal(); }
+        if (_modal || _viewBlocked || _adaptationBlocked || !_hasDocument) return;
+        var tile = new TileMember { Id = $"tile-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 1, 1) };
+        var error = AddDefaultMember(tile, groupId, lane);
+        if (error is not null) { Status(error); return; }
+        await EditMemberAsync(tile.Id);
     }
 
     private async Task CreatePuzzleAsync(string? groupId, int lane)
     {
-        if (_modal || _viewBlocked) return;
-        BeginModal();
-        try
-        {
-            var id = $"puzzle-{Guid.NewGuid():N}";
-            var dialog = new PuzzleEditorDialog(this, null, id, null, false, false, null,
-                MaxMemberRows(), _images, null, submission =>
-            {
-                var insert = Document.Lanes[lane].Groups.Count;
-                return Apply(new AddMemberAction(Document.Generation, submission.Puzzle, groupId,
-                    lane, insert, groupId is null ? $"group-{Guid.NewGuid():N}" : null), submission.EntryChanges);
-            }, _traceInput);
-            ActiveDialog = dialog;
-            await dialog.ShowAsync();
-        }
-        catch (Exception ex) { Status(string.Format(ProductStrings.Get("Wall.CreateFailed"), ex.Message)); }
-        finally { EndModal(); }
+        if (_modal || _viewBlocked || _adaptationBlocked || !_hasDocument) return;
+        var puzzle = new PuzzleMember { Id = $"puzzle-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 4, 4),
+            Partitions = Enumerable.Range(0, 16).Select(n => new GridRect(n % 4, n / 4, 1, 1)).ToArray() };
+        var error = AddDefaultMember(puzzle, groupId, lane);
+        if (error is not null) { Status(error); return; }
+        await EditMemberAsync(puzzle.Id);
     }
+
+    private string? AddDefaultMember(WallMember member, string? groupId, int lane) =>
+        Apply(new AddMemberAction(Document.Generation, member, groupId, lane,
+            Document.Lanes[lane].Groups.Count, groupId is null ? $"group-{Guid.NewGuid():N}" : null));
 
     private async Task EditMemberAsync(string id)
     {
         if (_modal || _viewBlocked || FindMember(id) is not { } tile ||
             tile is not (TileMember or PuzzleMember or ClockMember)) return;
-        BeginModal();
         try
         {
+            await BeginModalAsync();
             if (tile is ClockMember clock)
             {
-                var clockDialog = new ClockEditorDialog(this, clock, id, MaxMemberRows(), _clock,
+                var clockDialog = new ClockEditorDialog(DialogOwner, clock, MaxMemberRows(), _clock,
                     replacement => Apply(new ReplaceMemberAction(Document.Generation, id, replacement)));
                 ActiveDialog = clockDialog;
                 await clockDialog.ShowAsync();
@@ -399,7 +400,7 @@ public sealed partial class MainWindow : Window
             }
             if (tile is PuzzleMember puzzle)
             {
-                var dialog = new PuzzleEditorDialog(this, puzzle, id, target, idList, opaque,
+                var dialog = new PuzzleEditorDialog(DialogOwner, puzzle, target, idList, opaque,
                     entryDiagnostic, MaxMemberRows(), _images, entryPath, submission =>
                     Apply(new ReplaceMemberAction(Document.Generation, id, submission.Puzzle), submission.EntryChanges), _traceInput);
                 ActiveDialog = dialog;
@@ -407,7 +408,7 @@ public sealed partial class MainWindow : Window
             }
             else
             {
-                var dialog = new TileEditorDialog(this, (TileMember)tile, id, target, idList, opaque,
+                var dialog = new TileEditorDialog(DialogOwner, (TileMember)tile, target, idList, opaque,
                     entryDiagnostic, MaxMemberRows(), _images, entryPath, submission =>
                     Apply(new ReplaceMemberAction(Document.Generation, id, submission.Tile), submission.EntryChanges));
                 ActiveDialog = dialog;
@@ -419,7 +420,7 @@ public sealed partial class MainWindow : Window
     }
 
     private int MaxMemberRows() => Math.Clamp(
-        (int)Math.Floor((WorkHeightDip - 2 * _metrics.Margin + _metrics.Gap) / _metrics.Pitch), 1, 256);
+        (int)Math.Floor((WorkHeightDip - _metrics.TopMargin - _metrics.Margin + _metrics.Gap) / _metrics.Pitch), 1, 256);
 
     private void RemoveMember(string id)
     {
@@ -720,10 +721,11 @@ public sealed partial class MainWindow : Window
         {
             ghost = new Border
             {
-                Width = visual.Width,
-                Height = visual.Height,
+                Width = visual.Width + 4,
+                Height = visual.Height + 4,
                 Background = new SolidColorBrush(Color.FromArgb(180, 30, 49, 68)),
                 BorderThickness = new Thickness(2),
+                CornerRadius = WallCornerStyle.Corners(Document.Settings.VisualStyle),
                 Child = visual,
             };
             _gesture.SetGhostHost(ghost);
@@ -731,8 +733,8 @@ public sealed partial class MainWindow : Window
         }
         ghost.BorderBrush = new SolidColorBrush(allowed
             ? Microsoft.UI.Colors.LimeGreen : Microsoft.UI.Colors.OrangeRed);
-        Canvas.SetLeft(ghost, point.X - _gesture.GrabOffset.X);
-        Canvas.SetTop(ghost, point.Y - _gesture.GrabOffset.Y);
+        Canvas.SetLeft(ghost, point.X - _gesture.GrabOffset.X - 2);
+        Canvas.SetTop(ghost, point.Y - _gesture.GrabOffset.Y - 2);
     }
 
     private void TerminateGesture()

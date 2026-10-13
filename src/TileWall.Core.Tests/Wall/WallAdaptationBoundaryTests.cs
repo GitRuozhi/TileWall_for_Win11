@@ -14,17 +14,17 @@ public sealed class WallAdaptationBoundaryTests
         Assert.Equal(4, metrics.Gap);
         Assert.Equal(52, metrics.Pitch);
         Assert.Equal(860, metrics.WallWidth(2));
-        Assert.Equal(228, metrics.WallHeight(4));
+        Assert.Equal(216, metrics.WallHeight(4));
 
         var current = WallDocument.Empty(1, 4);
         var resize = new ResizeWallAction(0, 2, 4);
-        var exact = WallLayoutEngine.TryApply(current, resize, 860, 228, metrics);
+        var exact = WallLayoutEngine.TryApply(current, resize, 860, 216, metrics);
         Assert.True(exact.Success, exact.Detail);
         Assert.Equal(2, exact.Proposal!.Document.Columns);
 
         Assert.Equal(WallRejection.WorkAreaTooSmall,
-            WallLayoutEngine.TryApply(current, resize, 859.9, 228, metrics).Rejection);
+            WallLayoutEngine.TryApply(current, resize, 859.9, 216, metrics).Rejection);
         Assert.Equal(WallRejection.WorkAreaTooSmall,
-            WallLayoutEngine.TryApply(current, resize, 860, 227.9, metrics).Rejection);
+            WallLayoutEngine.TryApply(current, resize, 860, 215.9, metrics).Rejection);
     }
 }

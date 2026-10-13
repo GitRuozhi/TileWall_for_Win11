@@ -37,13 +37,22 @@ public sealed record StartGroup
 }
 
 public enum AnchorCorner { BottomLeft, BottomRight, TopLeft, TopRight }
-public enum WallLanguageMode { System, Chinese }
+public enum WallLanguageMode { System = 0, Chinese = 1, English = 2 }
+public enum WallVisualStyle { Win10 = 0, Win11 = 1 }
+public enum WallThemeMode { System = 0, Light = 1, Dark = 2 }
+public enum WallBackgroundMode { Acrylic = 0, Mica = 1, Custom = 2 }
 
 public sealed record WallSettings
 {
     public AnchorCorner AnchorCorner { get; init; } = AnchorCorner.BottomLeft;
+    public WallVisualStyle VisualStyle { get; init; } = WallVisualStyle.Win10;
+    public WallThemeMode ThemeMode { get; init; } = WallThemeMode.System;
+    public WallBackgroundMode BackgroundMode { get; init; } = WallBackgroundMode.Acrylic;
+    public int BackgroundTransparency { get; init; } = 15;
+    public string? BackgroundImagePath { get; init; }
     public bool AlwaysOnTop { get; init; } = true;
     public bool StayVisibleOnFocusLoss { get; init; }
+    public bool ShowGrid { get; init; }
     public WallLanguageMode LanguageMode { get; init; } = WallLanguageMode.System;
     public string? HotKey { get; init; } = "Win+Oem3";
     public bool RunAtLogin { get; init; }

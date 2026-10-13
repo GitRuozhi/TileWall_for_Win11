@@ -5,10 +5,28 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:views="using:TileWall.Views"
     Title="TileWall">
-    <Grid x:Name="WallRoot" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" AutomationProperties.AutomationId="wall-root">
+    <Grid x:Name="WallRoot" Background="Transparent" AutomationProperties.AutomationId="wall-root">
+        <Grid.Resources>
+            <Style x:Key="ResizeHotZone" TargetType="Thumb">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Thumb"><Border Background="Transparent" /></ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </Grid.Resources>
         <views:WallSurface x:Name="Surface" HorizontalAlignment="Left" VerticalAlignment="Top" />
         <Canvas x:Name="DragOverlay" IsHitTestVisible="False" />
-        <Thumb x:Name="ResizeGrip" Width="18" Height="18" Background="#40909090"
+        <Thumb x:Name="ResizeHorizontalEdge" Height="8" Style="{StaticResource ResizeHotZone}"
+               HorizontalAlignment="Stretch" VerticalAlignment="Top" Tag="Vertical"
+               AutomationProperties.AutomationId="wall-resize-horizontal-edge"
+               DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
+        <Thumb x:Name="ResizeVerticalEdge" Width="8" Style="{StaticResource ResizeHotZone}"
+               HorizontalAlignment="Right" VerticalAlignment="Stretch" Tag="Horizontal"
+               AutomationProperties.AutomationId="wall-resize-vertical-edge"
+               DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
+        <Thumb x:Name="ResizeGrip" Width="14" Height="14" Style="{StaticResource ResizeHotZone}"
                HorizontalAlignment="Right" VerticalAlignment="Top"
                AutomationProperties.AutomationId="wall-resize-grip"
                DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />

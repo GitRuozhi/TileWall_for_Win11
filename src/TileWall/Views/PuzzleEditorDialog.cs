@@ -22,7 +22,7 @@ internal sealed record PuzzleEditSubmission(PuzzleMember Puzzle, IReadOnlyList<E
 internal sealed class PuzzleEditorDialog : IWallDialogSession
 {
     private readonly Window _owner;
-    private readonly PuzzleMember? _original;
+    private readonly PuzzleMember _original;
     private readonly string? _originalTarget;
     private readonly bool _idList, _opaqueEntry;
     private readonly bool _trace;
@@ -50,14 +50,13 @@ internal sealed class PuzzleEditorDialog : IWallDialogSession
     private Point? _panPoint;
     private Task _pickerTask = Task.CompletedTask;
 
-    public PuzzleEditorDialog(Window owner, PuzzleMember? original, string memberId,
+    public PuzzleEditorDialog(Window owner, PuzzleMember original,
         string? originalTarget, bool idList, bool opaqueEntry, string? entryDiagnostic,
         int maxHeight, WallImageService images, string? entryPath, Func<PuzzleEditSubmission, string?> save, bool trace = false)
     {
         _owner = owner; _original = original; _originalTarget = originalTarget;
         _idList = idList; _opaqueEntry = opaqueEntry; _images = images; _save = save; _trace = trace;
-        _draft = original ?? new PuzzleMember { Id = memberId, LocalBounds = new(0, 0, 4, 4),
-            Partitions = Enumerable.Range(0, 16).Select(n => new GridRect(n % 4, n / 4, 1, 1)).ToArray() };
+        _draft = original;
         foreach (var transform in _draft.Images.Transforms)
         {
             var id = CanonicalImagePath(transform.ImageId);
@@ -68,7 +67,7 @@ internal sealed class PuzzleEditorDialog : IWallDialogSession
         _showTitle = new CheckBox { Content = ProductStrings.Get("Common.ShowTitle"), IsChecked = _draft.Visual.ShowTitle };
         Id(_showTitle, "show-title");
         _entryKind = Choice(ProductStrings.Get("Puzzle.Target"), "entry-kind", [ProductStrings.Get("Puzzle.NoTarget"), ProductStrings.Get("Entry.Path"), ProductStrings.Get("Entry.Copy"), ProductStrings.Get("Entry.Url")],
-            original?.Entry?.Kind switch { ManagedEntryKind.Lnk => 1, ManagedEntryKind.Url => 3, _ => 0 });
+            original.Entry?.Kind switch { ManagedEntryKind.Lnk => 1, ManagedEntryKind.Url => 3, _ => 0 });
         _target = Text(ProductStrings.Get("Entry.Target"), "target", originalTarget ?? string.Empty);
         _targetBrowse = Action(ProductStrings.Get("Entry.Browse"), "target-browse", () => _pickerTask = PickTargetAsync());
         _sourceKind = Choice(ProductStrings.Get("Puzzle.Source"), "source-kind", [ProductStrings.Get("Puzzle.NoImage"), ProductStrings.Get("Puzzle.SingleImage"), ProductStrings.Get("Puzzle.MultipleImages"), ProductStrings.Get("Puzzle.Folder")], (int)_draft.Images.Kind);
@@ -129,7 +128,7 @@ internal sealed class PuzzleEditorDialog : IWallDialogSession
         var errorHost = new ScrollViewer { Content = _error, MaxHeight = 80, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         Grid.SetRow(errorHost, 1); Grid.SetColumnSpan(errorHost, 2); _page.Children.Add(errorHost);
         _dialog = new ContentDialog { XamlRoot = (owner.Content as FrameworkElement)?.XamlRoot,
-            Title = original is null ? ProductStrings.Get("Puzzle.Create") : ProductStrings.Get("Puzzle.Edit"), Content = _page,
+            Title = ProductStrings.Get("Puzzle.Edit"), Content = _page,
             PrimaryButtonText = ProductStrings.Get("Common.Save"), CloseButtonText = ProductStrings.Get("Common.Cancel"), DefaultButton = ContentDialogButton.None };
         _dialog.Resources["ContentDialogMaxWidth"] = 740d;
         _exit = new(_dialog);
@@ -173,7 +172,7 @@ internal sealed class PuzzleEditorDialog : IWallDialogSession
 
     public async Task<bool> ShowAsync()
     {
-        try { await _dialog.ShowAsync(); return _saved; }
+        try { await OwnedDialogWindow.ShowAsync(_dialog); return _saved; }
         finally { _closed = true; CancelRequest(); }
     }
 
@@ -185,11 +184,12 @@ internal sealed class PuzzleEditorDialog : IWallDialogSession
         _panPoint = null; _layout?.FinishStroke(); return _exit.ConfirmAsync();
     }
     public void DiscardDraft() { _discardConfirmed = true; _dirty = false; }
+    public void RequestDismiss() => _dialog.Hide();
     public void Close() { _discardConfirmed = true; _layout = null; _dialog.Hide(); }
     public void RefreshStrings()
     {
         if (_exit.IsActive) return;
-        _dialog.Title = ProductStrings.Get(_layout is not null ? "Puzzle.LayoutTitle" : _original is null ? "Puzzle.Create" : "Puzzle.Edit");
+        _dialog.Title = ProductStrings.Get(_layout is not null ? "Puzzle.LayoutTitle" : "Puzzle.Edit");
         _dialog.PrimaryButtonText = ProductStrings.Get(_layout is not null ? "Puzzle.AcceptLayout" : "Common.Save");
         _dialog.CloseButtonText = ProductStrings.Get(_layout is not null ? "Puzzle.CancelLayout" : _allowDiscard ? "Common.Discard" : "Common.Cancel");
     }
@@ -270,8 +270,8 @@ internal sealed class PuzzleEditorDialog : IWallDialogSession
             {
                 _frame = frame;
                 Trace($"PreviewApplied generation={request.Generation} image={frame.CanonicalPath} sourcePixels={frame.SourcePixels.Width}x{frame.SourcePixels.Height}");
-                var unchanged = string.Equals(_original?.Carousel?.CurrentImageId, frame.CanonicalPath, StringComparison.OrdinalIgnoreCase);
-                _draft = _draft with { Carousel = new(frame.CanonicalPath, unchanged ? _original?.Carousel?.LastSwitchUtc : null) };
+                var unchanged = string.Equals(_original.Carousel?.CurrentImageId, frame.CanonicalPath, StringComparison.OrdinalIgnoreCase);
+                _draft = _draft with { Carousel = new(frame.CanonicalPath, unchanged ? _original.Carousel?.LastSwitchUtc : null) };
                 _status.Text = string.Format(ProductStrings.Get("Puzzle.ImageSize"), _candidates.Items.Count, frame.SourcePixels.Width, frame.SourcePixels.Height);
                 RefreshPreview();
             }
@@ -337,7 +337,7 @@ internal sealed class PuzzleEditorDialog : IWallDialogSession
             if (layout.Size != _draft.LocalBounds.Size || !layout.Partitions.SequenceEqual(_draft.Partitions)) MarkDirty();
             _draft = _draft with { LocalBounds = _draft.LocalBounds with { Width = layout.Size.Columns, Height = layout.Size.Rows }, Partitions = layout.Partitions.ToArray() };
         }
-        _layout = null; _dialog.Content = _page; _dialog.Title = _original is null ? ProductStrings.Get("Puzzle.Create") : ProductStrings.Get("Puzzle.Edit");
+        _layout = null; _dialog.Content = _page; _dialog.Title = ProductStrings.Get("Puzzle.Edit");
         _dialog.PrimaryButtonText = ProductStrings.Get("Common.Save"); _dialog.CloseButtonText = ProductStrings.Get("Common.Cancel"); RefreshPreview();
         if (_candidates.SelectedItem is string selected)
         {
@@ -403,25 +403,25 @@ internal sealed class PuzzleEditorDialog : IWallDialogSession
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         { return (null, string.Format(ProductStrings.Get("Puzzle.PathInvalid"), ex.Message)); }
         var target = _target.Text.Trim(); var mode = _entryKind.SelectedIndex;
-        var unchanged = _original?.Entry is not null && mode == (_original.Entry.Kind == ManagedEntryKind.Lnk ? 1 : 3) && target == (_originalTarget ?? string.Empty);
+        var unchanged = _original.Entry is not null && mode == (_original.Entry.Kind == ManagedEntryKind.Lnk ? 1 : 3) && target == (_originalTarget ?? string.Empty);
         if (mode != 0 && target.Length == 0 && !(_opaqueEntry && unchanged)) return (null, ProductStrings.Get("Puzzle.EmptyTarget"));
         if (mode is 1 or 2 && !unchanged && !Path.IsPathFullyQualified(target)) return (null, ProductStrings.Get("Entry.FullPathRequired"));
         if (mode == 2 && !new[] { ".lnk", ".url" }.Contains(Path.GetExtension(target), StringComparer.OrdinalIgnoreCase)) return (null, ProductStrings.Get("Entry.ShortcutOnly"));
         if (mode == 3 && !unchanged && UrlShortcut.ValidateUrl(target).Count != 0) return (null, ProductStrings.Get("Entry.InvalidUrl"));
         if (mode != 0 && !string.IsNullOrEmpty(_title.Text) && EntryNames.Validate(_title.Text).Count != 0) return (null, ProductStrings.Get("Puzzle.InvalidTitle"));
         var changes = new List<EntryChange>();
-        if (mode == 0) { if (_original?.Entry is not null) changes.Add(new EntryChange.Remove(_draft.Id)); }
-        else if (_original?.Entry is null || mode == 2 || mode == 3 && _original.Entry.Kind != ManagedEntryKind.Url || mode == 1 && _original.Entry.Kind != ManagedEntryKind.Lnk)
+        if (mode == 0) { if (_original.Entry is not null) changes.Add(new EntryChange.Remove(_draft.Id)); }
+        else if (_original.Entry is null || mode == 2 || mode == 3 && _original.Entry.Kind != ManagedEntryKind.Url || mode == 1 && _original.Entry.Kind != ManagedEntryKind.Lnk)
             changes.Add(mode switch { 2 => new EntryChange.CopyShortcut(_draft.Id, target), 3 => new EntryChange.CreateUrl(_draft.Id, target), _ => new EntryChange.CreateLink(_draft.Id, target) });
         else if (target != (_originalTarget ?? string.Empty))
         {
             if (_idList) return (null, ProductStrings.Get("Entry.IdListTarget"));
             changes.Add(new EntryChange.ChangeTarget(_draft.Id, target));
         }
-        if (_original?.Entry is not null && mode != 0 && mode != 2 && !changes.Any(c => c is EntryChange.CreateLink or EntryChange.CreateUrl)
+        if (_original.Entry is not null && mode != 0 && mode != 2 && !changes.Any(c => c is EntryChange.CreateLink or EntryChange.CreateUrl)
             && _title.Text != _original.Visual.Title && !string.IsNullOrEmpty(_title.Text)) changes.Add(new EntryChange.Rename(_draft.Id));
         var carousel = source.Kind == PuzzleImageSourceKind.None ? null : _draft.Carousel;
-        return (new(_draft with { Images = source, Carousel = carousel, Entry = mode == 0 ? null : _original?.Entry }, changes), null);
+        return (new(_draft with { Images = source, Carousel = carousel, Entry = mode == 0 ? null : _original.Entry }, changes), null);
     }
 
     private async Task PickTargetAsync()

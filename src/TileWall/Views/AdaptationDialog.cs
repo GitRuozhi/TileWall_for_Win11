@@ -115,10 +115,11 @@ internal sealed class AdaptationDialog : IWallDialogSession
     }
 
     public Task ShowAsync() => ShowCoreAsync();
-    private async Task ShowCoreAsync() { await _dialog.ShowAsync(); }
+    private async Task ShowCoreAsync() { await OwnedDialogWindow.ShowAsync(_dialog); }
     public bool HasUnsavedDraft => !_saved && (_changed || _fieldsDirty);
     public Task<ExitDecision> ConfirmExitAsync() => _exit.ConfirmAsync();
     public Task WaitForPendingAsync() => Task.CompletedTask;
+    public void RequestDismiss() => _dialog.Hide();
     public void Close() { _discarded = true; _dialog.Hide(); }
     public void DiscardDraft() { _draft = _original; _changed = false; _fieldsDirty = false; _discarded = true; }
     public string? TrySaveNow()

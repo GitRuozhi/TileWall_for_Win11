@@ -20,7 +20,7 @@ internal sealed record TileEditSubmission(TileMember Tile, IReadOnlyList<EntryCh
 internal sealed class TileEditorDialog : IWallDialogSession
 {
     private readonly Window _owner;
-    private readonly TileMember? _original;
+    private readonly TileMember _original;
     private readonly string _id;
     private readonly string? _originalTarget;
     private readonly bool _idList;
@@ -59,28 +59,28 @@ internal sealed class TileEditorDialog : IWallDialogSession
     private long _previewGeneration;
     private Task _pickerTask = Task.CompletedTask;
 
-    public TileEditorDialog(Window owner, TileMember? original, string memberId,
+    public TileEditorDialog(Window owner, TileMember original,
         string? originalTarget, bool idList, bool opaqueEntry, string? entryDiagnostic,
         int maxHeight, WallImageService images, string? entryPath,
         Func<TileEditSubmission, string?> save)
     {
         _owner = owner;
         _original = original;
-        _id = memberId;
+        _id = original.Id;
         _originalTarget = originalTarget;
         _idList = idList;
         _opaqueEntry = opaqueEntry;
-        _maxHeight = Math.Clamp(maxHeight, original?.LocalBounds.Height ?? 1, 256);
+        _maxHeight = Math.Clamp(maxHeight, original.LocalBounds.Height, 256);
         _save = save;
         _images = images;
         _entryPath = entryPath;
 
-        _title = new TextBox { Header = ProductStrings.Get("Entry.Title"), Text = original?.Visual.Title ?? string.Empty,
+        _title = new TextBox { Header = ProductStrings.Get("Entry.Title"), Text = original.Visual.Title ?? string.Empty,
             PlaceholderText = ProductStrings.Get("Entry.EmptyTitleHint"),
             IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
-        _showTitle = new CheckBox { Content = ProductStrings.Get("Tile.ShowTitle"), IsChecked = original?.Visual.ShowTitle ?? true };
-        _width = Choice(ProductStrings.Get("Common.Width"), 1, 8, original?.LocalBounds.Width ?? 1);
-        _height = Choice(ProductStrings.Get("Common.Height"), 1, _maxHeight, original?.LocalBounds.Height ?? 1);
+        _showTitle = new CheckBox { Content = ProductStrings.Get("Tile.ShowTitle"), IsChecked = original.Visual.ShowTitle };
+        _width = Choice(ProductStrings.Get("Common.Width"), 1, 8, original.LocalBounds.Width);
+        _height = Choice(ProductStrings.Get("Common.Height"), 1, _maxHeight, original.LocalBounds.Height);
         _entryKind = Choice(ProductStrings.Get("Entry.Kind"), [ProductStrings.Get("Entry.NoneTile"), ProductStrings.Get("Entry.Path"), ProductStrings.Get("Entry.Copy"), ProductStrings.Get("Entry.Url")], 0);
         _target = new TextBox { Header = ProductStrings.Get("Entry.Target"), Text = originalTarget ?? string.Empty,
             PlaceholderText = ProductStrings.Get("Entry.TargetHint"),
@@ -88,23 +88,23 @@ internal sealed class TileEditorDialog : IWallDialogSession
         _browseTarget = new Button { Content = ProductStrings.Get("Entry.Browse") };
         _browseTarget.Click += (_, _) => _pickerTask = PickIntoAsync(_target);
         _foreground = Choice(ProductStrings.Get("Tile.Foreground"), [ProductStrings.Get("Tile.AutoIcon"), ProductStrings.Get("Tile.CustomImage"), ProductStrings.Get("Tile.NoForeground")],
-            original?.Foreground switch { CustomImageIcon => 1, NoForegroundIcon => 2, _ => 0 });
+            original.Foreground switch { CustomImageIcon => 1, NoForegroundIcon => 2, _ => 0 });
         _customIcon = new TextBox { Header = ProductStrings.Get("Tile.CustomImagePath"),
-            Text = (original?.Foreground as CustomImageIcon)?.SourcePath ?? string.Empty,
+            Text = (original.Foreground as CustomImageIcon)?.SourcePath ?? string.Empty,
             IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
         _browseIcon = new Button { Content = ProductStrings.Get("Tile.BrowseForeground") };
         _browseIcon.Click += (_, _) => _pickerTask = PickIntoAsync(_customIcon);
         _backgroundKind = Choice(ProductStrings.Get("Tile.Background"), [ProductStrings.Get("Tile.SystemColor"), ProductStrings.Get("Tile.CustomColor"), ProductStrings.Get("Tile.Image")],
-            original?.Visual.BackgroundImagePath is not null ? 2
-                : original?.Visual.BackgroundColor is not null ? 1 : 0);
+            original.Visual.BackgroundImagePath is not null ? 2
+                : original.Visual.BackgroundColor is not null ? 1 : 0);
         _backgroundColor = new ColorPicker
         {
             IsAlphaEnabled = false, IsMoreButtonVisible = false,
-            Color = WallSurface.ParseColor(original?.Visual.BackgroundColor,
+            Color = WallSurface.ParseColor(original.Visual.BackgroundColor,
                 WallSurface.SystemAccentColor()),
         };
         _backgroundImage = new TextBox { Header = ProductStrings.Get("Tile.BackgroundPath"),
-            Text = original?.Visual.BackgroundImagePath ?? string.Empty,
+            Text = original.Visual.BackgroundImagePath ?? string.Empty,
             IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
         _browseBackground = new Button { Content = ProductStrings.Get("Tile.BrowseBackground") };
         _browseBackground.Click += (_, _) => _pickerTask = PickIntoAsync(_backgroundImage);
@@ -169,7 +169,7 @@ internal sealed class TileEditorDialog : IWallDialogSession
         _dialog = new ContentDialog
         {
             XamlRoot = (owner.Content as FrameworkElement)?.XamlRoot,
-            Title = original is null ? ProductStrings.Get("Tile.Create") : ProductStrings.Get("Tile.Edit"),
+            Title = ProductStrings.Get("Tile.Edit"),
             Content = dialogContent,
             PrimaryButtonText = ProductStrings.Get("Common.Save"), CloseButtonText = ProductStrings.Get("Common.Cancel"),
             DefaultButton = ContentDialogButton.Primary,
@@ -215,7 +215,7 @@ internal sealed class TileEditorDialog : IWallDialogSession
 
     public async Task<bool> ShowAsync()
     {
-        await _dialog.ShowAsync();
+        await OwnedDialogWindow.ShowAsync(_dialog);
         _previewCancellation?.Cancel();
         _previewCancellation?.Dispose();
         return _saved;
@@ -225,18 +225,19 @@ internal sealed class TileEditorDialog : IWallDialogSession
     public Task WaitForPendingAsync() => _pickerTask;
     public Task<ExitDecision> ConfirmExitAsync() => _exit.ConfirmAsync();
     public void DiscardDraft() => _allowDiscard = true;
+    public void RequestDismiss() => _dialog.Hide();
     public void Close() { _allowDiscard = true; _dialog.Hide(); }
     public void RefreshStrings()
     {
         if (_exit.IsActive) return;
-        _dialog.Title = ProductStrings.Get(_original is null ? "Tile.Create" : "Tile.Edit");
+        _dialog.Title = ProductStrings.Get("Tile.Edit");
         _dialog.PrimaryButtonText = ProductStrings.Get("Common.Save");
         _dialog.CloseButtonText = ProductStrings.Get(_allowDiscard ? "Common.Discard" : "Common.Cancel");
     }
 
     private void InitializeEntryKind()
     {
-        _entryKind.SelectedIndex = _original?.Entry?.Kind switch
+        _entryKind.SelectedIndex = _original.Entry?.Kind switch
         {
             ManagedEntryKind.Url => 3,
             ManagedEntryKind.Lnk => 1,
@@ -311,7 +312,7 @@ internal sealed class TileEditorDialog : IWallDialogSession
                 Id = _id, LocalBounds = new GridRect(0, 0, 1, 1), Foreground = foreground,
             };
             var path = _entryKind.SelectedIndex == 0 ? null
-                : _entryKind.SelectedIndex == 1 && _original?.Entry is not null &&
+                : _entryKind.SelectedIndex == 1 && _original.Entry is not null &&
                 _target.Text == (_originalTarget ?? string.Empty) ? _entryPath : _target.Text.Trim();
             var size = Math.Max(1, (int)Math.Ceiling(_previewForegroundImage.Width * scale));
             var icon = await _images.LoadForegroundAsync(tile, path, size, size, cancellation.Token);
@@ -363,27 +364,27 @@ internal sealed class TileEditorDialog : IWallDialogSession
         ShowError(ProductStrings.Get("Tile.UnsavedDraft"));
     }
 
-    private bool IsDirty() => _title.Text != (_original?.Visual.Title ?? string.Empty)
-        || _showTitle.IsChecked != (_original?.Visual.ShowTitle ?? true)
-        || _width.SelectedIndex + 1 != (_original?.LocalBounds.Width ?? 1)
-        || _height.SelectedIndex + 1 != (_original?.LocalBounds.Height ?? 1)
-        || _entryKind.SelectedIndex != (_original?.Entry?.Kind switch
+    private bool IsDirty() => _title.Text != (_original.Visual.Title ?? string.Empty)
+        || _showTitle.IsChecked != _original.Visual.ShowTitle
+        || _width.SelectedIndex + 1 != _original.LocalBounds.Width
+        || _height.SelectedIndex + 1 != _original.LocalBounds.Height
+        || _entryKind.SelectedIndex != (_original.Entry?.Kind switch
             { ManagedEntryKind.Url => 3, ManagedEntryKind.Lnk => 1, _ => 0 })
-        || _foreground.SelectedIndex != (_original?.Foreground switch
+        || _foreground.SelectedIndex != (_original.Foreground switch
             { CustomImageIcon => 1, NoForegroundIcon => 2, _ => 0 })
-        || _backgroundKind.SelectedIndex != (_original?.Visual.BackgroundImagePath is not null ? 2
-            : _original?.Visual.BackgroundColor is not null ? 1 : 0)
+        || _backgroundKind.SelectedIndex != (_original.Visual.BackgroundImagePath is not null ? 2
+            : _original.Visual.BackgroundColor is not null ? 1 : 0)
         || _target.Text != (_originalTarget ?? string.Empty)
-        || _customIcon.Text != ((_original?.Foreground as CustomImageIcon)?.SourcePath ?? string.Empty)
-        || _backgroundImage.Text != (_original?.Visual.BackgroundImagePath ?? string.Empty)
-        || _backgroundColor.Color != WallSurface.ParseColor(_original?.Visual.BackgroundColor,
+        || _customIcon.Text != ((_original.Foreground as CustomImageIcon)?.SourcePath ?? string.Empty)
+        || _backgroundImage.Text != (_original.Visual.BackgroundImagePath ?? string.Empty)
+        || _backgroundColor.Color != WallSurface.ParseColor(_original.Visual.BackgroundColor,
             WallSurface.SystemAccentColor());
 
     private (TileEditSubmission? Submission, string? Error) BuildSubmission()
     {
         var target = _target.Text.Trim();
         var mode = _entryKind.SelectedIndex;
-        var unchangedExisting = _original?.Entry is not null &&
+        var unchangedExisting = _original.Entry is not null &&
             mode == (_original.Entry.Kind == ManagedEntryKind.Lnk ? 1 : 3) &&
             target == (_originalTarget ?? string.Empty);
         var unchangedOpaque = _opaqueEntry && unchangedExisting;
@@ -413,8 +414,8 @@ internal sealed class TileEditorDialog : IWallDialogSession
         var tile = new TileMember
         {
             Id = _id,
-            LocalBounds = new GridRect(_original?.LocalBounds.Column ?? 0,
-                _original?.LocalBounds.Row ?? 0, _width.SelectedIndex + 1, _height.SelectedIndex + 1),
+            LocalBounds = new GridRect(_original.LocalBounds.Column,
+                _original.LocalBounds.Row, _width.SelectedIndex + 1, _height.SelectedIndex + 1),
             Visual = new MemberVisual
             {
                 Title = _title.Text,
@@ -424,14 +425,14 @@ internal sealed class TileEditorDialog : IWallDialogSession
                 BackgroundImagePath = _backgroundKind.SelectedIndex == 2 ? _backgroundImage.Text.Trim() : null,
             },
             Foreground = foreground,
-            Entry = mode == 0 ? null : _original?.Entry,
+            Entry = mode == 0 ? null : _original.Entry,
         };
         var changes = new List<EntryChange>();
         if (mode == 0)
         {
-            if (_original?.Entry is not null) changes.Add(new EntryChange.Remove(_id));
+            if (_original.Entry is not null) changes.Add(new EntryChange.Remove(_id));
         }
-        else if (_original?.Entry is null || mode == 2 ||
+        else if (_original.Entry is null || mode == 2 ||
             mode == 3 && _original.Entry.Kind != ManagedEntryKind.Url ||
             mode == 1 && _original.Entry.Kind != ManagedEntryKind.Lnk)
         {
@@ -447,7 +448,7 @@ internal sealed class TileEditorDialog : IWallDialogSession
             if (_idList) return (null, ProductStrings.Get("Entry.IdListTarget"));
             changes.Add(new EntryChange.ChangeTarget(_id, target));
         }
-        if (_original?.Entry is not null && mode != 0 && mode != 2 &&
+        if (_original.Entry is not null && mode != 0 && mode != 2 &&
             !changes.Any(c => c is EntryChange.CreateLink or EntryChange.CreateUrl) &&
             _title.Text != _original.Visual.Title && !string.IsNullOrEmpty(_title.Text))
             changes.Add(new EntryChange.Rename(_id));

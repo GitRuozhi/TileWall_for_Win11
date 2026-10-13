@@ -68,12 +68,182 @@ public sealed class WallLayoutEngineTests
         var metrics = new WallMetrics();
         Assert.Equal(52, metrics.Pitch);
         Assert.Equal(412, metrics.LaneWidth);
+        Assert.Equal(0, metrics.TopMargin);
+        Assert.Equal(12, metrics.Margin);
+        Assert.Equal(metrics.TopMargin + metrics.Margin + metrics.HeightOf(4), metrics.WallHeight(4));
+        Assert.Equal(48, metrics.TitleHeight);
+        Assert.Equal(4, metrics.TitleToMembersGap);
         var geometry = WallLayoutEngine.Measure(Document(
             Group("a", Tile("a1", new GridRect(0, 0, 1, 1))),
             Group("b", Tile("b1", new GridRect(0, 0, 1, 1)))) with { Rows = 4 }, metrics);
         Assert.Equal(412, geometry.Groups[0].TitleBounds.Width);
+        Assert.Equal(48, geometry.Groups[0].TitleBounds.Height);
+        Assert.Equal(geometry.Groups[0].TitleBounds.Y + 48 + 4,
+            geometry.Groups[0].Members[0].Bounds.Y);
         Assert.Equal(geometry.Groups[0].Bounds.Y + geometry.Groups[0].Bounds.Height + metrics.GroupGap,
             geometry.Groups[1].Bounds.Y);
+    }
+
+    [Fact]
+    public void MultipleLanesAndUnevenGroupsAlignWithinLanesRegardlessOfGridVisibility()
+    {
+        var metrics = new WallMetrics();
+        var puzzle = new PuzzleMember
+        {
+            Id = "puzzle", LocalBounds = new GridRect(1, 1, 4, 4),
+            Partitions = [new GridRect(0, 0, 2, 4), new GridRect(2, 0, 2, 4)],
+        };
+        var document = new WallDocument
+        {
+            Columns = 2, Rows = 9,
+            Lanes =
+            [
+                new WallLane { Groups =
+                [
+                    Group("left-tall", Tile("small", new GridRect(0, 0, 1, 1)),
+                        Tile("large", new GridRect(3, 2, 2, 2))),
+                    Group("left-short", Tile("last", new GridRect(7, 0, 1, 1))),
+                ] },
+                new WallLane { Groups =
+                [
+                    Group("right-tall", puzzle),
+                    Group("right-short", Clock("clock", new GridRect(0, 0, 2, 2))),
+                ] },
+            ],
+        };
+
+        var hidden = WallLayoutEngine.Measure(document);
+        var shown = WallLayoutEngine.Measure(document with
+        {
+            Settings = document.Settings with { ShowGrid = true },
+        });
+        Assert.Equal(860, hidden.WallWidth);
+        Assert.Equal(476, hidden.WallHeight);
+        Assert.Equal(new DipRect(12, 0, 412, 48), hidden.Groups[0].TitleBounds);
+        Assert.Equal(new DipRect(12, 260, 412, 48), hidden.Groups[1].TitleBounds);
+        Assert.Equal(new DipRect(436, 0, 412, 48), hidden.Groups[2].TitleBounds);
+        Assert.Equal(new DipRect(436, 312, 412, 48), hidden.Groups[3].TitleBounds);
+        Assert.Equal(12, hidden.Groups[2].TitleBounds.X -
+            (hidden.Groups[0].TitleBounds.X + hidden.Groups[0].TitleBounds.Width));
+        Assert.Equal(hidden.WallWidth, shown.WallWidth);
+        Assert.Equal(hidden.WallHeight, shown.WallHeight);
+
+        var hiddenBounds = hidden.Groups.SelectMany(group =>
+            new[] { group.TitleBounds, group.Bounds }.Concat(group.Members.Select(member => member.Bounds))).ToArray();
+        var shownBounds = shown.Groups.SelectMany(group =>
+            new[] { group.TitleBounds, group.Bounds }.Concat(group.Members.Select(member => member.Bounds))).ToArray();
+        Assert.Equal(hiddenBounds, shownBounds);
+        Assert.All(hidden.Groups, group =>
+        {
+            var laneOrigin = group.LaneIndex == 0 ? 12 : 436;
+            var boundsInLane = new[] { group.TitleBounds, group.Bounds }
+                .Concat(group.Members.Select(member => member.Bounds));
+            Assert.All(boundsInLane, bounds =>
+            {
+                Assert.Equal(0, (bounds.X - laneOrigin) % 52);
+                Assert.Equal(0, (bounds.Y - metrics.TopMargin) % 52);
+                Assert.Equal(0, (bounds.X + bounds.Width + 4 - laneOrigin) % 52);
+                Assert.Equal(0, (bounds.Y + bounds.Height + 4 - metrics.TopMargin) % 52);
+            });
+        });
+    }
+
+    [Fact]
+    public void AsymmetricTopAndBottomMarginsShareMeasureAndCapacityCalculations()
+    {
+        var metrics = new WallMetrics { TopMargin = 7, Margin = 13 };
+        var document = Document(Group("group", Tile("tile", new GridRect(0, 0, 1, 1)))) with
+        {
+            Rows = 2,
+        };
+        var geometry = WallLayoutEngine.Measure(document, metrics);
+        Assert.Equal(7, geometry.Groups[0].TitleBounds.Y);
+        Assert.Equal(7 + 13 + metrics.HeightOf(2), geometry.WallHeight);
+
+        var compressible = Document(Group("group", Tile("tile", new GridRect(0, 1, 1, 1)))) with
+        {
+            Rows = 4,
+        };
+        var compacted = WallLayoutEngine.TryApply(compressible,
+            new ResizeWallAction(0, 1, 2), metrics.WallWidth(1), 500, metrics);
+        Assert.True(compacted.Success, compacted.Detail);
+        Assert.Equal(2, compacted.Proposal!.Document.Rows);
+        Assert.Equal(new GridRect(0, 0, 1, 1),
+            compacted.Proposal.Document.Lanes[0].Groups[0].Members[0].LocalBounds);
+        Assert.Equal(120, compacted.Proposal.Geometry.WallHeight);
+
+        var minimumGroupHeight = metrics.TopMargin + metrics.Margin + metrics.TitleHeight +
+            metrics.TitleToMembersGap + metrics.HeightOf(1);
+        var fits = WallLayoutEngine.TryApply(WallDocument.Empty(1, 1),
+            new AddMemberAction(0, Tile("new", new GridRect(0, 0, 1, 1)), null, NewGroupId: "new-group"),
+            metrics.WallWidth(1), minimumGroupHeight, metrics);
+        Assert.True(fits.Success, fits.Detail);
+        Assert.Equal(2, fits.Proposal!.Document.Rows);
+
+        var batchFits = WallBatchPlanner.TryPlan(WallDocument.Empty(1, 1), [Tile("batch", new GridRect(0, 0, 1, 1))], null, 0,
+            "batch", metrics.WallWidth(1), minimumGroupHeight, metrics);
+        Assert.True(batchFits.Success, batchFits.Detail);
+        Assert.Equal(2, batchFits.Proposal!.Document.Rows);
+
+        var tooShort = WallLayoutEngine.TryApply(WallDocument.Empty(1, 1),
+            new AddMemberAction(0, Tile("new", new GridRect(0, 0, 1, 1)), null, NewGroupId: "new-group"),
+            metrics.WallWidth(1), minimumGroupHeight - 0.1, metrics);
+        Assert.False(tooShort.Success);
+        var batchTooShort = WallBatchPlanner.TryPlan(WallDocument.Empty(1, 1), [Tile("batch", new GridRect(0, 0, 1, 1))], null, 0,
+            "batch", metrics.WallWidth(1), minimumGroupHeight - 0.1, metrics);
+        Assert.False(batchTooShort.Success);
+    }
+
+    [Fact]
+    public void WallSettingsRejectNewInvalidEnumsTransparencyAndMissingCustomImage()
+    {
+        var baseline = Document(Group("group", Tile("tile", new GridRect(0, 0, 1, 1))));
+
+        Assert.Contains("SETTINGS_ENUM", WallLayoutEngine.Validate(baseline with
+        {
+            Settings = baseline.Settings with { LanguageMode = (WallLanguageMode)99 },
+        }));
+        Assert.Contains("SETTINGS_ENUM", WallLayoutEngine.Validate(baseline with
+        {
+            Settings = baseline.Settings with { ThemeMode = (WallThemeMode)99 },
+        }));
+        Assert.Contains("SETTINGS_ENUM", WallLayoutEngine.Validate(baseline with
+        {
+            Settings = baseline.Settings with { BackgroundMode = (WallBackgroundMode)99 },
+        }));
+        Assert.Contains("SETTINGS_TRANSPARENCY", WallLayoutEngine.Validate(baseline with
+        {
+            Settings = baseline.Settings with { BackgroundTransparency = -1 },
+        }));
+        Assert.Contains("SETTINGS_TRANSPARENCY", WallLayoutEngine.Validate(baseline with
+        {
+            Settings = baseline.Settings with { BackgroundTransparency = 101 },
+        }));
+        Assert.Contains("SETTINGS_BACKGROUND_PATH", WallLayoutEngine.Validate(baseline with
+        {
+            Settings = baseline.Settings with { BackgroundMode = WallBackgroundMode.Custom },
+        }));
+        Assert.Contains("SETTINGS_BACKGROUND_PATH", WallLayoutEngine.Validate(baseline with
+        {
+            Settings = baseline.Settings with
+            {
+                BackgroundMode = WallBackgroundMode.Custom,
+                BackgroundImagePath = "  ",
+            },
+        }));
+        Assert.Empty(WallLayoutEngine.Validate(baseline with
+        {
+            Settings = baseline.Settings with
+            {
+                BackgroundMode = WallBackgroundMode.Custom,
+                BackgroundImagePath = "C:\\wallpaper.png",
+                BackgroundTransparency = 0,
+            },
+        }));
+        Assert.Empty(WallLayoutEngine.Validate(baseline with
+        {
+            Settings = baseline.Settings with { BackgroundTransparency = 100 },
+        }));
     }
 
     [Fact]

@@ -17,6 +17,11 @@ public partial class App : Application
         _scope = scope;
         _intent = intent;
         InitializeComponent();
+        UnhandledException += (_, e) =>
+        {
+            AppLog.Error("UnhandledXaml", e.Exception?.ToString() ?? e.Message);
+            AppLog.Flush();
+        };
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
@@ -38,7 +43,8 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            AppLog.Error("Startup", ex.Message);
+            AppLog.Error("Startup", ex.ToString());
+            AppLog.Flush();
             gate.Dispose();
             Exit();
         }
