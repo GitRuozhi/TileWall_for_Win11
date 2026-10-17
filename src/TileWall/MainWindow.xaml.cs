@@ -37,11 +37,11 @@ public sealed partial class MainWindow : Window
     private bool _viewBlocked;
     private bool _carouselCommit;
     private bool _hasDocument;
-    private bool _adaptationBlocked;
     private bool _resizing;
     private readonly IClock _clock = SystemClock.Instance;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _clockTimer;
     private string? _suppressClickMember;
+    private double _gestureScrollOffset;
     private uint _tracedMovePointerId;
     private GesturePhase _tracedMovePhase;
     private readonly WallBackdrop _wallBackdrop;
@@ -52,10 +52,11 @@ public sealed partial class MainWindow : Window
 
     internal MainWindow(RuntimeScope scope)
     {
-        _traceInput = scope.IsTest;
+        _traceInput = scope.IsTest || Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1";
         _session = new WallSession(scope.DataRoot);
         _images = new WallImageService(_session.LinkFiles, scope.CacheRoot);
         InitializeComponent();
+        CreateWindowsSidebar();
         _clockTimer = DispatcherQueue.CreateTimer();
         _clockTimer.Interval = TimeSpan.FromSeconds(1);
         _clockTimer.IsRepeating = true;
@@ -66,12 +67,15 @@ public sealed partial class MainWindow : Window
         };
         _puzzles = new PuzzlePresentationCoordinator(_images, DispatcherQueue, () => Scale,
             PersistPuzzleCarousel, Status, _traceInput);
+        _puzzles.ResolveEntryPath = _session.ManagedEntryPath;
         _puzzles.FrameChanged += Surface.UpdatePuzzleFrame;
         _session.SetViewRefresh(RenderCommitted);
+        InitializePersistence();
         Surface.Images = _images;
         Surface.ResolveEntryPath = _session.ManagedEntryPath;
         Surface.ResolvePuzzleFrame = _puzzles.FrameFor;
         Surface.ResolvePuzzleProgress = _puzzles.ProgressFor;
+        Surface.ResolvePuzzleTransition = _puzzles.TransitionFor;
         Title = $"TileWall {typeof(MainWindow).Assembly.GetName().Version?.ToString(3)}";
         if (AppWindow.Presenter is OverlappedPresenter presenter)
         {
@@ -82,7 +86,9 @@ public sealed partial class MainWindow : Window
             presenter.IsAlwaysOnTop = true;
         }
         RemoveNativeFrame();
-        _nativeBackdropSurface = new NativeBackdropSurface(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        _nativeBackdropSurface = new NativeBackdropSurface(WinRT.Interop.WindowNative.GetWindowHandle(this),
+            _performance.NativeErase, _performance.NativeMessage);
+        InitializeNativeSizingPrototype();
         _wallBackdrop = new WallBackdrop(DispatcherQueue, OnMaterialFallbackChanged, scope.IsTest);
         InitializeAppearance();
         SystemBackdrop = _wallBackdrop;
@@ -95,13 +101,22 @@ public sealed partial class MainWindow : Window
         Surface.GroupRenameRequested += RenameGroup;
         Surface.NewTileRequested += (groupId, lane) => _ = CreateTileAsync(groupId, lane);
         Surface.NewPuzzleRequested += (groupId, lane) => _ = CreatePuzzleAsync(groupId, lane);
+        Surface.PuzzleNextPageRequested += () =>
+        {
+            if (PersistenceInteractionBlocked) return;
+            UpdatePuzzleGate();
+            _puzzles.AdvanceAll();
+        };
         Surface.NewClockRequested += (groupId, lane) => _ = CreateClockAsync(groupId, lane);
         Surface.SettingsRequested += () => SettingsRequested?.Invoke();
         Surface.ImportRequested += (groupId, lane) => _ = OpenImportAsync(groupId, lane);
         Surface.TitleEditFinished += () => ImportReadinessChanged?.Invoke();
+        Surface.ContextMenuVisibilityChanged += OnContextMenuVisibilityChanged;
         AppWindow.Changed += (_, args) =>
         {
-            if (args.DidVisibilityChange || args.DidPresenterChange || args.DidSizeChange) UpdatePuzzleGate();
+            var started = _performance.NativeStageStart();
+            try { if (args.DidVisibilityChange || args.DidPresenterChange || args.DidSizeChange) UpdatePuzzleGate(); }
+            finally { _performance.WindowChanged(started); }
         };
         Surface.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler(OnPointerPressed), true);
         Surface.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(OnPointerMoved), true);
@@ -132,12 +147,20 @@ public sealed partial class MainWindow : Window
             {
                 TerminateGesture();
                 CancelResize();
-                if (!_modal) AutomaticHideRequested?.Invoke();
+                QueueAutomaticHideCheck("Deactivated");
             }
         };
         Closed += (_, _) =>
         {
             _windowClosing = true;
+            StopPersistenceAfterClose();
+            DisposeNativeSizingPrototype();
+            DisposeInteractionScheduling();
+            _viewportTransition = null;
+            CancelResize();
+            _dragInputPending = _resizeInputPending = false;
+            StopFrameSubscriptionIfIdle();
+            _focusCheckRetry?.Stop();
             DisposeAppearance();
             _nativeBackdropSurface.Dispose();
             TerminateGesture();
@@ -162,8 +185,8 @@ public sealed partial class MainWindow : Window
 
     private WallDocument Document => _session.Current;
     private double Scale => WallRoot.XamlRoot?.RasterizationScale ?? Math.Max(96u, GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this))) / 96d;
-    private double WorkWidthDip => Math.Max(1, _workArea.Right - _workArea.Left - _frameWidth) / Scale;
-    private double WorkHeightDip => Math.Max(1, _workArea.Bottom - _workArea.Top - _frameHeight) / Scale;
+    private double WorkWidthDip => CurrentViewportBudget.MaxWidthDip;
+    private double WorkHeightDip => CurrentViewportBudget.MaxHeightDip;
 
     private void OpenWall()
     {
@@ -175,6 +198,7 @@ public sealed partial class MainWindow : Window
             return;
         }
         RefreshNativeFrame();
+        ReadPrimaryScreen();
         var width = WorkWidthDip;
         var height = WorkHeightDip;
         var (columns, rows) = ChooseInitialGrid(width, height);
@@ -217,7 +241,7 @@ public sealed partial class MainWindow : Window
         if (_carouselCommit) Surface.RefreshPuzzlePresentation(document);
         else Surface.Render(document);
         Surface.Visibility = Visibility.Visible;
-        Surface.IsHitTestVisible = true;
+        Surface.IsHitTestVisible = !PersistenceInteractionBlocked;
         _viewBlocked = false;
         StatusPanel.Visibility = Visibility.Collapsed;
         RetryViewButton.Visibility = Visibility.Collapsed;
@@ -229,6 +253,7 @@ public sealed partial class MainWindow : Window
     private void BlockView(string message, bool retry = false)
     {
         _viewBlocked = true;
+        UpdateNativeSizingRegion();
         UpdatePuzzleGate();
         Surface.IsHitTestVisible = false;
         Surface.Visibility = Visibility.Collapsed;
@@ -240,14 +265,11 @@ public sealed partial class MainWindow : Window
     private void OnRetryViewClicked(object sender, RoutedEventArgs e)
     {
         Surface.CancelImageRequests();
-        Surface.Children.Clear();
+        Surface.ResetProjection();
         if (_session.RefreshViewFromCurrent())
         {
-            if (!_adaptationBlocked)
-            {
-                StatusPanel.Visibility = Visibility.Collapsed;
-                RetryViewButton.Visibility = Visibility.Collapsed;
-            }
+            StatusPanel.Visibility = Visibility.Collapsed;
+            RetryViewButton.Visibility = Visibility.Collapsed;
         }
         else Status(ProductStrings.Get("Wall.RebuildFailed"));
     }
@@ -266,8 +288,13 @@ public sealed partial class MainWindow : Window
     private string? CommitProposal(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
         bool recordUndo = true)
     {
+        if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (_viewBlocked) return ProductStrings.Get("Wall.ViewBlocked");
+        var fit = WallViewportPolicy.Validate(proposal.Document, ViewportBudget(proposal.Document.Settings.FullScreen), _metrics);
+        if (fit.Proposal is null) return ViewportFailure(fit);
+        var commitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         var result = _session.Commit(proposal, changes, recordUndo);
+        _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - commitStarted);
         if (!result.Committed) return string.Format(ProductStrings.Get("Common.SaveFailed"), string.Join("；", result.Diagnostics));
         if (result.ViewFailed)
             BlockView(string.Format(ProductStrings.Get("Wall.CommitViewFailed"), string.Join("；", result.Diagnostics)), retry: true);
@@ -281,26 +308,33 @@ public sealed partial class MainWindow : Window
         if (result.Proposal is null)
         {
             AppLog.Warn("WallApply", $"action={action.GetType().Name} rejection={result.Rejection} detail={result.Detail}");
+            if (result.Detail is "CONTENT_TOO_LARGE" || result.Detail?.StartsWith("GROUP_TOO_TALL:", StringComparison.Ordinal) == true) return ViewportFailure(result);
             return string.Format(ProductStrings.Get("Wall.LocationUnavailable"),
                 ProductStrings.WallRejectionReason(result.Rejection), string.Empty).TrimEnd();
         }
         return CommitProposal(result.Proposal, changes);
     }
 
-    private string? PersistPuzzleCarousel(string id, PuzzleCarouselState carousel)
+    private async Task<string?> PersistPuzzleCarousel(string id, ImageCarouselState carousel, Func<bool> stillCurrent)
     {
-        if (FindMember(id) is not PuzzleMember puzzle) return ProductStrings.Get("Wall.PuzzleMissing");
+        // A prepared capture may wait behind another member's accepted save. Build
+        // its proposal only after that generation has been adopted on the UI.
+        await DrainPersistenceAsync();
+        if (!stillCurrent()) return null;
+        if (_persistenceAdmissionClosed || _windowClosing)
+            return ProductStrings.Get("Wall.SettingsSaving");
+        if (FindMember(id) is not { } member || member is not (TileMember or PuzzleMember))
+            return ProductStrings.Get("Wall.PuzzleMissing");
         var result = _session.Propose(new ReplaceMemberAction(Document.Generation, id,
-            puzzle with { Carousel = carousel }), WorkWidthDip, WorkHeightDip, _metrics);
+            member with { Carousel = carousel }), WorkWidthDip, WorkHeightDip, _metrics);
         if (result.Proposal is null)
         {
             AppLog.Warn("WallCarousel", $"member={id} rejection={result.Rejection} detail={result.Detail}");
+            if (result.Detail is "CONTENT_TOO_LARGE" || result.Detail?.StartsWith("GROUP_TOO_TALL:", StringComparison.Ordinal) == true) return ViewportFailure(result);
             return string.Format(ProductStrings.Get("Wall.LocationUnavailable"),
                 ProductStrings.WallRejectionReason(result.Rejection), string.Empty).TrimEnd();
         }
-        _carouselCommit = true;
-        try { return CommitProposal(result.Proposal, recordUndo: false); }
-        finally { _carouselCommit = false; }
+        return await CommitProposalAsync(result.Proposal, recordUndo: false, carousel: true);
     }
 
     private void UpdatePuzzleGate()
@@ -308,17 +342,17 @@ public sealed partial class MainWindow : Window
         var hidden = !AppWindow.IsVisible || AppWindow.Presenter is OverlappedPresenter
             { State: OverlappedPresenterState.Minimized };
         var imagesWereActive = Surface.ImagesActive;
-        Surface.ImagesActive = !hidden && !_viewBlocked && !_adaptationBlocked;
+        Surface.ImagesActive = !hidden && !_viewBlocked;
         if (!Surface.ImagesActive) Surface.CancelImageRequests();
         else if (!imagesWereActive && _hasDocument)
         {
             Surface.Render(Document);
             _needsVisualRefresh = false;
         }
-        _puzzles.SetGate(hidden || _viewBlocked || _adaptationBlocked ? PuzzleCarouselGate.Hidden
-            : _modal ? PuzzleCarouselGate.Modal
-            : _resizing || _gesture.Phase != GesturePhase.Idle ? PuzzleCarouselGate.Gesture : PuzzleCarouselGate.Ready);
-        if (hidden || _viewBlocked || _adaptationBlocked || !Surface.HasClocks)
+        _puzzles.SetGate(hidden || _viewBlocked ? MemberCarouselGate.Hidden
+            : _modal ? MemberCarouselGate.Modal
+            : _resizing || _gesture.Phase != GesturePhase.Idle ? MemberCarouselGate.Gesture : MemberCarouselGate.Ready);
+        if (hidden || _viewBlocked || !Surface.HasClocks)
         {
             if (_traceInput && _clockTimer.IsRunning) AppLog.Info("ClockTimer", $"Stop visible={!hidden} utc={_clock.UtcNow:O}");
             _clockTimer.Stop();
@@ -333,35 +367,41 @@ public sealed partial class MainWindow : Window
 
     private async Task CreateTileAsync(string? groupId, int lane)
     {
-        if (_modal || _viewBlocked || _adaptationBlocked || !_hasDocument) return;
-        var tile = new TileMember { Id = $"tile-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 1, 1) };
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked || !_hasDocument) return;
+        var tile = new TileMember { Id = $"tile-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 2, 2) };
         var error = AddDefaultMember(tile, groupId, lane);
         if (error is not null) { Status(error); return; }
-        await EditMemberAsync(tile.Id);
+        await EditMemberAsync(tile.Id, isNewPlaceholder: true);
     }
 
     private async Task CreatePuzzleAsync(string? groupId, int lane)
     {
-        if (_modal || _viewBlocked || _adaptationBlocked || !_hasDocument) return;
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked || !_hasDocument) return;
         var puzzle = new PuzzleMember { Id = $"puzzle-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 4, 4),
-            Partitions = Enumerable.Range(0, 16).Select(n => new GridRect(n % 4, n / 4, 1, 1)).ToArray() };
+            Partitions = [new GridRect(0, 0, 2, 2), new GridRect(2, 0, 2, 2),
+                new GridRect(0, 2, 2, 2), new GridRect(2, 2, 2, 2)] };
         var error = AddDefaultMember(puzzle, groupId, lane);
         if (error is not null) { Status(error); return; }
-        await EditMemberAsync(puzzle.Id);
+        await EditMemberAsync(puzzle.Id, isNewPlaceholder: true);
     }
 
-    private string? AddDefaultMember(WallMember member, string? groupId, int lane) =>
-        Apply(new AddMemberAction(Document.Generation, member, groupId, lane,
-            Document.Lanes[lane].Groups.Count, groupId is null ? $"group-{Guid.NewGuid():N}" : null));
-
-    private async Task EditMemberAsync(string id)
+    private string? AddDefaultMember(WallMember member, string? groupId, int lane)
     {
-        if (_modal || _viewBlocked || FindMember(id) is not { } tile ||
-            tile is not (TileMember or PuzzleMember or ClockMember)) return;
+        lane = Math.Clamp(lane, 0, Settings.FullScreen ? 63 : Document.Columns);
+        return Apply(new AddMemberAction(Document.Generation, member, groupId, lane,
+            lane >= Document.Columns ? 0 : Document.Lanes[lane].Groups.Count,
+            groupId is null ? $"group-{Guid.NewGuid():N}" : null));
+    }
+
+    private async Task EditMemberAsync(string id, bool isNewPlaceholder = false)
+    {
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked || FindMember(id) is not { } member ||
+            member is not (TileMember or PuzzleMember or ClockMember)) return;
+        string? duplicateToFocus = null;
         try
         {
             await BeginModalAsync();
-            if (tile is ClockMember clock)
+            if (member is ClockMember clock)
             {
                 var clockDialog = new ClockEditorDialog(DialogOwner, clock, MaxMemberRows(), _clock,
                     replacement => Apply(new ReplaceMemberAction(Document.Generation, id, replacement)));
@@ -369,62 +409,84 @@ public sealed partial class MainWindow : Window
                 await clockDialog.ShowAsync();
                 return;
             }
-            var entryPath = _session.ManagedEntryPath(tile);
-            string? target = null;
-            var idList = false;
-            var opaque = false;
-            string? entryDiagnostic = null;
-            if (entryPath is not null)
-            {
-                try
-                {
-                    if (tile.Entry!.Kind == ManagedEntryKind.Lnk)
-                    {
-                        var fields = _session.LinkFiles.Read(entryPath);
-                        target = fields.TargetPath;
-                        idList = fields.HasIdList;
-                        opaque = string.IsNullOrEmpty(target);
-                    }
-                    else
-                    {
-                        target = UrlShortcut.ReadUrlLine(File.ReadAllBytes(entryPath));
-                        opaque = string.IsNullOrEmpty(target);
-                    }
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
-                    System.Runtime.InteropServices.COMException)
-                {
-                    opaque = true;
-                    entryDiagnostic = string.Format(ProductStrings.Get("Wall.EntryReadFailed"), ex.Message);
-                }
-            }
-            if (tile is PuzzleMember puzzle)
-            {
-                var dialog = new PuzzleEditorDialog(DialogOwner, puzzle, target, idList, opaque,
-                    entryDiagnostic, MaxMemberRows(), _images, entryPath, submission =>
-                    Apply(new ReplaceMemberAction(Document.Generation, id, submission.Puzzle), submission.EntryChanges), _traceInput);
-                ActiveDialog = dialog;
-                await dialog.ShowAsync();
-            }
-            else
-            {
-                var dialog = new TileEditorDialog(DialogOwner, (TileMember)tile, target, idList, opaque,
-                    entryDiagnostic, MaxMemberRows(), _images, entryPath, submission =>
-                    Apply(new ReplaceMemberAction(Document.Generation, id, submission.Tile), submission.EntryChanges));
-                ActiveDialog = dialog;
-                await dialog.ShowAsync();
-            }
+            var dialog = new SharedMemberEditorDialog(DialogOwner, member, _images,
+                _session.ManagedEntryPath(member), _session.LinkFiles, MaxMemberRows(),
+                (replacement, changes) => SaveSharedMember(replacement, changes, isNewPlaceholder,
+                    existing => duplicateToFocus = existing), Settings.VisualStyle, isNewPlaceholder);
+            ActiveDialog = dialog;
+            await dialog.ShowAsync();
         }
         catch (Exception ex) { Status(string.Format(ProductStrings.Get("Wall.EditFailed"), ex.Message)); }
-        finally { EndModal(); }
+        finally
+        {
+            EndModal();
+            if (duplicateToFocus is not null)
+            {
+                Surface.FocusMember(duplicateToFocus);
+                Status(ProductStrings.Get("SharedEditor.DuplicateLocated"));
+            }
+        }
     }
 
-    private int MaxMemberRows() => Math.Clamp(
-        (int)Math.Floor((WorkHeightDip - _metrics.TopMargin - _metrics.Margin + _metrics.Gap) / _metrics.Pitch), 1, 256);
+    private string? SaveSharedMember(WallMember replacement, IReadOnlyList<EntryChange> changes,
+        bool isNewPlaceholder, Action<string> locateDuplicate)
+    {
+        if (FindMember(replacement.Id) is not { } current) return ProductStrings.Get("Wall.PuzzleMissing");
+        try
+        {
+            var identities = ImportIdentities;
+            var desired = DesiredEditorIdentity(current, replacement, changes, identities);
+            if (desired is not null)
+            {
+                var duplicate = Document.Lanes.SelectMany(l => l.Groups).SelectMany(g => g.Members)
+                    .FirstOrDefault(other => other.Id != replacement.Id &&
+                        TryIdentity(other, identities)?.Key == desired.Key);
+                if (duplicate is not null)
+                {
+                    if (!isNewPlaceholder) return ProductStrings.Get("SharedEditor.Duplicate");
+                    IReadOnlyList<EntryChange> removals = current.Entry is null ? [] : [new EntryChange.Remove(current.Id)];
+                    var error = Apply(new RemoveMemberAction(Document.Generation, current.Id), removals);
+                    if (error is not null) return error;
+                    locateDuplicate(duplicate.Id);
+                    return null;
+                }
+            }
+            if (changes.Count == 0 && !MemberPresentationRules.HasUserPropertyChanges(current, replacement)) return null;
+            return Apply(new ReplaceMemberAction(Document.Generation, replacement.Id, replacement), changes);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
+            System.Runtime.InteropServices.COMException)
+        { return string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message); }
+    }
 
+    private LaunchIdentity? DesiredEditorIdentity(WallMember current, WallMember replacement,
+        IReadOnlyList<EntryChange> changes, LaunchIdentityService identities)
+    {
+        if (changes.OfType<EntryChange.Remove>().Any()) return null;
+        if (changes.OfType<EntryChange.CopyShortcut>().FirstOrDefault() is { } copy)
+            return identities.ResolveInput(copy.SourcePath);
+        if (changes.OfType<EntryChange.CreateLink>().FirstOrDefault() is { } createLink)
+            return identities.ResolveInput(createLink.TargetPath);
+        if (changes.OfType<EntryChange.CreateUrl>().FirstOrDefault() is { } createUrl)
+            return identities.ResolveInput(createUrl.Url);
+        if (changes.OfType<EntryChange.ChangeTarget>().FirstOrDefault() is { } target)
+        {
+            if (current.Entry?.Kind == ManagedEntryKind.Lnk && _session.ManagedEntryPath(current) is { } managed)
+            {
+                var fields = _session.LinkFiles.Read(managed);
+                return LaunchIdentityService.ForPath(target.TargetPathOrUrl, fields.Arguments, fields.WorkingDirectory);
+            }
+            return identities.ResolveInput(target.TargetPathOrUrl);
+        }
+        return identities.ResolveMember(current, _session.ManagedEntryPath(current)) ??
+            identities.ResolveInput(replacement.TargetInput ?? string.Empty);
+    }
+
+    private int MaxMemberRows() => Math.Max(0,
+        Math.Min(WallViewportPolicy.MaximumMemberRows, CurrentViewportBudget.MaxRows - 1));
     private void RemoveMember(string id)
     {
-        if (_modal || _viewBlocked || FindMember(id) is not { } member) return;
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked || FindMember(id) is not { } member) return;
         var changes = member.Entry is null ? [] : new EntryChange[] { new EntryChange.Remove(id) };
         var error = Apply(new RemoveMemberAction(Document.Generation, id), changes);
         if (error is not null) Status(error);
@@ -432,7 +494,7 @@ public sealed partial class MainWindow : Window
 
     private void RenameGroup(string id, string? title)
     {
-        if (_modal || _viewBlocked) return;
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked) return;
         var error = Apply(new RenameGroupAction(Document.Generation, id, title));
         if (error is not null) Status(error);
     }
@@ -445,7 +507,7 @@ public sealed partial class MainWindow : Window
     private void LaunchMember(string id, bool elevated)
     {
         TraceInput($"LaunchRequested member={id} elevated={elevated} phase={_gesture.Phase} modal={_modal} blocked={_viewBlocked} suppressed={_suppressClickMember == id}");
-        if (_modal || _viewBlocked || _suppressClickMember == id ||
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked || _suppressClickMember == id ||
             _gesture.Phase != GesturePhase.Idle && _gesture.MemberId == id)
         {
             TraceInput("LaunchBlocked by modal/view/suppression/active press");
@@ -473,7 +535,7 @@ public sealed partial class MainWindow : Window
 
     private void ShowMemberLocation(string id)
     {
-        if (_modal || _viewBlocked || FindMember(id) is not { } member) return;
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked || FindMember(id) is not { } member) return;
         var entryPath = _session.ManagedEntryPath(member);
         if (entryPath is null) return;
         var result = _launcher.RevealInExplorer(entryPath);
@@ -488,6 +550,7 @@ public sealed partial class MainWindow : Window
 
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (PersistenceInteractionBlocked) { e.Handled = true; return; }
         if (e.Key == Windows.System.VirtualKey.Escape && !_modal && _gesture.Phase == GesturePhase.Idle)
         {
             if (_resizing) CancelResize();
@@ -503,7 +566,11 @@ public sealed partial class MainWindow : Window
         if (e.Key == Windows.System.VirtualKey.Z && (GetKeyState(0x11) & 0x8000) != 0 &&
             !_modal && !_viewBlocked && !WithinTextBox(e.OriginalSource as DependencyObject))
         {
-            var result = _session.Undo();
+            var result = _session.Undo(candidate =>
+            {
+                var fit = WallViewportPolicy.Validate(candidate, CurrentViewportBudget, _metrics);
+                return fit.Success ? null : ViewportFailure(fit);
+            });
             if (result.ViewFailed)
                 BlockView(string.Format(ProductStrings.Get("Wall.UndoViewFailed"), string.Join("；", result.Diagnostics)), retry: true);
             else if (!result.Committed) Status(string.Join("；", result.Diagnostics));
@@ -524,7 +591,7 @@ public sealed partial class MainWindow : Window
         _tracedMovePointerId = 0;
         _tracedMovePhase = GesturePhase.Idle;
         TraceInput($"Press source={e.OriginalSource?.GetType().Name} pointer={e.Pointer.PointerId} phase={_gesture.Phase} left={e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed}");
-        if (_modal || _viewBlocked || !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return;
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked || !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return;
         try
         {
             var point = e.GetCurrentPoint(Surface).Position;
@@ -532,19 +599,22 @@ public sealed partial class MainWindow : Window
             TraceInput($"PressHit member={hit.MemberId} group={hit.GroupId} handle={hit.GroupHandle} x={point.X:F1} y={point.Y:F1}");
             if (hit.MemberId is null && !hit.GroupHandle) return;
             // Capture a complete settled frame in the ghost, including a flip interrupted by this press.
-            _puzzles.SetGate(PuzzleCarouselGate.Gesture);
-            var geometry = WallLayoutEngine.Measure(Document, _metrics);
+            _puzzles.SetGate(MemberCarouselGate.Gesture);
+            StopViewportTransition();
+            var geometry = Surface.Geometry ?? WallLayoutEngine.Measure(Document, _metrics);
             var bounds = hit.MemberId is { } memberId
                 ? geometry.Groups.SelectMany(g => g.Members).First(m => m.MemberId == memberId).Bounds
                 : geometry.Groups.First(g => g.GroupId == hit.GroupId).Bounds;
             var offset = new Point(point.X - bounds.X, point.Y - bounds.Y);
             var ghost = Surface.CreateDragVisual(hit.MemberId, hit.GroupHandle ? hit.GroupId : null);
             var origin = AppWindow.Position;
+            _gestureScrollOffset = WallScroll.HorizontalOffset;
             var began = _gesture.Begin(e.Pointer.PointerId, point, offset, new Point(origin.X, origin.Y), ghost,
                 hit.MemberId, hit.GroupHandle ? hit.GroupId : null);
             TraceInput($"Begin result={began} phase={_gesture.Phase}");
             if (began)
             {
+                BeginGestureFrames(geometry);
                 UpdatePuzzleGate();
                 for (var source = e.OriginalSource as DependencyObject;
                      source is not null && !ReferenceEquals(source, Surface);
@@ -580,18 +650,10 @@ public sealed partial class MainWindow : Window
         if (_gesture.Phase == GesturePhase.Idle || _gesture.PointerId != e.Pointer.PointerId) return;
         try
         {
-            var point = CommittedPointerPoint(e);
-            if (!_gesture.Advance(point, 7)) return;
-            var proposal = CalculateDrop(point);
-            _gesture.SetPreview(proposal);
-            Surface.Render(proposal?.Proposal?.Document ?? Document);
-            Surface.RefreshClocks(_clock.UtcNow);
-            PlaceWall(); // preview client bounds and anchor are as real as the proposal
-            Surface.ShowDragCue(_gesture.MemberId, proposal?.Proposal is not null);
-            var current = AppWindow.Position;
-            DrawGhost(new Point(point.X - (current.X - _gesture.WindowOrigin.X) / Scale,
-                point.Y - (current.Y - _gesture.WindowOrigin.Y) / Scale),
-                proposal?.Proposal is not null);
+            _latestDragPoint = CommittedPointerPoint(e);
+            _dragInputPending = true;
+            _performance.Input();
+            EnsureFrameSubscription();
         }
         catch (Exception ex) { RecoverGestureError(ex); }
     }
@@ -602,12 +664,15 @@ public sealed partial class MainWindow : Window
         if (_gesture.Phase == GesturePhase.Idle || _gesture.PointerId != e.Pointer.PointerId) return;
         try
         {
+            if (!GestureSnapshotIsCurrent()) { TerminateGesture(); return; }
+            _dragInputPending = false;
             var point = CommittedPointerPoint(e);
+            _performance.Input();
             var dragged = _gesture.Phase == GesturePhase.Dragging || _gesture.Advance(point, 7);
             var proposal = dragged ? CalculateDrop(point) : null;
             var id = _gesture.MemberId;
             TraceInput($"ReleaseDecision dragged={dragged} member={id} proposal={proposal?.Proposal is not null}");
-            TerminateGesture();
+            TerminateGesture(restoreScroll: false, restoreView: proposal?.Proposal is null);
             if (!dragged)
             {
                 if (id is not null) LaunchMember(id);
@@ -620,12 +685,12 @@ public sealed partial class MainWindow : Window
             if (proposal?.Proposal is null)
             {
                 AppLog.Warn("WallDrop", $"rejection={proposal?.Rejection} detail={proposal?.Detail}");
-                Status(string.Format(ProductStrings.Get("Wall.DropFailed"),
-                    ProductStrings.WallRejectionReason(proposal?.Rejection ?? WallRejection.None)));
+                Status(proposal?.Detail is "CONTENT_TOO_LARGE" || proposal?.Detail?.StartsWith("GROUP_TOO_TALL:", StringComparison.Ordinal) == true
+                    ? ViewportFailure(proposal!) : string.Format(ProductStrings.Get("Wall.DropFailed"),
+                        ProductStrings.WallRejectionReason(proposal?.Rejection ?? WallRejection.None)));
                 return;
             }
-            var error = CommitProposal(proposal.Proposal);
-            if (error is not null) Status(error);
+            _ = CommitProposalAsync(proposal.Proposal, settle: SettleReleasePersistence);
         }
         catch (Exception ex) { RecoverGestureError(ex); }
     }
@@ -639,18 +704,13 @@ public sealed partial class MainWindow : Window
 
     private WallLayoutResult? CalculateDrop(Point point)
     {
-        var geometry = WallLayoutEngine.Measure(Document, _metrics);
-        var rightAnchor = Settings.AnchorCorner is AnchorCorner.TopRight or AnchorCorner.BottomRight;
-        var bottomAnchor = Document.Settings.AnchorCorner is AnchorCorner.BottomLeft or AnchorCorner.BottomRight;
-        var minX = rightAnchor ? -(WorkWidthDip - geometry.WallWidth) : _metrics.Margin;
-        var maxX = rightAnchor ? geometry.WallWidth : WorkWidthDip;
-        var minY = bottomAnchor ? -(WorkHeightDip - geometry.WallHeight) : 0;
-        var maxY = bottomAnchor ? geometry.WallHeight : WorkHeightDip;
-        if (point.X < minX || point.Y < minY || point.X >= maxX || point.Y >= maxY)
-            return InvalidDrop(ProductStrings.Get("Wall.OutsideWorkArea"));
+        var geometry = _gestureGeometry ?? WallLayoutEngine.Measure(Document, _metrics);
+        var rightAnchor = !Settings.FullScreen && Settings.AnchorCorner is AnchorCorner.TopRight or AnchorCorner.BottomRight;
+        if (point.X < 0 || point.Y < 0 || point.X >= (Settings.FullScreen ? Math.Max(geometry.WallWidth, WallScroll.ViewportWidth) : geometry.WallWidth) || point.Y >= (Settings.FullScreen ? WallScroll.ViewportHeight : geometry.WallHeight))
+            return InvalidDrop(ProductStrings.Get("Wall.OutsideWall"));
         if (rightAnchor && point.X < _metrics.Margin)
         {
-            if (_metrics.WallWidth(Document.Columns + 1) > WorkWidthDip)
+            if (Document.Columns >= 64)
                 return InvalidDrop(ProductStrings.Get("Wall.OutsideLane"));
             // Extending inward from a right anchor prepends a lane. The proposal still commits once
             // against the original generation, preserving every existing group/member identity.
@@ -659,96 +719,103 @@ public sealed partial class MainWindow : Window
             WallAction action;
             if (_gesture.GroupId is { } movedGroup)
                 action = new MoveGroupAction(Document.Generation, movedGroup, 0, 0);
-            else if (_gesture.MemberId is { } movedId && FindMember(movedId) is { } moved)
+            else if (_gesture.MemberId is { } movedId && _gestureMembers.GetValueOrDefault(movedId) is { } moved)
                 action = new MoveMemberAction(Document.Generation, movedId,
                     new TileWall.Core.Grid.GridRect(0, 0, moved.LocalBounds.Width, moved.LocalBounds.Height),
                     null, 0, 0, _gesture.NewGroupId);
             else return null;
-            return WallLayoutEngine.TryApply(expanded, action, WorkWidthDip, WorkHeightDip, _metrics);
+            return CachedDrop(action, expanded);
         }
-        var lane = (int)Math.Floor((point.X - _metrics.Margin) /
-            (_metrics.LaneWidth + _metrics.ColumnGap));
-        if (lane > Document.Columns || lane < 0 ||
-            lane == Document.Columns && _metrics.WallWidth(Document.Columns + 1) > WorkWidthDip)
+        var lane = !Settings.FullScreen && !rightAnchor && point.X >= geometry.WallWidth - _metrics.Margin ? Document.Columns :
+            (int)Math.Floor((point.X - _metrics.Margin) / (_metrics.LaneWidth + _metrics.ColumnGap));
+        if (lane < 0 || lane >= 64 || !Settings.FullScreen && lane > Document.Columns)
             return InvalidDrop(ProductStrings.Get("Wall.OutsideLane"));
-        if (lane < Document.Columns && point.X > _metrics.WallWidth(Document.Columns) &&
-            _metrics.WallWidth(Document.Columns + 1) > WorkWidthDip)
-            return InvalidDrop(ProductStrings.Get("Wall.OutsideWall"));
         if (_gesture.GroupId is { } groupId)
         {
             var before = geometry.Groups.Count(g => g.LaneIndex == lane && g.GroupId != groupId &&
                 g.TitleBounds.Y + g.TitleBounds.Height / 2 < point.Y);
-            return _session.Propose(new MoveGroupAction(Document.Generation, groupId, lane, before),
-                WorkWidthDip, WorkHeightDip, _metrics);
+            return CachedDrop(new MoveGroupAction(Document.Generation, groupId, lane, before));
         }
-        if (_gesture.MemberId is not { } memberId || FindMember(memberId) is not { } member) return null;
+        if (_gesture.MemberId is not { } memberId || _gestureMembers.GetValueOrDefault(memberId) is not { } member) return null;
         var target = geometry.Groups.FirstOrDefault(g => g.LaneIndex == lane &&
             point.Y >= g.Bounds.Y && point.Y < g.Bounds.Y + g.Bounds.Height);
-        var sameSource = Document.Lanes.SelectMany(l => l.Groups).FirstOrDefault(g =>
+        var sameSource = _gestureGroups.Values.FirstOrDefault(g =>
             g.Members.Any(m => m.Id == memberId));
         if (target is not null)
         {
             var first = target.Members.First();
-            var firstMember = Document.Lanes.SelectMany(l => l.Groups).First(g => g.Id == target.GroupId)
-                .Members.First(m => m.Id == first.MemberId);
+            var firstMember = _gestureMembers[first.MemberId];
             var memberOriginY = first.Bounds.Y - _metrics.MemberY(firstMember.LocalBounds.Row);
             var col = (int)Math.Round((point.X - _gesture.GrabOffset.X - target.Bounds.X) / _metrics.Pitch);
             var row = (int)Math.Round((point.Y - _gesture.GrabOffset.Y - memberOriginY) / _metrics.Pitch);
             if (col < 0 || col + member.LocalBounds.Width > 8 || row < 0)
                 return InvalidDrop(ProductStrings.Get("Wall.OutsideGroup"));
-            return _session.Propose(new MoveMemberAction(Document.Generation, memberId,
-                new GridRect(col, row, member.LocalBounds.Width, member.LocalBounds.Height),
-                target.GroupId), WorkWidthDip, WorkHeightDip, _metrics);
+            return CachedDrop(new MoveMemberAction(Document.Generation, memberId,
+                new GridRect(col, row, member.LocalBounds.Width, member.LocalBounds.Height), target.GroupId));
         }
         var sourceDisappears = sameSource?.Members.Count == 1;
         var insert = geometry.Groups.Count(g => g.LaneIndex == lane &&
             (!sourceDisappears || g.GroupId != sameSource?.Id) &&
             g.TitleBounds.Y + g.TitleBounds.Height / 2 < point.Y);
-        return _session.Propose(new MoveMemberAction(Document.Generation, memberId,
+        return CachedDrop(new MoveMemberAction(Document.Generation, memberId,
             new GridRect(0, 0, member.LocalBounds.Width, member.LocalBounds.Height),
-            null, lane, insert, _gesture.NewGroupId), WorkWidthDip, WorkHeightDip, _metrics);
+            null, lane, insert, _gesture.NewGroupId));
     }
 
-    private static WallLayoutResult InvalidDrop(string reason) =>
-        new(null, WallRejection.InvalidAction, reason);
+    private readonly Dictionary<string, WallLayoutResult> _invalidDrops = new(StringComparer.Ordinal);
+    private WallLayoutResult InvalidDrop(string reason)
+    {
+        if (!_invalidDrops.TryGetValue(reason, out var result))
+            _invalidDrops.Add(reason, result = new(null, WallRejection.InvalidAction, reason));
+        return result;
+    }
 
     private void DrawGhost(Point point, bool allowed)
     {
         var visual = _gesture.GhostVisual;
         if (visual is null) return;
+        var inset = _gesture.GroupId is null ? 1d : 0d;
         var ghost = _gesture.GhostHost;
         if (ghost is null)
         {
             ghost = new Border
             {
-                Width = visual.Width + 4,
-                Height = visual.Height + 4,
-                Background = new SolidColorBrush(Color.FromArgb(180, 30, 49, 68)),
-                BorderThickness = new Thickness(2),
+                Width = visual.Width + inset * 2,
+                Height = visual.Height + inset * 2,
+                Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                BorderThickness = new Thickness(inset),
                 CornerRadius = WallCornerStyle.Corners(Document.Settings.VisualStyle),
                 Child = visual,
+                RenderTransform = new TranslateTransform(),
             };
             _gesture.SetGhostHost(ghost);
             DragOverlay.Children.Add(ghost);
         }
-        ghost.BorderBrush = new SolidColorBrush(allowed
-            ? Microsoft.UI.Colors.LimeGreen : Microsoft.UI.Colors.OrangeRed);
-        Canvas.SetLeft(ghost, point.X - _gesture.GrabOffset.X - 2);
-        Canvas.SetTop(ghost, point.Y - _gesture.GrabOffset.Y - 2);
+        var color = allowed ? Color.FromArgb(210, 255, 255, 255) : Microsoft.UI.Colors.OrangeRed;
+        if (ghost.BorderBrush is not SolidColorBrush brush || brush.Color != color) ghost.BorderBrush = new SolidColorBrush(color);
+        point = ContentToViewport(point);
+        PositionGhost(ghost, point.X - _gesture.GrabOffset.X - inset,
+            point.Y - (_gesture.GroupId is null ? _gesture.GrabOffset.Y : 12) - inset);
     }
 
-    private void TerminateGesture()
+    private void TerminateGesture(bool restoreScroll = true, bool restoreView = true)
     {
         if (_gesture.Phase == GesturePhase.Idle) return;
         TraceInput($"End phase={_gesture.Phase} member={_gesture.MemberId} group={_gesture.GroupId}");
+        _dragInputPending = false;
+        ClearGhostComposition();
         var wasDragging = _gesture.End();
+        _dropCache.Clear(); _gestureDocument = null; _gestureGeometry = null; _drawnDrop = null;
+        StopFrameSubscriptionIfIdle();
+        if (restoreView) _performance.End("cancel-or-click", Surface.VisualCreationCount, Surface.GridCreationCount);
         UpdatePuzzleGate();
         try { Surface.ReleasePointerCaptures(); }
         catch (Exception) { /* End already made capture loss idempotent. */ }
         DragOverlay.Children.Clear();
+        if (restoreScroll) WallScroll.ChangeView(_gestureScrollOffset, 0, null, disableAnimation: true);
         try
         {
-            if (wasDragging && !_viewBlocked)
+            if (wasDragging && restoreView && !_viewBlocked)
             {
                 Surface.Render(Document);
                 Surface.RefreshClocks(_clock.UtcNow);
@@ -766,6 +833,7 @@ public sealed partial class MainWindow : Window
     {
         TraceInput($"GestureError {error.GetType().Name}: {error.Message}");
         TerminateGesture();
+        _performance.End("error", Surface.VisualCreationCount, Surface.GridCreationCount);
         UpdatePuzzleGate();
         if (!_viewBlocked) Status(string.Format(ProductStrings.Get("Wall.GestureFailed"), error.Message));
     }

@@ -23,6 +23,7 @@ internal sealed class ClockEditorDialog : IWallDialogSession
     private readonly ComboBox _width = new(), _height = new(), _timeFormat = new(), _dateFormat = new();
     private readonly TextBlock _time = new() { FontSize = 34 }, _date = new() { TextWrapping = TextWrapping.Wrap },
         _error = new() { TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed) };
+    private readonly Dictionary<string, TextBlock> _labels = [];
     private bool _saved, _dirty, _allowDiscard, _discarded;
 
     public ClockEditorDialog(Window owner, ClockMember original, int maxHeight,
@@ -38,8 +39,16 @@ internal sealed class ClockEditorDialog : IWallDialogSession
         _width.SelectedIndex = _draft.LocalBounds.Width - 1; _height.SelectedIndex = _draft.LocalBounds.Height - 1;
         _timeFormat.SelectedIndex = ClockFormatOptions.SupportedTimeFormats.ToList().IndexOf(_draft.TimeFormat);
         _dateFormat.SelectedIndex = ClockFormatOptions.SupportedDateFormats.ToList().IndexOf(_draft.DateFormat);
-        var form = new StackPanel { Spacing = 10 };
-        foreach (var item in new UIElement[] { _title, _showTitle, _width, _height, _timeFormat, _dateFormat, _time, _date }) form.Children.Add(item);
+        var form = new Grid { RowSpacing = 12, ColumnSpacing = 16 };
+        form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(112) });
+        form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        AddRow(form, "Common.Title", _title); AddRow(form, "Common.ShowTitle", _showTitle);
+        AddRow(form, "Common.Width", _width); AddRow(form, "Common.Height", _height);
+        AddRow(form, "Clock.TimeFormat", _timeFormat); AddRow(form, "Clock.DateFormat", _dateFormat);
+        var preview = new StackPanel { Spacing = 4, Margin = new Thickness(0, 12, 0, 0) };
+        preview.Children.Add(_time); preview.Children.Add(_date);
+        var previewRow = form.RowDefinitions.Count; form.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(preview, previewRow); Grid.SetColumnSpan(preview, 2); form.Children.Add(preview);
         var root = (owner.Content as FrameworkElement)?.XamlRoot;
         var body = new Grid { Width = Math.Min(400, Math.Max(260, (root?.Size.Width ?? 480) - 80)),
             MaxHeight = Math.Min(520, Math.Max(120, (root?.Size.Height ?? 730) - 210)) };
@@ -91,7 +100,8 @@ internal sealed class ClockEditorDialog : IWallDialogSession
         if (_width.SelectedIndex is < 0 or > 7 || _height.SelectedIndex < 0 || _height.SelectedIndex >= _maxHeight)
             return Error(ProductStrings.Get("Clock.SizeInvalid"));
         var value = _draft with { LocalBounds = _draft.LocalBounds with { Width = _width.SelectedIndex + 1, Height = _height.SelectedIndex + 1 },
-            Visual = _draft.Visual with { Title = _title.Text, ShowTitle = _showTitle.IsChecked == true },
+            Visual = _draft.Visual with { TitleMode = MemberTitleMode.Manual, Title = _title.Text,
+                ShowTitle = _showTitle.IsChecked == true },
             TimeFormat = time!, DateFormat = date!, Entry = null };
         try
         {
@@ -107,9 +117,10 @@ internal sealed class ClockEditorDialog : IWallDialogSession
         _dialog.Title = ProductStrings.Get("Clock.Edit");
         _dialog.PrimaryButtonText = ProductStrings.Get("Common.Save");
         _dialog.CloseButtonText = ProductStrings.Get(_allowDiscard ? "Common.Discard" : "Common.Cancel");
-        _title.Header = ProductStrings.Get("Common.Title"); _showTitle.Content = ProductStrings.Get("Common.ShowTitle");
-        _width.Header = ProductStrings.Get("Common.Width"); _height.Header = ProductStrings.Get("Common.Height");
-        _timeFormat.Header = ProductStrings.Get("Clock.TimeFormat"); _dateFormat.Header = ProductStrings.Get("Clock.DateFormat");
+        foreach (var (key, label) in _labels) label.Text = ProductStrings.Get(key);
+        AutomationProperties.SetName(_showTitle, ProductStrings.Get("Common.ShowTitle"));
+        ActionIcon.SetTip(_showTitle, ProductStrings.Get("Common.ShowTitle"));
+        ActionIcon.DecorateDialog(_dialog);
     }
     private void Changed() { _dirty = true; _allowDiscard = false; _discarded = false; RefreshStrings(); RefreshPreview(); }
     private void OfferDiscard() { _allowDiscard = true; _error.Text = ProductStrings.Get("Common.UnsavedDraft"); RefreshStrings(); }
@@ -120,6 +131,15 @@ internal sealed class ClockEditorDialog : IWallDialogSession
             _timeFormat.SelectedIndex >= 0 ? ClockFormatOptions.SupportedTimeFormats[_timeFormat.SelectedIndex] : null,
             _dateFormat.SelectedIndex >= 0 ? ClockFormatOptions.SupportedDateFormats[_dateFormat.SelectedIndex] : null);
         _time.Text = value.TimeLine; _date.Text = value.DateLine;
+    }
+    private void AddRow(Grid form, string key, FrameworkElement value)
+    {
+        var row = form.RowDefinitions.Count; form.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var label = new TextBlock { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+        _labels.Add(key, label); AutomationProperties.SetLabeledBy(value, label);
+        Grid.SetRow(label, row); form.Children.Add(label);
+        value.HorizontalAlignment = HorizontalAlignment.Stretch;
+        Grid.SetRow(value, row); Grid.SetColumn(value, 1); form.Children.Add(value);
     }
     private static void Id(DependencyObject item, string id) => AutomationProperties.SetAutomationId(item, "clock-" + id);
 }

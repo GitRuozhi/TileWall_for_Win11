@@ -49,9 +49,22 @@ public sealed class ShellLinkFileService : ILnkFileService
         // 特殊 Shell 入口的判定（探针 D 实证）：GetPath(SLGP_RAWPATH) 为空且 IDList 存在。
         // 普通路径链接同样可能带 IDList（Shell 依路径自动解析），不能单独作为判据。
         var hasIdList = targetText.Length == 0 && pidl != IntPtr.Zero;
+        string? shellName = null;
         if (pidl != IntPtr.Zero)
         {
-            Marshal.FreeCoTaskMem(pidl); // FreeCoTaskMem 无平台注解（探针同款）
+            try
+            {
+                // SIGDN_DESKTOPABSOLUTEPARSING; reading identity never resolves or executes the link.
+                if (hasIdList && SHGetNameFromIDList(pidl, 0x80028000, out var name) >= 0 && name != IntPtr.Zero)
+                {
+                    try { shellName = Marshal.PtrToStringUni(name); }
+                    finally { Marshal.FreeCoTaskMem(name); }
+                }
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(pidl); // FreeCoTaskMem 无平台注解（探针同款）
+            }
         }
 
         var iconText = iconPath.ToString();
@@ -62,7 +75,7 @@ public sealed class ShellLinkFileService : ILnkFileService
             iconText.Length > 0 ? iconText : null,
             iconIndex,
             showCmd,
-            hasIdList);
+            hasIdList) { ShellParsingName = shellName };
     }
 
     public void EditTargetOnly(string path, string newTarget)
@@ -130,4 +143,7 @@ public sealed class ShellLinkFileService : ILnkFileService
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern uint GetLongPathName(string lpszShortPath, [Out] StringBuilder lpszLongPath, int cchBuffer);
+
+    [DllImport("shell32.dll")]
+    private static extern int SHGetNameFromIDList(IntPtr pidl, uint nameKind, out IntPtr name);
 }

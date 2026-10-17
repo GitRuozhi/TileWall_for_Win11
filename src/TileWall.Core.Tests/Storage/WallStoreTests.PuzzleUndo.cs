@@ -9,123 +9,62 @@ namespace TileWall.Core.Tests.Storage;
 
 public sealed partial class WallStoreTests
 {
-    private const string ImageA = @"C:\Pictures\A.png";
-    private const string ImageB = @"C:\Pictures\B.png";
-    private const string ImageC = @"C:\Pictures\C.png";
-    private static readonly DateTimeOffset InitialSwitch = new(2026, 9, 24, 0, 0, 0, TimeSpan.Zero);
-
-    private static PuzzleMember UndoPuzzle() => new()
+    private static readonly DateTimeOffset InitialSwitch = DateTimeOffset.UnixEpoch;
+    private static ImageCarouselState CarouselAt(string image, int index, DateTimeOffset time) => new()
     {
-        Id = "puzzle", LocalBounds = new GridRect(0, 0, 2, 2),
-        Partitions = [new GridRect(0, 0, 2, 2)],
-        Images = new PuzzleImageSource { Kind = PuzzleImageSourceKind.Multiple, ImagePaths = [ImageA, ImageB] },
-        Carousel = new PuzzleCarouselState(ImageA, InitialSwitch)
+        CandidateIds = ["a", "b", "c"], Queue = ["a", "b", "c"],
+        CurrentImageId = image, NextIndex = index, Round = 1, LastSwitchUtc = time,
     };
 
-    [Fact]
-    public void ExplicitPuzzleSelectionUndoRestoresOldImageAndTimeAfterAutomaticBaselineSave()
-    {
-        AssertPuzzleEditUndo(UndoPuzzle(), p => p with
-        {
-            Carousel = new PuzzleCarouselState(ImageB, null)
-        }, preserveLiveCarousel: false);
-    }
-
     [Theory]
-    [InlineData("paths")]
-    [InlineData("order")]
-    [InlineData("kind")]
-    [InlineData("folder")]
-    [InlineData("clear")]
-    public void PuzzleSourceUndoRestoresMatchingSourceAndCarouselAfterAutomaticSwitch(string change)
-    {
-        var before = UndoPuzzle();
-        if (change == "folder") before = before with
-        {
-            Images = new PuzzleImageSource { Kind = PuzzleImageSourceKind.Folder, FolderPath = @"C:\Pictures" }
-        };
-        AssertPuzzleEditUndo(before, p => p with
-        {
-            Images = change switch
-            {
-                "paths" => p.Images with { ImagePaths = [ImageA, ImageC] },
-                "order" => p.Images with { ImagePaths = [ImageB, ImageA] },
-                "kind" => p.Images with { Kind = PuzzleImageSourceKind.Single, ImagePaths = [ImageA] },
-                "folder" => p.Images with { FolderPath = @"C:\OtherPictures" },
-                _ => new PuzzleImageSource()
-            },
-            Carousel = change == "clear" ? null : p.Carousel
-        }, preserveLiveCarousel: false,
-            liveCarousel: change == "clear" ? null : new PuzzleCarouselState(
-                change == "paths" ? ImageC : ImageA, InitialSwitch.AddMinutes(1)));
-    }
-
-    [Theory]
-    [InlineData("layout")]
-    [InlineData("transform")]
-    [InlineData("title")]
-    [InlineData("path-case")]
-    [InlineData("folder-case")]
-    public void PuzzlePropertyUndoKeepsLaterAutomaticCarouselAndSettings(string change)
-    {
-        var before = UndoPuzzle();
-        if (change == "folder-case") before = before with
-        {
-            Images = new PuzzleImageSource { Kind = PuzzleImageSourceKind.Folder, FolderPath = @"C:\Pictures" }
-        };
-        AssertPuzzleEditUndo(before, p => change switch
-        {
-            "layout" => p with { LocalBounds = new GridRect(1, 1, 2, 2) },
-            "transform" => p with { Images = p.Images with
-            {
-                Transforms = [new PuzzleImageTransform(ImageA, FitMode.CoverFill, new ImageTransform(2, 3, 4))]
-            } },
-            "title" => p with { Visual = p.Visual with { Title = "Edited" } },
-            "path-case" => p with
-            {
-                Images = p.Images with { ImagePaths = [ImageA.ToLowerInvariant(), ImageB.ToUpperInvariant()] },
-                Carousel = p.Carousel! with { CurrentImageId = ImageA.ToLowerInvariant() }
-            },
-            _ => p with { Images = p.Images with { FolderPath = @"c:\PICTURES" } }
-        }, preserveLiveCarousel: true);
-    }
-
-    private static void AssertPuzzleEditUndo(PuzzleMember original, Func<PuzzleMember, PuzzleMember> edit,
-        bool preserveLiveCarousel, PuzzleCarouselState? liveCarousel = null)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void SharedMemberUndoRestoresSourceOrKeepsLaterAutomaticState(bool puzzle, bool sourceChange)
     {
         var (store, files, _, root) = Harness();
         var empty = WallDocument.Empty(1, 6);
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(empty).Status);
+        WallMember original = puzzle ? new PuzzleMember
+        {
+            Id = "member", LocalBounds = new GridRect(0, 0, 2, 2), Partitions = [new GridRect(0, 0, 2, 2)]
+        } : new TileMember { Id = "member", LocalBounds = new GridRect(0, 0, 2, 2) };
+        original = original with
+        {
+            Images = new() { Kind = MemberImageSourceKind.Folder, Path = @"C:\Pictures" },
+            Carousel = CarouselAt("a", 1, InitialSwitch), TargetInput = "https://example.com",
+            ImportSource = new()
+            {
+                BatchId = "batch", GroupBucketKey = "letter:A", OriginGroupId = "group",
+                SourceRoot = @"C:\Programs", RelativePath = "App.lnk",
+            },
+        };
         var populated = empty with
         {
             Generation = 1,
-            Lanes = [new WallLane { Groups = [new StartGroup
-            {
-                Id = "group", Members = [original, Tile("untouched") with { LocalBounds = new GridRect(4, 0, 1, 1) }]
-            }] }]
+            Lanes = [new WallLane { Groups = [new StartGroup { Id = "group", Members = [original] }] }]
         };
         var seeded = store.Commit(empty, Plan(store, empty, populated,
-            new EntryChange.CreateUrl(original.Id, "https://puzzle.example"),
-            new EntryChange.CreateUrl("untouched", "https://untouched.example")), true);
+            new EntryChange.CreateUrl("member", "https://example.com")), true);
         Assert.Equal(WallCommitStatus.Committed, seeded.Status);
         var before = seeded.CommittedDocument!;
-        var puzzle = (PuzzleMember)before.Lanes[0].Groups[0].Members[0];
-        var entries = before.Lanes[0].Groups[0].Members.ToDictionary(m => EntryPath(root, m.Entry!),
-            m => files.ReadAllBytes(EntryPath(root, m.Entry!)).ToArray());
-        var editedPuzzle = edit(puzzle);
-        var candidate = WithPuzzle(before, editedPuzzle);
-        EntryChange[] changes = editedPuzzle.Visual.Title != puzzle.Visual.Title
-            ? [new EntryChange.Rename(puzzle.Id)] : [];
-        var edited = store.Commit(before, Plan(store, before, candidate, changes), true);
-        Assert.Equal(WallCommitStatus.Committed, edited.Status);
-        Assert.NotNull(edited.Undo);
-        var saved = edited.CommittedDocument!;
-        var changedPuzzle = (PuzzleMember)saved.Lanes[0].Groups[0].Members[0];
-        var automaticCarousel = changedPuzzle.Images.Kind == PuzzleImageSourceKind.None ? null :
-            liveCarousel ?? new PuzzleCarouselState(ImageB, InitialSwitch.AddMinutes(1));
-        var automatic = WithPuzzle(saved, changedPuzzle with { Carousel = automaticCarousel }) with
+        var member = before.Lanes[0].Groups[0].Members[0];
+        var entryPath = EntryPath(root, member.Entry!);
+        var entryBytes = files.ReadAllBytes(entryPath).ToArray();
+        var editedMember = member with
         {
-            Settings = saved.Settings with { AlwaysOnTop = false, StayVisibleOnFocusLoss = true }
+            UserClaimed = true,
+            Images = sourceChange ? member.Images with { Path = @"C:\OtherPictures" } : member.Images,
+            ImageDisplay = sourceChange ? member.ImageDisplay : new() { Mode = ImageDisplayMode.Fill },
+        };
+        var edited = store.Commit(before, Plan(store, before, WithSharedMember(before, editedMember)), true);
+        Assert.Equal(WallCommitStatus.Committed, edited.Status);
+        var saved = edited.CommittedDocument!;
+        var automaticState = CarouselAt("b", 2, InitialSwitch.AddMinutes(1));
+        var automatic = WithSharedMember(saved, saved.Lanes[0].Groups[0].Members[0] with { Carousel = automaticState }) with
+        {
+            Settings = saved.Settings with { AlwaysOnTop = false }
         };
         var advanced = store.Commit(saved, Plan(store, saved, automatic), false);
         Assert.Equal(WallCommitStatus.Committed, advanced.Status);
@@ -133,26 +72,45 @@ public sealed partial class WallStoreTests
         var current = advanced.CommittedDocument!;
         var undone = store.Undo(current, before, edited.Undo!, current.Generation);
         Assert.Equal(WallCommitStatus.Committed, undone.Status);
-        var expected = WithPuzzle(before, puzzle with
-        {
-            Carousel = preserveLiveCarousel ? automaticCarousel : puzzle.Carousel
-        }) with { Generation = current.Generation + 1, Settings = current.Settings };
-        Assert.Equal(WallJson.Serialize(expected), WallJson.Serialize(undone.CommittedDocument!));
-        Assert.Equal(WallJson.Serialize(expected), WallJson.Serialize(store.Open().Document!));
-        foreach (var (path, bytes) in entries) Assert.Equal(bytes, files.ReadAllBytes(path));
-        var objectsRoot = Path.Combine(root, "Objects") + Path.DirectorySeparatorChar;
-        Assert.Equal(entries.Keys.Order(), files.SnapshotFiles().Keys
-            .Where(path => path.StartsWith(objectsRoot, StringComparison.OrdinalIgnoreCase)).Order());
+        var restored = undone.CommittedDocument!.Lanes[0].Groups[0].Members[0];
+        Assert.False(restored.UserClaimed);
+        Assert.Equal(member.ImportSource, restored.ImportSource);
+        Assert.Equal(member.Images, restored.Images);
+        Assert.Equal(member.ImageDisplay, restored.ImageDisplay);
+        Assert.Equal(sourceChange ? "a" : "b", restored.Carousel!.CurrentImageId);
+        Assert.Equal(sourceChange ? 1 : 2, restored.Carousel.NextIndex);
+        Assert.False(undone.CommittedDocument.Settings.AlwaysOnTop);
+        Assert.Equal(entryBytes, files.ReadAllBytes(entryPath));
+        Assert.Equal(WallJson.Serialize(undone.CommittedDocument), WallJson.Serialize(store.Open().Document!));
     }
 
-    private static WallDocument WithPuzzle(WallDocument document, PuzzleMember puzzle) => document with
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NonUndoCannotChangeUserClaimed(bool puzzle)
+    {
+        var (store, _, _, _) = Harness();
+        WallMember member = puzzle ? new PuzzleMember
+        {
+            Id = "member", LocalBounds = new GridRect(0, 0, 2, 2), Partitions = [new GridRect(0, 0, 2, 2)]
+        } : new TileMember { Id = "member", LocalBounds = new GridRect(0, 0, 2, 2) };
+        var initial = WallDocument.Empty(1, 6) with
+        {
+            Lanes = [new WallLane { Groups = [new StartGroup { Id = "group", Members = [member] }] }]
+        };
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
+        var candidate = WithSharedMember(initial, member with { UserClaimed = true });
+        Assert.Equal(WallCommitStatus.Rejected, store.Commit(initial, Plan(store, initial, candidate), false).Status);
+    }
+
+    private static WallDocument WithSharedMember(WallDocument document, WallMember member) => document with
     {
         Generation = document.Generation + 1,
         Lanes = [document.Lanes[0] with
         {
             Groups = [document.Lanes[0].Groups[0] with
             {
-                Members = document.Lanes[0].Groups[0].Members.Select(m => m.Id == puzzle.Id ? puzzle : m).ToArray()
+                Members = document.Lanes[0].Groups[0].Members.Select(m => m.Id == member.Id ? member : m).ToArray()
             }]
         }]
     };

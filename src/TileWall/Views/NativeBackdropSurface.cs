@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using TileWall.Core.Shell;
 using TileWall.Shell.Interop;
 
@@ -10,10 +11,15 @@ internal sealed class NativeBackdropSurface : IDisposable
     private readonly Win32Api.SubclassProc _callback;
     private IntPtr _backgroundBrush;
     private bool _attached;
+    private readonly bool _measureErase = Environment.GetEnvironmentVariable("TILEWALL_PERF") == "1";
+    private readonly Action<long>? _eraseTiming;
+    private readonly Action<uint, long>? _messageTiming;
 
-    internal NativeBackdropSurface(IntPtr hwnd)
+    internal NativeBackdropSurface(IntPtr hwnd, Action<long>? eraseTiming = null, Action<uint, long>? messageTiming = null)
     {
         _hwnd = hwnd;
+        _eraseTiming = eraseTiming;
+        _messageTiming = messageTiming;
         _callback = WindowMessage;
         _backgroundBrush = Win32Api.CreateSolidBrush(0);
         _attached = Win32Api.SetWindowSubclass(hwnd, _callback, 1, 0);
@@ -51,9 +57,21 @@ internal sealed class NativeBackdropSurface : IDisposable
     {
         // Black GDI clearing preserves zero alpha rather than letting an opaque class brush
         // erase the surface when the window is resized, activated, or exposed.
-        if (message == 0x0014 && ClearBackground(wParam)) return new IntPtr(1); // WM_ERASEBKGND
+        if (message == 0x0014) // WM_ERASEBKGND
+        {
+            var started = _measureErase ? Stopwatch.GetTimestamp() : 0;
+            try { if (ClearBackground(wParam)) return new IntPtr(1); }
+            finally { if (started != 0) _eraseTiming?.Invoke(Stopwatch.GetTimestamp() - started); }
+        }
         if (message == 0x031E) ConfigureDwm(); // WM_DWMCOMPOSITIONCHANGED
         if (message == 0x0082) Dispose(); // WM_NCDESTROY
+        if (_measureErase && message is 0x0003 or 0x0005 or 0x0046 or 0x0047 or 0x0083)
+        {
+            // WM_MOVE / WM_SIZE / WM_WINDOWPOSCHANGING / WM_WINDOWPOSCHANGED / WM_NCCALCSIZE.
+            var started = Stopwatch.GetTimestamp();
+            try { return Win32Api.DefSubclassProc(hwnd, message, wParam, lParam); }
+            finally { _messageTiming?.Invoke(message, Stopwatch.GetTimestamp() - started); }
+        }
         return Win32Api.DefSubclassProc(hwnd, message, wParam, lParam);
     }
 

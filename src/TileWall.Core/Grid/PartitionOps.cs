@@ -8,6 +8,7 @@ public enum PartitionOpStatus
     DashedForErase,
     OutOfRange,
     AtLimit,
+    SizeLimit,
 }
 
 /// <summary>纯函数操作结果：状态 + 结果布局（不可变 record；失败输入返回原因，调用方保留原布局）。</summary>
@@ -81,6 +82,8 @@ public static class PartitionOps
         }
 
         var r = extent.Value;
+        if (!TileWall.Core.Wall.MemberSizeRules.IsPartitionSize(r.Width, r.Height))
+            return PartitionOpResult.Fail(PartitionOpStatus.SizeLimit);
         var merged = layout.Partitions.Where(p => r.Contains(p)).ToList();
         return PartitionOpResult.Applied(MergeMany(layout, merged, r));
     }

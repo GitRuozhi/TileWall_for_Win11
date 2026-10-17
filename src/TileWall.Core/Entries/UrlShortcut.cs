@@ -14,14 +14,14 @@ public static class UrlShortcut
     public const string UrlTooLong = "URL_TOO_LONG";
     public const string UrlWhitespace = "URL_WHITESPACE";
 
-    /// <summary>URL 长度上限（任务书 M4 范围：仅 http/https；上限取经典 2048）。</summary>
+    /// <summary>URL 长度上限（上限取经典 2048）。</summary>
     public const int MaxUrlLength = 2048;
 
     private static readonly Encoding StrictUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly Encoding WritingUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
     private const string UrlLinePrefix = "URL=";
 
-    /// <summary>固定错误码列表（空 = 合法）：URL_EMPTY / URL_WHITESPACE / URL_SCHEME_UNSUPPORTED / URL_TOO_LONG。</summary>
+    /// <summary>固定错误码列表（空 = 语法合法）：URL_EMPTY / URL_WHITESPACE / URL_SCHEME_UNSUPPORTED / URL_TOO_LONG。</summary>
     public static IReadOnlyList<string> ValidateUrl(string? url)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -35,11 +35,15 @@ public static class UrlShortcut
             errors.Add(UrlWhitespace); // 含换行/制表：同时阻断 INI 注入
         }
 
-        var schemeSupported = Uri.TryCreate(url, UriKind.Absolute, out var uri)
-            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
-        if (!schemeSupported)
+        var uriSupported = !LooksLikeWindowsDrivePath(url) &&
+            Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.IsAbsoluteUri &&
+            !uri.Scheme.Equals(Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase) &&
+            ((!uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+              !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) ||
+             !string.IsNullOrWhiteSpace(uri.Host));
+        if (!uriSupported)
         {
-            errors.Add(UrlSchemeUnsupported); // ftp:/无 scheme 等一律拒（任务书 M4 范围）
+            errors.Add(UrlSchemeUnsupported); // 接受语法有效的非 file 绝对 URI；注册可用性由应用层检查
         }
 
         if (url.Length > MaxUrlLength)
@@ -136,6 +140,10 @@ public static class UrlShortcut
 
         return false;
     }
+
+    private static bool LooksLikeWindowsDrivePath(string value) =>
+        value.Length >= 3 && char.IsAsciiLetter(value[0]) && value[1] == ':' &&
+        (value[2] is '\\' or '/');
 
     private static string Decode(byte[] content)
     {

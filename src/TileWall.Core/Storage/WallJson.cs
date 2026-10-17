@@ -4,7 +4,7 @@ using TileWall.Core.Wall;
 
 namespace TileWall.Core.Storage;
 
-/// <summary>Schema-two document serialization and immutable storage boundary.</summary>
+/// <summary>Schema-three document serialization and immutable storage boundary. Older schemas are not migrated.</summary>
 public static class WallJson
 {
     private static readonly JsonSerializerOptions Options = new()
@@ -20,10 +20,13 @@ public static class WallJson
     {
         var document = JsonSerializer.Deserialize<WallDocument>(bytes, Options)
             ?? throw new JsonException("Empty wall document.");
+        if (document.SchemaVersion != WallDocument.CurrentSchemaVersion)
+            throw new JsonException("Unsupported wall document schema.");
         if (document.Lanes is null || document.Lanes.Any(l => l?.Groups is null ||
             l.Groups.Any(g => g?.Members is null || g.Members.Any(m => m is null ||
-                m is PuzzleMember p && (p.Images is null || p.Partitions is null ||
-                    p.Images.ImagePaths is null || p.Images.Transforms is null)))))
+                m.Images is null || m.ImageDisplay is null || m.Visual is null ||
+                m.Carousel is { } carousel && (carousel.CandidateIds is null || carousel.Queue is null) ||
+                m is PuzzleMember p && p.Partitions is null))))
             throw new JsonException("Malformed wall document collection.");
         return Freeze(document);
     }
@@ -39,21 +42,20 @@ public static class WallJson
         }))
     };
 
-    private static WallMember FreezeMember(WallMember member) => member switch
+    private static WallMember FreezeMember(WallMember member)
     {
-        PuzzleMember puzzle => puzzle with
+        var carousel = member.Carousel is { } state ? state with
         {
-            Partitions = ReadOnly(puzzle.Partitions),
-            Images = puzzle.Images with
-            {
-                ImagePaths = ReadOnly(puzzle.Images.ImagePaths),
-                Transforms = ReadOnly(puzzle.Images.Transforms)
-            }
-        },
-        TileMember tile => tile with { },
-        ClockMember clock => clock with { },
-        _ => throw new JsonException("Unknown member type.")
-    };
+            CandidateIds = ReadOnly(state.CandidateIds), Queue = ReadOnly(state.Queue)
+        } : null;
+        return member switch
+        {
+            PuzzleMember puzzle => puzzle with { Partitions = ReadOnly(puzzle.Partitions), Carousel = carousel },
+            TileMember tile => tile with { Carousel = carousel },
+            ClockMember clock => clock with { Carousel = carousel },
+            _ => throw new JsonException("Unknown member type.")
+        };
+    }
 
     private static IReadOnlyList<T> ReadOnly<T>(IEnumerable<T> items) =>
         new ReadOnlyCollection<T>(items.ToArray());

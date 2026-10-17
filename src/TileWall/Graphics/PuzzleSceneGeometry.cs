@@ -13,6 +13,15 @@ public sealed record PuzzleSceneGeometry(
     ImageTransform BackgroundTransform,
     IReadOnlyList<PuzzlePartitionScene> Partitions)
 {
+    public static PuzzleSceneGeometry Create(DipSize canvas, PixelSize sourcePixels,
+        IReadOnlyList<DipRect> partitionViewports, MemberImageDisplay display, double rasterScale)
+    {
+        var placed = MemberImageGeometry.Calculate(canvas.Width, canvas.Height,
+            sourcePixels.Width, sourcePixels.Height, rasterScale, display);
+        return Create(canvas, sourcePixels, partitionViewports,
+            new ImageTransform(placed.Scale, placed.Bounds.X, placed.Bounds.Y));
+    }
+
     public static PuzzleSceneGeometry Create(
         DipSize canvas,
         PixelSize sourcePixels,
@@ -39,7 +48,7 @@ public sealed record PuzzleSceneGeometry(
         }
 
         return new PuzzleSceneGeometry(canvas, sourcePixels, sharpTransform,
-            SharedCanvasTransform.DefaultTransform(sourcePixels, canvas, FitMode.CoverFill), partitions);
+            SharedCanvasTransform.DefaultTransform(sourcePixels, canvas), partitions);
     }
 
     /// <summary>Round shared edges once, in canvas coordinates, so adjacent viewports agree at any DPI.</summary>

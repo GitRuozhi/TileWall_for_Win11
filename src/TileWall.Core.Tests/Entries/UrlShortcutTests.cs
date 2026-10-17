@@ -17,12 +17,23 @@ public class UrlShortcutTests
     }
 
     [Theory]
-    [InlineData("ftp://example.com/file")]
     [InlineData("example.com/no-scheme")]
     [InlineData("file:///C:/x")]
-    public void ValidateUrl_非http_s_SCHEME_UNSUPPORTED(string url)
+    [InlineData("C:\\folder\\app.exe")]
+    [InlineData("http:///missing-host")]
+    public void ValidateUrl_相对地址文件地址或无主机HTTP_SCHEME_UNSUPPORTED(string url)
     {
         Assert.Equal([UrlShortcut.UrlSchemeUnsupported], UrlShortcut.ValidateUrl(url));
+    }
+
+    [Theory]
+    [InlineData("steam://rungameid/570")]
+    [InlineData("steam:run/570")]
+    [InlineData("ftp://example.com/file")]
+    public void ValidateUrl_语法有效的非文件绝对协议合法(string url)
+    {
+        Assert.Empty(UrlShortcut.ValidateUrl(url));
+        Assert.Equal(url, UrlShortcut.ReadUrlLine(UrlShortcut.CreateContent(url)));
     }
 
     [Theory]

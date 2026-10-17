@@ -13,7 +13,9 @@ internal static class StartMenuImportScan
         var roots = new List<(string Path, SourceKind Source)>();
         if (known.UserPrograms is { } user) roots.Add((user, SourceKind.User));
         if (known.CommonPrograms is { } common) roots.Add((common, SourceKind.Common));
-        return StartMenuScanner.Enumerate(new ScanFiles(token), roots);
+        var result = StartMenuScanner.Enumerate(new ScanFiles(token), roots);
+        // A failed known-folder lookup must never authorize removing that root's old imported members.
+        return result with { SkippedDirectories = result.SkippedDirectories + 2 - roots.Count };
     }, token);
 
     // Cancellation is checked at every scanner IO boundary. The adapter cannot write or read shortcut contents.

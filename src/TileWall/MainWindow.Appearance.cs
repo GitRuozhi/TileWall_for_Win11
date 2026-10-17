@@ -18,7 +18,8 @@ public sealed partial class MainWindow
     private CancellationTokenSource? _backgroundRequest;
     private string? _backgroundPath;
     private bool _themeDark, _materialFallback = true, _materialReduced;
-    private bool _appearanceQueued, _highContrastSubscribed;
+    private bool? _materialHighContrast;
+    private bool _appearanceQueued, _highContrastSubscribed, _appearanceAfterPersistence;
 
     private void InitializeAppearance()
     {
@@ -50,15 +51,19 @@ public sealed partial class MainWindow
         _themeDark = settings.ThemeMode == WallThemeMode.Dark || settings.ThemeMode == WallThemeMode.System &&
             (foreground.R * 299 + foreground.G * 587 + foreground.B * 114) > 128_000;
         var theme = _themeDark ? ElementTheme.Dark : ElementTheme.Light;
-        WallRoot.RequestedTheme = theme;
+        if (WallRoot.RequestedTheme != theme) WallRoot.RequestedTheme = theme;
         _dialogHost?.ApplyTheme(theme);
         var contrast = _accessibilitySettings.HighContrast;
-        StatusText.Foreground = new SolidColorBrush(contrast
+        var statusForeground = contrast
             ? _appearanceSettings.GetColorValue(UIColorType.Foreground)
-            : _themeDark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black);
-        StatusPanel.Background = new SolidColorBrush(contrast
+            : _themeDark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
+        if (StatusText.Foreground is not SolidColorBrush foregroundBrush || !foregroundBrush.Color.Equals(statusForeground))
+            StatusText.Foreground = new SolidColorBrush(statusForeground);
+        var statusBackground = contrast
             ? _appearanceSettings.GetColorValue(UIColorType.Background)
-            : _themeDark ? Color.FromArgb(240, 32, 32, 32) : Color.FromArgb(240, 243, 243, 243));
+            : _themeDark ? Color.FromArgb(240, 32, 32, 32) : Color.FromArgb(240, 243, 243, 243);
+        if (StatusPanel.Background is not SolidColorBrush statusBrush || !statusBrush.Color.Equals(statusBackground))
+            StatusPanel.Background = new SolidColorBrush(statusBackground);
         _wallBackdrop.Configure(settings, _backdropActive, _themeDark);
         var path = settings.BackgroundMode == WallBackgroundMode.Custom ? settings.BackgroundImagePath : null;
         if (!string.Equals(_backgroundPath, path, StringComparison.OrdinalIgnoreCase))
@@ -80,7 +85,10 @@ public sealed partial class MainWindow
     private void OnMaterialFallbackChanged(bool fallback, bool reduced)
     {
         TraceInput($"Backdrop mode={Settings.BackgroundMode} active={_backdropActive} fallback={fallback} reduced={reduced} transparency={Settings.BackgroundTransparency}");
-        var policyChanged = _materialReduced != reduced;
+        var highContrast = _accessibilitySettings.HighContrast;
+        var policyChanged = _materialReduced != reduced ||
+            _materialHighContrast is { } previousContrast && previousContrast != highContrast || highContrast;
+        _materialHighContrast = highContrast;
         _materialFallback = fallback;
         _materialReduced = reduced;
         UpdateBackgroundLayer();
@@ -95,18 +103,28 @@ public sealed partial class MainWindow
         var highContrast = _accessibilitySettings.HighContrast;
         var reduced = _materialReduced || highContrast || !_appearanceSettings.AdvancedEffectsEnabled;
         var settings = Settings;
-        _backgroundLayer.Visibility = _materialFallback || settings.BackgroundMode == WallBackgroundMode.Custom || reduced
+        var visibility = _materialFallback || settings.BackgroundMode == WallBackgroundMode.Custom || reduced
             ? Visibility.Visible : Visibility.Collapsed;
-        _backgroundLayer.Opacity = reduced ? 1 : (100 - Math.Clamp(settings.BackgroundTransparency, 0, 100)) / 100d;
+        if (_backgroundLayer.Visibility != visibility) _backgroundLayer.Visibility = visibility;
+        var opacity = reduced ? 1 : (100 - Math.Clamp(settings.BackgroundTransparency, 0, 100)) / 100d;
+        if (_backgroundLayer.Opacity != opacity) _backgroundLayer.Opacity = opacity;
         var customImageReady = !reduced && settings.BackgroundMode == WallBackgroundMode.Custom &&
             _backgroundImage.Source is not null;
         // Draw exactly one background plane. Keeping a tinted plane underneath the
         // image would attenuate the desktop twice when XAML applies layer opacity.
-        _backgroundLayer.Background = customImageReady ? null : new SolidColorBrush(highContrast
-            ? _appearanceSettings.GetColorValue(UIColorType.Background)
-            : _themeDark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243));
-        _backgroundImage.Visibility = customImageReady
-            ? Visibility.Visible : Visibility.Collapsed;
+        if (customImageReady)
+        {
+            if (_backgroundLayer.Background is not null) _backgroundLayer.Background = null;
+        }
+        else
+        {
+            var color = highContrast ? _appearanceSettings.GetColorValue(UIColorType.Background)
+                : _themeDark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243);
+            if (_backgroundLayer.Background is not SolidColorBrush backgroundBrush || !backgroundBrush.Color.Equals(color))
+                _backgroundLayer.Background = new SolidColorBrush(color);
+        }
+        var imageVisibility = customImageReady ? Visibility.Visible : Visibility.Collapsed;
+        if (_backgroundImage.Visibility != imageVisibility) _backgroundImage.Visibility = imageVisibility;
     }
 
     private async Task LoadCustomBackgroundAsync(string path, CancellationToken ct)
@@ -130,6 +148,11 @@ public sealed partial class MainWindow
         {
             _appearanceQueued = false;
             if (_windowClosing) return;
+            if (_persistencePending)
+            {
+                _appearanceAfterPersistence = true;
+                return;
+            }
             RefreshAppearance();
             if (_hasDocument && !_viewBlocked)
             {

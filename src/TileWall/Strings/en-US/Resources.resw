@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <data name="TileWall.LanguageSupportMarker" xml:space="preserve">
+    <value>en-US</value>
+    <comment>Declares English support to MRT Core for unpackaged language selection.</comment>
+  </data>
+</root>

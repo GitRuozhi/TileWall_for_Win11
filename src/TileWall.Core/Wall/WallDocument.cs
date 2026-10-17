@@ -8,7 +8,7 @@ namespace TileWall.Core.Wall;
 /// <summary>The sole persisted wall snapshot. Lane and group order, plus member-local cells, determine placement.</summary>
 public sealed record WallDocument
 {
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public long Generation { get; init; }
     public required int Columns { get; init; }
@@ -27,6 +27,7 @@ public sealed record WallDocument
 public sealed record WallLane
 {
     public required IReadOnlyList<StartGroup> Groups { get; init; }
+    public string? ImportBatchId { get; init; }
 }
 
 public sealed record StartGroup
@@ -34,6 +35,8 @@ public sealed record StartGroup
     public required string Id { get; init; }
     public string? Title { get; init; }
     public required IReadOnlyList<WallMember> Members { get; init; }
+    public ImportSourceMetadata? ImportSource { get; init; }
+    public bool UserClaimed { get; init; }
 }
 
 public enum AnchorCorner { BottomLeft, BottomRight, TopLeft, TopRight }
@@ -45,10 +48,14 @@ public enum WallBackgroundMode { Acrylic = 0, Mica = 1, Custom = 2 }
 public sealed record WallSettings
 {
     public AnchorCorner AnchorCorner { get; init; } = AnchorCorner.BottomLeft;
+    public bool FullScreen { get; init; }
+    public int? WindowedColumns { get; init; }
+    public int? WindowedRows { get; init; }
+    public AnchorCorner? WindowedAnchorCorner { get; init; }
     public WallVisualStyle VisualStyle { get; init; } = WallVisualStyle.Win10;
     public WallThemeMode ThemeMode { get; init; } = WallThemeMode.System;
     public WallBackgroundMode BackgroundMode { get; init; } = WallBackgroundMode.Acrylic;
-    public int BackgroundTransparency { get; init; } = 15;
+    public int BackgroundTransparency { get; init; } = 10;
     public string? BackgroundImagePath { get; init; }
     public bool AlwaysOnTop { get; init; } = true;
     public bool StayVisibleOnFocusLoss { get; init; }
@@ -63,20 +70,49 @@ public sealed record ManagedEntryReference(string ObjectId, string RelativePath,
 
 public sealed record MemberVisual
 {
+    public MemberTitleMode TitleMode { get; init; } = MemberTitleMode.Automatic;
     public string? Title { get; init; }
     public bool ShowTitle { get; init; } = true;
+    public MemberBackgroundMode BackgroundMode { get; init; } = MemberBackgroundMode.Default;
+    public int BackgroundTransparency { get; init; } = 50;
     public string? BackgroundColor { get; init; }
-    public string? BackgroundImagePath { get; init; }
 }
 
-[JsonPolymorphic(TypeDiscriminatorPropertyName = "$kind")]
-[JsonDerivedType(typeof(AutoEntryIcon), "auto")]
-[JsonDerivedType(typeof(CustomImageIcon), "custom")]
-[JsonDerivedType(typeof(NoForegroundIcon), "none")]
-public abstract record ForegroundChoice;
-public sealed record AutoEntryIcon : ForegroundChoice;
-public sealed record CustomImageIcon(string SourcePath) : ForegroundChoice;
-public sealed record NoForegroundIcon : ForegroundChoice;
+public enum MemberTitleMode { Automatic, Manual }
+public enum MemberBackgroundMode { Default, Color, Blur, None }
+public enum MemberImageSourceKind { Automatic, Single, Folder }
+public enum ImageRotationInterval { Seconds5 = 5, Seconds15 = 15, Seconds30 = 30, Minute1 = 60,
+    Minute5 = 300, Minute15 = 900, Minute30 = 1800 }
+
+/// <summary>One source and display policy for a complete tile or puzzle canvas.</summary>
+public sealed record MemberImageSource
+{
+    public MemberImageSourceKind Kind { get; init; } = MemberImageSourceKind.Automatic;
+    public string? Path { get; init; }
+}
+
+/// <summary>Queue position is persisted only when the asynchronously prepared image is adopted.</summary>
+public sealed record ImageCarouselState
+{
+    public string? CurrentImageId { get; init; }
+    public DateTimeOffset? LastSwitchUtc { get; init; }
+    public IReadOnlyList<string> CandidateIds { get; init; } = [];
+    public IReadOnlyList<string> Queue { get; init; } = [];
+    public int NextIndex { get; init; }
+    public long Round { get; init; }
+}
+
+public enum ImportSourceKind { StartMenu }
+public sealed record ImportSourceMetadata
+{
+    public ImportSourceKind Kind { get; init; } = ImportSourceKind.StartMenu;
+    public required string BatchId { get; init; }
+    public required string GroupBucketKey { get; init; }
+    public required string OriginGroupId { get; init; }
+    // Group metadata spans both roots. Member metadata identifies the exact original source.
+    public string? SourceRoot { get; init; }
+    public string? RelativePath { get; init; }
+}
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "$kind")]
 [JsonDerivedType(typeof(TileMember), "tile")]
@@ -88,30 +124,20 @@ public abstract record WallMember
     public required GridRect LocalBounds { get; init; }
     public MemberVisual Visual { get; init; } = new();
     public ManagedEntryReference? Entry { get; init; }
+    public string? TargetInput { get; init; }
+    public MemberImageSource Images { get; init; } = new();
+    public MemberImageDisplay ImageDisplay { get; init; } = new();
+    public ImageRotationInterval RotationInterval { get; init; } = ImageRotationInterval.Minute1;
+    public ImageCarouselState? Carousel { get; init; }
+    public ImportSourceMetadata? ImportSource { get; init; }
+    public bool UserClaimed { get; init; }
 }
 
-public sealed record TileMember : WallMember
-{
-    public ForegroundChoice Foreground { get; init; } = new AutoEntryIcon();
-}
-
-public enum PuzzleImageSourceKind { None, Single, Multiple, Folder }
-public sealed record PuzzleImageTransform(string ImageId, FitMode Fit, ImageTransform Transform);
-public sealed record PuzzleImageSource
-{
-    public PuzzleImageSourceKind Kind { get; init; }
-    public IReadOnlyList<string> ImagePaths { get; init; } = [];
-    public string? FolderPath { get; init; }
-    public IReadOnlyList<PuzzleImageTransform> Transforms { get; init; } = [];
-}
-
-public sealed record PuzzleCarouselState(string? CurrentImageId, DateTimeOffset? LastSwitchUtc);
+public sealed record TileMember : WallMember;
 
 public sealed record PuzzleMember : WallMember
 {
     public required IReadOnlyList<GridRect> Partitions { get; init; }
-    public PuzzleImageSource Images { get; init; } = new();
-    public PuzzleCarouselState? Carousel { get; init; }
 }
 
 public sealed record ClockMember : WallMember

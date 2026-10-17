@@ -8,8 +8,8 @@ namespace TileWall.Core.Tests.Wall;
 public sealed class WallBatchPlannerTests
 {
     private const double OneLaneWidth = 436;
-    private const double TwoLaneWidth = 860;
-    private const double ThreeLaneWidth = 1284;
+    private const double TwoLaneWidth = 864;
+    private const double ThreeLaneWidth = 1292;
     private const double OneGroupHeight = 112;
 
     private static TileMember Tile(string id, int column = 0, string? title = null) => new()
@@ -107,16 +107,18 @@ public sealed class WallBatchPlannerTests
     public void GroupTitleConsumesCapacity()
     {
         var empty = WallDocument.Empty(1, 1);
+        var before = WallJson.Serialize(empty);
         Assert.Equal(OneGroupHeight, new WallMetrics().WallHeight(2));
-        var noTitleRoom = WallBatchPlanner.TryPlan(empty, [Tile("one")], null, 0,
+        var beyondMonitor = WallBatchPlanner.TryPlan(empty, [Tile("one")], null, 0,
             "batch", OneLaneWidth, OneGroupHeight - 1);
-        Assert.False(noTitleRoom.Success);
-        Assert.Null(noTitleRoom.Proposal);
-
-        var withTitleRoom = WallBatchPlanner.TryPlan(empty, [Tile("one")], null, 0,
+        Assert.False(beyondMonitor.Success);
+        Assert.Equal(WallRejection.NoSpace, beyondMonitor.Rejection);
+        Assert.Null(beyondMonitor.Proposal);
+        Assert.Equal(before, WallJson.Serialize(empty));
+        var exact = WallBatchPlanner.TryPlan(empty, [Tile("one")], null, 0,
             "batch", OneLaneWidth, OneGroupHeight);
-        Assert.True(withTitleRoom.Success, withTitleRoom.Detail);
-        Assert.Equal(2, withTitleRoom.Proposal!.Document.Rows);
+        Assert.True(exact.Success, exact.Detail);
+        Assert.Equal(2, exact.Proposal!.Document.Rows);
     }
 
     [Fact]
@@ -125,7 +127,7 @@ public sealed class WallBatchPlannerTests
         var existing = Enumerable.Range(0, 7).Select(i => Tile($"old-{i}", i)).ToArray();
         var before = Document(Lane(Group("target", existing)));
         var serialized = WallJson.Serialize(before);
-        var result = WallBatchPlanner.TryPlan(before, [Tile("first"), Tile("last")],
+        var result = WallBatchPlanner.TryPlan(before, [Tile("first"), Tile("old-0")],
             "target", 0, "batch", OneLaneWidth, OneGroupHeight);
 
         Assert.False(result.Success);
@@ -156,14 +158,38 @@ public sealed class WallBatchPlannerTests
     }
 
     [Fact]
-    public void NewLaneMustFitWorkAreaAndGroupIdsAvoidMemberIds()
+    public void BatchKeepsInputMemberSizesWhenSearchingCurrentGroupAndNewGroup()
+    {
+        var before = WallDocument.Empty(1, 1);
+        var first = Tile("medium-one") with { LocalBounds = new GridRect(7, 8, 2, 2) };
+        var second = Tile("medium-two") with { LocalBounds = new GridRect(6, 9, 2, 2) };
+
+        var result = WallBatchPlanner.TryPlan(before, [first, second], null, 0,
+            "batch", OneLaneWidth, new WallMetrics().WallHeight(3));
+
+        Assert.True(result.Success, result.Detail);
+        var group = Assert.Single(result.Proposal!.Document.Lanes[0].Groups);
+        var firstPlacement = group.Members.Single(member => member.Id == first.Id).LocalBounds;
+        var secondPlacement = group.Members.Single(member => member.Id == second.Id).LocalBounds;
+        Assert.Equal(new GridSize(2, 2), firstPlacement.Size);
+        Assert.Equal(new GridSize(2, 2), secondPlacement.Size);
+        Assert.False(firstPlacement.Intersects(secondPlacement));
+        Assert.Equal(new GridSize(2, 2), first.LocalBounds.Size);
+        Assert.Equal(3, result.Proposal.Document.Rows);
+    }
+
+    [Fact]
+    public void NewLaneRespectsBudgetAndGroupIdsAvoidMemberIds()
     {
         var full = Enumerable.Range(0, 8).Select(i => Tile($"old-{i}", i)).ToArray();
         var before = Document(Lane(Group("target", full)));
-        var blocked = WallBatchPlanner.TryPlan(before, [Tile("added")], "target", 0,
+        var serialized = WallJson.Serialize(before);
+        var beyondMonitor = WallBatchPlanner.TryPlan(before, [Tile("added")], "target", 0,
             "batch", OneLaneWidth, OneGroupHeight);
-        Assert.False(blocked.Success);
-        Assert.Null(blocked.Proposal);
+        Assert.False(beyondMonitor.Success);
+        Assert.Equal(WallRejection.NoSpace, beyondMonitor.Rejection);
+        Assert.Null(beyondMonitor.Proposal);
+        Assert.Equal(serialized, WallJson.Serialize(before));
 
         var incoming = Tile("batch-0001");
         var allowed = WallBatchPlanner.TryPlan(before, [incoming], "target", 0,

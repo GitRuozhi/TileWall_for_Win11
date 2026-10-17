@@ -40,7 +40,7 @@ public sealed class PartitionFuzzTests
         var random = new Random(seed);
 
         // —— 随机初始剖分（合法构造器路径：FullGrid + 随机适用操作）——
-        var size = new GridSize(2 + random.Next(7), 2 + random.Next(24)); // 列 2–8、行 2–25
+        var size = new GridSize(1 + random.Next(8), 1 + random.Next(12)); // 列 1–8、行 1–12
         var layout = PartitionLayout.FullGrid(size);
         log.Add($"init FullGrid({size.Columns},{size.Rows})");
         var initOps = random.Next(8);
@@ -58,6 +58,7 @@ public sealed class PartitionFuzzTests
             }
 
             PartitionAssert.AssertValid(layout, $"fuzz#{seed} 初始剖分第 {i} 步后");
+            Assert.All(layout.Partitions, p => Assert.True(TileWall.Core.Wall.MemberSizeRules.IsPartitionSize(p.Width, p.Height)));
         }
 
         var session = new PartitionEditSession(layout.Size, layout.Partitions);
@@ -89,6 +90,7 @@ public sealed class PartitionFuzzTests
                 }
 
                 PartitionAssert.AssertValid(session.Current, $"fuzz#{seed} stroke[{s}].{e} {tool} {edge} → {outcome} 后");
+                Assert.All(session.Current.Partitions, p => Assert.True(TileWall.Core.Wall.MemberSizeRules.IsPartitionSize(p.Width, p.Height)));
             }
 
             var depthBefore = session.UndoDepth;

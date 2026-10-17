@@ -1,4 +1,4 @@
-using TileWall.Core.Entries;
+﻿using TileWall.Core.Entries;
 using TileWall.Core.Grid;
 using TileWall.Core.Components;
 
@@ -54,10 +54,9 @@ public static class WallLayoutEngine
         ArgumentNullException.ThrowIfNull(current);
         ArgumentNullException.ThrowIfNull(action);
         metrics ??= new WallMetrics();
-        if (!metrics.IsValid || !double.IsFinite(workWidthDip) || !double.IsFinite(workHeightDip)
-            || workWidthDip <= 0 || workHeightDip <= 0)
+        if (!metrics.IsValid)
         {
-            return Reject(WallRejection.InvalidAction, "Invalid metrics or work area.");
+            return Reject(WallRejection.InvalidAction, "Invalid metrics.");
         }
 
         var errors = ValidateGeometry(current, metrics);
@@ -72,21 +71,23 @@ public static class WallLayoutEngine
         }
 
         var lanes = current.Lanes.Select(l => l.Groups.ToList()).ToList();
+        var laneSources = new Dictionary<List<StartGroup>, WallLane>(ReferenceEqualityComparer.Instance);
+        for (var index = 0; index < lanes.Count; index++) laneSources.Add(lanes[index], current.Lanes[index]);
         WallRejection rejection;
         switch (action)
         {
             case AddMemberAction add:
                 rejection = PlaceMember(lanes, add.Member, add.TargetGroupId, add.LaneIndex,
-                    add.GroupInsertIndex, add.NewGroupId, current.Rows, workHeightDip, metrics);
+                    add.GroupInsertIndex, add.NewGroupId, current.Rows, metrics);
                 break;
             case ReplaceMemberAction replace:
-                rejection = ReplaceMember(lanes, replace, current.Rows, workHeightDip, metrics);
+                rejection = ReplaceMember(lanes, replace, current.Rows, metrics);
                 break;
             case AddBatchAction batch:
-                rejection = AddBatch(lanes, batch, current.Rows, workHeightDip, metrics);
+                rejection = AddBatch(lanes, batch, current.Rows, metrics);
                 break;
             case MoveMemberAction move:
-                rejection = MoveMember(lanes, move, current.Rows, workHeightDip, metrics);
+                rejection = MoveMember(lanes, move, current.Rows, metrics);
                 break;
             case MoveGroupAction moveGroup:
                 rejection = MoveGroup(lanes, moveGroup);
@@ -116,7 +117,9 @@ public static class WallLayoutEngine
             Generation = current.Generation + 1,
             Columns = lanes.Count,
             Rows = requestedRows,
-            Lanes = lanes.Select(g => new WallLane { Groups = g.ToArray() }).ToArray(),
+            Lanes = lanes.Select(groups => laneSources.TryGetValue(groups, out var source)
+                ? source with { Groups = groups.ToArray() }
+                : new WallLane { Groups = groups.ToArray() }).ToArray(),
         };
         errors = Validate(proposed);
         if (errors.Count > 0)
@@ -124,24 +127,12 @@ public static class WallLayoutEngine
             return Reject(WallRejection.InvalidAction, string.Join("; ", errors));
         }
 
-        if (metrics.WallWidth(proposed.Columns) > workWidthDip)
-        {
-            return Reject(WallRejection.WorkAreaTooSmall);
-        }
-
         var requiredHeight = RequiredHeight(proposed, metrics);
         if (action is not ResizeWallAction)
         {
-            while (metrics.WallHeight(proposed.Rows) < requiredHeight &&
-                   metrics.WallHeight(proposed.Rows + 1) <= workHeightDip)
-            {
-                proposed = proposed with { Rows = proposed.Rows + 1 };
-            }
-        }
-
-        if (metrics.WallHeight(proposed.Rows) > workHeightDip)
-        {
-            return Reject(WallRejection.WorkAreaTooSmall);
+            var requiredRows = RowsForHeight(requiredHeight, metrics);
+            if (requiredRows > MaxRows) return Reject(WallRejection.NoSpace, "Required wall height exceeds the structural row limit.");
+            proposed = proposed with { Rows = Math.Max(proposed.Rows, requiredRows) };
         }
 
         if (requiredHeight > metrics.WallHeight(proposed.Rows))
@@ -155,7 +146,16 @@ public static class WallLayoutEngine
             return Reject(WallRejection.InvalidAction, string.Join("; ", errors));
         }
 
-        return new WallLayoutResult(new WallProposal(proposed, Measure(proposed, metrics)), WallRejection.None);
+        if (metrics.WallWidth(proposed.Columns) > workWidthDip + 1e-8 ||
+            metrics.WallHeight(proposed.Rows) > workHeightDip + 1e-8)
+        {
+            foreach (var group in proposed.Lanes.SelectMany(l => l.Groups))
+                if (group.Members.Count > 0 && metrics.TopMargin + metrics.Margin + metrics.TitleHeight +
+                    metrics.TitleToMembersGap + metrics.HeightOf(group.Members.Max(m => m.LocalBounds.Bottom)) > workHeightDip + 1e-8)
+                    return Reject(WallRejection.NoSpace, "GROUP_TOO_TALL:" + (string.IsNullOrWhiteSpace(group.Title) ? group.Id : group.Title));
+            return Reject(WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE");
+        }
+        return new WallLayoutResult(new WallProposal(proposed, MeasureValidated(proposed, metrics)), WallRejection.None);
     }
 
     public static IReadOnlyList<string> Validate(WallDocument document)
@@ -174,6 +174,11 @@ public static class WallLayoutEngine
             errors.Add("SETTINGS_ENUM");
         else
         {
+            if (document.Settings.WindowedColumns is < 1 or > MaxColumns ||
+                document.Settings.WindowedRows is < 1 or > MaxRows)
+                errors.Add("SETTINGS_WINDOWED_SIZE");
+            if (document.Settings.WindowedAnchorCorner is { } windowedAnchor && !Enum.IsDefined(windowedAnchor))
+                errors.Add("SETTINGS_WINDOWED_ANCHOR");
             if (document.Settings.BackgroundTransparency is < 0 or > 100)
                 errors.Add("SETTINGS_TRANSPARENCY");
             if (document.Settings.BackgroundMode == WallBackgroundMode.Custom &&
@@ -189,6 +194,8 @@ public static class WallLayoutEngine
             {
                 if (group is null) { errors.Add("GROUP_NULL"); continue; }
                 CheckId(group.Id, ids, errors);
+                if (MemberPresentationRules.ValidateImportSource(group.ImportSource) is { } groupImportError)
+                    errors.Add(groupImportError);
                 if (group.Members is null || group.Members.Count == 0)
                 {
                     errors.Add("EMPTY_GROUP");
@@ -206,7 +213,9 @@ public static class WallLayoutEngine
                     if (b.Column < 0 || b.Row < 0 || b.Width < 1 || b.Height < 1 ||
                         (long)b.Column + b.Width > CellsPerLane || (long)b.Row + b.Height > MaxRows)
                         errors.Add("MEMBER_BOUNDS");
-                    if (member.Visual is null) errors.Add("VISUAL_NULL");
+                    if (MemberPresentationRules.Validate(member) is { } presentationError)
+                        errors.Add(presentationError);
+                    if (!MemberSizeRules.IsValid(member)) errors.Add("MEMBER_SIZE_LIMIT");
                     if (member.Entry is { } entry &&
                         (!string.Equals(entry.ObjectId, member.Id, StringComparison.Ordinal) ||
                          !Enum.IsDefined(entry.Kind) ||
@@ -216,26 +225,12 @@ public static class WallLayoutEngine
                          !entry.RelativePath.EndsWith(entry.Kind == ManagedEntryKind.Lnk ? ".lnk" : ".url",
                              StringComparison.OrdinalIgnoreCase))) errors.Add("ENTRY_REFERENCE");
                     if (member is ClockMember && member.Entry is not null) errors.Add("CLOCK_ENTRY");
-                    if (member is TileMember tile && (tile.Foreground is not (AutoEntryIcon or CustomImageIcon or NoForegroundIcon) ||
-                        tile.Foreground is CustomImageIcon { SourcePath: null or "" })) errors.Add("FOREGROUND");
                     if (member is ClockMember clock &&
                         !ClockFormatOptions.IsValid(clock.TimeFormat, clock.DateFormat))
                         errors.Add("CLOCK_FORMAT");
                     if (member is PuzzleMember puzzle)
                     {
-                        if (puzzle.Images is null || !Enum.IsDefined(puzzle.Images.Kind) ||
-                            puzzle.Images.ImagePaths is null || puzzle.Images.ImagePaths.Any(path => path is null) ||
-                            puzzle.Images.Transforms is null)
-                            errors.Add("PUZZLE_IMAGES");
-                        else if (puzzle.Images.Transforms.Any(t => t is null || string.IsNullOrWhiteSpace(t.ImageId) ||
-                            !Enum.IsDefined(t.Fit) ||
-                            !double.IsFinite(t.Transform.Scale) || t.Transform.Scale <= 0 ||
-                            !double.IsFinite(t.Transform.OffsetX) || !double.IsFinite(t.Transform.OffsetY)))
-                            errors.Add("PUZZLE_TRANSFORMS");
-                        else if (puzzle.Images.Transforms.Select(t => t.ImageId)
-                            .Distinct(StringComparer.OrdinalIgnoreCase).Count() != puzzle.Images.Transforms.Count)
-                            errors.Add("PUZZLE_TRANSFORMS");
-                        if (b.Width is < 2 or > 8 || b.Height is < 2 or > 25 || puzzle.Partitions is null)
+                        if (b.Width is < 1 or > 8 || b.Height is < 1 or > 12 || puzzle.Partitions is null)
                             errors.Add("PUZZLE_SIZE");
                         else if (puzzle.Partitions.Any(p => p.Column < 0 || p.Row < 0 || p.Width < 1 || p.Height < 1 ||
                             (long)p.Column + p.Width > b.Width || (long)p.Row + p.Height > b.Height) ||
@@ -281,6 +276,12 @@ public static class WallLayoutEngine
         if (!metrics.IsValid) throw new ArgumentException("Invalid wall metrics.", nameof(metrics));
         var errors = ValidateGeometry(document, metrics);
         if (errors.Count > 0) throw new ArgumentException($"Invalid wall document: {string.Join("; ", errors)}", nameof(document));
+        return MeasureValidated(document, metrics);
+    }
+
+    // Only called after this exact immutable proposal has passed ValidateGeometry.
+    private static WallGeometry MeasureValidated(WallDocument document, WallMetrics metrics)
+    {
         var positions = new List<GroupPlacement>();
         for (var laneIndex = 0; laneIndex < document.Lanes.Count; laneIndex++)
         {
@@ -308,6 +309,13 @@ public static class WallLayoutEngine
         return document.Lanes.Max(lane => RequiredLaneHeight(lane.Groups, metrics));
     }
 
+    private static int RowsForHeight(double requiredHeight, WallMetrics metrics)
+    {
+        var contentHeight = requiredHeight - metrics.TopMargin - metrics.Margin;
+        if (contentHeight <= metrics.HeightOf(1)) return 1;
+        return (int)Math.Ceiling((contentHeight + metrics.Gap) / metrics.Pitch - 1e-10);
+    }
+
     private static double RequiredLaneHeight(IReadOnlyList<StartGroup> groups, WallMetrics metrics)
     {
         var height = metrics.TopMargin + metrics.Margin;
@@ -318,7 +326,7 @@ public static class WallLayoutEngine
     }
 
     private static WallRejection ReplaceMember(List<List<StartGroup>> lanes, ReplaceMemberAction action,
-        int currentRows, double workHeightDip, WallMetrics metrics)
+        int currentRows, WallMetrics metrics)
     {
         var location = FindMember(lanes, action.MemberId);
         if (location is null) return WallRejection.ObjectNotFound;
@@ -329,13 +337,23 @@ public static class WallLayoutEngine
             return WallRejection.InvalidAction;
 
         var source = lanes[laneIndex][groupIndex];
+        var userPropertyChanged = original is PuzzleMember && action.Replacement is PuzzleMember replacementPuzzle &&
+            replacementPuzzle.Partitions is null
+            ? true
+            : MemberPresentationRules.HasUserPropertyChanges(original, action.Replacement);
+        var replacement = action.Replacement with
+        {
+            ImportSource = original.ImportSource,
+            UserClaimed = original.UserClaimed ||
+                (original.ImportSource is not null && userPropertyChanged),
+        };
         lanes[laneIndex][groupIndex] = source with
         {
             Members = source.Members.Where(member =>
                 !string.Equals(member.Id, original.Id, StringComparison.Ordinal)).ToArray(),
         };
-        var rejection = PlaceMember(lanes, action.Replacement, source.Id, laneIndex, groupIndex,
-            null, currentRows, workHeightDip, metrics);
+        var rejection = PlaceMember(lanes, replacement, source.Id, laneIndex, groupIndex,
+            null, currentRows, metrics);
         if (rejection != WallRejection.None) return rejection;
 
         // A property edit does not change the member's relative ordering in its group.
@@ -349,21 +367,21 @@ public static class WallLayoutEngine
     }
 
     private static WallRejection AddBatch(List<List<StartGroup>> lanes, AddBatchAction action,
-        int currentRows, double workHeightDip, WallMetrics metrics)
+        int currentRows, WallMetrics metrics)
     {
         if (action.Items is null || action.Items.Count == 0) return WallRejection.InvalidAction;
         foreach (var item in action.Items)
         {
             if (item is null) return WallRejection.InvalidAction;
             var rejection = PlaceMember(lanes, item.Member, item.TargetGroupId, item.LaneIndex,
-                item.GroupInsertIndex, item.NewGroupId, currentRows, workHeightDip, metrics);
+                item.GroupInsertIndex, item.NewGroupId, currentRows, metrics);
             if (rejection != WallRejection.None) return rejection;
         }
         return WallRejection.None;
     }
 
     private static WallRejection MoveMember(List<List<StartGroup>> lanes, MoveMemberAction action,
-        int currentRows, double workHeightDip, WallMetrics metrics)
+        int currentRows, WallMetrics metrics)
     {
         var location = FindMember(lanes, action.MemberId);
         if (location is null) return WallRejection.ObjectNotFound;
@@ -374,14 +392,19 @@ public static class WallLayoutEngine
         if (remaining.Length == 0 && !string.Equals(source.Id, action.TargetGroupId, StringComparison.OrdinalIgnoreCase))
             lanes[sourceLane].RemoveAt(sourceGroup);
         else lanes[sourceLane][sourceGroup] = source with { Members = remaining };
+        var sameGroup = string.Equals(source.Id, action.TargetGroupId, StringComparison.OrdinalIgnoreCase);
         var moved = WithBounds(member, action.TargetBounds);
+        if (member.ImportSource is not null)
+        {
+            var changedPosition = !sameGroup || member.LocalBounds != action.TargetBounds;
+            moved = moved with { UserClaimed = member.UserClaimed || changedPosition };
+        }
         return PlaceMember(lanes, moved, action.TargetGroupId, action.LaneIndex,
-            action.GroupInsertIndex, action.NewGroupId, currentRows, workHeightDip, metrics);
+            action.GroupInsertIndex, action.NewGroupId, currentRows, metrics);
     }
 
     private static WallRejection PlaceMember(List<List<StartGroup>> lanes, WallMember member, string? targetGroupId,
-        int laneIndex, int insertIndex, string? newGroupId, int currentRows,
-        double workHeightDip, WallMetrics metrics)
+        int laneIndex, int insertIndex, string? newGroupId, int currentRows, WallMetrics metrics)
     {
         if (member is null || !IsLocalRect(member.LocalBounds)) return WallRejection.InvalidAction;
         if (FindMember(lanes, member.Id) is not null || FindGroup(lanes, member.Id) is not null)
@@ -389,9 +412,9 @@ public static class WallLayoutEngine
         if (targetGroupId is null)
         {
             if (string.IsNullOrWhiteSpace(newGroupId) || FindGroup(lanes, newGroupId) is not null ||
-                FindMember(lanes, newGroupId) is not null || laneIndex < 0 || laneIndex > lanes.Count)
+                FindMember(lanes, newGroupId) is not null || laneIndex < 0 || laneIndex >= MaxColumns)
                 return WallRejection.InvalidAction;
-            if (laneIndex == lanes.Count) lanes.Add([]);
+            while (laneIndex >= lanes.Count) lanes.Add([]);
             if (insertIndex < 0 || insertIndex > lanes[laneIndex].Count) return WallRejection.InvalidAction;
             lanes[laneIndex].Insert(insertIndex, new StartGroup { Id = newGroupId, Members = [member] });
             return WallRejection.None;
@@ -402,9 +425,7 @@ public static class WallLayoutEngine
         var (targetLane, targetIndex) = groupLocation.Value;
         var group = lanes[targetLane][targetIndex];
         var currentBudget = MaxMemberRowsForGroup(lanes[targetLane], targetIndex, currentRows, metrics);
-        var maxWallRows = (int)Math.Clamp(Math.Floor((workHeightDip - metrics.TopMargin - metrics.Margin + metrics.Gap) /
-            metrics.Pitch), 0, MaxRows);
-        var expandedBudget = MaxMemberRowsForGroup(lanes[targetLane], targetIndex, maxWallRows, metrics);
+        var expandedBudget = MaxMemberRowsForGroup(lanes[targetLane], targetIndex, MaxRows, metrics);
         var placed = TryPlaceMembers(group.Members, member, currentBudget)
             ?? TryPlaceMembers(group.Members, member, expandedBudget);
         if (placed is null) return WallRejection.NoSpace;
@@ -489,11 +510,14 @@ public static class WallLayoutEngine
     {
         var location = FindGroup(lanes, action.GroupId);
         if (location is null) return WallRejection.ObjectNotFound;
-        if (action.LaneIndex < 0 || action.LaneIndex > lanes.Count) return WallRejection.InvalidAction;
+        if (action.LaneIndex < 0 || action.LaneIndex >= MaxColumns) return WallRejection.InvalidAction;
         var (sourceLane, sourceIndex) = location.Value;
         var group = lanes[sourceLane][sourceIndex];
+        var changedPosition = action.LaneIndex != sourceLane || action.GroupInsertIndex != sourceIndex;
+        if (group.ImportSource is not null && changedPosition)
+            group = group with { UserClaimed = true };
         lanes[sourceLane].RemoveAt(sourceIndex);
-        if (action.LaneIndex == lanes.Count) lanes.Add([]);
+        while (action.LaneIndex >= lanes.Count) lanes.Add([]);
         var target = lanes[action.LaneIndex];
         if (action.GroupInsertIndex < 0 || action.GroupInsertIndex > target.Count) return WallRejection.InvalidAction;
         target.Insert(action.GroupInsertIndex, group);
@@ -518,7 +542,13 @@ public static class WallLayoutEngine
         var location = FindGroup(lanes, id);
         if (location is null) return WallRejection.ObjectNotFound;
         var (lane, group) = location.Value;
-        lanes[lane][group] = lanes[lane][group] with { Title = title };
+        var current = lanes[lane][group];
+        var changed = !string.Equals(current.Title, title, StringComparison.Ordinal);
+        lanes[lane][group] = current with
+        {
+            Title = title,
+            UserClaimed = current.UserClaimed || (current.ImportSource is not null && changed),
+        };
         return WallRejection.None;
     }
 
@@ -635,3 +665,6 @@ public static class WallLayoutEngine
     private static WallLayoutResult Reject(WallRejection rejection, string? detail = null) =>
         new(null, rejection, detail);
 }
+
+
+

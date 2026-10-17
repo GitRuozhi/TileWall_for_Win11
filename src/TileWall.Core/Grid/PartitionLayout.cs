@@ -14,6 +14,7 @@ public static class PartitionErrorCodes
     public const string Overlap = "PARTITION_OVERLAP";
     public const string Hole = "PARTITION_HOLE";
     public const string Cover = "PARTITION_COVER";
+    public const string SizeLimit = "PARTITION_SIZE_LIMIT";
 }
 
 /// <summary>分区不变式检查结果（M5 设计 §3.3 INV-P1–P5）：违规码列表，空 = 全部成立。</summary>
@@ -170,6 +171,9 @@ public sealed record PartitionLayout
                 violations.Add(PartitionErrorCodes.OutOfBounds);
             }
         }
+
+        if (Partitions.Any(p => !TileWall.Core.Wall.MemberSizeRules.IsPartitionSize(p.Width, p.Height)))
+            violations.Add(PartitionErrorCodes.SizeLimit);
 
         // INV-P1：两两不交
         for (var i = 0; i < Partitions.Count; i++)

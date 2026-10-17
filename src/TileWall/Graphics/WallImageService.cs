@@ -3,7 +3,6 @@ using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using TileWall.Core.Entries;
-using TileWall.Core.Wall;
 using TileWall.Shell.Interop;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
@@ -41,17 +40,6 @@ public sealed partial class WallImageService : IDisposable
         // No disk cache is used. Keeping this argument validates the caller's data scope
         // without creating directories or touching a custom-image source.
         _ = Path.GetFullPath(cacheRoot);
-    }
-
-    public Task<WallImageResult> LoadForegroundAsync(
-        TileMember member, string? entryOrTargetPath, int widthPixels, int heightPixels,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(member);
-        if (member.Foreground is NoForegroundIcon)
-            return Task.FromResult(new WallImageResult(null, WallImageStatus.None));
-        return LoadAsync(() => PrepareForegroundAsync(member, entryOrTargetPath, widthPixels, heightPixels, ct),
-            widthPixels, heightPixels, ct);
     }
 
     public Task<WallImageResult> LoadBackgroundAsync(
@@ -104,31 +92,19 @@ public sealed partial class WallImageService : IDisposable
         }
     }
 
-    private async Task<Prepared> PrepareForegroundAsync(
-        TileMember member, string? entryOrTargetPath, int width, int height, CancellationToken ct)
-    {
-        if (member.Foreground is CustomImageIcon custom)
-        {
-            var selected = await PrepareFileAsync(custom.SourcePath, "custom", width, height, ct);
-            if (selected.Status is WallImageStatus.Loaded or WallImageStatus.Cancelled)
-                return selected;
-            var automatic = await PrepareAutoAsync(entryOrTargetPath, width, height, ct);
-            if (automatic.Pixels is not null)
-                return automatic with { Status = WallImageStatus.Fallback,
-                    Diagnostic = $"CustomImage:{selected.Status};Auto:{automatic.Diagnostic ?? "Loaded"}" };
-            return selected;
-        }
-        return await PrepareAutoAsync(entryOrTargetPath, width, height, ct);
-    }
-
     private async Task<Prepared> PrepareAutoAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(entryOrTargetPath))
-            return new(WallImageStatus.Fallback, null, 0, 0, "NoEntry");
+            return new(WallImageStatus.None, null, 0, 0, null);
         if (Uri.TryCreate(entryOrTargetPath, UriKind.Absolute, out var uri) &&
             (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
-            return new(WallImageStatus.Fallback, null, 0, 0, "WebEntry");
+        {
+            var web = ShellIconPixels.Read(".url", association: true);
+            return web is { } icon
+                ? new(WallImageStatus.Fallback, icon.Pixels, icon.Width, icon.Height, "WebAssociation")
+                : new(WallImageStatus.Fallback, null, 0, 0, "WebEntry");
+        }
 
         var entry = NormalizePath(entryOrTargetPath);
         if (entry is null)
@@ -355,12 +331,14 @@ public sealed partial class WallImageService : IDisposable
 
     private static class ShellIconPixels
     {
-        public static (byte[] Pixels, int Width, int Height)? Read(string path)
+        public static (byte[] Pixels, int Width, int Height)? Read(string path, bool association = false)
         {
             var info = new Win32Api.ShFileInfoW { szDisplayName = string.Empty, szTypeName = string.Empty };
             var size = (uint)Marshal.SizeOf<Win32Api.ShFileInfoW>();
-            var result = Win32Api.SHGetFileInfoW(path, 0, ref info, size,
-                Win32Api.ShgfiIcon | Win32Api.ShgfiLargeicon);
+            const uint useFileAttributes = 0x000000010;
+            const uint normalFile = 0x000000080;
+            var result = Win32Api.SHGetFileInfoW(path, association ? normalFile : 0, ref info, size,
+                Win32Api.ShgfiIcon | Win32Api.ShgfiLargeicon | (association ? useFileAttributes : 0));
             if (result == IntPtr.Zero || info.hIcon == IntPtr.Zero) return null;
             try { return ReadIcon(info.hIcon); }
             finally { _ = Win32Api.DestroyIcon(info.hIcon); }

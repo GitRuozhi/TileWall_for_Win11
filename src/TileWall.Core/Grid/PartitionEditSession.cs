@@ -15,10 +15,16 @@ public enum StrokeOutcome
     SolidForDraw,
     DashedForErase,
     OutOfRange,
+    SizeLimit,
 }
 
 /// <summary>落笔前预览（纯函数；状态行/画布叠加）：Draw 适用 → NewLineExtent=将新增完整线段矩形；Erase 适用 → MergeExtent=最终合并矩形 R。</summary>
-public sealed record StrokePreview(bool Applicable, StrokeOutcome Outcome, GridRect? NewLineExtent, GridRect? MergeExtent);
+public sealed record StrokePreview(bool Applicable, StrokeOutcome Outcome, GridRect? NewLineExtent, GridRect? MergeExtent)
+{
+    /// <summary>The exact immutable result used for both feedback and submission.</summary>
+    public PartitionLayout? Layout { get; init; }
+    public IReadOnlyList<WallEdge> AffectedEdges { get; init; } = [];
+}
 
 /// <summary>
 /// 布局子草稿会话（M5 设计 §6）：确定性有状态——无时钟/随机/IO（类型级保证 INV-P12 草稿隔离）。
@@ -89,21 +95,9 @@ public sealed class PartitionEditSession
             return StrokeOutcome.DashedForErase; // 4. 拆墙经过虚线不处理（§8.4）
         }
 
-        var result = tool == EditTool.Draw
-            ? PartitionOps.DrawWall(Current, edge)
-            : PartitionOps.EraseWall(Current, edge);
-        if (result.Status != PartitionOpStatus.Applied || result.Layout is null)
-        {
-            // 防御：与上方虚实判定应一致；出现即按原因返回、布局不变
-            return result.Status switch
-            {
-                PartitionOpStatus.SolidForDraw => StrokeOutcome.SolidForDraw,
-                PartitionOpStatus.DashedForErase => StrokeOutcome.DashedForErase,
-                _ => StrokeOutcome.OutOfRange,
-            };
-        }
-
-        Current = result.Layout; // 5. 应用
+        var preview = Preview(edge, tool);
+        if (!preview.Applicable || preview.Layout is null) return preview.Outcome;
+        Current = preview.Layout; // The same proposal that supplied the affected-edge feedback.
         _strokeEdges.Add(edge);
         return StrokeOutcome.Applied;
     }
@@ -142,7 +136,7 @@ public sealed class PartitionEditSession
             var line = edge.IsVertical
                 ? new GridRect(edge.X, p.Row, 1, p.Height)      // 新竖线段：贯穿 p 整条高
                 : new GridRect(p.Column, edge.Y, p.Width, 1);   // 新横线段：贯穿 p 整条宽
-            return new StrokePreview(true, StrokeOutcome.Applied, line, null);
+            return Proposed(edge, tool, line, null);
         }
 
         if (!solid)
@@ -151,7 +145,22 @@ public sealed class PartitionEditSession
         }
 
         var extent = PartitionOps.EraseExtent(Current, edge);
-        return new StrokePreview(true, StrokeOutcome.Applied, null, extent);
+        return Proposed(edge, tool, null, extent);
+    }
+
+    private StrokePreview Proposed(WallEdge edge, EditTool tool, GridRect? line, GridRect? extent)
+    {
+        if (tool == EditTool.Erase && extent is { } blocked && !TileWall.Core.Wall.MemberSizeRules.IsPartitionSize(blocked.Width, blocked.Height))
+            return new StrokePreview(false, StrokeOutcome.SizeLimit, line, extent)
+            { AffectedEdges = Current.Edges().Where(e => blocked.Contains(PartitionOps.CellsAcross(Current, e).A) && blocked.Contains(PartitionOps.CellsAcross(Current, e).B)).ToArray() };
+        var result = tool == EditTool.Draw ? PartitionOps.DrawWall(Current, edge) : PartitionOps.EraseWall(Current, edge);
+        if (result.Status != PartitionOpStatus.Applied || result.Layout is null || !result.Layout.Check().IsValid)
+            return new StrokePreview(false, StrokeOutcome.OutOfRange, null, null);
+        var before = Current.Edges().ToHashSet();
+        var after = result.Layout.Edges().ToHashSet();
+        var affected = tool == EditTool.Draw ? after.Except(before) : before.Except(after);
+        return new StrokePreview(true, StrokeOutcome.Applied, line, extent)
+        { Layout = result.Layout, AffectedEdges = affected.ToArray() };
     }
 
     // ————————————————————————————— 行列增减（单击即一个撤销单元，§7） —————————————————————————————

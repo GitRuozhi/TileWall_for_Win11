@@ -21,6 +21,8 @@ public sealed partial class MainWindow
     private int _frameHeight;
     private bool _environmentQueued;
     private bool _needsVisualRefresh;
+    private bool _focusCheckQueued, _contextMenuOpen;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _focusCheckRetry;
     private double _lastEnvironmentScale;
     private WorkAreaRect _lastEnvironmentWork;
     private OwnedDialogWindow? _dialogHost;
@@ -50,11 +52,51 @@ public sealed partial class MainWindow
 
     internal void HideWall()
     {
+        _focusCheckRetry?.Stop();
         CancelTransientState();
         AppWindow.Hide();
         Surface.CancelImageRequests();
         _needsVisualRefresh = true;
         UpdatePuzzleGate();
+    }
+
+    private void OnContextMenuVisibilityChanged(bool open)
+    {
+        _contextMenuOpen = open;
+        AppLog.Info("WindowFocus", $"Context menu open={open}");
+        if (!open) QueueAutomaticHideCheck("ContextMenuClosed");
+    }
+
+    private void QueueAutomaticHideCheck(string reason, bool retryUnknown = true)
+    {
+        if (_focusCheckQueued || _windowClosing) return;
+        _focusCheckQueued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            _focusCheckQueued = false;
+            if (_windowClosing || !AppWindow.IsVisible || _modal || _contextMenuOpen) return;
+            // XAML popup HWND activation can precede its MenuFlyoutItem.Click route.
+            // Let that route finish, then decide from the actual foreground session.
+            var foreground = GetForegroundWindow();
+            var thread = GetWindowThreadProcessId(foreground, out var processId);
+            if (foreground == IntPtr.Zero || thread == 0)
+            {
+                AppLog.Info("WindowFocus", $"Automatic hide deferred: foreground transition reason={reason} retry={retryUnknown}");
+                if (!retryUnknown) return;
+                if (_focusCheckRetry is null)
+                {
+                    _focusCheckRetry = DispatcherQueue.CreateTimer();
+                    _focusCheckRetry.Interval = TimeSpan.FromMilliseconds(80);
+                    _focusCheckRetry.IsRepeating = false;
+                    _focusCheckRetry.Tick += (_, _) => QueueAutomaticHideCheck("ForegroundSettled", retryUnknown: false);
+                }
+                _focusCheckRetry.Start();
+                return;
+            }
+            var wall = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            var inSession = processId == (uint)Environment.ProcessId || GetAncestor(foreground, 3) == wall;
+            AppLog.Info("WindowFocus", $"Automatic hide check reason={reason} foreground={foreground} pid={processId} inSession={inSession}");
+            if (!inSession) AutomaticHideRequested?.Invoke();
+        });
     }
 
     internal void FocusTopSession()
@@ -75,13 +117,13 @@ public sealed partial class MainWindow
     {
         TerminateGesture();
         CancelResize(reason);
+        _windowsSidebar?.Collapse();
     }
 
     internal void RefreshProductStrings()
     {
-        RetryViewButton.Content = ProductStrings.Get("Wall.Retry");
-        AdaptationButton.Content = ProductStrings.Get("Wall.AdaptTitle");
-        foreach (var zone in new[] { ResizeGrip, ResizeHorizontalEdge, ResizeVerticalEdge })
+        ActionIcon.Set(RetryViewButton, ProductStrings.Get("Wall.Retry"), ActionIcon.Refresh);
+        foreach (var zone in new[] { ResizeGrip, ResizeHorizontalEdge, ResizeVerticalEdge, ResizeTopLeft, ResizeTopRight, ResizeBottomLeft, ResizeBottomRight })
         {
             ToolTipService.SetToolTip(zone, ProductStrings.Get("Wall.Resize"));
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(zone, ProductStrings.Get("Wall.Resize"));
@@ -97,19 +139,32 @@ public sealed partial class MainWindow
 
     internal string? CommitSettings(WallSettings settings)
     {
+        if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (!_hasDocument || _viewBlocked) return ProductStrings.Get("Wall.SettingsBlocked");
+        if (settings.FullScreen != Settings.FullScreen)
+        {
+            var mode = ProposeMode(Document, settings);
+            if (mode.Proposal is null) return ViewportFailure(mode);
+            // Mode changes that resize/compact the wall are layout transactions. The
+            // non-undo path is reserved for settings/carousel-only commits and keeps
+            // the previous layout undo token when the grid itself did not change.
+            var changesLayout = mode.Proposal.Document.Columns != Document.Columns ||
+                mode.Proposal.Document.Rows != Document.Rows;
+            return CommitProposal(mode.Proposal, recordUndo: changesLayout);
+        }
         var next = Document with { Generation = checked(Document.Generation + 1), Settings = settings };
         return CommitProposal(new WallProposal(next, WallLayoutEngine.Measure(next, _metrics)), recordUndo: false);
     }
 
     internal async Task OpenSettingsAsync(Func<SettingsDialogState> read,
-        Func<WallSettings, bool, Task<SettingsDialogState>> apply)
+        Func<WallSettings, bool, Task<SettingsDialogState>> apply,
+        Action<bool>? hotKeyRecordingChanged = null)
     {
-        if (_modal || !_hasDocument) return;
+        if (PersistenceInteractionBlocked || _modal || !_hasDocument) return;
         try
         {
             await BeginModalAsync();
-            var dialog = new SettingsDialog(DialogOwner, read, apply);
+            var dialog = new SettingsDialog(DialogOwner, read, apply, hotKeyRecordingChanged);
             ActiveDialog = dialog;
             await dialog.ShowAsync();
         }
@@ -119,7 +174,7 @@ public sealed partial class MainWindow
 
     private Task CreateClockAsync(string? groupId, int lane)
     {
-        if (_modal || _viewBlocked || _adaptationBlocked || !_hasDocument) return Task.CompletedTask;
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked || !_hasDocument) return Task.CompletedTask;
         var clock = new ClockMember { Id = $"clock-{Guid.NewGuid():N}", LocalBounds = new(0, 0, 2, 2) };
         var error = AddDefaultMember(clock, groupId, lane);
         if (error is not null) Status(error);
@@ -129,6 +184,7 @@ public sealed partial class MainWindow
     private async Task BeginModalAsync()
     {
         _modal = true;
+        UpdateNativeSizingRegion(); // Remove the opt-in native edge before any asynchronous dialog setup.
         UpdatePuzzleGate();
         CancelTransientState();
         DialogOpened?.Invoke();
@@ -165,13 +221,16 @@ public sealed partial class MainWindow
 
     private void RefreshEnvironment(bool force)
     {
+        if (_persistencePending) { _environmentAfterPersistence = true; return; }
         RefreshAppearance();
         if (!SystemParametersInfoW(SpiGetWorkArea, 0, out var area, 0)) return;
         RefreshNativeFrame();
+        UpdateNativeSizingRegion();
         var scale = Scale;
         if (!force && _lastEnvironmentScale == scale && _lastEnvironmentWork.Equals(area)) return;
         if (_resizing) TraceInput($"ResizeEnvironment force={force} scale={_lastEnvironmentScale:F3}->{scale:F3} work={area.Left},{area.Top},{area.Right},{area.Bottom}");
         _workArea = area;
+        ReadPrimaryScreen();
         _lastEnvironmentWork = area;
         _lastEnvironmentScale = scale;
         CancelTransientState();
@@ -198,74 +257,35 @@ public sealed partial class MainWindow
         }
     }
 
-    private void ApplyViewport()
+    private void ApplyViewport(WallDocument? previewDocument = null, WallGeometry? previewGeometry = null, bool animateMode = true)
     {
         if (!_hasDocument) return;
         RefreshNativeFrame();
-        var workWidth = _workArea.Right - _workArea.Left;
-        var workHeight = _workArea.Bottom - _workArea.Top;
-        var width = (int)Math.Ceiling(Surface.Width * Scale) + _frameWidth;
-        var height = (int)Math.Ceiling(Surface.Height * Scale) + _frameHeight;
-        var wasBlocked = _adaptationBlocked;
-        _adaptationBlocked = width > workWidth || height > workHeight;
-        AdaptationButton.Visibility = _adaptationBlocked && !_modal ? Visibility.Visible : Visibility.Collapsed;
-        if (_adaptationBlocked)
+        var document = previewDocument ?? Document;
+        var fullScreen = document.Settings.FullScreen;
+        var geometry = previewGeometry ?? Surface.Geometry ?? WallLayoutEngine.Measure(document, _metrics);
+        var width = fullScreen ? _screenArea.Right - _screenArea.Left :
+            (int)Math.Ceiling((geometry.WallWidth + WallViewportPolicy.SidebarWidthDip) * Scale) + _frameWidth;
+        var height = fullScreen ? _screenArea.Bottom - _screenArea.Top :
+            (int)Math.Ceiling(geometry.WallHeight * Scale) + _frameHeight;
+        if (!fullScreen)
         {
-            Surface.Visibility = Visibility.Collapsed;
-            Status(ProductStrings.Get("Wall.Adaptation"));
-            RetryViewButton.Visibility = Visibility.Visible;
-            width = Math.Min(workWidth, (int)Math.Ceiling(640 * Scale) + _frameWidth);
-            height = Math.Min(workHeight, (int)Math.Ceiling(220 * Scale) + _frameHeight);
+            width = Math.Min(width, (int)Math.Floor((_screenArea.Right - _screenArea.Left) * .9));
+            height = Math.Min(height, (int)Math.Floor((_screenArea.Bottom - _screenArea.Top) * .9));
         }
-        else
-        {
-            Surface.Visibility = Visibility.Visible;
-            Surface.IsHitTestVisible = !_viewBlocked;
-            if (wasBlocked) { StatusPanel.Visibility = Visibility.Collapsed; RetryViewButton.Visibility = Visibility.Collapsed; }
-        }
-        var right = Settings.AnchorCorner is AnchorCorner.BottomRight or AnchorCorner.TopRight;
-        var bottom = Settings.AnchorCorner is AnchorCorner.BottomLeft or AnchorCorner.BottomRight;
-        var x = right ? _workArea.Right - width : _workArea.Left;
-        var y = bottom ? _workArea.Bottom - height : _workArea.Top;
-        AppWindow.MoveAndResize(new RectInt32(x, y, Math.Max(1, width), Math.Max(1, height)));
+
+        Surface.Visibility = _viewBlocked ? Visibility.Collapsed : Visibility.Visible;
+        Surface.IsHitTestVisible = !_viewBlocked && !PersistenceInteractionBlocked;
+        var right = document.Settings.AnchorCorner is AnchorCorner.BottomRight or AnchorCorner.TopRight;
+        var bottom = document.Settings.AnchorCorner is AnchorCorner.BottomLeft or AnchorCorner.BottomRight;
+        // Both modes use the complete primary rectangle, preserving the opposite corner when exiting fullscreen.
+        var x = right && !fullScreen ? _screenArea.Right - width : _screenArea.Left;
+        var y = bottom && !fullScreen ? _screenArea.Bottom - height : _screenArea.Top;
+        PresentViewport(new RectInt32(x, y, Math.Max(1, width), Math.Max(1, height)), fullScreen,
+            document.Settings.AnchorCorner, animateMode);
         if (AppWindow.Presenter is OverlappedPresenter presenter)
             presenter.IsAlwaysOnTop = Settings.AlwaysOnTop;
         UpdateResizeZones();
-    }
-
-    private async void OnAdaptationClicked(object sender, RoutedEventArgs e)
-    {
-        if (_modal || _viewBlocked || !_hasDocument) return;
-        try
-        {
-            await BeginModalAsync();
-            var dialog = new AdaptationDialog(DialogOwner, Document, WorkWidthDip, WorkHeightDip, _metrics, SaveAdaptation);
-            ActiveDialog = dialog;
-            await dialog.ShowAsync();
-        }
-        catch (Exception ex) { Status(ex.Message); }
-        finally { EndModal(); }
-    }
-
-    private string? SaveAdaptation(WallDocument draft, IReadOnlyList<EntryChange> removals)
-    {
-        if (!SystemParametersInfoW(SpiGetWorkArea, 0, out _workArea, 0))
-            return ProductStrings.Get("Wall.ReadWorkAreaFailed");
-        RefreshNativeFrame();
-        var columns = Enumerable.Range(1, 64).LastOrDefault(c => _metrics.WallWidth(c) <= WorkWidthDip);
-        var rows = Enumerable.Range(1, 256).LastOrDefault(r => _metrics.WallHeight(r) <= WorkHeightDip);
-        if (columns == 0 || rows == 0) return ProductStrings.Get("Wall.Adaptation");
-        var latest = draft with { Generation = Document.Generation, Settings = Document.Settings };
-        var result = WallLayoutEngine.TryApply(latest,
-            new ResizeWallAction(Document.Generation, Math.Min(columns, draft.Columns), Math.Min(rows, draft.Rows)),
-            WorkWidthDip, WorkHeightDip, _metrics);
-        if (result.Proposal is null)
-        {
-            AppLog.Warn("WallAdaptation", $"rejection={result.Rejection} detail={result.Detail}");
-            return string.Format(ProductStrings.Get("Wall.LocationUnavailable"),
-                ProductStrings.WallRejectionReason(result.Rejection), string.Empty).TrimEnd();
-        }
-        return CommitProposal(result.Proposal, removals);
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -275,4 +295,10 @@ public sealed partial class MainWindow
     [DllImport("user32.dll")] private static extern IntPtr GetLastActivePopup(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+    [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
 }
+
+
+

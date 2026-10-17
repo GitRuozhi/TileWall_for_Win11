@@ -27,13 +27,36 @@ public sealed class ImageFrameDecoder
     private const long MaxSourcePixels = 80_000_000;
     private const long MaxDecodedPixels = 16_000_000;
     private const int MaxDecodedEdge = 4096;
-    private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
-    { ".png", ".jpg", ".jpeg", ".bmp" };
+    /// <summary>Discover format support through WIC itself, including installed codecs and extensionless files.</summary>
+    public async Task<bool> ProbeAsync(string path, CancellationToken ct = default)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            var info = new FileInfo(path);
+            if (!info.Exists || info.Length is < 1 or > MaxSourceBytes) return false;
+            var file = await StorageFile.GetFileFromPathAsync(path);
+            using var stream = await file.OpenReadAsync();
+            var decoder = await BitmapDecoder.CreateAsync(stream);
+            ct.ThrowIfCancellationRequested();
+            if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 ||
+                (long)decoder.PixelWidth * decoder.PixelHeight > MaxSourcePixels) return false;
+            // A valid header alone is not a usable gallery candidate. Decode a bounded
+            // sample before counting this file toward the shared 99-image limit.
+            return await DecodePlaneAsync(decoder, path, info.Length, info.LastWriteTimeUtc,
+                checked((int)decoder.PixelWidth), checked((int)decoder.PixelHeight),
+                checked((int)decoder.OrientedPixelWidth), checked((int)decoder.OrientedPixelHeight),
+                1, 1, ct, maxEdge: 1) is not null;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or
+            ArgumentException or OverflowException or InvalidOperationException) { return false; }
+    }
 
     /// <summary>Decode both complete image planes from one open file and one decoder.</summary>
     public async Task<PuzzleDecodeResult> DecodePuzzlePairAsync(
         string? sourcePath, int requiredWidthPx, int requiredHeightPx,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool preserveSourceResolution = false)
     {
         if (string.IsNullOrWhiteSpace(sourcePath))
             return new(ImageDecodeStatus.MissingFile, null);
@@ -44,8 +67,6 @@ public sealed class ImageFrameDecoder
         try { path = Path.GetFullPath(sourcePath); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         { return new(ImageDecodeStatus.MissingFile, null, ex.GetType().Name); }
-        if (!AllowedExtensions.Contains(Path.GetExtension(path)))
-            return new(ImageDecodeStatus.UnsupportedFormat, null);
 
         try
         {
@@ -74,7 +95,8 @@ public sealed class ImageFrameDecoder
 
             var sharp = await DecodePlaneAsync(decoder, path, fileBytes, lastWriteUtc,
                 rawWidth, rawHeight, orientedWidth, orientedHeight,
-                requiredWidthPx, requiredHeightPx, cancellationToken);
+                preserveSourceResolution ? orientedWidth : requiredWidthPx,
+                preserveSourceResolution ? orientedHeight : requiredHeightPx, cancellationToken);
             // A second WIC read uses the same open stream and decoder, never a second file version.
             var blur = await DecodePlaneAsync(decoder, path, fileBytes, lastWriteUtc,
                 rawWidth, rawHeight, orientedWidth, orientedHeight,
@@ -148,8 +170,6 @@ public sealed class ImageFrameDecoder
         try { path = Path.GetFullPath(sourcePath); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         { return new(ImageDecodeStatus.MissingFile, null, ex.GetType().Name); }
-        if (!AllowedExtensions.Contains(Path.GetExtension(path)))
-            return new(ImageDecodeStatus.UnsupportedFormat, null);
 
         try
         {

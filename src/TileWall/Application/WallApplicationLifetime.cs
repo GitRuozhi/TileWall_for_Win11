@@ -26,6 +26,8 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
     private int _queuedPaths;
     private bool? _loginEnabled;
     private bool _settingsBusy;
+    private bool _hotKeyRecording;
+    private HotKeyGesture? _recordingPreviousHotKey;
     private bool _exitPending;
     private bool _tearingDown;
     private bool _started;
@@ -65,12 +67,12 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         {
             if (_tearingDown) return;
             e.Cancel = true;
-            _ = RequestExitAsync();
+            RequestExit();
         };
         _tray.ShowOrFocusRequested += () => Request(WallShowTrigger.Show);
         _tray.SettingsRequested += OpenSettings;
-        _tray.ExitRequested += () => _ = RequestExitAsync();
-        _host.HotKeyPressed += () => Request(WallShowTrigger.Toggle);
+        _tray.ExitRequested += RequestExit;
+        _host.HotKeyPressed += () => { if (!_hotKeyRecording) Request(WallShowTrigger.Toggle); };
         _host.DisplayChanged += _window.QueueEnvironmentRefresh;
         _host.AcceptPaths = ReceiveAdd;
         _instance.Activated += () => Request(WallShowTrigger.Show);
@@ -118,10 +120,29 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
 
     private void OpenSettings()
     {
-        if (!_started || _tearingDown) return;
+        if (!_started || _tearingDown || _window.PersistenceBusy) return;
         if (_window.ModalActive) { _window.FocusTopSession(); return; }
         Request(WallShowTrigger.Show);
-        _ = _window.OpenSettingsAsync(CurrentSettingsState, ApplySettingsAsync);
+        _ = _window.OpenSettingsAsync(CurrentSettingsState, ApplySettingsAsync, SetHotKeyRecording);
+    }
+
+    private void SetHotKeyRecording(bool recording)
+    {
+        if (_hotKeyRecording == recording || _tearingDown) return;
+        _hotKeyRecording = recording;
+        if (recording)
+        {
+            // Unregister as well as suppressing WM_HOTKEY so the actual keys reach
+            // the recorder (including the application's current Win+~ chord).
+            _recordingPreviousHotKey = _hotKey.CurrentGesture;
+            _hotKey.Unregister();
+        }
+        else
+        {
+            var previous = _recordingPreviousHotKey; _recordingPreviousHotKey = null;
+            if (previous is not null && !_hotKey.TryRegister(previous))
+                _window.ShowStatus(ProductStrings.Get("Wall.HotKeyUnavailable"));
+        }
     }
 
     private SettingsDialogState CurrentSettingsState() => new(_window.Settings,
@@ -129,6 +150,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
 
     private async Task<SettingsDialogState> ApplySettingsAsync(WallSettings proposed, bool restoreDefaults)
     {
+        if (_window.PersistenceMutationBlocked) return CurrentSettingsState() with { Error = ProductStrings.Get("Wall.SettingsSaving") };
         if (_settingsBusy) return CurrentSettingsState() with { Error = ProductStrings.Get("Wall.SettingsSaving") };
         if (!HotKeyGesture.TryParse(proposed.HotKey, out var nextKey, out var error))
             return CurrentSettingsState() with { Error = error };
@@ -237,26 +259,45 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
     private void UpdateTray() => _tray.UpdateTooltip(_hotKey.IsRegistered
         ? $"TileWall · {_hotKey.CurrentGesture?.ToDisplayString()}" : $"TileWall · {ProductStrings.Get("Wall.HotKeyUnavailable")}");
 
-    private async Task RequestExitAsync()
+    private void RequestExit()
     {
         if (_exitPending || _tearingDown) return;
         _exitPending = true;
+        // Tray commands and AppWindow.Closing arrive inside native callbacks. Let
+        // their menus/closing frames unwind before destroying any HWND or XAML state.
+        if (!_window.DispatcherQueue.TryEnqueue(() => _ = RequestExitAsync()))
+        {
+            _exitPending = false;
+            AppLog.Warn("Exit", "Exit request could not be queued because the UI dispatcher is shutting down.");
+        }
+    }
+
+    private async Task RequestExitAsync()
+    {
         try
         {
+            _window.SuspendPersistenceAdmission();
+            await _window.DrainPersistenceAsync();
             var session = _window.ActiveDialog;
             if (session is not null) await session.WaitForPendingAsync();
             session = _window.ActiveDialog;
             if (_exit.ShouldConfirmDraft(session))
             {
                 _window.FocusTopSession();
-                if (!_exit.ApplyDecision(session, await session!.ConfirmExitAsync())) return;
+                if (!_window.ApplyExitDecision(_exit, session!, await session!.ConfirmExitAsync())) return;
             }
             else _exit.CloseDraftlessSession();
+            try { await _window.ShutdownPersistenceAsync(); }
+            catch (Exception ex) { AppLog.Warn("Exit", $"Storage worker shutdown: {ex.Message}"); }
             _tearingDown = true;
             _exit.RunTeardown();
         }
         catch (Exception ex) { _window.ShowStatus(string.Format(ProductStrings.Get("Wall.OperationFailed"), ex.Message)); }
-        finally { _exitPending = false; QueueAddDrain(); }
+        finally
+        {
+            if (!_tearingDown) _window.ResumePersistenceAdmission();
+            _exitPending = false; QueueAddDrain();
+        }
     }
 
     public void BeginShowAnimation() => _animation.BeginShow();
@@ -273,5 +314,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
     public void RemoveTrayIcon() => _tray.Dispose();
     public void DestroyShellHostWindow() => _host.Dispose();
     public void ReleaseSingleInstanceMutex() => _instance.Dispose();
-    public void ExitApplication() { _window.Close(); _application.Exit(); }
+    // Application.Exit closes the XAML windows and raises their Closed cleanup
+    // handlers. Closing the last window first would begin shutdown twice.
+    public void ExitApplication() => _application.Exit();
 }

@@ -51,7 +51,8 @@ public sealed class FakeLinkFileService(IFileStore files) : ILnkFileService
     {
         Fire(LnkFaultPoint.BeforeRead, path);
         var state = ReadState(path);
-        return new LinkFields(state.TargetPath, state.Arguments, state.WorkingDirectory, IconPath: null, IconIndex: 0, ShowCmd: 1, state.HasIdList);
+        return new LinkFields(state.TargetPath, state.Arguments, state.WorkingDirectory, IconPath: null, IconIndex: 0, ShowCmd: 1, state.HasIdList)
+        { ShellParsingName = state.ShellParsingName };
     }
 
     public void EditTargetOnly(string path, string newTarget)
@@ -62,8 +63,9 @@ public sealed class FakeLinkFileService(IFileStore files) : ILnkFileService
     }
 
     /// <summary>测试种子：直接落一份既有入口（模拟历史数据/特殊 IDList 入口）。</summary>
-    public void Register(string path, string? target, string arguments = "", string workingDirectory = "", bool hasIdList = false) =>
-        Write(path, new FakeLinkState(target, arguments, workingDirectory, hasIdList));
+    public void Register(string path, string? target, string arguments = "", string workingDirectory = "", bool hasIdList = false,
+        string? shellParsingName = null) =>
+        Write(path, new FakeLinkState(target, arguments, workingDirectory, hasIdList, shellParsingName));
 
     public bool Exists(string path) => _files.Exists(path);
 
@@ -96,4 +98,5 @@ public sealed class FakeLinkFileService(IFileStore files) : ILnkFileService
 }
 
 /// <summary>FakeLinkFileService 的持久化状态（JSON）。</summary>
-public sealed record FakeLinkState(string? TargetPath, string Arguments, string WorkingDirectory, bool HasIdList);
+public sealed record FakeLinkState(string? TargetPath, string Arguments, string WorkingDirectory, bool HasIdList,
+    string? ShellParsingName = null);

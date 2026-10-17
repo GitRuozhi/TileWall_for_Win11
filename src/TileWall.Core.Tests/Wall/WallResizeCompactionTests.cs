@@ -68,6 +68,40 @@ public sealed class WallResizeCompactionTests
         Assert.Equal("second", Assert.Single(lanes[secondLane].Groups).Id);
     }
 
+    [Fact]
+    public void RemovingMiddleEmptyLaneKeepsSurvivingImportMarkersAndNewLanesAreManual()
+    {
+        var current = Document(8, [], [Group("first", Tile("a", 0))], [],
+            [Group("second", Tile("b", 0))]);
+        current = current with
+        {
+            Lanes =
+            [
+                current.Lanes[0],
+                current.Lanes[1] with { ImportBatchId = "batch-first" },
+                current.Lanes[2] with { ImportBatchId = "batch-empty" },
+                current.Lanes[3] with { ImportBatchId = "batch-second" },
+            ],
+        };
+        var shrink = Resize(current, 3, 8);
+        Assert.True(shrink.Success, shrink.Detail);
+        var compacted = shrink.Proposal!.Document;
+        Assert.Null(compacted.Lanes[0].ImportBatchId);
+        Assert.Empty(compacted.Lanes[0].Groups);
+        Assert.Equal("batch-first", compacted.Lanes[1].ImportBatchId);
+        Assert.Equal("first", Assert.Single(compacted.Lanes[1].Groups).Id);
+        Assert.Equal("batch-second", compacted.Lanes[2].ImportBatchId);
+        Assert.Equal("second", Assert.Single(compacted.Lanes[2].Groups).Id);
+
+        var expand = Resize(compacted, 4, 8);
+        Assert.True(expand.Success, expand.Detail);
+        var expanded = expand.Proposal!.Document;
+        Assert.Null(expanded.Lanes[3].ImportBatchId);
+        Assert.Empty(expanded.Lanes[3].Groups);
+        Assert.Equal("batch-first", expanded.Lanes[1].ImportBatchId);
+        Assert.Equal("batch-second", expanded.Lanes[2].ImportBatchId);
+    }
+
     [Theory]
     [InlineData(6, 2, 4)]
     [InlineData(5, 2, 3)]

@@ -6,38 +6,56 @@
     xmlns:views="using:TileWall.Views"
     Title="TileWall">
     <Grid x:Name="WallRoot" Background="Transparent" AutomationProperties.AutomationId="wall-root">
-        <Grid.Resources>
-            <Style x:Key="ResizeHotZone" TargetType="Thumb">
-                <Setter Property="Background" Value="Transparent" />
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="Thumb"><Border Background="Transparent" /></ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-        </Grid.Resources>
-        <views:WallSurface x:Name="Surface" HorizontalAlignment="Left" VerticalAlignment="Top" />
+        <ScrollViewer x:Name="WallScroll" HorizontalScrollMode="Disabled" VerticalScrollMode="Disabled"
+                      HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Disabled"
+                      ZoomMode="Disabled" HorizontalContentAlignment="Left" VerticalContentAlignment="Top">
+            <views:WallSurface x:Name="Surface" HorizontalAlignment="Left" VerticalAlignment="Top" />
+        </ScrollViewer>
         <Canvas x:Name="DragOverlay" IsHitTestVisible="False" />
-        <Thumb x:Name="ResizeHorizontalEdge" Height="8" Style="{StaticResource ResizeHotZone}"
+        <Grid x:Name="WindowsSidebarHost" HorizontalAlignment="Left" VerticalAlignment="Stretch" />
+        <views:ResizeThumb x:Name="ResizeHorizontalEdge" Height="8" Margin="14,0,14,0"
                HorizontalAlignment="Stretch" VerticalAlignment="Top" Tag="Vertical"
                AutomationProperties.AutomationId="wall-resize-horizontal-edge"
+               PointerEntered="OnResizePointerEntered" PointerExited="OnResizePointerExited" PointerCaptureLost="OnResizePointerCaptureLost"
                DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
-        <Thumb x:Name="ResizeVerticalEdge" Width="8" Style="{StaticResource ResizeHotZone}"
+        <views:ResizeThumb x:Name="ResizeVerticalEdge" Width="8" Margin="0,14,0,14"
                HorizontalAlignment="Right" VerticalAlignment="Stretch" Tag="Horizontal"
                AutomationProperties.AutomationId="wall-resize-vertical-edge"
+               PointerEntered="OnResizePointerEntered" PointerExited="OnResizePointerExited" PointerCaptureLost="OnResizePointerCaptureLost"
                DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
-        <Thumb x:Name="ResizeGrip" Width="14" Height="14" Style="{StaticResource ResizeHotZone}"
+        <views:ResizeThumb x:Name="ResizeGrip" Width="14" Height="14"
                HorizontalAlignment="Right" VerticalAlignment="Top"
                AutomationProperties.AutomationId="wall-resize-grip"
+               PointerEntered="OnResizePointerEntered" PointerExited="OnResizePointerExited" PointerCaptureLost="OnResizePointerCaptureLost"
                DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
+        <views:ResizeThumb x:Name="ResizeTopLeft" Width="14" Height="14" HorizontalAlignment="Left" VerticalAlignment="Top" Tag="TopLeft"
+            AutomationProperties.AutomationId="wall-resize-top-left" Visibility="Collapsed"
+            PointerEntered="OnResizePointerEntered" PointerExited="OnResizePointerExited" PointerCaptureLost="OnResizePointerCaptureLost"
+            DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
+        <views:ResizeThumb x:Name="ResizeTopRight" Width="14" Height="14" HorizontalAlignment="Right" VerticalAlignment="Top" Tag="TopRight"
+            AutomationProperties.AutomationId="wall-resize-top-right" Visibility="Collapsed"
+            PointerEntered="OnResizePointerEntered" PointerExited="OnResizePointerExited" PointerCaptureLost="OnResizePointerCaptureLost"
+            DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
+        <views:ResizeThumb x:Name="ResizeBottomLeft" Width="14" Height="14" HorizontalAlignment="Left" VerticalAlignment="Bottom" Tag="BottomLeft"
+            AutomationProperties.AutomationId="wall-resize-bottom-left" Visibility="Collapsed"
+            PointerEntered="OnResizePointerEntered" PointerExited="OnResizePointerExited" PointerCaptureLost="OnResizePointerCaptureLost"
+            DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
+        <views:ResizeThumb x:Name="ResizeBottomRight" Width="14" Height="14" HorizontalAlignment="Right" VerticalAlignment="Bottom" Tag="BottomRight"
+            AutomationProperties.AutomationId="wall-resize-bottom-right" Visibility="Collapsed"
+            PointerEntered="OnResizePointerEntered" PointerExited="OnResizePointerExited" PointerCaptureLost="OnResizePointerCaptureLost"
+            DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
+        <Border x:Name="ResizeHorizontalHighlight" Height="2" HorizontalAlignment="Stretch" VerticalAlignment="Top"
+                IsHitTestVisible="False" Visibility="Collapsed" />
+        <Border x:Name="ResizeVerticalHighlight" Width="2" HorizontalAlignment="Right" VerticalAlignment="Stretch"
+                IsHitTestVisible="False" Visibility="Collapsed" />
         <Border x:Name="StatusPanel" Background="#DC263445" Visibility="Collapsed"
                 HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="8" Padding="8,5">
             <StackPanel Spacing="4">
                 <TextBlock x:Name="StatusText" Foreground="White" TextWrapping="Wrap" />
                 <Button x:Name="RetryViewButton" Content="从已保存状态重建墙面"
                         Visibility="Collapsed" Click="OnRetryViewClicked" />
-                <Button x:Name="AdaptationButton" Visibility="Collapsed" Click="OnAdaptationClicked" />
             </StackPanel>
         </Border>
     </Grid>
 </Window>
+

@@ -20,8 +20,10 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
     private SystemBackdropConfiguration? _defaultConfiguration;
     private MaterialSlot? _selectedMaterial;
     private WallBackgroundMode _mode = WallBackgroundMode.Acrylic;
-    private int _transparency = 15;
+    private int _transparency = 10;
     private bool _active = true, _dark, _acrylicFailed, _updating;
+    private (bool Fallback, bool Reduced)? _lastNotifiedState;
+    private (bool HighContrast, Color? Background)? _lastMaterialPolicy;
 
     private sealed class MaterialSlot(WallBackgroundMode mode, ISystemBackdropControllerWithTargets controller,
         AlphaBackdropTarget proxy)
@@ -52,6 +54,8 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
     protected override void OnTargetConnected(ICompositionSupportsSystemBackdrop connectedTarget, XamlRoot xamlRoot)
     {
         base.OnTargetConnected(connectedTarget, xamlRoot);
+        _lastNotifiedState = null; // A new target must receive its initial state once.
+        _lastMaterialPolicy = null;
         queue.EnsureSystemDispatcherQueue();
         _target = connectedTarget;
         TraceDiagnostic("Connected mode=alpha-mask");
@@ -113,12 +117,27 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
         _selectedMaterial = null;
     }
 
+    private void NotifyFallbackChanged(bool fallback, bool reduced)
+    {
+        if (_lastNotifiedState is { } previous && previous.Fallback == fallback && previous.Reduced == reduced) return;
+        fallbackChanged(fallback, reduced);
+        _lastNotifiedState = (fallback, reduced);
+    }
+
     private void UpdateMaterial()
     {
         if (_target is null || _defaultConfiguration is null || _updating) return;
         _updating = true;
         try
         {
+            // High contrast can change while reduced stays true (for example when
+            // AdvancedEffectsEnabled is already false). Keep that real policy/color
+            // change observable even when the two fallback booleans are unchanged.
+            var highContrast = _defaultConfiguration.IsHighContrast;
+            var contrastBackground = _defaultConfiguration.HighContrastBackgroundColor;
+            if (_lastMaterialPolicy is { } previousPolicy && (previousPolicy.HighContrast != highContrast ||
+                !previousPolicy.Background.Equals(contrastBackground))) _lastNotifiedState = null;
+            _lastMaterialPolicy = (highContrast, contrastBackground);
             // The default configuration observes native focus before Window.Activated
             // can enqueue its refresh. Stop borrowing the active brush immediately.
             var effectiveActive = _active && _defaultConfiguration.IsInputActive;
@@ -131,25 +150,28 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             if (!ReferenceEquals(material, _selectedMaterial)) DisableSelectedMaterial();
             foreach (var slot in _materials.Values)
             {
-                slot.Proxy.Opacity = reduced ? 1f : (100 - _transparency) / 100f;
+                // Offset only the material that really is Acrylic. Mica and the XAML
+                // fallback plane retain the setting's original transparency.
+                var transparency = slot.Mode == WallBackgroundMode.Acrylic ? Math.Clamp(_transparency - 6, 0, 94) : _transparency;
+                slot.Proxy.Opacity = reduced ? 1f : (100 - transparency) / 100f;
                 UpdateConfiguration(slot, ReferenceEquals(slot, material) && effectiveActive);
             }
             if (material is { Available: true })
             {
                 _selectedMaterial = material;
                 material.Proxy.SetEnabled(true);
-                fallbackChanged(false, false);
+                NotifyFallbackChanged(false, false);
             }
             else
             {
                 DisableSelectedMaterial();
-                _target.SystemBackdrop = null!;
+                if (_target.SystemBackdrop is not null) _target.SystemBackdrop = null!;
                 if (selected == WallBackgroundMode.Acrylic)
                 {
                     _acrylicFailed = true;
                     queue.TryEnqueue(UpdateMaterial);
                 }
-                fallbackChanged(selected != WallBackgroundMode.Custom, reduced);
+                NotifyFallbackChanged(selected != WallBackgroundMode.Custom, reduced);
             }
         }
         catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException)
@@ -162,7 +184,7 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
                 _acrylicFailed = true;
                 queue.TryEnqueue(UpdateMaterial);
             }
-            fallbackChanged(true, false);
+            NotifyFallbackChanged(true, false);
         }
         finally { _updating = false; }
     }
@@ -188,8 +210,11 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
         foreach (var slot in _materials.Values)
         {
             slot.Controller.StateChanged -= OnControllerStateChanged;
-            slot.Controller.RemoveAllSystemBackdropTargets();
+            // Our mask graph uses the controller brush's compositor. Detach the
+            // borrowed brush and release our graph before removing its last target,
+            // which can close that compositor and every brush created from it.
             slot.Proxy.ResetGraph();
+            slot.Controller.RemoveAllSystemBackdropTargets();
             (slot.Controller as IDisposable)?.Dispose();
         }
         _materials.Clear();
@@ -233,6 +258,7 @@ internal sealed partial class AlphaBackdropTarget(ICompositionSupportsSystemBack
         get => _opacity;
         set
         {
+            if (_opacity == value) return;
             _opacity = value;
             if (_alpha is not null) _alpha.Color = Color.FromArgb((byte)Math.Round(255 * value), 255, 255, 255);
         }
@@ -304,4 +330,5 @@ internal sealed partial class AlphaBackdropTarget(ICompositionSupportsSystemBack
 
     public void Dispose() => ResetGraph();
 }
+
 

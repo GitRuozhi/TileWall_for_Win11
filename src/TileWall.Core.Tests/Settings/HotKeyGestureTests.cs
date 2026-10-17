@@ -23,6 +23,8 @@ public sealed class HotKeyGestureTests
     [InlineData("Ctrl+D1", ModCtrl, 0x31u)] // "D1" 与 "1" 同指
     [InlineData("Control+A", ModCtrl, 0x41u)] // "Control" 别名
     [InlineData("Win+Return", ModWin, 0x0Du)] // "Return" 别名 → VK_RETURN
+    [InlineData("Win+~", ModWin, 0xC0u)] // 波浪键帽别名不隐式添加 Shift
+    [InlineData("Win+`", ModWin, 0xC0u)] // 反引号可视键帽别名
     public void TryParse_ValidTexts_YieldsModifiersAndRawVk(string text, uint modifiers, uint vk)
     {
         var ok = HotKeyGesture.TryParse(text, out var gesture, out var failure);
@@ -39,6 +41,18 @@ public sealed class HotKeyGestureTests
         Assert.True(HotKeyGesture.TryParse("win+oem3", out var lower));
         Assert.True(HotKeyGesture.TryParse("WIN+OEM3", out var upper));
         Assert.Equal(lower, upper); // record 值相等
+    }
+
+    [Theory]
+    [InlineData("Win+~")]
+    [InlineData("Win+`")]
+    public void TryParse_Oem3KeycapAliases_KeepCanonicalConfig(string text)
+    {
+        Assert.True(HotKeyGesture.TryParse(text, out var gesture));
+        Assert.Equal(ModWin, gesture!.Modifiers); // 键帽别名不要求或推断 Shift
+        Assert.Equal(0xC0u, gesture.VirtualKey);
+        Assert.Equal("Win+Oem3", gesture.ToConfigString());
+        Assert.Equal("Win+`", gesture.ToDisplayString()); // 保留现有全局友好名
     }
 
     [Fact]

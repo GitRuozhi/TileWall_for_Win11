@@ -59,6 +59,17 @@ internal sealed class WallStoragePaths(IFileStore files, IDataDirectory director
     }
 
     public void Guard(string path, bool allowExternalRead = false)
+        => GuardCore(path, allowExternalRead, null);
+
+    /// <summary>One validation pass only; actual IO always uses the uncached Guard.</summary>
+    public Action<string> CreateValidationGuard()
+    {
+        var inspected = new Dictionary<string, FileStorePathInfo>(StringComparer.OrdinalIgnoreCase);
+        return path => GuardCore(path, false, inspected);
+    }
+
+    private void GuardCore(string path, bool allowExternalRead,
+        Dictionary<string, FileStorePathInfo>? inspected)
     {
         if (!Path.IsPathFullyQualified(path) || Path.GetFullPath(path) != path)
             throw new IOException($"Unnormalized path: {path}");
@@ -72,7 +83,11 @@ internal sealed class WallStoragePaths(IFileStore files, IDataDirectory director
                      StringSplitOptions.RemoveEmptyEntries))
         {
             cursor = Path.Combine(cursor, part);
-            var info = _files.GetPathInfo(cursor);
+            if (inspected is null || !inspected.TryGetValue(cursor, out var info))
+            {
+                info = _files.GetPathInfo(cursor);
+                inspected?.Add(cursor, info);
+            }
             if (info.IsReparsePoint) throw new IOException($"Reparse point in managed path: {cursor}");
             if (info.Exists && cursor != full && !info.IsDirectory)
                 throw new IOException($"File in directory path: {cursor}");

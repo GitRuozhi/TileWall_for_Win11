@@ -1,12 +1,13 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Markup;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using TileWall.Core.Settings;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
 using TileWall.Graphics;
 using TileWall.Resources;
+using TileWall.Shell.Interop;
 using Windows.Storage.Pickers;
 
 namespace TileWall.Views;
@@ -21,50 +22,85 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly Func<SettingsDialogState> _readState;
     private readonly Func<WallSettings, bool, Task<SettingsDialogState>> _apply;
     private readonly ContentDialog _dialog;
-    private readonly Grid _form = new() { RowSpacing = 12, ColumnSpacing = 20 };
+    private readonly Grid _form = new() { RowSpacing = 12, ColumnSpacing = 16 };
     private readonly Dictionary<string, TextBlock> _labels = [];
     private readonly ScrollViewer _formHost = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-    private readonly ComboBox _anchor = new(), _language = new(), _visualStyle = new(), _theme = new(), _background = new();
+    private readonly StackPanel _anchor = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
+    private readonly ToggleButton[] _anchorButtons = Enumerable.Range(0, 4).Select(_ => new ToggleButton { Width = 32, Height = 32 }).ToArray();
+    private readonly ToggleSwitch _fullScreen = new();
+    private readonly ComboBox _language = new(), _visualStyle = new(), _theme = new(), _background = new();
     private readonly ToggleSwitch _topmost = new(), _stayVisible = new(), _runAtLogin = new(), _showGrid = new();
-    private readonly TextBox _hotKey = new() { IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
-    private readonly Slider _transparency = new() { Minimum = 0, Maximum = 100, StepFrequency = 1, MinWidth = 120, VerticalAlignment = VerticalAlignment.Center };
-    private readonly NumberBox _transparencyInput = new() { Minimum = 0, Maximum = 100, SmallChange = 1, Width = 76, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden };
+    private readonly HotKeyRecorder _hotKey = new();
+    private readonly Button _resetHotKey = new();
+    private readonly Slider _transparency = new() { Minimum = 0, Maximum = 100, StepFrequency = 1, Width = 180, MinWidth = 0, VerticalAlignment = VerticalAlignment.Center };
+    private readonly NumberBox _transparencyInput = new() { Minimum = 0, Maximum = 100, SmallChange = 1, Width = 56, MinWidth = 0, Padding = new Thickness(8, 5, 8, 5), SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden };
     private readonly TextBlock _backgroundPath = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
-    private readonly Button _reset = new();
+    private readonly Button _reset = new(), _registerContextMenu = new() { HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBlock _version = new(), _status = new() { TextWrapping = TextWrapping.Wrap };
     private SettingsDialogState _state;
     private Task _pending = Task.CompletedTask;
-    private bool _refreshing, _busy, _closeRequested, _forceClose, _showFailureBeforeClose, _hotKeyInvalid;
+    private bool _refreshing, _busy, _closeRequested, _forceClose, _showFailureBeforeClose;
 
     public SettingsDialog(Window owner, Func<SettingsDialogState> readState,
-        Func<WallSettings, bool, Task<SettingsDialogState>> applyAsync)
+        Func<WallSettings, bool, Task<SettingsDialogState>> applyAsync, Action<bool>? hotKeyRecordingChanged = null)
     {
         _owner = owner; _readState = readState; _apply = applyAsync; _state = readState();
-        _form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(130) });
+        _form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(112) });
         _form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        foreach (var box in new[] { _theme, _visualStyle, _language, _background })
+        {
+            box.Width = 180; box.HorizontalAlignment = HorizontalAlignment.Left;
+        }
+        for (var index = 0; index < _anchorButtons.Length; index++)
+        {
+            var anchor = (AnchorCorner)index;
+            _anchor.Children.Add(_anchorButtons[index]);
+            _anchorButtons[index].Click += (_, _) => BeginApply(s => s with { AnchorCorner = anchor });
+        }
+        _hotKey.RecordingChanged += recording => hotKeyRecordingChanged?.Invoke(recording);
+        _hotKey.GestureRecorded += gesture => BeginApply(s => s with { HotKey = gesture.ToConfigString() });
+        _hotKey.RecordingFailed += error =>
+        {
+            _status.Text = error; _status.Visibility = Visibility.Visible;
+        };
         AddRow("Settings.Theme", _theme);
         AddRow("Settings.VisualStyle", _visualStyle);
         AddRow("Settings.Language", _language);
-        AddRow("Settings.ShowGrid", _showGrid);
         var backgroundRow = new Grid { ColumnSpacing = 12 };
         backgroundRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         backgroundRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         backgroundRow.Children.Add(_background); Grid.SetColumn(_backgroundPath, 1); backgroundRow.Children.Add(_backgroundPath);
         AddRow("Settings.Background", backgroundRow);
-        var transparencyRow = new Grid { ColumnSpacing = 10 };
-        transparencyRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        // The inner TextBox otherwise retains its theme's 64 DIP minimum.
+        _transparencyInput.Resources["TextControlThemeMinWidth"] = 0d;
+        _transparencyInput.Resources["NumberBoxMinWidth"] = 0d;
+        var transparencyRow = new Grid { ColumnSpacing = 8, HorizontalAlignment = HorizontalAlignment.Left };
         transparencyRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         transparencyRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        transparencyRow.Children.Add(_transparency); Grid.SetColumn(_transparencyInput, 1); transparencyRow.Children.Add(_transparencyInput);
+        transparencyRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        transparencyRow.Children.Add(_transparencyInput);
         var percent = new TextBlock { Text = "%", VerticalAlignment = VerticalAlignment.Center };
-        Grid.SetColumn(percent, 2); transparencyRow.Children.Add(percent); AddRow("Settings.Transparency", transparencyRow);
+        Grid.SetColumn(percent, 1); transparencyRow.Children.Add(percent);
+        Grid.SetColumn(_transparency, 2); transparencyRow.Children.Add(_transparency); AddRow("Settings.Transparency", transparencyRow);
+        AddRow("Settings.ShowGrid", _showGrid);
         AddSeparator();
+        AddRow("Settings.FullScreen", _fullScreen);
         AddRow("Settings.Anchor", _anchor);
-        AddRow("Settings.HotKey", _hotKey);
+        var hotKeyRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        hotKeyRow.Children.Add(_resetHotKey); hotKeyRow.Children.Add(_hotKey);
+        AddRow("Settings.HotKey", hotKeyRow);
+        Id(_resetHotKey, "reset-hot-key");
+        _resetHotKey.Click += (_, _) =>
+        {
+            if (_refreshing || _busy) return;
+            _hotKey.CancelRecording();
+            BeginApply(s => s with { HotKey = new WallSettings().HotKey });
+        };
         AddRow("Settings.RunAtLogin", _runAtLogin);
         AddRow("Settings.Topmost", _topmost);
         AddRow("Settings.StayVisible", _stayVisible);
         AddRow("Settings.Reset", _reset);
+        AddRow("Settings.ExplorerMenu", _registerContextMenu);
         AddSeparator();
         AddRow("Settings.Product", new TextBlock { Text = "TileWall", VerticalAlignment = VerticalAlignment.Center });
         AddRow("Settings.VersionLabel", _version);
@@ -74,7 +110,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         AddRow("Settings.Feedback", Link("Discussions", "https://github.com/GitRuozhi/TileWall_for_Win11/discussions"));
         AddRow("Settings.Chat", new TextBlock());
         var root = (owner.Content as FrameworkElement)?.XamlRoot;
-        var body = new Grid { Width = Math.Min(620, Math.Max(400, (root?.Size.Width ?? 800) - 100)),
+        var body = new Grid { Width = Math.Min(600, Math.Max(400, (root?.Size.Width ?? 800) - 100)),
             MaxHeight = Math.Min(560, Math.Max(120, (root?.Size.Height ?? 780) - 210)) };
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -82,13 +118,12 @@ internal sealed class SettingsDialog : IWallDialogSession
         var statusHost = new ScrollViewer { Content = _status, MaxHeight = 90, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         Grid.SetRow(statusHost, 1); body.Children.Add(statusHost);
         _dialog = new ContentDialog { XamlRoot = root, Content = body, DefaultButton = ContentDialogButton.None };
-        _dialog.Resources["ContentDialogMaxWidth"] = 740d;
+        _dialog.Resources["ContentDialogMaxWidth"] = 700d;
         Id(_dialog, "dialog"); Id(_anchor, "anchor"); Id(_topmost, "topmost"); Id(_stayVisible, "stay-visible");
         Id(_language, "language"); Id(_visualStyle, "visual-style"); Id(_theme, "theme"); Id(_background, "background");
         Id(_hotKey, "hotkey"); Id(_transparency, "transparency"); Id(_transparencyInput, "transparency-input");
-        Id(_backgroundPath, "background-path"); Id(_showGrid, "show-grid"); Id(_runAtLogin, "run-at-login"); Id(_reset, "reset"); Id(_status, "status");
+        Id(_backgroundPath, "background-path"); Id(_showGrid, "show-grid"); Id(_runAtLogin, "run-at-login"); Id(_reset, "reset"); Id(_status, "status"); Id(_registerContextMenu, "register-context-menu");
         RefreshStrings(); RestoreState();
-        _anchor.SelectionChanged += (_, _) => { if (_anchor.SelectedIndex is >= 0 and < 4) BeginChoiceApply(_anchor, s => s with { AnchorCorner = (AnchorCorner)_anchor.SelectedIndex }); };
         _theme.SelectionChanged += (_, _) => BeginChoiceApply(_theme, s => s with { ThemeMode = (WallThemeMode)_theme.SelectedIndex });
         _language.SelectionChanged += (_, _) => BeginChoiceApply(_language, s => s with { LanguageMode = (WallLanguageMode)_language.SelectedIndex });
         _visualStyle.SelectionChanged += (_, _) => BeginChoiceApply(_visualStyle, s => s with { VisualStyle = (WallVisualStyle)_visualStyle.SelectedIndex });
@@ -111,6 +146,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         _transparency.KeyUp += (_, _) => ApplyTransparency();
         _transparency.LostFocus += (_, _) => ApplyTransparency();
         _transparencyInput.ValueChanged += (_, e) => { if (!double.IsNaN(e.NewValue)) SetTransparency(e.NewValue, apply: true); };
+        _fullScreen.Toggled += (_, _) => BeginApply(s => s with { FullScreen = _fullScreen.IsOn });
         _topmost.Toggled += (_, _) => BeginApply(s => s with { AlwaysOnTop = _topmost.IsOn });
         _stayVisible.Toggled += (_, _) => BeginApply(s => s with { StayVisibleOnFocusLoss = _stayVisible.IsOn });
         _showGrid.Toggled += (_, _) => BeginApply(s => s with { ShowGrid = _showGrid.IsOn });
@@ -118,22 +154,28 @@ internal sealed class SettingsDialog : IWallDialogSession
         _reset.Click += (_, _) =>
         {
             if (_refreshing || _busy) return;
-            _hotKeyInvalid = false; _pending = ApplyAsync(new WallSettings(), restoreDefaults: true);
+            _hotKey.CancelRecording(); _pending = ApplyAsync(new WallSettings(), restoreDefaults: true);
         };
-        _hotKey.LostFocus += (_, _) => ApplyHotKey();
-        _hotKey.KeyDown += (_, e) => { if (e.Key == Windows.System.VirtualKey.Enter) { ApplyHotKey(); e.Handled = true; } };
+        _registerContextMenu.Click += (_, _) =>
+        {
+            if (_refreshing || _busy) return;
+            var error = ShortcutContextMenuRegistration.Register(ProductStrings.Get("Explorer.AddToTileWall"));
+            _status.Text = error is null ? ProductStrings.Get("Settings.ContextMenuRegistered")
+                : string.Format(ProductStrings.Get("Settings.ContextMenuRegistrationFailed"), error);
+            _status.Visibility = Visibility.Visible;
+        };
         _dialog.Closing += (_, e) =>
         {
+            _hotKey.CancelRecording();
             if (_forceClose) return;
-            if (!_busy && !ApplyHotKey()) { _showFailureBeforeClose = false; e.Cancel = true; return; }
             if (_showFailureBeforeClose) { _showFailureBeforeClose = false; e.Cancel = true; return; }
             if (_busy) { e.Cancel = true; _closeRequested = true; }
         };
     }
 
-    public async Task ShowAsync() { await OwnedDialogWindow.ShowAsync(_dialog); await _pending; }
+    public async Task ShowAsync() { try { await OwnedDialogWindow.ShowAsync(_dialog); await _pending; } finally { _hotKey.CancelRecording(); } }
     public bool HasUnsavedDraft => false;
-    public Task WaitForPendingAsync() { if (!_busy) ApplyHotKey(); return _pending; }
+    public Task WaitForPendingAsync() { _hotKey.CancelRecording(); return _pending; }
     public Task<ExitDecision> ConfirmExitAsync() => Task.FromResult(ExitDecision.DiscardAndExit);
     public string? TrySaveNow() => _busy ? ProductStrings.Get("Settings.Saving") : null;
     public void DiscardDraft() { }
@@ -144,15 +186,31 @@ internal sealed class SettingsDialog : IWallDialogSession
     {
         _refreshing = true;
         _dialog.Title = ProductStrings.Get("Settings.Title"); _dialog.CloseButtonText = ProductStrings.Get("Common.Close");
-        SetChoices(_anchor, "Settings.Anchor", ["Settings.BottomLeft", "Settings.BottomRight", "Settings.TopLeft", "Settings.TopRight", "Settings.FullScreen"]);
-        ((ComboBoxItem)_anchor.Items[4]).IsEnabled = false;
+        ActionIcon.DecorateDialog(_dialog);
+        string[] anchorKeys = ["Settings.BottomLeft", "Settings.BottomRight", "Settings.TopLeft", "Settings.TopRight"];
+        for (var index = 0; index < anchorKeys.Length; index++)
+        {
+            var label = ProductStrings.Get(anchorKeys[index]);
+            ActionIcon.SetIcon(_anchorButtons[index], label, ActionIcon.PresetMedium);
+            _anchorButtons[index].Content = AnchorIcon(index);
+            Id(_anchorButtons[index], "anchor-" + index);
+        }
+        Id(_fullScreen, "full-screen");
         SetChoices(_theme, "Settings.Theme", ["Settings.SystemLanguage", "Settings.Light", "Settings.Dark"]);
         SetChoices(_language, "Settings.Language", ["Settings.SystemLanguage", "Settings.Chinese", "Settings.English"]);
         SetChoices(_visualStyle, "Settings.VisualStyle", ["Settings.Win10Style", "Settings.Win11Style"]);
         SetChoices(_background, "Settings.Background", ["Settings.Acrylic", "Settings.Mica", "Settings.Custom"]);
         foreach (var (key, label) in _labels) label.Text = ProductStrings.Get(key);
-        foreach (var toggle in new[] { _topmost, _stayVisible, _showGrid, _runAtLogin }) { toggle.OnContent = string.Empty; toggle.OffContent = string.Empty; }
-        _reset.Content = ProductStrings.Get("Settings.Reset");
+        foreach (var (toggle, key) in new[] { (_topmost, "Settings.Topmost"), (_stayVisible, "Settings.StayVisible"),
+            (_showGrid, "Settings.ShowGrid"), (_runAtLogin, "Settings.RunAtLogin"), (_fullScreen, "Settings.FullScreen") })
+        {
+            toggle.OnContent = string.Empty; toggle.OffContent = string.Empty;
+            var name = ProductStrings.Get(key);
+            AutomationProperties.SetName(toggle, name); ToolTipService.SetToolTip(toggle, name);
+        }
+        ActionIcon.Set(_reset, ProductStrings.Get("Settings.Reset"), ActionIcon.Reset);
+        ActionIcon.SetIcon(_resetHotKey, ProductStrings.Get("Settings.ResetHotKey"), ActionIcon.Reset);
+        ActionIcon.Set(_registerContextMenu, ProductStrings.Get("Settings.RegisterContextMenu"), ActionIcon.Register);
         AutomationProperties.SetName(_transparency, ProductStrings.Get("Settings.Transparency"));
         AutomationProperties.SetName(_transparencyInput, ProductStrings.Get("Settings.Transparency"));
         _version.Text = typeof(SettingsDialog).Assembly.GetName().Version?.ToString(3);
@@ -164,7 +222,18 @@ internal sealed class SettingsDialog : IWallDialogSession
     private void RestoreState()
     {
         _refreshing = true;
-        _anchor.SelectedIndex = (int)_state.Settings.AnchorCorner; _language.SelectedIndex = (int)_state.Settings.LanguageMode;
+        string[] anchorKeys = ["Settings.BottomLeft", "Settings.BottomRight", "Settings.TopLeft", "Settings.TopRight"];
+        for (var index = 0; index < _anchorButtons.Length; index++)
+        {
+            _anchorButtons[index].IsChecked = index == (int)_state.Settings.AnchorCorner;
+            _anchorButtons[index].IsEnabled = !_state.Settings.FullScreen;
+            ActionIcon.SetTip(_anchorButtons[index], ProductStrings.Get(_state.Settings.FullScreen
+                ? "Settings.AnchorUnavailableFullScreen" : anchorKeys[index]));
+        }
+        _fullScreen.IsOn = _state.Settings.FullScreen;
+        ToolTipService.SetToolTip(_labels["Settings.Anchor"], ProductStrings.Get(_state.Settings.FullScreen
+            ? "Settings.AnchorUnavailableFullScreen" : "Settings.Anchor"));
+        _language.SelectedIndex = (int)_state.Settings.LanguageMode;
         _theme.SelectedIndex = (int)_state.Settings.ThemeMode; _visualStyle.SelectedIndex = (int)_state.Settings.VisualStyle;
         _background.SelectedIndex = (int)_state.Settings.BackgroundMode;
         _backgroundPath.Text = _state.Settings.BackgroundMode == WallBackgroundMode.Custom ? _state.Settings.BackgroundImagePath ?? string.Empty : string.Empty;
@@ -172,25 +241,10 @@ internal sealed class SettingsDialog : IWallDialogSession
         _transparency.Value = _state.Settings.BackgroundTransparency; _transparencyInput.Value = _state.Settings.BackgroundTransparency;
         _topmost.IsOn = _state.Settings.AlwaysOnTop; _stayVisible.IsOn = _state.Settings.StayVisibleOnFocusLoss;
         _showGrid.IsOn = _state.Settings.ShowGrid; _runAtLogin.IsOn = _state.Settings.RunAtLogin;
-        if (!_hotKeyInvalid) _hotKey.Text = _state.Settings.HotKey ?? string.Empty;
+        _hotKey.SetConfigured(_state.Settings.HotKey);
         _status.Text = _state.Error is null ? string.Empty : string.Format(ProductStrings.Get("Settings.ApplyFailed"), _state.Error);
         _status.Visibility = _state.Error is null ? Visibility.Collapsed : Visibility.Visible;
         _refreshing = false;
-    }
-
-    private bool ApplyHotKey()
-    {
-        if (_refreshing || _busy) return true;
-        if (_hotKey.Text == (_state.Settings.HotKey ?? string.Empty))
-        {
-            _hotKeyInvalid = false; ApplyTransparency(); return true;
-        }
-        if (!HotKeyGesture.TryParse(_hotKey.Text, out var gesture, out var error))
-        {
-            _hotKeyInvalid = true; _state = _readState() with { Error = error }; RestoreState(); return false;
-        }
-        _hotKeyInvalid = false; BeginApply(s => s with { HotKey = gesture!.ToConfigString(), BackgroundTransparency = (int)_transparency.Value });
-        return _busy || _state.Error is null;
     }
 
     private void SetTransparency(double value, bool apply)
@@ -273,10 +327,11 @@ internal sealed class SettingsDialog : IWallDialogSession
 
     private async Task ApplyAsync(WallSettings candidate, bool restoreDefaults = false)
     {
+        var restoreAnchorFocus = _anchor.FocusState != FocusState.Unfocused;
         _busy = true; _formHost.IsEnabled = false; _status.Visibility = Visibility.Visible; _status.Text = ProductStrings.Get("Settings.Saving");
         try { _state = await _apply(candidate, restoreDefaults); }
         catch (Exception ex) { _state = _readState() with { Error = string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message) }; }
-        finally { _busy = false; _formHost.IsEnabled = true; RestoreState(); FinishPending(); }
+        finally { _busy = false; _formHost.IsEnabled = true; RestoreState(); if (restoreAnchorFocus) _anchor.Focus(FocusState.Programmatic); FinishPending(); }
     }
 
     private void FinishPending()
@@ -284,7 +339,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         _showFailureBeforeClose = _state.Error is not null;
         var closeAfterSuccess = _closeRequested && _state.Error is null;
         _closeRequested = false;
-        if (closeAfterSuccess) _dialog.Hide(); // Closing checks any final hotkey/transparency input again.
+        if (closeAfterSuccess) _dialog.Hide();
     }
 
     private void AddRow(string key, FrameworkElement value)
@@ -301,11 +356,17 @@ internal sealed class SettingsDialog : IWallDialogSession
     {
         var row = _form.RowDefinitions.Count;
         _form.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var separator = (Border)XamlReader.Load("<Border xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Height=\"1\" Margin=\"0,6,0,6\" Background=\"{ThemeResource DividerStrokeColorDefaultBrush}\" />");
+        var separator = new Border { Height = 8 };
         Grid.SetRow(separator, row); Grid.SetColumnSpan(separator, 2); _form.Children.Add(separator);
     }
 
-    private static HyperlinkButton Link(string text, string url) => new() { Content = text, NavigateUri = new Uri(url), HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(0) };
+    private static Button Link(string text, string url)
+    {
+        var button = new Button { HorizontalAlignment = HorizontalAlignment.Left };
+        ActionIcon.Set(button, text, ActionIcon.Link);
+        button.Click += async (_, _) => { await Windows.System.Launcher.LaunchUriAsync(new Uri(url)); };
+        return button;
+    }
     private static void SetChoices(ComboBox box, string header, string[] keys)
     {
         box.Header = null; AutomationProperties.SetName(box, ProductStrings.Get(header));
@@ -325,5 +386,17 @@ internal sealed class SettingsDialog : IWallDialogSession
         // RefreshStrings suppresses apply events while refreshing this existing container.
         if (refreshSelection) { box.SelectedIndex = -1; box.SelectedIndex = selected; }
     }
+    private static UIElement AnchorIcon(int index)
+    {
+        return new FontIcon
+        {
+            FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe MDL2 Assets"),
+            Glyph = ActionIcon.PresetMedium, FontSize = 16, RenderTransformOrigin = new Windows.Foundation.Point(.5, .5),
+            RenderTransform = new Microsoft.UI.Xaml.Media.RotateTransform { Angle = index switch { 0 => 0, 1 => 270, 2 => 90, _ => 180 } },
+        };
+    }
     private static void Id(DependencyObject item, string id) => AutomationProperties.SetAutomationId(item, "settings-" + id);
 }
+
+
+

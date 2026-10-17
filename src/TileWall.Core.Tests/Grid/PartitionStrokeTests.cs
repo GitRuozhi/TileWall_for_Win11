@@ -176,7 +176,7 @@ public sealed class PartitionStrokeTests
         Assert.True(session.Undo());
 
         // 到界拒绝：栈与布局不动
-        var tight = new PartitionEditSession(new GridSize(2, 2), PartitionLayout.FullGrid(new GridSize(2, 2)).Partitions);
+        var tight = new PartitionEditSession(new GridSize(1, 1), PartitionLayout.FullGrid(new GridSize(1, 1)).Partitions);
         Assert.False(tight.RemoveColumn());
         Assert.False(tight.RemoveRow());
         Assert.Equal(0, tight.UndoDepth);
@@ -234,6 +234,44 @@ public sealed class PartitionStrokeTests
     }
 
     // ————————————————————————————— 夹具 —————————————————————————————
+
+    [Fact]
+    public void Preview_EraseIncludesAllClosureEdgesAndCommitsIdenticalProposal()
+    {
+        var session = new PartitionEditSession(new GridSize(2, 2),
+            [new(0, 0, 2, 1), new(0, 1, 1, 1), new(1, 1, 1, 1)]);
+        var before = session.Current;
+        var edge = new WallEdge(false, 0, 1);
+        var preview = session.Preview(edge, EditTool.Erase);
+        Assert.True(preview.Applicable);
+        Assert.Equal(3, preview.AffectedEdges.Count);
+        Assert.Contains(new WallEdge(false, 1, 1), preview.AffectedEdges);
+        Assert.Contains(new WallEdge(true, 1, 1), preview.AffectedEdges);
+        Assert.Equal(before, session.Current);
+        session.BeginStroke();
+        Assert.Equal(StrokeOutcome.Applied, session.Stroke(edge, EditTool.Erase));
+        session.EndStroke();
+        Assert.Equal(preview.Layout, session.Current);
+        Assert.Empty(session.Current.Edges());
+        Assert.True(session.Undo());
+        Assert.Equal(before, session.Current);
+        Assert.Equal(3, session.Preview(edge, EditTool.Erase).AffectedEdges.Count);
+        Assert.True(session.Redo());
+        Assert.Empty(session.Preview(edge, EditTool.Erase).AffectedEdges);
+    }
+
+    [Fact]
+    public void Preview_DrawIncludesFullSplitRatherThanOnlyTouchedUnit()
+    {
+        var session = MixedSession();
+        var preview = session.Preview(new WallEdge(true, 1, 0), EditTool.Draw);
+        Assert.Equal(2, preview.AffectedEdges.Count);
+        Assert.Contains(new WallEdge(true, 1, 1), preview.AffectedEdges);
+        Assert.NotNull(preview.Layout);
+        Assert.True(preview.Layout.Check().IsValid);
+        Assert.False(session.Preview(new WallEdge(true, 3, 3), EditTool.Draw).Applicable);
+        Assert.Empty(session.Preview(new WallEdge(true, 3, 3), EditTool.Draw).AffectedEdges);
+    }
 
     /// <summary>4×4：左上 2×2 大块 + 其余 12 格 1×1（13 块；画墙在大块内适用）。</summary>
     private static PartitionEditSession MixedSession()

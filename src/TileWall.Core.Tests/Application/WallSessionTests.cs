@@ -67,7 +67,7 @@ public sealed class WallSessionTests
     {
         var (session, files, root) = Harness();
         files.WriteAllBytes(Path.Combine(root, "config.json"),
-            Encoding.UTF8.GetBytes("{\"schemaVersion\":3}"));
+            Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion + 1}}}"));
         var result = session.Open(1, 6);
         Assert.Equal(WallOpenStatus.FutureVersionBlocked, result.Status);
         Assert.Throws<InvalidOperationException>(() => session.Current);

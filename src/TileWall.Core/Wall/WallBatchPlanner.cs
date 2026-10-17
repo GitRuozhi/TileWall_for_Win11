@@ -16,18 +16,13 @@ public static class WallBatchPlanner
         ArgumentNullException.ThrowIfNull(current);
         ArgumentNullException.ThrowIfNull(members);
         metrics ??= new WallMetrics();
-        if (members.Count == 0 || members.Any(member => member is null) ||
-            string.IsNullOrWhiteSpace(newGroupIdPrefix) || !metrics.IsValid ||
-            !double.IsFinite(workWidthDip) || !double.IsFinite(workHeightDip) ||
-            workWidthDip <= 0 || workHeightDip <= 0)
+        if (members.Count == 0 || members.Any(member => member is null ||
+                member.LocalBounds.Width is < 1 or > CellsPerLane || member.LocalBounds.Height is < 1 or > MaxRows) ||
+            string.IsNullOrWhiteSpace(newGroupIdPrefix) || !metrics.IsValid)
             return Reject(WallRejection.InvalidAction);
 
         var errors = WallLayoutEngine.ValidateGeometry(current, metrics);
         if (errors.Count > 0) return Reject(WallRejection.InvalidDocument, string.Join("; ", errors));
-        if (metrics.WallWidth(current.Columns) > workWidthDip ||
-            metrics.WallHeight(current.Rows) > workHeightDip)
-            return Reject(WallRejection.WorkAreaTooSmall);
-
         var targetLane = -1;
         if (targetGroupId is not null)
         {
@@ -58,8 +53,8 @@ public static class WallBatchPlanner
         }
         foreach (var member in members) reservedIds.Add(member.Id);
 
-        var maxCandidateRows = (int)Math.Clamp(Math.Floor(
-            (workHeightDip - metrics.TopMargin - metrics.Margin + metrics.Gap) / metrics.Pitch), 0, MaxRows);
+        var maxCandidateRows = Math.Clamp((int)Math.Floor((workHeightDip - metrics.TopMargin - metrics.Margin + metrics.Gap) /
+            metrics.Pitch + 1e-8), 0, MaxRows);
         var accepted = new List<AddBatchItem>(members.Count);
         var snapshot = current;
         var activeGroupId = targetGroupId;
@@ -87,7 +82,8 @@ public static class WallBatchPlanner
             {
                 var lane = laneCursor < laneOrder.Count ? laneOrder[laneCursor] : snapshot.Columns;
                 if (lane >= MaxLanes) break;
-                var item = new AddBatchItem(incoming with { LocalBounds = new GridRect(0, 0, 1, 1) },
+                var item = new AddBatchItem(incoming with { LocalBounds = new GridRect(0, 0,
+                        incoming.LocalBounds.Width, incoming.LocalBounds.Height) },
                     null, lane, lane < snapshot.Columns ? snapshot.Lanes[lane].Groups.Count : 0, id);
                 var attempt = WallLayoutEngine.TryApply(snapshot,
                     new AddBatchAction(snapshot.Generation, [item]), workWidthDip, workHeightDip, metrics);
@@ -126,11 +122,20 @@ public static class WallBatchPlanner
         for (var col = member.LocalBounds.Column; col < member.LocalBounds.Right; col++)
             occupied[row, col] = true;
 
-        for (var row = 0; row < maxRows; row++)
-        for (var col = 0; col < CellsPerLane; col++)
+        for (var row = 0; row + incoming.LocalBounds.Height <= maxRows; row++)
+        for (var col = 0; col + incoming.LocalBounds.Width <= CellsPerLane; col++)
         {
-            if (occupied[row, col]) continue;
-            var item = new AddBatchItem(incoming with { LocalBounds = new GridRect(col, row, 1, 1) }, groupId);
+            var bounds = new GridRect(col, row, incoming.LocalBounds.Width, incoming.LocalBounds.Height);
+            var overlaps = false;
+            for (var occupiedRow = row; occupiedRow < bounds.Bottom && !overlaps; occupiedRow++)
+            for (var occupiedColumn = col; occupiedColumn < bounds.Right; occupiedColumn++)
+                if (occupied[occupiedRow, occupiedColumn])
+                {
+                    overlaps = true;
+                    break;
+                }
+            if (overlaps) continue;
+            var item = new AddBatchItem(incoming with { LocalBounds = bounds }, groupId);
             var attempt = WallLayoutEngine.TryApply(snapshot,
                 new AddBatchAction(snapshot.Generation, [item]), workWidthDip, workHeightDip, metrics);
             if (attempt.Success)
@@ -162,3 +167,4 @@ public static class WallBatchPlanner
     private static WallLayoutResult Reject(WallRejection rejection, string? detail = null) =>
         new(null, rejection, detail);
 }
+

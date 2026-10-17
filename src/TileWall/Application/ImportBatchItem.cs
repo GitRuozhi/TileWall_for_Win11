@@ -7,7 +7,13 @@ namespace TileWall.ApplicationModel;
 
 internal sealed record ImportBatchItem(string SourcePath, TileMember Member, ExplorerAddKind Kind)
 {
-    public static ImportBatchItem Create(string sourcePath, string? displayName = null)
+    public string? GroupBucketKey { get; init; }
+    public string? GroupTitle { get; init; }
+    public int GroupOrder { get; init; }
+    public string? SourceRoot { get; init; }
+    public string? RelativePath { get; init; }
+
+    public static ImportBatchItem Create(string sourcePath, string? displayName = null, int size = 2)
     {
         if (!Path.IsPathFullyQualified(sourcePath)) throw new IOException(sourcePath);
         // Normalize before admission, including equivalent local-root spellings.
@@ -25,13 +31,13 @@ internal sealed record ImportBatchItem(string SourcePath, TileMember Member, Exp
         if (errors.Count != 0) throw new IOException($"{path}: {string.Join("; ", errors)}");
         return new(path, new TileMember
         {
-            Id = $"tile-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 1, 1),
+            Id = $"tile-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, size, size),
             Visual = new MemberVisual { Title = name },
+            TargetInput = path,
         }, kind);
     }
 
     public bool StillValid() => ExplorerAddPathClassifier.Classify(SourcePath) == Kind;
 }
 
-internal sealed record ImportPreview(WallProposal? Proposal, string Text, string? Error);
 internal sealed record ExternalImportResult(string Message, bool Succeeded, int AddedCount);

@@ -227,7 +227,7 @@ internal static class HotKeyNames
         Add(0xBD, "OemMinus");
         Add(0xBE, "OemPeriod");
         Add(0xBF, "Oem2");
-        Add(0xC0, "Oem3"); // 反引号 / 波浪键帽（默认组合 Win+Oem3）
+        Add(0xC0, "Oem3", "`", "~"); // 默认组合 Win+Oem3；两个可视键帽别名均映射同一 VK，不要求 Shift
         Add(0xDB, "Oem4");
         Add(0xDC, "Oem5");
         Add(0xDD, "Oem6");

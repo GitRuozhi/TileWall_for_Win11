@@ -117,13 +117,13 @@ public sealed class WallLayoutEngineTests
         {
             Settings = document.Settings with { ShowGrid = true },
         });
-        Assert.Equal(860, hidden.WallWidth);
+        Assert.Equal(864, hidden.WallWidth);
         Assert.Equal(476, hidden.WallHeight);
         Assert.Equal(new DipRect(12, 0, 412, 48), hidden.Groups[0].TitleBounds);
         Assert.Equal(new DipRect(12, 260, 412, 48), hidden.Groups[1].TitleBounds);
-        Assert.Equal(new DipRect(436, 0, 412, 48), hidden.Groups[2].TitleBounds);
-        Assert.Equal(new DipRect(436, 312, 412, 48), hidden.Groups[3].TitleBounds);
-        Assert.Equal(12, hidden.Groups[2].TitleBounds.X -
+        Assert.Equal(new DipRect(440, 0, 412, 48), hidden.Groups[2].TitleBounds);
+        Assert.Equal(new DipRect(440, 312, 412, 48), hidden.Groups[3].TitleBounds);
+        Assert.Equal(16, hidden.Groups[2].TitleBounds.X -
             (hidden.Groups[0].TitleBounds.X + hidden.Groups[0].TitleBounds.Width));
         Assert.Equal(hidden.WallWidth, shown.WallWidth);
         Assert.Equal(hidden.WallHeight, shown.WallHeight);
@@ -135,7 +135,7 @@ public sealed class WallLayoutEngineTests
         Assert.Equal(hiddenBounds, shownBounds);
         Assert.All(hidden.Groups, group =>
         {
-            var laneOrigin = group.LaneIndex == 0 ? 12 : 436;
+            var laneOrigin = group.LaneIndex == 0 ? 12 : 440;
             var boundsInLane = new[] { group.TitleBounds, group.Bounds }
                 .Concat(group.Members.Select(member => member.Bounds));
             Assert.All(boundsInLane, bounds =>
@@ -185,13 +185,20 @@ public sealed class WallLayoutEngineTests
         Assert.True(batchFits.Success, batchFits.Detail);
         Assert.Equal(2, batchFits.Proposal!.Document.Rows);
 
-        var tooShort = WallLayoutEngine.TryApply(WallDocument.Empty(1, 1),
+        var empty = WallDocument.Empty(1, 1);
+        var before = WallJson.Serialize(empty);
+        var beyondScreen = WallLayoutEngine.TryApply(empty,
             new AddMemberAction(0, Tile("new", new GridRect(0, 0, 1, 1)), null, NewGroupId: "new-group"),
             metrics.WallWidth(1), minimumGroupHeight - 0.1, metrics);
-        Assert.False(tooShort.Success);
-        var batchTooShort = WallBatchPlanner.TryPlan(WallDocument.Empty(1, 1), [Tile("batch", new GridRect(0, 0, 1, 1))], null, 0,
+        Assert.False(beyondScreen.Success);
+        Assert.Equal(WallRejection.NoSpace, beyondScreen.Rejection);
+        Assert.Null(beyondScreen.Proposal);
+        var batchBeyondScreen = WallBatchPlanner.TryPlan(empty, [Tile("batch", new GridRect(0, 0, 1, 1))], null, 0,
             "batch", metrics.WallWidth(1), minimumGroupHeight - 0.1, metrics);
-        Assert.False(batchTooShort.Success);
+        Assert.False(batchBeyondScreen.Success);
+        Assert.Equal(WallRejection.NoSpace, batchBeyondScreen.Rejection);
+        Assert.Null(batchBeyondScreen.Proposal);
+        Assert.Equal(before, WallJson.Serialize(empty));
     }
 
     [Fact]
@@ -264,6 +271,34 @@ public sealed class WallLayoutEngineTests
         Assert.Single(move.Proposal!.Document.Lanes[0].Groups);
         Assert.Equal("second", move.Proposal.Document.Lanes[0].Groups[0].Id);
         Assert.Equal(2, move.Proposal.Document.Generation);
+    }
+
+    [Fact]
+    public void OrdinaryReplaceAndMoveKeepImportMarkersOnTheirOriginalLanes()
+    {
+        var member = Tile("a", new GridRect(0, 0, 1, 1));
+        var current = WallDocument.Empty(2, 3) with
+        {
+            Lanes =
+            [
+                new WallLane { ImportBatchId = "batch-a", Groups = [Group("first", member)] },
+                new WallLane { ImportBatchId = "batch-b", Groups = [Group("second", Tile("b", new GridRect(0, 0, 1, 1)))] },
+            ],
+        };
+        var replacement = member with { Visual = member.Visual with { ShowTitle = false } };
+        var replace = WallLayoutEngine.TryApply(current,
+            new ReplaceMemberAction(0, "a", replacement), 1000, 1000);
+        Assert.True(replace.Success, replace.Detail);
+        var replaced = replace.Proposal!.Document;
+        Assert.Equal(new[] { "batch-a", "batch-b" }, replaced.Lanes.Select(lane => lane.ImportBatchId));
+
+        var move = WallLayoutEngine.TryApply(replaced,
+            new MoveMemberAction(replaced.Generation, "a", new GridRect(1, 0, 1, 1), "second"), 1000, 1000);
+        Assert.True(move.Success, move.Detail);
+        var moved = move.Proposal!.Document;
+        Assert.Empty(moved.Lanes[0].Groups);
+        Assert.Equal(new[] { "batch-a", "batch-b" }, moved.Lanes.Select(lane => lane.ImportBatchId));
+        Assert.Equal(new[] { "a", "b" }, moved.Lanes[1].Groups[0].Members.Select(item => item.Id).Order());
     }
 
     [Fact]
@@ -356,7 +391,7 @@ public sealed class WallLayoutEngineTests
     }
 
     [Fact]
-    public void WholeGroupMovePreservesLocalBoundsAndRejectsOutOfScreenLane()
+    public void WholeGroupMovePreservesLocalBoundsAndRejectsViewportOverflow()
     {
         var initial = Document(Group("a", Tile("a1", new GridRect(2, 1, 2, 2))),
             Group("b", Tile("b1", new GridRect(0, 0, 1, 1)))) with { Rows = 6 };
@@ -365,22 +400,41 @@ public sealed class WallLayoutEngineTests
         Assert.Equal("a", moved.Proposal!.Document.Lanes[0].Groups[1].Id);
         Assert.Equal(new GridRect(2, 1, 2, 2), moved.Proposal.Document.Lanes[0].Groups[1].Members[0].LocalBounds);
 
-        var rejected = WallLayoutEngine.TryApply(initial, new MoveGroupAction(0, "a", 1, 0), 500, 500);
-        Assert.Equal(WallRejection.WorkAreaTooSmall, rejected.Rejection);
+        var before = WallJson.Serialize(initial);
+        var rejected = WallLayoutEngine.TryApply(initial, new MoveGroupAction(0, "a", 1, 0), 1, 1);
+        Assert.False(rejected.Success);
+        Assert.Null(rejected.Proposal);
+        Assert.Equal(before, WallJson.Serialize(initial));
+        var extended = WallLayoutEngine.TryApply(initial, new MoveGroupAction(0, "a", 1, 0),
+            new WallMetrics().WallWidth(2), new WallMetrics().WallHeight(6));
+        Assert.True(extended.Success, extended.Detail);
+        Assert.Equal(2, extended.Proposal!.Document.Columns);
+        Assert.Equal("a", Assert.Single(extended.Proposal.Document.Lanes[1].Groups).Id);
+        Assert.Equal(new GridRect(2, 1, 2, 2), Assert.Single(extended.Proposal.Document.Lanes[1].Groups[0].Members).LocalBounds);
         Assert.Equal(0, initial.Generation);
     }
 
     [Fact]
-    public void InsufficientHeightRejectsEntireProposalAndShrinkCannotClip()
+    public void AddRejectsViewportHeightOverflowAndExplicitShrinkCannotClip()
     {
         var initial = Document(Group("a", Tile("a1", new GridRect(0, 0, 1, 1))));
-        var cannotAdd = WallLayoutEngine.TryApply(initial,
-            new AddMemberAction(0, Tile("b1", new GridRect(0, 0, 1, 1)), null, 0, 1, "b"), 500, 180);
-        Assert.Equal(WallRejection.NoSpace, cannotAdd.Rejection);
+        var before = WallJson.Serialize(initial);
+        var metrics = new WallMetrics();
+        var action = new AddMemberAction(0, Tile("b1", new GridRect(0, 0, 1, 1)), null, 0, 1, "b");
+        var rejected = WallLayoutEngine.TryApply(initial, action, metrics.WallWidth(1), metrics.WallHeight(3));
+        Assert.False(rejected.Success);
+        Assert.Equal(WallRejection.WorkAreaTooSmall, rejected.Rejection);
+        Assert.Null(rejected.Proposal);
+        Assert.Equal(before, WallJson.Serialize(initial));
+        var add = WallLayoutEngine.TryApply(initial, action, metrics.WallWidth(1), metrics.WallHeight(4));
+        Assert.True(add.Success, add.Detail);
+        Assert.Equal(4, add.Proposal!.Document.Rows);
         Assert.Single(initial.Lanes[0].Groups);
 
         var shrink = WallLayoutEngine.TryApply(initial, new ResizeWallAction(0, 1, 1), 500, 500);
         Assert.Equal(WallRejection.NoSpace, shrink.Rejection);
+        Assert.Null(shrink.Proposal);
+        Assert.Equal(before, WallJson.Serialize(initial));
     }
 
     [Fact]
@@ -432,34 +486,39 @@ public sealed class WallLayoutEngineTests
     }
 
     [Fact]
-    public void SchemaTwoRoundTripKeepsMemberKindsAndImageState()
+    public void SchemaThreeRoundTripKeepsMemberKindsAndSharedImageState()
     {
         var puzzle = new PuzzleMember
         {
             Id = "p",
             LocalBounds = new GridRect(0, 0, 2, 2),
             Partitions = [new GridRect(0, 0, 2, 2)],
-            Images = new PuzzleImageSource
+            Images = new MemberImageSource
             {
-                Kind = PuzzleImageSourceKind.Single,
-                ImagePaths = ["C:\\sample.png"],
-                Transforms = [new PuzzleImageTransform("image-1", FitMode.CoverFill,
-                    new ImageTransform(1.5, -3, 7))],
+                Kind = MemberImageSourceKind.Single,
+                Path = "C:\\sample.png",
             },
-            Carousel = new PuzzleCarouselState("image-1", DateTimeOffset.UnixEpoch),
+            ImageDisplay = new MemberImageDisplay { Mode = ImageDisplayMode.Custom, CustomScale = 1.5 },
+            Carousel = new ImageCarouselState
+            {
+                CurrentImageId = "image-1",
+                LastSwitchUtc = DateTimeOffset.UnixEpoch,
+                CandidateIds = ["image-1"],
+                Queue = ["image-1"],
+            },
         };
         var original = Document(Group("g", puzzle,
-            new TileMember { Id = "t", LocalBounds = new GridRect(3, 0, 1, 1),
-                Foreground = new NoForegroundIcon() },
+            new TileMember { Id = "t", LocalBounds = new GridRect(3, 0, 1, 1) },
             new ClockMember { Id = "c", LocalBounds = new GridRect(4, 0, 2, 1) }));
         var json = JsonSerializer.Serialize(original);
         var restored = JsonSerializer.Deserialize<WallDocument>(json)!;
         Assert.Empty(WallLayoutEngine.Validate(restored));
         var members = restored.Lanes[0].Groups[0].Members;
         Assert.IsType<PuzzleMember>(members[0]);
-        Assert.IsType<NoForegroundIcon>(Assert.IsType<TileMember>(members[1]).Foreground);
+        Assert.IsType<TileMember>(members[1]);
         Assert.IsType<ClockMember>(members[2]);
         Assert.Equal("image-1", Assert.IsType<PuzzleMember>(members[0]).Carousel!.CurrentImageId);
+        Assert.Equal(ImageDisplayMode.Custom, members[0].ImageDisplay.Mode);
     }
 
     [Fact]
@@ -521,6 +580,82 @@ public sealed class WallLayoutEngineTests
     }
 
     [Fact]
+    public void ManualActionsClaimImportedContentOnlyWhenItsMeaningfulPositionOrPropertiesChange()
+    {
+        var groupSource = new ImportSourceMetadata
+        {
+            BatchId = "batch",
+            GroupBucketKey = "bucket",
+            OriginGroupId = "origin-group",
+        };
+        var memberSource = groupSource with
+        {
+            SourceRoot = "UserPrograms",
+            RelativePath = "App.lnk",
+        };
+        var member = Tile("imported", new GridRect(0, 0, 1, 1)) with { ImportSource = memberSource };
+        var group = Group("managed", member) with { Title = "Managed", ImportSource = groupSource };
+        var current = new WallDocument
+        {
+            Columns = 2,
+            Rows = 3,
+            Lanes = [new WallLane { Groups = [group] }, new WallLane { Groups = [] }],
+        };
+
+        var noOpReplace = WallLayoutEngine.TryApply(current,
+            new ReplaceMemberAction(0, member.Id, member with
+            {
+                Carousel = new ImageCarouselState
+                {
+                    CandidateIds = ["one", "two"],
+                    Queue = ["two", "one"],
+                    NextIndex = 1,
+                    Round = 1,
+                },
+            }), new WallMetrics().WallWidth(2), new WallMetrics().WallHeight(3));
+        Assert.True(noOpReplace.Success, noOpReplace.Detail);
+        Assert.False(noOpReplace.Proposal!.Document.Lanes[0].Groups[0].Members[0].UserClaimed);
+
+        var edited = WallLayoutEngine.TryApply(current,
+            new ReplaceMemberAction(0, member.Id, member with
+            {
+                Visual = member.Visual with { TitleMode = MemberTitleMode.Manual, Title = "Edited" },
+            }), new WallMetrics().WallWidth(2), new WallMetrics().WallHeight(3));
+        Assert.True(edited.Success, edited.Detail);
+        Assert.True(edited.Proposal!.Document.Lanes[0].Groups[0].Members[0].UserClaimed);
+
+        var noOpMove = WallLayoutEngine.TryApply(current,
+            new MoveMemberAction(0, member.Id, member.LocalBounds, group.Id), new WallMetrics().WallWidth(2), new WallMetrics().WallHeight(3));
+        Assert.True(noOpMove.Success, noOpMove.Detail);
+        Assert.False(noOpMove.Proposal!.Document.Lanes[0].Groups[0].Members[0].UserClaimed);
+
+        var moved = WallLayoutEngine.TryApply(current,
+            new MoveMemberAction(0, member.Id, new GridRect(1, 0, 1, 1), group.Id), new WallMetrics().WallWidth(2), new WallMetrics().WallHeight(3));
+        Assert.True(moved.Success, moved.Detail);
+        Assert.True(moved.Proposal!.Document.Lanes[0].Groups[0].Members[0].UserClaimed);
+
+        var noOpRename = WallLayoutEngine.TryApply(current,
+            new RenameGroupAction(0, group.Id, group.Title), new WallMetrics().WallWidth(2), new WallMetrics().WallHeight(3));
+        Assert.True(noOpRename.Success, noOpRename.Detail);
+        Assert.False(noOpRename.Proposal!.Document.Lanes[0].Groups[0].UserClaimed);
+
+        var renamed = WallLayoutEngine.TryApply(current,
+            new RenameGroupAction(0, group.Id, "Renamed"), new WallMetrics().WallWidth(2), new WallMetrics().WallHeight(3));
+        Assert.True(renamed.Success, renamed.Detail);
+        Assert.True(renamed.Proposal!.Document.Lanes[0].Groups[0].UserClaimed);
+
+        var noOpGroupMove = WallLayoutEngine.TryApply(current,
+            new MoveGroupAction(0, group.Id, 0, 0), new WallMetrics().WallWidth(2), new WallMetrics().WallHeight(3));
+        Assert.True(noOpGroupMove.Success, noOpGroupMove.Detail);
+        Assert.False(noOpGroupMove.Proposal!.Document.Lanes[0].Groups[0].UserClaimed);
+
+        var groupMoved = WallLayoutEngine.TryApply(current,
+            new MoveGroupAction(0, group.Id, 1, 0), new WallMetrics().WallWidth(2), new WallMetrics().WallHeight(3));
+        Assert.True(groupMoved.Success, groupMoved.Detail);
+        Assert.True(groupMoved.Proposal!.Document.Lanes[1].Groups[0].UserClaimed);
+    }
+
+    [Fact]
     public void SavedRowsMustContainFullGroupGeometryIndependentlyOfMonitorSize()
     {
         var tooShort = Document(Group("one", Tile("a", new GridRect(0, 0, 1, 1))),
@@ -566,87 +701,44 @@ public sealed class WallLayoutEngineTests
     }
 
     [Fact]
-    public void MalformedNestedImageAndClockValuesRejectBeforeMeasurement()
+    public void InvalidSharedImageSettingsPartitionsAndClockValuesRejectBeforeMeasurement()
     {
         var badImage = new PuzzleMember
         {
             Id = "p", LocalBounds = new GridRect(0, 0, 2, 2),
             Partitions = [new GridRect(0, 0, 2, 2)],
-            Images = new PuzzleImageSource
+            Images = new MemberImageSource
             {
-                Kind = PuzzleImageSourceKind.Single,
-                ImagePaths = [null!],
-                Transforms = [new PuzzleImageTransform("image", FitMode.CoverFill,
-                    new ImageTransform(double.NaN, 0, 0))],
+                Kind = MemberImageSourceKind.Single,
             },
         };
         var invalid = Document(Group("g", badImage,
             new ClockMember { Id = "clock", LocalBounds = new GridRect(3, 0, 1, 1),
                 TimeFormat = null! }));
         var errors = WallLayoutEngine.Validate(invalid);
-        Assert.Contains("PUZZLE_IMAGES", errors);
+        Assert.Contains("IMAGE_SOURCE_PATH", errors);
         Assert.Contains("CLOCK_FORMAT", errors);
         Assert.Throws<ArgumentException>(() => WallLayoutEngine.Measure(invalid));
 
-        var invalidTransform = invalid with
+        var invalidDisplay = invalid with
         {
             Lanes = [new WallLane { Groups = [Group("g", badImage with
             {
-                Images = badImage.Images with { ImagePaths = ["C:\\image.png"] },
+                Images = badImage.Images with { Path = "C:\\image.png" },
+                ImageDisplay = new MemberImageDisplay
+                {
+                    Mode = (ImageDisplayMode)99,
+                },
             })] }],
         };
-        Assert.Contains("PUZZLE_TRANSFORMS", WallLayoutEngine.Validate(invalidTransform));
-    }
+        Assert.Contains("IMAGE_DISPLAY", WallLayoutEngine.Validate(invalidDisplay));
 
-    [Theory]
-    [InlineData(@"C:\Pictures\Photo.png")]
-    [InlineData(@"c:\pictures\PHOTO.PNG")]
-    public void DuplicateWindowsImageTransformsRejectValidationAndReplacement(string duplicateId)
-    {
-        var original = new PuzzleMember
+        var invalidPartitions = Document(Group("g", badImage with
         {
-            Id = "p", LocalBounds = new GridRect(0, 0, 2, 2),
-            Partitions = [new GridRect(0, 0, 2, 2)],
-        };
-        var replacement = original with
-        {
-            Images = new PuzzleImageSource
-            {
-                Kind = PuzzleImageSourceKind.Single,
-                ImagePaths = [@"C:\Pictures\Photo.png"],
-                Transforms =
-                [
-                    new PuzzleImageTransform(@"C:\Pictures\Photo.png", FitMode.CoverFill, new(1, 2, 3)),
-                    new PuzzleImageTransform(duplicateId, FitMode.FitAll, new(2, 4, 6)),
-                ],
-            },
-        };
-        Assert.Contains("PUZZLE_TRANSFORMS", WallLayoutEngine.Validate(Document(Group("g", replacement))));
-        var result = WallLayoutEngine.TryApply(Document(Group("g", original)),
-            new ReplaceMemberAction(0, "p", replacement), 500, 500);
-        Assert.Null(result.Proposal);
-        Assert.Equal(WallRejection.InvalidAction, result.Rejection);
-        Assert.Contains("PUZZLE_TRANSFORMS", result.Detail);
-    }
-
-    [Fact]
-    public void DistinctImageTransformsRemainUnchangedInReplacement()
-    {
-        var original = new PuzzleMember
-        {
-            Id = "p", LocalBounds = new GridRect(0, 0, 2, 2),
-            Partitions = [new GridRect(0, 0, 2, 2)],
-        };
-        var transforms = new[]
-        {
-            new PuzzleImageTransform(@"C:\Pictures\One.png", FitMode.CoverFill, new(1, 2, 3)),
-            new PuzzleImageTransform(@"C:\Pictures\Two.png", FitMode.FitAll, new(2, 4, 6)),
-        };
-        var replacement = original with { Images = new PuzzleImageSource { Transforms = transforms } };
-        var result = WallLayoutEngine.TryApply(Document(Group("g", original)),
-            new ReplaceMemberAction(0, "p", replacement), 500, 500);
-        Assert.True(result.Success, result.Detail);
-        var saved = Assert.IsType<PuzzleMember>(Assert.Single(Assert.Single(result.Proposal!.Document.Lanes[0].Groups).Members));
-        Assert.Equal(transforms, saved.Images.Transforms);
+            Images = badImage.Images with { Path = "C:\\image.png" },
+            Partitions = [new GridRect(0, 0, 2, 2), new GridRect(1, 1, 1, 1)],
+        }));
+        Assert.Contains("PUZZLE_PARTITIONS", WallLayoutEngine.Validate(invalidPartitions));
     }
 }
+

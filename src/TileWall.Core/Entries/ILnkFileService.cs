@@ -8,7 +8,11 @@ public sealed record LinkFields(
     string? IconPath,
     int IconIndex,
     int ShowCmd,               // 窗口方式：表单不暴露，Load→Save 往返自动保留
-    bool HasIdList);           // true = 特殊 Shell 入口（目标不可编辑 [R5]，仅可整体替换）
+    bool HasIdList)            // true = 特殊 Shell 入口（目标不可编辑 [R5]，仅可整体替换）
+{
+    /// <summary>Desktop-absolute parsing name for a non-file PIDL, when Shell can provide one.</summary>
+    public string? ShellParsingName { get; init; }
+}
 
 /// <summary>
 /// .lnk 读写薄适配（M4 设计 §3.3）。COM 真身只在 <see cref="ShellLinkFileService"/>；

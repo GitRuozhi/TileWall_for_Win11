@@ -7,7 +7,7 @@ public sealed record WallMetrics
 {
     public double Cell { get; init; } = 48;
     public double Gap { get; init; } = 4;
-    public double ColumnGap { get; init; } = 12;
+    public double ColumnGap { get; init; } = 16;
     public double Margin { get; init; } = 12;
     public double TopMargin { get; init; } = 0;
     public double TitleHeight { get; init; } = 48;

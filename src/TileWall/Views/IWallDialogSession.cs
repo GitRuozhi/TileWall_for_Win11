@@ -21,6 +21,7 @@ internal sealed class DialogExitPrompt(ContentDialog dialog)
     private object? _content, _title;
     private string _primary = string.Empty, _secondary = string.Empty, _close = string.Empty;
     private ContentDialogButton _default;
+    private (string Primary, string Secondary, string Close) _icons;
     public bool IsActive => _completion is not null;
 
     public Task<ExitDecision> ConfirmAsync()
@@ -30,6 +31,7 @@ internal sealed class DialogExitPrompt(ContentDialog dialog)
         _content = dialog.Content; _title = dialog.Title;
         _primary = dialog.PrimaryButtonText; _secondary = dialog.SecondaryButtonText; _close = dialog.CloseButtonText;
         _default = dialog.DefaultButton;
+        _icons = ActionIcon.GetDialogIcons(dialog);
         dialog.Title = ProductStrings.Get("Common.ExitTitle");
         dialog.Content = new TextBlock { Text = ProductStrings.Get("Common.ExitDraft"),
             TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap, MaxWidth = 400 };
@@ -37,6 +39,7 @@ internal sealed class DialogExitPrompt(ContentDialog dialog)
         dialog.SecondaryButtonText = ProductStrings.Get("Common.DiscardAndExit");
         dialog.CloseButtonText = ProductStrings.Get("Common.CancelExit");
         dialog.DefaultButton = ContentDialogButton.None;
+        ActionIcon.DecorateDialog(dialog, ActionIcon.Save, ActionIcon.Delete, ActionIcon.Previous);
         return _completion.Task;
     }
 
@@ -47,6 +50,7 @@ internal sealed class DialogExitPrompt(ContentDialog dialog)
         dialog.Content = _content; dialog.Title = _title;
         dialog.PrimaryButtonText = _primary; dialog.SecondaryButtonText = _secondary; dialog.CloseButtonText = _close;
         dialog.DefaultButton = _default;
+        ActionIcon.DecorateDialog(dialog, _icons.Primary, _icons.Secondary, _icons.Close);
         completion.TrySetResult(decision);
     }
 }

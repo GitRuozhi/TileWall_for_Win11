@@ -144,6 +144,7 @@ public sealed class ShellNotifyIconHost : IDisposable
             return;
         }
 
+        var command = 0;
         try
         {
             _ = Win32Api.AppendMenuW(menu, Win32Api.MfString, (UIntPtr)MenuIdSettings, ProductStrings.Get("Wall.Settings"));
@@ -152,25 +153,26 @@ public sealed class ShellNotifyIconHost : IDisposable
 
             var foreground = Win32Api.SetForegroundWindow(_host.Hwnd); // 经典 KB135788：缺此步点外不消失
             Trace($"Menu track position={x},{y} foregroundAccepted={foreground}");
-            var command = Win32Api.TrackPopupMenuEx(menu, Win32Api.TpmReturncmd | Win32Api.TpmRightbutton, x, y, _host.Hwnd, IntPtr.Zero);
+            command = Win32Api.TrackPopupMenuEx(menu, Win32Api.TpmReturncmd | Win32Api.TpmRightbutton, x, y, _host.Hwnd, IntPtr.Zero);
             Trace($"Menu command={command}");
-            switch (command)
-            {
-                case MenuIdSettings:
-                    Trace($"SettingsRequested subscriber={SettingsRequested is not null}");
-                    SettingsRequested?.Invoke();
-                    break;
-                case MenuIdExit:
-                    Trace($"ExitRequested subscriber={ExitRequested is not null}");
-                    ExitRequested?.Invoke();
-                    break;
-            }
-
             _ = Win32Api.PostMessageW(_host.Hwnd, Win32Api.WmNull, IntPtr.Zero, IntPtr.Zero); // 前置消息泵收尾
         }
         finally
         {
             _ = Win32Api.DestroyMenu(menu); // 即建即毁，不常驻
+        }
+
+        // Finish all native menu cleanup before a command can close its owner.
+        switch (command)
+        {
+            case MenuIdSettings:
+                Trace($"SettingsRequested subscriber={SettingsRequested is not null}");
+                SettingsRequested?.Invoke();
+                break;
+            case MenuIdExit:
+                Trace($"ExitRequested subscriber={ExitRequested is not null}");
+                ExitRequested?.Invoke();
+                break;
         }
     }
 
