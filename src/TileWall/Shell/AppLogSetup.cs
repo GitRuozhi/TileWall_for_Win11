@@ -6,8 +6,8 @@ using TileWall.Shell.Interop;
 namespace TileWall.Shell;
 
 /// <summary>
-/// 进程级日志装配（C4/F-07）：TileWall.exe 的三种进程形态（主实例 / --add 冷启动 / -Embedding COM）
-/// 统一在 Program.Main 最前初始化——COM 路由失败发生在主实例装配之前，COM 进程自身也必须可落盘。
+/// 仅取得SingleInstanceGate所有权的主实例装配滚动文件日志（含--add冷启动）。
+/// 二次启动与-Embedding COM进程不打开同名writer；前置失败仅使用已注册事件源兜底。
 /// 落盘位置：unpackaged = &lt;LOCALAPPDATA&gt;\TileWall\logs\；packaged = LocalFolder\logs\。
 /// 初始化失败（磁盘满/权限）静默降级为无日志：日志系统绝不能反过来阻断启动。
 /// </summary>
@@ -24,7 +24,7 @@ internal static class AppLogSetup
     {
         try
         {
-            // TILEWALL_LOG_INFO=1（任意进程形态可设）：诊断期开启 INFO 输入/状态日志；默认仍只 WARN+
+            // TILEWALL_LOG_INFO=1：主实例诊断期开启INFO；默认仍只WARN+。
             AppLog.Initialize(new RollingFileSink(logsDirectory, "tilewall"),
                 infoEnabled: AppLog.InfoEnabledByDefault
                     || Environment.GetEnvironmentVariable("TILEWALL_LOG_INFO") == "1");

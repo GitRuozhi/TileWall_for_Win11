@@ -20,6 +20,10 @@ internal sealed class WallSession
     private IWallStorageExecutor? _executor;
     private Func<Action, Task>? _acceptOnUi;
     private bool _writePending;
+    private UiCommitReservation? _activeUiCommit;
+    private bool _storeRecoveryBlocked;
+
+    private sealed class UiCommitReservation { }
 
     public WallSession(string dataRoot)
         : this(dataRoot, new LocalFileStore(), new ShellLinkFileService()) { }
@@ -36,6 +40,8 @@ internal sealed class WallSession
     public WallDocument Current => _current ?? throw new InvalidOperationException("Wall is not open.");
     public bool CanUndo => _undoToken is not null;
     public bool ViewBlocked { get; private set; }
+    public bool RequiresReopen { get; private set; }
+    public bool RecoveryBlocked => _storeRecoveryBlocked;
     public bool WritePending { get { lock (_gate) return _writePending; } }
 
     public void ConfigureAsyncExecution(IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
@@ -55,7 +61,7 @@ internal sealed class WallSession
 
     public bool RefreshViewFromCurrent()
     {
-        lock (_gate) return !_writePending && RefreshViewCore();
+        lock (_gate) return !_writePending && !RequiresReopen && !_storeRecoveryBlocked && RefreshViewCore();
     }
 
     private bool RefreshViewCore()
@@ -93,7 +99,28 @@ internal sealed class WallSession
             if (result.Status == WallOpenStatus.Fresh)
                 result = _store.InitializeFresh(WallDocument.Empty(initialColumns, initialRows));
             if (result.Document is not null && result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious)
+            {
                 _current = WallJson.Freeze(result.Document);
+                _undoPrevious = null;
+                _undoToken = null;
+                RequiresReopen = false;
+                _storeRecoveryBlocked = false;
+                ViewBlocked = false;
+            }
+            else if (result.Status == WallOpenStatus.RecoveryBlocked)
+            {
+                MarkStoreRecoveryBlocked();
+            }
+            else if (RequiresReopen)
+            {
+                // A failed attempt to read the committed snapshot must not unlock the
+                // old in-memory document or make it look current again.
+                ViewBlocked = true;
+            }
+            else if (_storeRecoveryBlocked)
+            {
+                ViewBlocked = true;
+            }
             return result;
         }
     }
@@ -102,8 +129,13 @@ internal sealed class WallSession
         WallMetrics? metrics = null)
     {
         lock (_gate)
-            return _writePending ? new(null, WallRejection.StaleGeneration, "A storage operation is pending.")
-                : WallLayoutEngine.TryApply(Current, action, workWidthDip, workHeightDip, metrics);
+        {
+            if (_writePending)
+                return new(null, WallRejection.StaleGeneration, "A storage operation is pending.");
+            if (ViewBlocked)
+                return new(null, WallRejection.StaleGeneration, ViewBlockedDiagnostic());
+            return WallLayoutEngine.TryApply(Current, action, workWidthDip, workHeightDip, metrics);
+        }
     }
 
     public WallSessionResult Commit(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
@@ -120,8 +152,8 @@ internal sealed class WallSession
                 if (_writePending) return BusyResult();
                 if (ViewBlocked)
                 {
-                    outcome = "view-blocked";
-                    return new(false, false, ["View is blocked until rebuilt from Current."]);
+                    outcome = RequiresReopen ? "requires-reopen" : "view-blocked";
+                    return BlockedViewResult();
                 }
                 var before = Current;
                 generation = before.Generation;
@@ -137,7 +169,11 @@ internal sealed class WallSession
                 if (timings is not null) outcome = result.Status.ToString();
                 if (result.Status is not (WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup) ||
                     result.CommittedDocument is null)
+                {
+                    if (result.Status == WallCommitStatus.RecoveryBlocked)
+                        MarkStoreRecoveryBlocked();
                     return new(false, false, result.Diagnostics);
+                }
 
                 var accepted = AcceptCommitted(before, result, recordUndo, timings);
                 if (timings is not null && accepted.ViewFailed) outcome += ":view-failed";
@@ -170,19 +206,22 @@ internal sealed class WallSession
         lock (_gate)
         {
             if (_writePending) return Task.FromResult(BusyResult());
-            if (ViewBlocked) return Task.FromResult(new WallSessionResult(false, false, ["View is blocked until rebuilt from Current."]));
+            if (ViewBlocked) return Task.FromResult(BlockedViewResult());
             if (_executor is null || _acceptOnUi is null)
                 throw new InvalidOperationException("Asynchronous storage has not been configured.");
             var before = Current;
             var frozen = proposal with { Document = WallJson.Freeze(proposal.Document) };
             var entryChanges = changes?.ToArray() ?? [];
+            var reservation = new UiCommitReservation();
             _writePending = true;
-            return CommitReservedAsync(before, frozen, entryChanges, recordUndo, _executor, _acceptOnUi);
+            _activeUiCommit = reservation;
+            return CommitReservedAsync(before, frozen, entryChanges, recordUndo, reservation, _executor, _acceptOnUi);
         }
     }
 
     private async Task<WallSessionResult> CommitReservedAsync(WallDocument before, WallProposal proposal,
-        IReadOnlyList<EntryChange> changes, bool recordUndo, IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
+        IReadOnlyList<EntryChange> changes, bool recordUndo, UiCommitReservation reservation,
+        IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
     {
         var timings = CreateCommitTimings();
         var total = timings?.Measure("session.total");
@@ -190,6 +229,7 @@ internal sealed class WallSession
         var storageThread = 0;
         var acceptanceThread = 0;
         WallCommitResult? stored = null;
+        WallSessionResult? accepted = null;
         try
         {
             stored = await executor.ExecuteAsync(() =>
@@ -203,26 +243,86 @@ internal sealed class WallSession
                     : _store.Commit(before, plan.Request, recordUndo, timings);
             }).ConfigureAwait(false);
             outcome = stored.Status.ToString();
-            WallSessionResult? accepted = null;
+            if (stored.Status == WallCommitStatus.RecoveryBlocked)
+            {
+                lock (_gate)
+                {
+                    if (ReferenceEquals(_activeUiCommit, reservation))
+                        MarkStoreRecoveryBlocked();
+                }
+            }
+            if ((stored.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup) &&
+                stored.CommittedDocument is null)
+            {
+                lock (_gate)
+                {
+                    if (ReferenceEquals(_activeUiCommit, reservation))
+                    {
+                        MarkRequiresReopen();
+                        _activeUiCommit = null;
+                    }
+                }
+                throw new InvalidOperationException("The committed wall snapshot is unavailable for UI acceptance.");
+            }
+
             await acceptOnUi(() =>
             {
-                acceptanceThread = Environment.CurrentManagedThreadId;
-                lock (_gate) accepted = AcceptCommitted(before, stored, recordUndo, timings);
+                lock (_gate)
+                {
+                    // A dispatcher may invoke its callback after returning or more than
+                    // once. Only the live reservation can publish this disk snapshot.
+                    if (!ReferenceEquals(_activeUiCommit, reservation) || accepted is not null) return;
+                    acceptanceThread = Environment.CurrentManagedThreadId;
+                    accepted = AcceptCommitted(before, stored, recordUndo, timings);
+                }
             }).ConfigureAwait(false);
-            if (accepted!.ViewFailed) outcome += ":view-failed";
+            lock (_gate)
+            {
+                if (ReferenceEquals(_activeUiCommit, reservation))
+                {
+                    if (stored.Status == WallCommitStatus.RecoveryBlocked)
+                        MarkStoreRecoveryBlocked();
+                    else if (accepted is null && (stored.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup))
+                        MarkRequiresReopen();
+                    _activeUiCommit = null;
+                }
+            }
+            if (accepted is null)
+                throw new InvalidOperationException("The UI dispatcher completed without accepting the committed snapshot.");
+            if (accepted.ViewFailed) outcome += ":view-failed";
             return accepted;
         }
         catch
         {
             // A committed disk snapshot must never be rolled back merely because its
             // UI dispatcher disappeared. Normal exit drains before closing that dispatcher.
-            if (stored?.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup)
-                lock (_gate) ViewBlocked = true;
+            lock (_gate)
+            {
+                if (ReferenceEquals(_activeUiCommit, reservation))
+                {
+                    if (stored?.Status == WallCommitStatus.RecoveryBlocked)
+                        MarkStoreRecoveryBlocked();
+                    else if ((stored?.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup) && accepted is null)
+                        MarkRequiresReopen();
+                    _activeUiCommit = null;
+                }
+            }
+            // Once Current was published, an exception raised by the dispatcher after
+            // running the callback does not turn that accepted commit into an unknown one.
+            if ((stored?.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup) && accepted is not null)
+            {
+                outcome += ":dispatcher-failed-after-accept";
+                return accepted;
+            }
             throw;
         }
         finally
         {
-            lock (_gate) _writePending = false;
+            lock (_gate)
+            {
+                if (ReferenceEquals(_activeUiCommit, reservation)) _activeUiCommit = null;
+                _writePending = false;
+            }
             total?.Dispose();
             if (timings is not null)
             {
@@ -243,6 +343,11 @@ internal sealed class WallSession
     private WallSessionResult AcceptCommitted(WallDocument before, WallCommitResult result,
         bool recordUndo, WallCommitTimings? timings)
     {
+        if (result.Status == WallCommitStatus.RecoveryBlocked)
+        {
+            MarkStoreRecoveryBlocked();
+            return new(false, false, result.Diagnostics);
+        }
         if (result.Status is not (WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup) ||
             result.CommittedDocument is null) return new(false, false, result.Diagnostics);
         // Called only on the UI acceptance path; disk replacement is the commit point.
@@ -260,6 +365,27 @@ internal sealed class WallSession
 
     private static WallSessionResult BusyResult() => new(false, false, ["A storage operation is pending."]);
 
+    private WallSessionResult BlockedViewResult() =>
+        new(false, false, [ViewBlockedDiagnostic()]);
+
+    private string ViewBlockedDiagnostic() => RequiresReopen
+        ? "The committed wall snapshot was not accepted by the UI; reopen the wall from disk before continuing."
+        : _storeRecoveryBlocked
+            ? "Storage recovery is blocked; reopen the wall after recovery succeeds before continuing."
+            : "View is blocked until rebuilt from Current.";
+
+    private void MarkStoreRecoveryBlocked()
+    {
+        _storeRecoveryBlocked = true;
+        ViewBlocked = true;
+    }
+
+    private void MarkRequiresReopen()
+    {
+        RequiresReopen = true;
+        ViewBlocked = true;
+    }
+
     private WallCommitTimings? CreateCommitTimings()
     {
         if (!_commitPerformanceEnabled) return null;
@@ -272,7 +398,7 @@ internal sealed class WallSession
         lock (_gate)
         {
             if (_writePending) return BusyResult();
-            if (ViewBlocked) return new(false, false, ["View is blocked until rebuilt from Current."]);
+            if (ViewBlocked) return BlockedViewResult();
             if (_undoPrevious is null || _undoToken is null)
                 return new(false, false, ["没有可撤销的操作。"]);
             // Store undo preserves current settings and can therefore restore a layout
@@ -291,7 +417,11 @@ internal sealed class WallSession
             var result = _store.Undo(Current, _undoPrevious, _undoToken, Current.Generation);
             if (result.Status is not (WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup) ||
                 result.CommittedDocument is null)
+            {
+                if (result.Status == WallCommitStatus.RecoveryBlocked)
+                    MarkStoreRecoveryBlocked();
                 return new(false, false, result.Diagnostics);
+            }
             _current = WallJson.Freeze(result.CommittedDocument);
             _undoPrevious = null;
             _undoToken = null;

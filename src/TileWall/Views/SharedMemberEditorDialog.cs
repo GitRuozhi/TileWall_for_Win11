@@ -60,7 +60,13 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private string? _previewPath;
     private CancellationTokenSource? _request;
     private CancellationTokenSource? _thumbnailRequest;
+    private bool _thumbnailCandidatesReady, _thumbnailPreviewPending = true;
+    private int _thumbnailEdge;
     private long _generation;
+    private long _candidateEnumerationGeneration = -1;
+    private XamlRoot? _previewRoot;
+    private double _previewRasterScale = 1;
+    private bool _previewClosing;
     private Task _pending = Task.CompletedTask;
     private FileSystemWatcher? _watcher;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _watchTimer;
@@ -119,8 +125,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         var shapeActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         if (_layout is not null)
         {
-            _undo.Click += (_, _) => { _preview.FinishGesture(); if (_layout.Undo()) LayoutChanged(); };
-            _redo.Click += (_, _) => { _preview.FinishGesture(); if (_layout.Redo()) LayoutChanged(); };
+            _undo.Click += (_, _) => { _preview.FinishGesture(notifyCompleted: false); if (_layout.Undo()) LayoutChanged(); };
+            _redo.Click += (_, _) => { _preview.FinishGesture(notifyCompleted: false); if (_layout.Redo()) LayoutChanged(); };
             shapeActions.Children.Add(_undo); shapeActions.Children.Add(_redo); shapeActions.Children.Add(_draw); shapeActions.Children.Add(_erase);
             _draw.Checked += (_, _) => { _erase.IsChecked = false; _preview.Tool = EditTool.Draw; };
             _erase.Checked += (_, _) => { _draw.IsChecked = false; _preview.Tool = EditTool.Erase; };
@@ -189,7 +195,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         Id(_targetConfirm, "target-confirm"); Id(_titleConfirm, "title-confirm");
         _sourcePath.TextChanged += (_, _) => { if (!_refreshing) { _sourceDirty = true; _sourceRevision = ++_inputRevision; Changed(); } };
         _sourcePath.KeyDown += (_, e) => { if (e.Key == Windows.System.VirtualKey.Enter) { _pending = ConfirmSourceAsync(); e.Handled = true; } };
-        _imageRatio.ValueChanged += (_, e) => { if (!_refreshing && double.IsFinite(e.NewValue) && e.NewValue > 0) { _draft = _draft with { ImageDisplay = new MemberImageDisplay { Mode = ImageDisplayMode.Custom, CustomScale = Math.Clamp(e.NewValue / 100, MemberImageGeometry.MinimumCustomScale, MemberImageGeometry.MaximumCustomScale) } }; Changed(); RefreshPreview(); } };
+        _imageRatio.ValueChanged += (_, e) => { if (!_refreshing && double.IsFinite(e.NewValue) && e.NewValue > 0) { _draft = _draft with { ImageDisplay = new MemberImageDisplay { Mode = ImageDisplayMode.Custom, CustomScale = Math.Clamp(e.NewValue / 100, MemberImageGeometry.MinimumCustomScale, MemberImageGeometry.MaximumCustomScale) } }; Changed(); RefreshPreview(); EnsurePreviewQuality(); } };
         _title.TextChanged += (_, _) => { if (!_refreshing) { _titleDirty = true; _titleRevision = ++_inputRevision; Changed(); } };
         _target.TextChanged += (_, _) => { if (!_refreshing) { _targetDirty = true; _targetRevision = ++_inputRevision; Changed(); } };
         _title.KeyDown += (_, e) => { if (e.Key == Windows.System.VirtualKey.Enter) { ConfirmTitle(); e.Handled = true; } };
@@ -200,12 +206,12 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         {
             if (_refreshing) return;
             var kind = (MemberImageSourceKind)_source.SelectedIndex; _sourceRevision = ++_inputRevision; CancelRequest();
+            CancelThumbnailRequests();
             _watcher?.Dispose(); _watcher = null; _watchTimer?.Stop();
             if (kind == MemberImageSourceKind.Automatic) { _pending = PickSourceAsync(kind); return; }
             _draft = _draft with { Images = new MemberImageSource { Kind = kind, Path = string.Empty }, Carousel = null,
                 Visual = _draft.Visual with { BackgroundMode = MemberBackgroundMode.Blur } };
             _sourceDirty = true; _frame = null; _previewPath = null;
-            _thumbnailRequest?.Cancel(); _thumbnailRequest?.Dispose(); _thumbnailRequest = null;
             _candidates.Clear(); _thumbnailStrip.Children.Clear(); _selectedThumbnail = null;
             _sourceStatus.Text = string.Empty; RefreshThumbnailSelection(center: false);
             _thumbnails.ChangeView(0, null, null, true);
@@ -224,45 +230,77 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _transparencyInput.ValueChanged += (_, e) => { if (!_refreshing && !double.IsNaN(e.NewValue)) SetTransparency(e.NewValue); };
         _transparency.ValueChanged += (_, e) => { if (!_refreshing) SetTransparency(e.NewValue); };
         _interval.SelectionChanged += (_, _) => { if (!_refreshing && _interval.SelectedIndex >= 0) { _draft = _draft with { RotationInterval = _intervals[_interval.SelectedIndex] }; Changed(); } };
-        _preview.DisplayChanged += display => { _draft = _draft with { ImageDisplay = display }; Changed(); RefreshPreview(); };
+        _preview.DisplayChanged += display => { _draft = _draft with { ImageDisplay = display }; Changed(); RefreshPreview(); EnsurePreviewQuality(); };
+        _preview.GestureCompleted += EnsurePreviewQuality;
         _dialog.PrimaryButtonClick += async (_, e) =>
         {
             if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.SaveAndExit); return; }
             var deferral = e.GetDeferral();
-            try { await WaitForPendingAsync(); e.Cancel = TrySaveNow() is not null; }
-            catch (Exception ex) { e.Cancel = true; ShowError(string.Format(T("Common.SaveFailed"), ex.Message)); }
+            try { await WaitForPendingAsync(); e.Cancel = _closed || _previewClosing || TrySaveNow() is not null; }
+            catch (Exception ex)
+            {
+                e.Cancel = true;
+                if (!_closed && !_previewClosing) ShowError(string.Format(T("Common.SaveFailed"), ex.Message));
+            }
             finally { deferral.Complete(); }
         };
         _dialog.SecondaryButtonClick += (_, e) => { if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.DiscardAndExit); } };
         _dialog.CloseButtonClick += (_, e) => { if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); } };
         _dialog.Closing += (_, e) =>
         {
-            _preview.FinishGesture();
-            if (_saved || _discardConfirmed) return;
-            if (_pickerBusy) { e.Cancel = true; return; }
-            if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); return; }
-            if (!HasUnsavedDraft) return;
-            if (_allowDiscard) return;
-            e.Cancel = true; _allowDiscard = true; _error.Text = T("Common.UnsavedDraft"); RefreshStrings();
+            _previewClosing = true;
+            try
+            {
+                _preview.FinishGesture(notifyCompleted: false);
+                if (_saved || _discardConfirmed) return;
+                if (_pickerBusy) { e.Cancel = true; return; }
+                if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); return; }
+                if (!HasUnsavedDraft) return;
+                if (_allowDiscard) return;
+                e.Cancel = true; _allowDiscard = true; _error.Text = T("Common.UnsavedDraft"); RefreshStrings();
+            }
+            finally
+            {
+                _previewClosing = !e.Cancel;
+                if (_previewClosing)
+                {
+                    CancelRequest(); CancelThumbnailRequests();
+                    _watchTimer?.Stop(); _watcher?.Dispose(); _watcher = null;
+                }
+            }
         };
-        _dialog.Opened += (_, _) => { _title.Focus(FocusState.Programmatic); _pending = ReloadCandidatesAsync(); };
+        _dialog.Opened += (_, _) =>
+        {
+            _previewRoot = _dialog.XamlRoot;
+            _previewRasterScale = PreviewRasterizationScale;
+            if (_previewRoot is not null) _previewRoot.Changed += OnPreviewRootChanged;
+            _title.Focus(FocusState.Programmatic); _pending = ReloadCandidatesAsync();
+        };
         RefreshStrings(); RefreshFields();
     }
 
     public async Task<bool> ShowAsync()
     {
         try { await OwnedDialogWindow.ShowAsync(_dialog); return _saved; }
-        finally { _closed = true; CancelRequest(); _thumbnailRequest?.Cancel(); _thumbnailRequest?.Dispose(); _watcher?.Dispose(); _watchTimer?.Stop(); }
+        finally
+        {
+            _closed = true;
+            if (_previewRoot is not null) _previewRoot.Changed -= OnPreviewRootChanged;
+            _previewRoot = null;
+            CancelRequest(); CancelThumbnailRequests(); _watcher?.Dispose(); _watchTimer?.Stop();
+        }
     }
     public bool HasUnsavedDraft => _sourceDirty || _titleDirty || _targetDirty || _width.HasPendingInput || _height.HasPendingInput || MemberPresentationRules.HasUserPropertyChanges(_original, _draft);
     public async Task WaitForPendingAsync()
     {
         await DrainPendingAsync();
+        if (_closed || _previewClosing) return;
         if (_targetDirty)
         {
             var title = _title.Text; var applyTitle = _titleDirty && _titleRevision > _targetRevision;
             if (!ConfirmTarget()) return;
             await DrainPendingAsync();
+            if (_closed || _previewClosing) return;
             if (applyTitle) { _refreshing = true; _title.Text = title; _refreshing = false; _titleDirty = true; }
         }
         if (_sourceDirty) await ConfirmSourceAsync();
@@ -271,12 +309,12 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     {
         Task pending;
         do { pending = _pending; await pending; }
-        while (!_closed && !ReferenceEquals(pending, _pending));
+        while (!_closed && !_previewClosing && !ReferenceEquals(pending, _pending));
     }
-    public Task<ExitDecision> ConfirmExitAsync() { _preview.FinishGesture(); return _exit.ConfirmAsync(); }
+    public Task<ExitDecision> ConfirmExitAsync() { _preview.FinishGesture(notifyCompleted: false); return _exit.ConfirmAsync(); }
     public void DiscardDraft() { _discardConfirmed = true; }
     public void RequestDismiss() => _dialog.Hide();
-    public void Close() { _discardConfirmed = true; _preview.FinishGesture(); _dialog.Hide(); }
+    public void Close() { _discardConfirmed = true; _preview.FinishGesture(notifyCompleted: false); _dialog.Hide(); }
 
     public void RefreshStrings()
     {
@@ -340,14 +378,49 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         if (_frame is { } image)
         {
             var placement = MemberImageGeometry.Calculate(tileWidth, tileHeight, image.SourcePixels.Width, image.SourcePixels.Height,
-                (_owner.Content as FrameworkElement)?.XamlRoot?.RasterizationScale ?? 1, _draft.ImageDisplay);
+                PreviewRasterizationScale, _draft.ImageDisplay);
             var percent = 100 * MemberImageGeometry.CustomScaleFromImageScale(placement.Scale, tileWidth, tileHeight, image.SourcePixels.Width, image.SourcePixels.Height);
             // Preset geometry may lie outside the editable custom interval. Still
             // display its exact fill-relative percentage; custom edits use the shared gate.
             _imageRatio.Minimum = Math.Min(1, percent); _imageRatio.Maximum = Math.Max(10000, percent); _imageRatio.Value = percent;
         }
         _refreshing = false;
-        _preview.SetScene(_draft, _frame, (_owner.Content as FrameworkElement)?.XamlRoot?.RasterizationScale ?? 1, _visualStyle);
+        _preview.SetScene(_draft, _frame, PreviewRasterizationScale, _visualStyle);
+    }
+    private double PreviewRasterizationScale => _dialog.XamlRoot?.RasterizationScale ?? 1;
+
+    private void OnPreviewRootChanged(XamlRoot sender, XamlRootChangedEventArgs args)
+    {
+        if (_closed || _previewClosing || _previewRasterScale == sender.RasterizationScale) return;
+        _previewRasterScale = sender.RasterizationScale;
+        RefreshPreview();
+        // An initial preview owns its first request. Its completion compares
+        // requestedScale with the latest root before releasing thumbnail work.
+        if (!_thumbnailPreviewPending) EnsurePreviewQuality();
+        RestartThumbnailBatch();
+    }
+
+    private void EnsurePreviewQuality()
+    {
+        if (_closed || _previewClosing || _saved || _discardConfirmed || _sourceDirty || _targetDirty ||
+            _preview.IsGestureActive || _generation == _candidateEnumerationGeneration || _frame is not { } frame)
+            return;
+        if (_previewPath is not null && !StringComparer.OrdinalIgnoreCase.Equals(_previewPath, frame.CanonicalPath)) return;
+        var source = frame.SourcePixels;
+        var metrics = new WallMetrics();
+        var placement = MemberImageGeometry.Calculate(metrics.WidthOf(_draft.LocalBounds.Width),
+            metrics.HeightOf(_draft.LocalBounds.Height), source.Width, source.Height,
+            PreviewRasterizationScale, _draft.ImageDisplay);
+        // Compare the complete sharp plane with the physical display requirement,
+        // retaining the body's source, longest-edge and decoded-pixel ceilings.
+        var scale = Math.Min(1, placement.Scale * PreviewRasterizationScale);
+        scale = Math.Min(scale, 4096d / Math.Max(source.Width, source.Height));
+        scale = Math.Min(scale, Math.Sqrt(16_000_000d / ((long)source.Width * source.Height)));
+        var width = Math.Max(1, (int)Math.Round(source.Width * scale));
+        var height = Math.Max(1, (int)Math.Round(source.Height * scale));
+        // One pixel of rounding tolerance avoids retrying an already capped plane.
+        if (frame.SharpDecodedPixels.Width + 1 >= width && frame.SharpDecodedPixels.Height + 1 >= height) return;
+        _pending = LoadPreviewAsync();
     }
     private void Changed()
     {
@@ -357,7 +430,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
 
     private void SetSize(int columns, int rows)
     {
-        _preview.FinishGesture();
+        _preview.FinishGesture(notifyCompleted: false);
         if (!(_original is PuzzleMember ? MemberSizeRules.IsPuzzleSize(columns, rows) : MemberSizeRules.IsTileSize(columns, rows)) || rows > _maxRows)
         { ShowError(T("Common.CheckInput")); return; }
         if (_layout is not null)
@@ -368,13 +441,13 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             while (_layout.Current.Size.Rows > rows && _layout.RemoveRow()) { }
             LayoutChanged();
         }
-        else { _draft = _draft with { LocalBounds = _draft.LocalBounds with { Width = columns, Height = rows } }; Changed(); RefreshFields(); }
+        else { _draft = _draft with { LocalBounds = _draft.LocalBounds with { Width = columns, Height = rows } }; Changed(); RefreshFields(); EnsurePreviewQuality(); }
     }
     private void LayoutChanged()
     {
         if (_layout is null || _draft is not PuzzleMember puzzle) return;
         _draft = puzzle with { LocalBounds = puzzle.LocalBounds with { Width = _layout.Current.Size.Columns, Height = _layout.Current.Size.Rows }, Partitions = _layout.Current.Partitions.ToArray() };
-        Changed(); RefreshFields();
+        Changed(); RefreshFields(); EnsurePreviewQuality();
     }
     private void SetTransparency(double value)
     {
@@ -384,33 +457,34 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     }
     private void SetDisplayMode(ImageDisplayMode mode)
     {
-        _preview.FinishGesture();
+        _preview.FinishGesture(notifyCompleted: false);
         var display = _draft.ImageDisplay;
         if (mode == ImageDisplayMode.Custom && display.Mode != ImageDisplayMode.Custom && _frame is not null)
         {
             var metrics = new WallMetrics(); var width = metrics.WidthOf(_draft.LocalBounds.Width); var height = metrics.HeightOf(_draft.LocalBounds.Height);
             var placement = MemberImageGeometry.Calculate(width, height, _frame.SourcePixels.Width, _frame.SourcePixels.Height,
-                (_owner.Content as FrameworkElement)?.XamlRoot?.RasterizationScale ?? 1, display);
+                PreviewRasterizationScale, display);
             display = display with { CustomScale = Math.Clamp(MemberImageGeometry.CustomScaleFromImageScale(placement.Scale, width, height, _frame.SourcePixels.Width, _frame.SourcePixels.Height), MemberImageGeometry.MinimumCustomScale, MemberImageGeometry.MaximumCustomScale) };
         }
-        _draft = _draft with { ImageDisplay = display with { Mode = mode } }; Changed(); RefreshPreview();
+        _draft = _draft with { ImageDisplay = display with { Mode = mode } }; Changed(); RefreshPreview(); EnsurePreviewQuality();
     }
 
     private async Task PickTargetAsync()
     {
-        if (_pickerBusy) return;
+        if (_closed || _previewClosing || _pickerBusy) return;
         _pickerBusy = true;
         try
         {
             var path = TargetItemPicker.Pick(WinRT.Interop.WindowNative.GetWindowHandle(_owner), T("Editor.SelectCurrentFolder"));
-            if (path is not null) { _target.Text = path; if (ConfirmTarget()) await _pending; }
+            if (!_closed && !_previewClosing && path is not null) { _target.Text = path; if (ConfirmTarget()) await _pending; }
         }
-        catch (Exception ex) { _error.Text = string.Format(T("Entry.PickerFailed"), ex.Message); }
+        catch (Exception ex) { if (!_closed && !_previewClosing) _error.Text = string.Format(T("Entry.PickerFailed"), ex.Message); }
         finally { _pickerBusy = false; }
     }
 
     private async Task PickSourceAsync(MemberImageSourceKind kind)
     {
+        if (_closed || _previewClosing) return;
         if (_pickerBusy) { RefreshFields(); return; }
         if (kind == MemberImageSourceKind.Automatic)
         {
@@ -423,7 +497,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             string? path;
             if (kind == MemberImageSourceKind.Folder) { var picker = new FolderPicker(); InitializePicker(picker); picker.FileTypeFilter.Add("*"); path = (await picker.PickSingleFolderAsync())?.Path; }
             else { var picker = new FileOpenPicker(); InitializePicker(picker); picker.FileTypeFilter.Add("*"); path = (await picker.PickSingleFileAsync())?.Path; }
-            if (path is not null)
+            if (!_closed && !_previewClosing && path is not null)
             {
                 // Browsing and typing share the same readable-image gate and the
                 // same cached candidate list, including for empty/broken folders.
@@ -432,14 +506,16 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                 await ConfirmSourceAsync();
             }
         }
-        catch (Exception ex) { _error.Text = string.Format(T("Puzzle.PickerFailed"), ex.Message); }
-        finally { _pickerBusy = false; RefreshFields(); }
+        catch (Exception ex) { if (!_closed && !_previewClosing) _error.Text = string.Format(T("Puzzle.PickerFailed"), ex.Message); }
+        finally { _pickerBusy = false; if (!_closed && !_previewClosing) RefreshFields(); }
     }
 
     private async Task ReloadCandidatesAsync(PuzzleCandidateResult? cached = null)
     {
+        if (_closed || _previewClosing) return;
         var request = BeginRequest(); _sourceStatus.Text = T("Puzzle.ReadingSource");
-        _thumbnailRequest?.Cancel(); _thumbnailRequest?.Dispose(); _thumbnailRequest = new();
+        _candidateEnumerationGeneration = request.Generation;
+        CancelThumbnailRequests();
         try
         {
             var result = cached ?? await _images.EnumerateMemberCandidatesAsync(_draft.Images, request.Token);
@@ -448,9 +524,14 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             _refreshing = true; _candidates.Clear(); _thumbnailStrip.Children.Clear(); foreach (var path in result.Paths) { var item = new Thumbnail(path); _candidates.Add(item); AddThumbnail(item); }
             var selection = _candidates.FirstOrDefault(i => StringComparer.OrdinalIgnoreCase.Equals(i.Path, preferred)) ?? _candidates.FirstOrDefault();
             _selectedThumbnail = selection; _previewPath = selection?.Path; _refreshing = false; RefreshThumbnailSelection();
+            _thumbnailCandidatesReady = true;
             _sourceStatus.Text = _draft.Images.Kind == MemberImageSourceKind.Automatic ? string.Empty
                 : result.Paths.Count > 0 ? string.Empty : result.Diagnostic ?? T("Puzzle.NoCandidates");
-            WatchFolder(); await LoadPreviewAsync();
+            WatchFolder();
+            // The main request starts and completes before any thumbnails enter
+            // the shared two-slot service. Its current completion opens the batch
+            // with the latest DPI, even when the root changes during this await.
+            await LoadPreviewAsync();
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (Active(request.Generation)) _sourceStatus.Text = string.Format(T("Puzzle.SourceFailed"), ex.Message); }
@@ -458,37 +539,82 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
 
     private async Task LoadPreviewAsync()
     {
+        if (_closed || _previewClosing) return;
         var request = BeginRequest();
         try
         {
             var target = _draft.TargetInput is null ? null : string.Equals(_draft.TargetInput, _originalInput, StringComparison.Ordinal) ? _managedEntryPath ?? _draft.TargetInput : _draft.TargetInput;
-            var result = await _images.LoadMemberFrameAsync(_draft, target, 1024, 1024, _previewPath, request.Token);
+            var requestedMember = _draft;
+            var requestedScale = PreviewRasterizationScale;
+            var metrics = new WallMetrics();
+            var width = Math.Clamp((int)Math.Ceiling(metrics.WidthOf(requestedMember.LocalBounds.Width) * requestedScale), 1, 4096);
+            var height = Math.Clamp((int)Math.Ceiling(metrics.HeightOf(requestedMember.LocalBounds.Height) * requestedScale), 1, 4096);
+            var result = await _images.LoadMemberFrameAsync(requestedMember, target, width, height, _previewPath, request.Token);
             if (!Active(request.Generation)) return;
             if (result.Frame is not null || result.Status == WallImageStatus.None)
             {
                 _frame = result.Frame;
                 if (_draft.Images.Kind == MemberImageSourceKind.Automatic) _sourceStatus.Text = string.Empty;
                 RefreshPreview();
+                // A mode/size/DPI edit can occur while the new source has no
+                // usable frame yet. Check that changed requirement once here;
+                // rendering and SetScene never initiate image requests.
+                if (requestedMember.ImageDisplay != _draft.ImageDisplay ||
+                    requestedMember.LocalBounds.Size != _draft.LocalBounds.Size || requestedScale != PreviewRasterizationScale)
+                    EnsurePreviewQuality();
             }
             else _sourceStatus.Text = (result.Diagnostic ?? T("Puzzle.UnavailableImage")) + (_frame is not null ? T("Puzzle.KeepPreview") : string.Empty);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (Active(request.Generation)) _sourceStatus.Text = string.Format(T("Puzzle.LoadFailed"), ex.Message); }
+        finally
+        {
+            if (Active(request.Generation) && _thumbnailPreviewPending)
+            {
+                _thumbnailPreviewPending = false;
+                RestartThumbnailBatch();
+            }
+        }
     }
-    private async Task LoadThumbnailAsync(Thumbnail item)
+
+    private void RestartThumbnailBatch()
     {
-        if (item.Requested) return; item.Requested = true;
+        var edge = (int)Math.Clamp(Math.Ceiling(48 * PreviewRasterizationScale), 64, 256);
+        if (_thumbnailRequest is not null && _thumbnailEdge == edge) return;
+        CancelThumbnailRequests(resetCandidates: false);
+        if (_closed || _previewClosing || _saved || _discardConfirmed || _sourceDirty || _targetDirty ||
+            !_thumbnailCandidatesReady || _thumbnailPreviewPending || _candidates.Count == 0) return;
+        var batch = _thumbnailRequest = new CancellationTokenSource();
+        var token = batch.Token;
+        _thumbnailEdge = edge;
+        _ = LoadThumbnailsAsync(_candidates.ToArray(), _draft, edge, batch, token);
+    }
+    private async Task LoadThumbnailsAsync(IReadOnlyList<Thumbnail> candidates, WallMember member, int edge,
+        CancellationTokenSource batch, CancellationToken token)
+    {
         try
         {
-            var result = await _images.LoadMemberFrameAsync(_draft, null, 64, 64, item.Path, _thumbnailRequest?.Token ?? CancellationToken.None);
-            if (!_closed && item.Host is { } host && result.Frame is { } frame)
+            foreach (var item in candidates)
             {
-                var tile = new TileMember { Id = "thumbnail", LocalBounds = new GridRect(0, 0, 1, 1), Visual = _draft.Visual,
-                    Images = new MemberImageSource { Kind = MemberImageSourceKind.Single, Path = item.Path }, ImageDisplay = new MemberImageDisplay { Mode = ImageDisplayMode.Fill } };
-                host.Children.Insert(0, WallMemberVisualFactory.Create(tile, frame, new WallMetrics(), 1, _visualStyle, interactive: false));
+                if (!ThumbnailBatchActive(batch, token)) return;
+                // Await each result before submitting the next request; a 99-image
+                // gallery must never prequeue 99 decodes ahead of a new selection.
+                var result = await _images.LoadMemberFrameAsync(member, null, edge, edge, item.Path, token,
+                    MemberImagePurpose.Thumbnail);
+                if (!ThumbnailBatchActive(batch, token)) return;
+                if (_candidates.Contains(item) && item.Host is { } host && result.Frame is { } frame)
+                {
+                    var tile = new TileMember { Id = "thumbnail", LocalBounds = new GridRect(0, 0, 1, 1), Visual = member.Visual,
+                        Images = new MemberImageSource { Kind = MemberImageSourceKind.Single, Path = item.Path }, ImageDisplay = new MemberImageDisplay { Mode = ImageDisplayMode.Fill } };
+                    var visual = WallMemberVisualFactory.Create(tile, frame, new WallMetrics(), 1, _visualStyle, interactive: false);
+                    if (item.Visual is { } previous) host.Children.Remove(previous);
+                    item.Visual = visual;
+                    host.Children.Insert(0, visual);
+                }
             }
         }
         catch (OperationCanceledException) { }
+        catch (Exception ex) { if (ThumbnailBatchActive(batch, token)) _sourceStatus.Text = string.Format(T("Puzzle.LoadFailed"), ex.Message); }
     }
 
     private void WatchFolder()
@@ -508,7 +634,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         var revision = _sourceRevision;
         _owner.DispatcherQueue.TryEnqueue(() =>
         {
-            if (_closed || revision != _sourceRevision) return;
+            if (_closed || _previewClosing || revision != _sourceRevision) return;
             if (_watchTimer is null)
             {
                 _watchTimer = _owner.DispatcherQueue.CreateTimer(); _watchTimer.Interval = TimeSpan.FromMilliseconds(350); _watchTimer.IsRepeating = false;
@@ -520,7 +646,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
 
     public string? TrySaveNow()
     {
-        _preview.FinishGesture();
+        _preview.FinishGesture(notifyCompleted: false);
         if (_pickerBusy) return ShowError(T("Settings.Saving"));
         // Save/exit can be invoked without moving keyboard focus. Confirm both
         // complete number drafts explicitly rather than relying on a blur event.
@@ -615,7 +741,14 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     }
     private (long Generation, CancellationToken Token) BeginRequest() { CancelRequest(); _request = new(); return (_generation, _request.Token); }
     private void CancelRequest() { _generation++; _request?.Cancel(); _request?.Dispose(); _request = null; }
-    private bool Active(long generation) => !_closed && generation == _generation;
+    private void CancelThumbnailRequests(bool resetCandidates = true)
+    {
+        _thumbnailRequest?.Cancel(); _thumbnailRequest?.Dispose(); _thumbnailRequest = null;
+        if (resetCandidates) { _thumbnailCandidatesReady = false; _thumbnailPreviewPending = true; }
+    }
+    private bool ThumbnailBatchActive(CancellationTokenSource batch, CancellationToken token) =>
+        !_closed && !_previewClosing && !token.IsCancellationRequested && ReferenceEquals(batch, _thumbnailRequest);
+    private bool Active(long generation) => !_closed && !_previewClosing && generation == _generation;
     private string ShowError(string message) { _error.Text = message; return message; }
     private void InitializePicker(object picker) => WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(_owner));
     private static string ColorText(Windows.UI.Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
@@ -671,6 +804,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             }
         }
         CancelRequest();
+        CancelThumbnailRequests();
         // A new confirmation supersedes all earlier inference, even when the
         // path is unchanged. Old folder callbacks must not replace its save wait.
         _sourceRevision = ++_inputRevision;
@@ -704,7 +838,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         WallMemberVisualFactory.ConfigureInteraction(button, host, WallCornerStyle.Corners(_visualStyle));
         AutomationProperties.SetName(button, item.Name); ActionIcon.SetTip(button, item.Name);
         button.Click += (_, _) => { _selectedThumbnail = item; _previewPath = item.Path; RefreshThumbnailSelection(center: false); _pending = LoadPreviewAsync(); CenterThumbnail(true); };
-        _thumbnailStrip.Children.Add(button); _ = LoadThumbnailAsync(item);
+        _thumbnailStrip.Children.Add(button);
     }
     private void RefreshThumbnailSelection(bool center = true)
     {
@@ -721,10 +855,12 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     }
     private async Task<bool> ConfirmSourceAsync()
     {
+        if (_closed || _previewClosing) return false;
         var kind = _draft.Images.Kind; if (kind == MemberImageSourceKind.Automatic) { _sourceDirty = false; return true; }
+        CancelThumbnailRequests();
         var path = _sourcePath.Text.Trim(); var revision = _sourceRevision;
         var result = await _images.EnumerateMemberCandidatesAsync(new MemberImageSource { Kind = kind, Path = path });
-        if (_closed || revision != _sourceRevision || kind != _draft.Images.Kind) return false;
+        if (_closed || _previewClosing || revision != _sourceRevision || kind != _draft.Images.Kind) return false;
         if (result.Paths.Count == 0) { ShowError(T("Puzzle.UnavailableImage")); return false; }
         _sourceDirty = false; _draft = _draft with { Images = new MemberImageSource { Kind = kind, Path = path }, Carousel = null,
             Visual = _draft.Visual with { BackgroundMode = MemberBackgroundMode.Blur } };
@@ -732,6 +868,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     }
     private async Task ApplyTargetSourceAsync(string? target)
     {
+        if (_closed || _previewClosing) return;
         var source = new MemberImageSource(); var sourceRevision = _sourceRevision;
         PuzzleCandidateResult? candidates = null;
         if (Directory.Exists(target))
@@ -746,7 +883,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             candidates = await _images.EnumerateMemberCandidatesAsync(file);
             if (candidates.Paths.Count > 0) source = file;
         }
-        if (_closed || sourceRevision != _sourceRevision || !string.Equals(target, _draft.TargetInput, StringComparison.Ordinal)) return;
+        if (_closed || _previewClosing || sourceRevision != _sourceRevision || !string.Equals(target, _draft.TargetInput, StringComparison.Ordinal)) return;
         _sourceDirty = false; _previewPath = null; _frame = null;
         _draft = _draft with { Images = source, Carousel = null, Visual = _draft.Visual with { BackgroundMode = source.Kind == MemberImageSourceKind.Automatic ? MemberBackgroundMode.Default : MemberBackgroundMode.Blur, BackgroundTransparency = source.Kind == MemberImageSourceKind.Automatic ? 50 : _draft.Visual.BackgroundTransparency } };
         RefreshFields(); await ReloadCandidatesAsync(source.Kind == MemberImageSourceKind.Automatic ? null : candidates);
@@ -755,10 +892,10 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private sealed class Thumbnail(string path)
     {
         public Grid? Host { get; set; }
+        public PuzzleCanvasView? Visual { get; set; }
         public Border? Outline { get; set; }
         public Border? Check { get; set; }
         public string Path { get; } = path;
         public string Name => System.IO.Path.GetFileName(Path);
-        public bool Requested { get; set; }
     }
 }

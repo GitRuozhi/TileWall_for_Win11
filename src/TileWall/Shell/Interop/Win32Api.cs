@@ -184,7 +184,7 @@ internal static class Win32Api
     internal const uint WmSettingchange = 0x001A;   // WM_SETTINGCHANGE（SPI_SETWORKAREA 广播同路，M8 §6.2）
     internal const uint WmDisplaychange = 0x007E;   // WM_DISPLAYCHANGE（分辨率/显示器变更，M8 §6.2）
 
-    // ———— C1/F-01：WM_COPYDATA 发送方进程鉴权（wParam 句柄 → PID → 映像路径） ————
+    // ———— WM_COPYDATA 声明 HWND 的映像路由过滤（wParam 句柄 → PID → 映像路径） ————
 
     /// <summary>PROCESS_QUERY_LIMITED_INFORMATION：仅查基本信息/映像路径，权限面最小的查询权。</summary>
     internal const uint ProcessQueryLimitedInformation = 0x1000;
@@ -227,24 +227,23 @@ internal static class Win32Api
             return false;
         }
 
-        var messagePtr = Marshal.StringToHGlobalUni(message);
+        var messagePtr = IntPtr.Zero;
         try
         {
-            var stringsPtr = Marshal.AllocHGlobal(IntPtr.Size); // LPCTSTR*：单字符串指针数组
-            Marshal.WriteIntPtr(stringsPtr, messagePtr);
-            try
-            {
-                return ReportEventW(handle, EventlogErrorType, 0, 0, IntPtr.Zero, 1, 0, ref stringsPtr, IntPtr.Zero);
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(stringsPtr);
-            }
+            messagePtr = Marshal.StringToHGlobalUni(message);
+            // ReportEventW expects LPCWSTR*; ref messagePtr supplies the one-element string array.
+            return ReportEventW(handle, EventlogErrorType, 0, 0, IntPtr.Zero, 1, 0, ref messagePtr, IntPtr.Zero);
         }
         finally
         {
-            Marshal.FreeHGlobal(messagePtr);
-            _ = DeregisterEventSource(handle);
+            try
+            {
+                if (messagePtr != IntPtr.Zero) Marshal.FreeHGlobal(messagePtr);
+            }
+            finally
+            {
+                _ = DeregisterEventSource(handle);
+            }
         }
     }
 
@@ -272,6 +271,7 @@ internal static class Win32Api
     internal const uint MfSeparator = 0x00000800;
     internal const uint TpmReturncmd = 0x0100;
     internal const uint TpmRightbutton = 0x0002;
+    internal const uint TpmBottomalign = 0x0020;
 
     internal struct InteropPoint
     {
@@ -314,6 +314,9 @@ internal static class Win32Api
     [DllImport("shell32.dll", SetLastError = true)]
     internal static extern bool Shell_NotifyIconW(uint dwMessage, ref NotifyIconDataW lpData);
 
+    [DllImport("shell32.dll", ExactSpelling = true)]
+    internal static extern int Shell_NotifyIconGetRect(ref NotifyIconIdentifier identifier, out NativeRect iconLocation);
+
     internal const uint NimAdd = 0x00000000;
     internal const uint NimModify = 0x00000001;
     internal const uint NimDelete = 0x00000002;
@@ -322,8 +325,18 @@ internal static class Win32Api
     internal const uint NifMessage = 0x00000001;
     internal const uint NifIcon = 0x00000002;
     internal const uint NifTip = 0x00000004;
+    internal const uint NifShowTip = 0x00000080;
 
     internal const uint NotifyIconVersion4 = 4;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NotifyIconIdentifier
+    {
+        public uint cbSize;
+        public IntPtr hWnd;
+        public uint uID;
+        public Guid guidItem;
+    }
 
     /// <summary>NOTIFYICONDATAW（shellapi.h 布局；szTip 128 / szInfo 256 / szInfoTitle 64 字符）。</summary>
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -359,7 +372,7 @@ internal static class Win32Api
         szInfoTitle = string.Empty,
     };
 
-    /// <summary>NOTIFYICON_VERSION_4：事件在 lParam 低字；屏幕坐标在 wParam 低/高字（WM_CONTEXTMENU 键盘触发时为 -1）。</summary>
+    /// <summary>NOTIFYICON_VERSION_4：事件在 lParam 低字、图标 ID 在高字；坐标只对协议定义的事件有效。</summary>
     internal static uint LowWord(IntPtr value) => (uint)((long)value & 0xFFFF);
 
     internal static uint HighWord(IntPtr value) => (uint)(((long)value >> 16) & 0xFFFF);

@@ -32,15 +32,15 @@ public sealed class AppLogEngine : IDisposable
     /// <summary>后台写线程的排空轮询间隔。</summary>
     public static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
-    private const int WorkerJoinTimeoutMs = 1000;
-
     private readonly ILogSink _sink;
     private readonly bool _infoEnabled;
     private readonly ConcurrentQueue<AppLogEntry> _queue = new();
     private readonly object _gate = new(); // 排空互斥：Flush 与后台线程互斥进入 sink
+    private readonly object _lifecycleGate = new(); // 串行化入队与关闭，不受 sink IO 阻塞
+    private readonly object _disposeGate = new(); // 并发 Dispose 返回前都等待 sink 释放完成
     private readonly Thread _worker;
     private volatile bool _stopRequested;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public AppLogEngine(ILogSink sink, bool infoEnabled = AppLog.InfoEnabledByDefault)
     {
@@ -66,11 +66,19 @@ public sealed class AppLogEngine : IDisposable
             return;
         }
 
-        _queue.Enqueue(new AppLogEntry(
-            DateTimeOffset.Now,
-            level,
-            string.IsNullOrWhiteSpace(category) ? "App" : category,
-            message ?? string.Empty));
+        lock (_lifecycleGate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _queue.Enqueue(new AppLogEntry(
+                DateTimeOffset.Now,
+                level,
+                string.IsNullOrWhiteSpace(category) ? "App" : category,
+                message ?? string.Empty));
+        }
     }
 
     /// <summary>同步排空队列到 sink（与后台写线程互斥）；返回时队列已空。</summary>
@@ -78,23 +86,49 @@ public sealed class AppLogEngine : IDisposable
     {
         lock (_gate)
         {
-            DrainCore();
+            if (!_disposed)
+            {
+                DrainCore();
+            }
         }
     }
 
+    /// <summary>停止后台线程、排空队列并释放可释放的 sink。本引擎拥有传入 sink 的生命周期。</summary>
     public void Dispose()
     {
-        if (_disposed)
+        lock (_disposeGate)
         {
-            return;
-        }
+            lock (_lifecycleGate)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
 
-        _disposed = true;
-        Flush();
-        _stopRequested = true;
-        if (_worker.IsAlive)
-        {
-            _worker.Join(WorkerJoinTimeoutMs);
+                // Reject new writes before joining the worker. Any write already enqueued
+                // is drained below after the worker has stopped.
+                _disposed = true;
+                _stopRequested = true;
+            }
+
+            _worker.Join(); // Never close a sink while a background write could still be in flight.
+
+            lock (_gate)
+            {
+                DrainCore();
+                if (_sink is IDisposable disposableSink)
+                {
+                    try
+                    {
+                        disposableSink.Dispose();
+                    }
+                    catch (Exception)
+                    {
+                        // Shutdown must not make logging failures escape into the host.
+                    }
+                }
+            }
+
         }
     }
 
@@ -105,6 +139,11 @@ public sealed class AppLogEngine : IDisposable
             Thread.Sleep(PollInterval);
             lock (_gate)
             {
+                if (_stopRequested)
+                {
+                    return;
+                }
+
                 DrainCore();
             }
         }
@@ -169,6 +208,17 @@ public static class AppLog
         {
             _engine?.Dispose();
             _engine = new AppLogEngine(sink, infoEnabled);
+        }
+    }
+
+    /// <summary>停止日志后台线程并释放当前引擎的 sink；重复调用及未初始化时均无操作。</summary>
+    public static void Shutdown()
+    {
+        lock (Gate)
+        {
+            var engine = _engine;
+            _engine = null;
+            engine?.Dispose();
         }
     }
 

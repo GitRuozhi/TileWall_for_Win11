@@ -14,6 +14,7 @@ internal static class StartMenuImportScan
         if (known.UserPrograms is { } user) roots.Add((user, SourceKind.User));
         if (known.CommonPrograms is { } common) roots.Add((common, SourceKind.Common));
         var result = StartMenuScanner.Enumerate(new ScanFiles(token), roots);
+        token.ThrowIfCancellationRequested();
         // A failed known-folder lookup must never authorize removing that root's old imported members.
         return result with { SkippedDirectories = result.SkippedDirectories + 2 - roots.Count };
     }, token);

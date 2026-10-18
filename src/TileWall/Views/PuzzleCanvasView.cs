@@ -15,6 +15,8 @@ namespace TileWall.Views;
 public sealed class PuzzleCanvasView : Canvas
 {
     private readonly List<Action> _resetInteractions = [];
+    private readonly List<(Border Band, TextBlock Title, double ViewportWidth)> _externalTitles = [];
+    private static readonly Windows.UI.ViewManagement.UISettings MotionSettings = new();
     private sealed class FramePlane(Canvas host, double x, double y)
     {
         public Canvas Host = host;
@@ -34,12 +36,15 @@ public sealed class PuzzleCanvasView : Canvas
     private double _scrollOffset;
     private DateTime _scrollStarts;
     public bool Interactive { get; set; }
+    internal bool ExternalInteraction { get; set; }
     internal bool RevealTitles { get; set; }
     public event Action<Button, int>? PartitionCreated;
 
     internal void StopTransientFeedback()
     {
         StopScrolling();
+        foreach (var title in _externalTitles)
+            title.Band.Visibility = RevealTitles ? Visibility.Visible : Visibility.Collapsed;
         foreach (var reset in _resetInteractions) reset();
     }
 
@@ -55,6 +60,7 @@ public sealed class PuzzleCanvasView : Canvas
         StopTransientFeedback();
         Children.Clear();
         _resetInteractions.Clear();
+        _externalTitles.Clear();
         _planes.Clear();
         _transition = null;
         _member = member;
@@ -83,7 +89,7 @@ public sealed class PuzzleCanvasView : Canvas
             _planes.Add(new FramePlane(plane, x, y));
             Border? band = null;
             TextBlock? label = null;
-            if (member.Visual.ShowTitle && !string.IsNullOrWhiteSpace(title) && (Interactive || RevealTitles))
+            if (member.Visual.ShowTitle && !string.IsNullOrWhiteSpace(title) && (Interactive || RevealTitles || ExternalInteraction))
             {
                 label = new TextBlock { Text = title, FontSize = 11,
                     Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
@@ -101,6 +107,7 @@ public sealed class PuzzleCanvasView : Canvas
                     Visibility = RevealTitles ? Visibility.Visible : Visibility.Collapsed,
                     Padding = new Thickness(5, 2, 5, 2), IsHitTestVisible = false, Child = titleViewport };
                 content.Children.Add(band);
+                if (ExternalInteraction) _externalTitles.Add((band, label, width - 10));
             }
             FrameworkElement part = content;
             if (Interactive)
@@ -269,6 +276,7 @@ public sealed class PuzzleCanvasView : Canvas
     private void StartScrolling(TextBlock title, double viewportWidth)
     {
         StopScrolling();
+        if (!MotionSettings.AnimationsEnabled) return;
         title.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         _scrollMaximum = title.DesiredSize.Width - viewportWidth;
         if (_scrollMaximum <= 0 || viewportWidth <= 0) return;
@@ -286,6 +294,7 @@ public sealed class PuzzleCanvasView : Canvas
 
     private void OnScrollTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
     {
+        if (!MotionSettings.AnimationsEnabled) { StopScrolling(); return; }
         if (_scrollTitle?.RenderTransform is not TranslateTransform transform || DateTime.UtcNow < _scrollStarts) return;
         _scrollOffset += 0.75;
         if (_scrollOffset > _scrollMaximum)
@@ -301,6 +310,18 @@ public sealed class PuzzleCanvasView : Canvas
         if (requested is not null && !ReferenceEquals(requested, _scrollTitle)) return;
         _scrollTimer?.Stop();
         if (_scrollTitle?.RenderTransform is TranslateTransform transform) transform.X = 0;
+        _scrollOffset = 0;
+        _scrollMaximum = 0;
         _scrollTitle = null;
+    }
+
+    internal void SetExternalHover(bool hover)
+    {
+        foreach (var title in _externalTitles)
+        {
+            title.Band.Visibility = hover || RevealTitles ? Visibility.Visible : Visibility.Collapsed;
+            if (hover) StartScrolling(title.Title, title.ViewportWidth);
+            else StopScrolling(title.Title);
+        }
     }
 }

@@ -313,8 +313,18 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
     public void UnregisterHotKey() => _hotKey.Dispose();
     public void RemoveTrayIcon() => _tray.Dispose();
     public void DestroyShellHostWindow() => _host.Dispose();
-    public void ReleaseSingleInstanceMutex() => _instance.Dispose();
+    public void ReleaseSingleInstanceMutex()
+    {
+        // The next owner must never acquire the gate while this process still
+        // owns the rolling file handle.
+        try { AppLog.Shutdown(); }
+        finally { _instance.Dispose(); }
+    }
     // Application.Exit closes the XAML windows and raises their Closed cleanup
     // handlers. Closing the last window first would begin shutdown twice.
-    public void ExitApplication() => _application.Exit();
+    public void ExitApplication()
+    {
+        try { AppLog.Shutdown(); }
+        finally { _application.Exit(); }
+    }
 }

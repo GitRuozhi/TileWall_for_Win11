@@ -388,8 +388,9 @@ public sealed class WallStore
             if (overrideBytes is not null && oldRef == newRef && !overrideBytes.ContainsKey(id)) continue;
             var oldPath = oldRef?.RelativePath;
             var newPath = newRef?.RelativePath;
-            var oldHash = oldRef is null ? null : Hash(_files.ReadAllBytes(_paths.Entry(oldRef)));
-            var oldLength = oldRef is null ? 0 : _files.ReadAllBytes(_paths.Entry(oldRef)).LongLength;
+            byte[]? oldEntryBytes = oldRef is null ? null : _files.ReadAllBytes(_paths.Entry(oldRef));
+            var oldHash = oldEntryBytes is null ? null : Hash(oldEntryBytes);
+            var oldLength = oldEntryBytes?.LongLength ?? 0;
             ops.Add(new WallJournalOp(id, oldPath, newPath, oldHash, oldLength, null, 0));
         }
         List<WallObservedEntry> observed;
@@ -588,7 +589,6 @@ public sealed class WallStore
         {
             var stage = _paths.Under("Staging", journal.CommitId);
             PreserveCommittedMaterial(journal, _paths.Under("Staging", journal.CommitId, JournalName));
-            _paths.GuardTree(stage);
             _files.DeleteDirectory(stage);
             PruneMaterials(journal);
             return WallCommitStatus.Committed;
@@ -648,7 +648,6 @@ public sealed class WallStore
         {
             if (material.Id == newest.CommitId || material.Id == latestUndo) continue;
             var directory = _paths.Under("Recovery", "Entries", material.Id);
-            _paths.GuardTree(directory);
             _files.DeleteDirectory(directory);
         }
     }
@@ -1024,7 +1023,21 @@ public sealed class WallStore
     {
         try
         {
-            document = WallJson.Deserialize(_files.ReadAllBytes(path));
+            return TryReadDocument(_files.ReadAllBytes(path), out document, out error);
+        }
+        catch (Exception ex) when (IsStorageError(ex) || ex is JsonException or ArgumentException)
+        {
+            error = ex.Message;
+            document = null;
+            return false;
+        }
+    }
+
+    private static bool TryReadDocument(byte[] bytes, out WallDocument? document, out string error)
+    {
+        try
+        {
+            document = WallJson.Deserialize(bytes);
             var issues = Validate(document);
             if (issues.Count == 0) { error = ""; return true; }
             error = string.Join("; ", issues);
@@ -1042,15 +1055,16 @@ public sealed class WallStore
         _paths.Guard(_paths.Config);
         var bytes = _files.ReadAllBytes(_paths.Config);
         diskHash = Hash(bytes);
-        return TryReadDocument(_paths.Config, out var disk, out _) && disk!.Generation == generation &&
+        return TryReadDocument(bytes, out var disk, out _) && disk!.Generation == generation &&
             DocumentEqual(current, disk);
     }
 
     private static IReadOnlyList<string> Validate(WallDocument document)
     {
-        var errors = WallLayoutEngine.Validate(document).ToList();
-        if (errors.Count > 0) return errors;
-        errors.AddRange(WallLayoutEngine.ValidateGeometry(document));
+        var errors = WallLayoutEngine.ValidateGeometry(document).ToList();
+        // ValidateGeometry already includes the base checks. Keep their old short-circuit,
+        // but still add storage path diagnostics when geometry alone fails.
+        if (errors.Any(error => error != "WALL_GEOMETRY")) return errors;
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var lane in document.Lanes)
             foreach (var group in lane.Groups)
@@ -1263,6 +1277,8 @@ public sealed class WallStore
         }
         foreach (var observed in journal.Observed)
         {
+            if (string.IsNullOrWhiteSpace(observed.RelativePath))
+                throw new InvalidDataException($"Malformed observed entry path: {journal.CommitId}");
             if (!WallStoragePaths.ValidId(observed.MemberId) || !ids.Add(observed.MemberId) ||
                 !ValidHash(observed.Hash) || observed.Length < 0)
                 throw new InvalidDataException($"Malformed observed entry: {journal.CommitId}");

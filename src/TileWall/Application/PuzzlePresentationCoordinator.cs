@@ -188,6 +188,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     public void SetGate(MemberCarouselGate gate)
     {
         if (_disposed || _gate == gate) return;
+        var previousGate = _gate;
         _gate = gate;
         Trace($"Gate={gate}");
         _timer.Stop();
@@ -200,7 +201,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             }
             Trace("HideCancelOrSuspend");
         }
-        else QueueCheck(true);
+        else QueueCheck(previousGate == MemberCarouselGate.Hidden);
     }
 
     public void SetPersistenceBusy(bool busy)
@@ -243,16 +244,17 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         _dispatcher.TryEnqueue(() =>
         {
             _queued = false;
-            var explicitEvent = _queuedExplicit;
-            _queuedExplicit = false;
-            Check(explicitEvent);
+            Check(false);
         });
     }
 
     private void Check(bool explicitCheck)
     {
+        _queuedExplicit |= explicitCheck;
         if (_persistenceBusy) return;
         if (_disposed || _gate != MemberCarouselGate.Ready) return;
+        explicitCheck = _queuedExplicit;
+        _queuedExplicit = false;
         // Also covers OS versions without the preference-change event.
         ApplyAnimationPreference();
         _timer.Stop();

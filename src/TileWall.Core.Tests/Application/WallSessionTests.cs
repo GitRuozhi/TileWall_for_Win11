@@ -12,11 +12,48 @@ namespace TileWall.Core.Tests.Application;
 
 public sealed class WallSessionTests
 {
+    private sealed class FaultingFiles(IFileStore inner) : IFileStore
+    {
+        public List<Func<string, string?, string?, bool>> Rules { get; } = [];
+
+        private void Trip(string kind, string? source, string? destination)
+        {
+            for (var i = 0; i < Rules.Count; i++)
+            {
+                if (!Rules[i](kind, source, destination)) continue;
+                Rules.RemoveAt(i);
+                throw new IOException($"Injected {kind}: {source} -> {destination}");
+            }
+        }
+
+        public FileStorePathInfo GetPathInfo(string path) => inner.GetPathInfo(path);
+        public bool Exists(string path) => inner.Exists(path);
+        public byte[] ReadAllBytes(string path) => inner.ReadAllBytes(path);
+        public void WriteAllBytes(string path, byte[] bytes) { Trip("write", null, path); inner.WriteAllBytes(path, bytes); }
+        public void Move(string source, string destination, bool overwrite)
+        { Trip("move", source, destination); inner.Move(source, destination, overwrite); }
+        public void Copy(string source, string destination, bool overwrite)
+        { Trip("copy", source, destination); inner.Copy(source, destination, overwrite); }
+        public void Delete(string path) { Trip("delete", path, null); inner.Delete(path); }
+        public void CreateDirectory(string path) { Trip("mkdir", null, path); inner.CreateDirectory(path); }
+        public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
+        public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);
+        public void DeleteDirectory(string path) { Trip("rmdir", path, null); inner.DeleteDirectory(path); }
+    }
+
     private static (WallSession Session, InMemoryFileStore Files, string Root) Harness()
     {
         var files = new InMemoryFileStore();
         var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(),
             "wall-session-" + Guid.NewGuid().ToString("N")));
+        return (new WallSession(root, files, new FakeLinkFileService(files)), files, root);
+    }
+
+    private static (WallSession Session, FaultingFiles Files, string Root) RecoveryHarness()
+    {
+        var files = new FaultingFiles(new InMemoryFileStore());
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(),
+            "wall-session-recovery-" + Guid.NewGuid().ToString("N")));
         return (new WallSession(root, files, new FakeLinkFileService(files)), files, root);
     }
 
@@ -84,6 +121,7 @@ public sealed class WallSessionTests
         Assert.True(result.Committed);
         Assert.True(result.ViewFailed);
         Assert.True(session.ViewBlocked);
+        Assert.False(session.RequiresReopen);
         Assert.Equal(1, session.Current.Generation);
         Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
         Assert.False(session.Commit(added.Proposal!).Committed);
@@ -96,6 +134,57 @@ public sealed class WallSessionTests
         var removed = session.Propose(new RemoveMemberAction(1, "tile1"), 500, 500);
         Assert.True(session.Commit(removed.Proposal!).Committed);
         Assert.Equal(2, session.Current.Generation);
+    }
+
+    [Fact]
+    public void RecoveryBlockedCommitBlocksEditsAndRefreshUntilOpenRecovers()
+    {
+        var (session, files, root) = RecoveryHarness();
+        Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
+        var added = Add(session);
+        Assert.True(session.Commit(added.Proposal!,
+            [new EntryChange.CreateUrl("tile1", "https://old.example")]).Committed);
+        var before = session.Current;
+        var tile = (TileMember)before.Lanes[0].Groups[0].Members[0];
+        var changed = session.Propose(new ReplaceMemberAction(before.Generation, tile.Id,
+            tile with { Visual = tile.Visual with { Title = "Second" } }), 500, 500);
+        Assert.NotNull(changed.Proposal);
+
+        files.Rules.Add((kind, source, destination) => kind == "move" &&
+            source?.EndsWith("entry-tile1.tmp", StringComparison.Ordinal) == true &&
+            destination?.Contains(Path.DirectorySeparatorChar + "Objects" + Path.DirectorySeparatorChar,
+                StringComparison.Ordinal) == true);
+        files.Rules.Add((kind, source, destination) => kind == "copy" &&
+            source?.Contains(Path.DirectorySeparatorChar + "Recovery" + Path.DirectorySeparatorChar + "Entries",
+                StringComparison.Ordinal) == true &&
+            destination?.Contains(Path.DirectorySeparatorChar + "Objects" + Path.DirectorySeparatorChar,
+                StringComparison.Ordinal) == true);
+
+        var blocked = session.Commit(changed.Proposal!,
+            [new EntryChange.ChangeTarget("tile1", "https://new.example")]);
+        Assert.False(blocked.Committed);
+        Assert.Empty(files.Rules);
+        Assert.Same(before, session.Current);
+        Assert.True(session.ViewBlocked);
+        Assert.False(session.RequiresReopen);
+
+        var refreshCount = 0;
+        session.SetViewRefresh(_ => refreshCount++);
+        Assert.False(session.RefreshViewFromCurrent());
+        Assert.Equal(0, refreshCount);
+        Assert.Null(session.Propose(new RemoveMemberAction(before.Generation, "tile1"), 500, 500).Proposal);
+        Assert.False(session.Commit(changed.Proposal!).Committed);
+        Assert.False(session.Undo().Committed);
+
+        var reopened = session.Open(1, 6);
+        Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
+        Assert.Equal(before.Generation, session.Current.Generation);
+        Assert.False(session.ViewBlocked);
+        Assert.False(session.RequiresReopen);
+        Assert.True(session.RefreshViewFromCurrent());
+        Assert.Equal(1, refreshCount);
+        Assert.NotNull(session.Propose(new RemoveMemberAction(session.Current.Generation, "tile1"), 500, 500).Proposal);
+        Assert.Equal(before.Generation, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
     }
 
     [Fact]

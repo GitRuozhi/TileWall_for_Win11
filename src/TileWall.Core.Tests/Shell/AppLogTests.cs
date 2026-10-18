@@ -4,7 +4,11 @@ using TileWall.Core.Shell;
 
 namespace TileWall.Core.Tests.Shell;
 
+[CollectionDefinition("AppLog facade", DisableParallelization = true)]
+public sealed class AppLogFacadeCollection { }
+
 /// <summary>C4/F-07：日志引擎核心行为——等级过滤、线程安全队列、同步排空。</summary>
+[Collection("AppLog facade")]
 public sealed class AppLogTests
 {
     private static AppLogEntry Entry(AppLogLevel level, string message) =>
@@ -74,13 +78,116 @@ public sealed class AppLogTests
     [Fact]
     public void 静态门面未初始化时无操作不抛出()
     {
-        // 只验证「未初始化也不炸」；Initialize 属进程级装配（UI 侧），不在单测污染全局态
+        // 前置关闭避免其它静态门面测试遗留全局实例，保持本测试确实覆盖未初始化路径。
+        AppLog.Shutdown();
         Assert.False(AppLog.IsInitialized);
         AppLog.Warn("Test", "无操作");
         AppLog.Error("Test", "无操作");
         AppLog.Info("Test", "无操作");
         AppLog.Flush();
+        AppLog.Shutdown();
         Assert.False(AppLog.IsInitialized);
+    }
+
+    [Fact]
+    public void Shutdown_排空队列并释放引擎_sink_晚到日志无操作且可重复调用()
+    {
+        AppLog.Shutdown();
+        var sink = new CapturingSink();
+        AppLog.Initialize(sink);
+
+        const int expectedCount = 64;
+        for (var i = 0; i < expectedCount; i++)
+        {
+            AppLog.Warn("Shutdown", $"queued-{i}");
+        }
+
+        try
+        {
+            AppLog.Shutdown();
+            AppLog.Shutdown();
+            AppLog.Warn("Shutdown", "late-warn");
+            AppLog.Error("Shutdown", "late-error");
+            AppLog.Info("Shutdown", "late-info");
+            AppLog.Flush();
+
+            Assert.False(AppLog.IsInitialized);
+            Assert.True(sink.IsDisposed);
+            Assert.Equal(expectedCount, sink.Entries.Count);
+            Assert.DoesNotContain(sink.Entries, entry => entry.Message.StartsWith("late-", StringComparison.Ordinal));
+        }
+        finally
+        {
+            AppLog.Shutdown();
+        }
+    }
+
+    [Fact]
+    public async Task Shutdown_等待在途写结束并排空其间入队的记录()
+    {
+        AppLog.Shutdown();
+        var sink = new BlockingSink();
+        AppLog.Initialize(sink);
+        try
+        {
+            AppLog.Warn("Shutdown", "in-flight");
+            Assert.True(sink.FirstWriteStarted.Wait(TimeSpan.FromSeconds(5)), "后台 sink 没有开始首条写入。");
+            const int queuedCount = 64;
+            for (var i = 0; i < queuedCount; i++)
+            {
+                AppLog.Warn("Shutdown", $"queued-{i}");
+            }
+
+            var shutdown = Task.Run(AppLog.Shutdown);
+            await Assert.ThrowsAsync<TimeoutException>(() => shutdown.WaitAsync(TimeSpan.FromMilliseconds(50)));
+            sink.ReleaseFirstWrite.Set();
+            await shutdown.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(queuedCount + 1, sink.Entries.Count);
+            Assert.True(sink.IsDisposed);
+        }
+        finally
+        {
+            sink.ReleaseFirstWrite.Set();
+            AppLog.Shutdown();
+            sink.DisposeWaitHandles();
+        }
+    }
+
+    [Fact]
+    public void Shutdown_关闭真实滚动文件句柄后新sink可立即追加()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "tilewall-applog-shutdown-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            AppLog.Shutdown();
+            AppLog.Initialize(new RollingFileSink(directory));
+            AppLog.Warn("Shutdown", "before-shutdown");
+
+            AppLog.Shutdown();
+            AppLog.Warn("Shutdown", "late-after-shutdown");
+            AppLog.Shutdown();
+
+            using (var replacement = new RollingFileSink(directory))
+            {
+                replacement.Write(Entry(AppLogLevel.Warn, "replacement-after-shutdown"));
+                Assert.False(replacement.Abandoned);
+            }
+
+            var lines = File.ReadAllLines(Path.Combine(directory, "tilewall.log"));
+            Assert.Equal(2, lines.Length);
+            Assert.Contains("before-shutdown", lines[0]);
+            Assert.Contains("replacement-after-shutdown", lines[1]);
+            Assert.DoesNotContain("late-after-shutdown", string.Join('\n', lines));
+            Assert.False(AppLog.IsInitialized);
+        }
+        finally
+        {
+            AppLog.Shutdown();
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -91,22 +198,106 @@ public sealed class AppLogTests
         Assert.Equal(1, line.Count(c => c == '\n'));
     }
 
-    private sealed class CapturingSink : ILogSink
+    private sealed class CapturingSink : ILogSink, IDisposable
     {
         private readonly object _gate = new();
+        private bool _disposed;
 
         public List<AppLogEntry> Entries { get; } = [];
+
+        public bool IsDisposed
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _disposed;
+                }
+            }
+        }
 
         public void Write(AppLogEntry entry)
         {
             lock (_gate)
             {
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException(nameof(CapturingSink));
+                }
+
                 Entries.Add(entry);
             }
         }
 
         public void Flush()
         {
+        }
+
+        public void Dispose()
+        {
+            lock (_gate)
+            {
+                _disposed = true;
+            }
+        }
+    }
+
+    private sealed class BlockingSink : ILogSink, IDisposable
+    {
+        private readonly object _gate = new();
+        private int _blockNextWrite = 1;
+        private bool _disposed;
+
+        public ManualResetEventSlim FirstWriteStarted { get; } = new(false);
+        public ManualResetEventSlim ReleaseFirstWrite { get; } = new(false);
+        public List<AppLogEntry> Entries { get; } = [];
+
+        public bool IsDisposed
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _disposed;
+                }
+            }
+        }
+
+        public void Write(AppLogEntry entry)
+        {
+            if (Interlocked.Exchange(ref _blockNextWrite, 0) == 1)
+            {
+                FirstWriteStarted.Set();
+                ReleaseFirstWrite.Wait();
+            }
+
+            lock (_gate)
+            {
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException(nameof(BlockingSink));
+                }
+
+                Entries.Add(entry);
+            }
+        }
+
+        public void Flush()
+        {
+        }
+
+        public void Dispose()
+        {
+            lock (_gate)
+            {
+                _disposed = true;
+            }
+        }
+
+        public void DisposeWaitHandles()
+        {
+            FirstWriteStarted.Dispose();
+            ReleaseFirstWrite.Dispose();
         }
     }
 }

@@ -118,4 +118,28 @@ public class UrlShortcutTests
         Assert.Equal(0xDC, rewritten[header.Length]); // 高位字节按 Latin-1 无损保留
         Assert.EndsWith("URL=https://example.com/\r\n", Encoding.UTF8.GetString(rewritten));
     }
+
+    [Fact]
+    public void RewriteUrlLine_Latin1拒绝不可表示目标而UTF8仍接受()
+    {
+        const string target = "https://example.com/\u20AC";
+        Assert.Empty(UrlShortcut.ValidateUrl(target));
+
+        var latin1 = Encoding.Latin1.GetBytes(
+            "[InternetShortcut]\r\nURL=https://old.example/\r\nIconFile=C:\\icons\\caf\u00E9.ico\r\n");
+        const string latin1Target = "https://example.com/caf\u00E9";
+        Assert.Empty(UrlShortcut.ValidateUrl(latin1Target));
+        Assert.Equal(
+            Encoding.Latin1.GetBytes(
+                "[InternetShortcut]\r\nURL=" + latin1Target + "\r\nIconFile=C:\\icons\\caf\u00E9.ico\r\n"),
+            UrlShortcut.RewriteUrlLine(latin1, latin1Target));
+        Assert.Throws<EncoderFallbackException>(() => UrlShortcut.RewriteUrlLine(latin1, target));
+
+        var utf8 = Encoding.UTF8.GetBytes(
+            "[InternetShortcut]\r\nURL=https://old.example/\r\nIconFile=C:\\icons\\page.ico\r\n");
+        var rewritten = UrlShortcut.RewriteUrlLine(utf8, target);
+        Assert.Equal(
+            "[InternetShortcut]\r\nURL=" + target + "\r\nIconFile=C:\\icons\\page.ico\r\n",
+            Encoding.UTF8.GetString(rewritten));
+    }
 }

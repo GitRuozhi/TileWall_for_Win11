@@ -68,6 +68,54 @@ public sealed partial class WallStoreTests
         return result.Request;
     }
 
+    private static (WallStore Store, InMemoryFileStore Files, string Root, WallDocument Document,
+        string JournalPath, string CommitId) CreateObservedJournalScenario(bool leaveStagingJournal)
+    {
+        var (store, files, _, root) = Harness();
+        var initial = Wall();
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
+        var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
+            new EntryChange.CreateUrl("a", "https://example.com")), true);
+        Assert.Equal(WallCommitStatus.Committed, added.Status);
+
+        var current = added.CommittedDocument!;
+        var candidate = current with
+        {
+            Generation = current.Generation + 1,
+            Settings = current.Settings with { AlwaysOnTop = !current.Settings.AlwaysOnTop }
+        };
+        var request = Plan(store, current, candidate);
+        if (leaveStagingJournal) files.EntryFault = EntryFaultPoint.BeforeStagingCleanup;
+        var result = store.Commit(current, request, true);
+        string commitId;
+        string journalPath;
+        if (leaveStagingJournal)
+        {
+            Assert.Equal(WallCommitStatus.CommittedNeedsCleanup, result.Status);
+            var stage = Assert.Single(files.ListDirectories(Path.Combine(root, "Staging")));
+            commitId = Path.GetFileName(stage);
+            journalPath = Path.Combine(stage, "commit.json");
+        }
+        else
+        {
+            Assert.Equal(WallCommitStatus.Committed, result.Status);
+            commitId = result.Undo!.CommitId;
+            journalPath = Path.Combine(root, "Recovery", "Entries", commitId, "journal.json");
+        }
+
+        var journal = JsonNode.Parse(files.ReadAllBytes(journalPath))!;
+        Assert.NotEmpty(journal["observed"]!.AsArray());
+        return (store, files, root, result.CommittedDocument!, journalPath, commitId);
+    }
+
+    private static void AssertSameFileBytes(
+        IReadOnlyDictionary<string, byte[]> expected, IReadOnlyDictionary<string, byte[]> actual)
+    {
+        Assert.Equal(expected.Keys.Order(StringComparer.Ordinal), actual.Keys.Order(StringComparer.Ordinal));
+        foreach (var (path, bytes) in expected)
+            Assert.Equal(bytes, actual[path]);
+    }
+
     [Fact]
     public void FreshInitializeCommitRestartAndStaleReject()
     {
@@ -203,6 +251,28 @@ public sealed partial class WallStoreTests
         var request = Plan(store, loaded.Document, candidate);
         Assert.Equal(WallCommitStatus.Committed, store.Commit(loaded.Document, request, false).Status);
         Assert.Equal(formatted, files.ReadAllBytes(Path.Combine(root, "Recovery", "config.prev.json")));
+    }
+
+    [Fact]
+    public void SameGenerationExternalConfigChangeRejectsCommitWithoutWriting()
+    {
+        var (store, files, _, root) = Harness();
+        var current = Wall();
+        store.InitializeFresh(current);
+        var candidate = current with
+        {
+            Generation = 1,
+            Settings = current.Settings with { AlwaysOnTop = false }
+        };
+        var request = Plan(store, current, candidate);
+
+        var external = current with { Settings = current.Settings with { ThemeMode = WallThemeMode.Dark } };
+        var configPath = Path.Combine(root, "config.json");
+        files.WriteAllBytes(configPath, WallJson.Serialize(external));
+        var baseline = files.SnapshotFiles();
+
+        Assert.Equal(WallCommitStatus.Rejected, store.Commit(current, request, true).Status);
+        AssertSameFileBytes(baseline, files.SnapshotFiles());
     }
 
     [Fact]
@@ -364,6 +434,58 @@ public sealed partial class WallStoreTests
         Assert.Equal(WallOpenStatus.RecoveryBlocked, store.Open().Status);
         Assert.True(files.Exists(journalPath));
         Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+    }
+
+    [Theory]
+    [InlineData(true, null)]
+    [InlineData(true, "")]
+    [InlineData(true, " \t ")]
+    [InlineData(false, null)]
+    [InlineData(false, "")]
+    [InlineData(false, " \t ")]
+    public void ObservedJournalPathMissingBlocksRecoveryAndKeepsMaterial(
+        bool leaveStagingJournal, string? invalidRelativePath)
+    {
+        // An equivalent untouched journal must remain readable before the malformed copy is checked.
+        var valid = CreateObservedJournalScenario(leaveStagingJournal);
+        var validJournal = JsonNode.Parse(valid.Files.ReadAllBytes(valid.JournalPath))!;
+        var validObserved = Assert.Single(validJournal["observed"]!.AsArray());
+        Assert.Equal("Objects/a/A.url", validObserved!["relativePath"]!.GetValue<string>());
+        Assert.Equal(WallOpenStatus.Loaded, valid.Store.Open().Status);
+
+        var (store, files, root, current, journalPath, commitId) =
+            CreateObservedJournalScenario(leaveStagingJournal);
+        var journal = JsonNode.Parse(files.ReadAllBytes(journalPath))!;
+        var observed = Assert.Single(journal["observed"]!.AsArray());
+        if (invalidRelativePath is null)
+            observed!["relativePath"] = null;
+        else
+            observed!["relativePath"] = JsonValue.Create(invalidRelativePath);
+        files.WriteAllBytes(journalPath, Encoding.UTF8.GetBytes(journal.ToJsonString()));
+
+        var configPath = Path.Combine(root, "config.json");
+        var entryPath = EntryPath(root, current.Lanes[0].Groups[0].Members[0].Entry!);
+        var baseline = files.SnapshotFiles();
+        Assert.Contains(journalPath, baseline.Keys);
+        Assert.Contains(configPath, baseline.Keys);
+        Assert.Contains(entryPath, baseline.Keys);
+
+        var opened = store.Open();
+        Assert.Equal(WallOpenStatus.RecoveryBlocked, opened.Status);
+        Assert.Contains(commitId, string.Join(" ", opened.Diagnostics), StringComparison.Ordinal);
+        Assert.True(files.Exists(journalPath));
+        AssertSameFileBytes(baseline, files.SnapshotFiles());
+
+        var candidate = current with
+        {
+            Generation = current.Generation + 1,
+            Settings = current.Settings with { AlwaysOnTop = !current.Settings.AlwaysOnTop }
+        };
+        var request = Plan(store, current, candidate);
+        var blockedCommit = store.Commit(current, request, true);
+        Assert.Equal(WallCommitStatus.RecoveryBlocked, blockedCommit.Status);
+        Assert.True(files.Exists(journalPath));
+        AssertSameFileBytes(baseline, files.SnapshotFiles());
     }
 
     [Fact]
@@ -638,6 +760,36 @@ public sealed partial class WallStoreTests
     }
 
     [Fact]
+    public void Latin1UrlRejectsUnrepresentableTargetWithoutChangingEntryOrStoreFiles()
+    {
+        var (store, files, _, root) = Harness();
+        var initial = Wall();
+        store.InitializeFresh(initial);
+        var source = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "source-" + Guid.NewGuid().ToString("N") + ".url"));
+        var oldBytes = Encoding.Latin1.GetBytes(
+            "[InternetShortcut]\r\nURL=https://old.example/\r\nIconFile=C:\\icons\\caf\u00E9.ico\r\nIconIndex=3\r\n");
+        files.WriteAllBytes(source, oldBytes);
+
+        var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
+            new EntryChange.CopyShortcut("a", source)), true);
+        Assert.Equal(WallCommitStatus.Committed, added.Status);
+        var current = added.CommittedDocument!;
+        var entry = current.Lanes[0].Groups[0].Members[0].Entry!;
+        var entryPath = EntryPath(root, entry);
+        Assert.Equal(oldBytes, files.ReadAllBytes(entryPath));
+
+        const string target = "https://new.example/\u20AC";
+        Assert.Empty(UrlShortcut.ValidateUrl(target));
+        var request = Plan(store, current, current with { Generation = 2 },
+            new EntryChange.ChangeTarget("a", target));
+        var baseline = files.SnapshotFiles();
+
+        Assert.Equal(WallCommitStatus.Rejected, store.Commit(current, request, true).Status);
+        Assert.Equal(oldBytes, files.ReadAllBytes(entryPath));
+        AssertSameFileBytes(baseline, files.SnapshotFiles());
+    }
+
+    [Fact]
     public void DamagedStoredRecoveryJournalBlocksLaterWritesAndKeepsMaterial()
     {
         var (store, files, _, root) = Harness();
@@ -837,7 +989,8 @@ public sealed partial class WallStoreTests
         files.CreateDirectory(Path.Combine(root, "Staging"));
         files.CreateDirectory(stage);
         files.WriteAllBytes(Path.Combine(stage, "config.tmp"), [1]);
-        var malformed = initial with { Generation = 1, Rows = 0 };
+        var malformed = Wall(Tile("a")) with { Generation = 1, Rows = 1 };
+        Assert.Contains("WALL_GEOMETRY", WallLayoutEngine.ValidateGeometry(malformed));
         var result = store.Commit(initial, new WallCommitRequest(0, malformed, []), true);
         Assert.Equal(WallCommitStatus.Rejected, result.Status);
         Assert.True(files.Exists(Path.Combine(stage, "config.tmp")));

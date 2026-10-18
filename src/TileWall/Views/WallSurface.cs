@@ -50,8 +50,6 @@ public sealed class WallSurface : Canvas
     private string? _dragGroupId;
     private bool _dragAllowed;
     private Border? _groupDragVisual;
-    private CancellationTokenSource? _imageCancellation;
-    private long _renderVersion;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _titleScrollTimer;
     private TextBlock? _scrollingTitle;
     private Border? _scrollingTitleBand;
@@ -63,7 +61,6 @@ public sealed class WallSurface : Canvas
 
     private CornerRadius WallCorners => WallCornerStyle.Corners(_document!.Settings.VisualStyle);
 
-    public WallImageService? Images { get; set; }
     public Func<WallMember, string?>? ResolveEntryPath { get; set; }
     public Func<string, PuzzleFrame?>? ResolvePuzzleFrame { get; set; }
     public Func<string, double>? ResolvePuzzleProgress { get; set; }
@@ -141,7 +138,6 @@ public sealed class WallSurface : Canvas
         if (resetAppearance) ResetProjection();
         _renderScale = scale;
         _renderLanguage = ProductStrings.Language;
-        _imageCancellation ??= new CancellationTokenSource();
         var geometry = measuredGeometry ?? WallLayoutEngine.Measure(document, _metrics);
         var groups = document.Lanes.SelectMany(l => l.Groups).ToDictionary(g => g.Id, StringComparer.Ordinal);
         var members = groups.Values.SelectMany(g => g.Members).ToDictionary(m => m.Id, StringComparer.Ordinal);
@@ -183,8 +179,7 @@ public sealed class WallSurface : Canvas
                 }
                 if (!_buttons.TryGetValue(member.Id, out var button))
                 {
-                    _buttons.Add(member.Id, button = CreateMember(member, memberPlace.Bounds, _renderVersion,
-                        _imageCancellation.Token));
+                    _buttons.Add(member.Id, button = CreateMember(member, memberPlace.Bounds));
                     VisualCreationCount++;
                 }
                 AddAt(button, memberPlace.Bounds);
@@ -392,16 +387,12 @@ public sealed class WallSurface : Canvas
         editor.SelectAll();
     }
 
-    public void CancelImageRequests()
+    public void ClearTransientInteraction()
     {
         ClearGroupFeedback();
         StopTitleScrolling();
         foreach (var reset in _memberInteractions.Values) reset();
         foreach (var puzzle in _puzzles.Values) puzzle.StopTransientFeedback();
-        _imageCancellation?.Cancel();
-        _imageCancellation?.Dispose();
-        _imageCancellation = null;
-        _renderVersion++;
     }
 
     public FrameworkElement? CreateDragVisual(string? memberId, string? groupId)
@@ -741,8 +732,7 @@ public sealed class WallSurface : Canvas
         return grid;
     }
 
-    private Button CreateMember(WallMember member, DipRect bounds, long renderVersion,
-        CancellationToken cancellation)
+    private Button CreateMember(WallMember member, DipRect bounds)
     {
         // WinUI clips Grid children to its CornerRadius, including asynchronously loaded images.
         // Keep the rectangular viewport fixed so title scrolling never expands the tile bounds.

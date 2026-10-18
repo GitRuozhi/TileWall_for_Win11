@@ -55,7 +55,7 @@ public sealed partial class MainWindow
         _focusCheckRetry?.Stop();
         CancelTransientState();
         AppWindow.Hide();
-        Surface.CancelImageRequests();
+        Surface.ClearTransientInteraction();
         _needsVisualRefresh = true;
         UpdatePuzzleGate();
     }

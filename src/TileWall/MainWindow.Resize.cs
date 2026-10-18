@@ -320,6 +320,8 @@ public sealed partial class MainWindow
         _resizeSnapshot = null;
         _resizeProposal = null;
         _resizePreviewDocument = null;
+        _resizeFits.Clear();
+        _resizeFullResult = null;
         if (thumb?.IsDragging == true) thumb.CancelDrag();
         TraceInput($"ResizeCancel reason={reason} events={_resizeDeltaCount} samples={_resizeSampleCount}");
         StopFrameSubscriptionIfIdle();

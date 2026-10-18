@@ -5,7 +5,7 @@ namespace TileWall.Core.Entries;
 /// <summary>
 /// .url 互联网快捷方式（INI 风格纯文本）读写：不经 COM [R11]（IShellLink 无 URL 能力，探针 E 实测）。
 /// 编辑只替换 URL= 行，其余行（IconFile/IconIndex 等外部字段）逐字节保留（设计 §6.4 语义保真）。
-/// 字节解码优先严格 UTF-8，失败回退 Latin-1（重编码字节无损耗）；本类新建内容为无 BOM UTF-8。
+/// 字节解码优先严格 UTF-8，失败回退 Latin-1；Latin-1 回写使用严格编码，不能表示的新文本会失败。本类新建内容为无 BOM UTF-8。
 /// </summary>
 public static class UrlShortcut
 {
@@ -19,6 +19,7 @@ public static class UrlShortcut
 
     private static readonly Encoding StrictUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly Encoding WritingUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+    private static readonly Encoding StrictLatin1 = CreateStrictLatin1();
     private const string UrlLinePrefix = "URL=";
 
     /// <summary>固定错误码列表（空 = 语法合法）：URL_EMPTY / URL_WHITESPACE / URL_SCHEME_UNSUPPORTED / URL_TOO_LONG。</summary>
@@ -153,7 +154,7 @@ public static class UrlShortcut
         }
         catch (DecoderFallbackException)
         {
-            return Encoding.Latin1.GetString(content); // ANSI/本机码页：字节 1:1 映射，重编码无损耗
+            return Encoding.Latin1.GetString(content); // Latin-1 maps each byte 1:1.
         }
     }
 
@@ -166,8 +167,15 @@ public static class UrlShortcut
         }
         catch (DecoderFallbackException)
         {
-            return Encoding.Latin1;
+            return StrictLatin1;
         }
+    }
+
+    private static Encoding CreateStrictLatin1()
+    {
+        var encoding = (Encoding)Encoding.Latin1.Clone();
+        encoding.EncoderFallback = EncoderFallback.ExceptionFallback;
+        return encoding;
     }
 
     private static IEnumerable<string> SplitLines(string text)

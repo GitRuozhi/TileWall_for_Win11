@@ -189,6 +189,8 @@
     <x:String x:Key="Wall.RebuildFailed">重建失败；磁盘状态未更改，可再次尝试或重启。</x:String>
     <x:String x:Key="Wall.ViewBlocked">墙面视图已阻断，请重新启动。</x:String>
     <x:String x:Key="Wall.CommitViewFailed">已写入磁盘，但墙面刷新失败：{0}</x:String>
+    <x:String x:Key="Wall.RequiresReopen">更改已写入磁盘，但当前会话未能接受新状态。请关闭并重新打开 TileWall 以读取已保存的墙面。</x:String>
+    <x:String x:Key="Wall.RecoveryBlocked">存储恢复尚未完成，墙面操作已阻断。请关闭并重新打开 TileWall 以重试恢复。</x:String>
     <x:String x:Key="Wall.CleanupPending">已保存；清理将在恢复时继续。</x:String>
     <x:String x:Key="Wall.LocationUnavailable">位置不可用：{0} {1}</x:String>
     <x:String x:Key="Wall.Rejection.None">无法完成这项操作。</x:String>

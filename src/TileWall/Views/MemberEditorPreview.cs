@@ -38,6 +38,8 @@ internal sealed partial class MemberEditorPreview : Grid
 
     internal EditTool? Tool { get; set; }
     internal event Action<MemberImageDisplay>? DisplayChanged;
+    internal event Action? GestureCompleted;
+    internal bool IsGestureActive => _scaling || _stroke;
     internal event Action? StrokeStarted;
     internal event Action<WallEdge>? StrokeEdge;
     internal event Action? StrokeCompleted;
@@ -64,13 +66,15 @@ internal sealed partial class MemberEditorPreview : Grid
         Refresh(refitCamera: !_scaling && !_stroke);
     }
 
-    internal void FinishGesture()
+    internal void FinishGesture(bool notifyCompleted = true)
     {
+        var wasActive = IsGestureActive;
         if (_stroke) { _stroke = false; _previousStroke = null; _strokeAffected.Clear(); StrokeCompleted?.Invoke(); }
         if (_scaling) _scaling = false;
         _scalePointerId = 0;
         _frame = _latestFrame;
         SetEdgeCursor(false); Refresh(refitCamera: true);
+        if (wasActive && notifyCompleted) GestureCompleted?.Invoke();
     }
 
     private void Refresh(bool refitCamera)

@@ -6,7 +6,7 @@ namespace TileWall.Core.Shell;
 /// 滚动文件日志落地（C4/F-07）：&lt;dir&gt;/&lt;base&gt;.log 追加写；超过 maxFileBytes 滚动为
 /// .1.log … .maxHistoryFiles.log（新→旧），最旧直接删除。线程安全（引擎单线程写 + Flush 并发）。
 /// 单条一行：换行折叠为字面 \n，便于 grep。落地持续失败（磁盘满/权限）达上限后放弃——
-/// 日志系统不得反过来拖垮宿主。多进程同机各写同一路径时按追加模式尽力而为（行级交错可容忍）。
+/// 日志系统不得反过来拖垮宿主。同一路径的滚动writer由单一主实例拥有，不提供多进程滚动协调。
 /// </summary>
 public sealed class RollingFileSink : ILogSink, IDisposable
 {

@@ -68,7 +68,6 @@ public static class StartMenuScanner
 
             var pending = new Queue<string>();
             var scheduled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             pending.Enqueue(rootFullPath);
             scheduled.Add(rootFullPath);
             while (pending.Count > 0)
@@ -77,12 +76,6 @@ public static class StartMenuScanner
                 if (!IsWithinRoot(rootFullPath, directory))
                 {
                     skipped++;
-                    continue;
-                }
-
-                if (!visited.Add(directory))
-                {
-                    skipped++; // 防止异常枚举器重复返回目录或形成循环
                     continue;
                 }
 

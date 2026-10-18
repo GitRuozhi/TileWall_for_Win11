@@ -21,7 +21,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly ContentDialog _dialog;
     private readonly DialogExitPrompt _exit;
     private readonly WallImageService _images;
-    private readonly Func<StartMenuScanResult, IReadOnlyList<StartMenuImportCandidate>> _prepare;
+    private readonly Func<StartMenuScanResult, CancellationToken, Task<IReadOnlyList<StartMenuImportCandidate>>> _prepare;
     private readonly Func<IReadOnlyList<ImportBatchItem>, bool, string?> _save;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly HashSet<CancellationTokenSource> _rowRequests = [];
@@ -33,7 +33,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly TextBlock _sourceLabel = Label(), _trimLabel = Label(), _groupsLabel = Label(), _sizeLabel = Label();
     private readonly WallMetrics _metrics = new();
     private readonly WallVisualStyle _style;
-    private readonly Dictionary<string, (Border Outline, Border Check)> _selectionVisuals = new(StringComparer.Ordinal);
+    private readonly HashSet<CandidateRow> _rows = [];
     private readonly Canvas _groupOverlay = new() { IsHitTestVisible = false };
     private GridViewHeaderItem? _hoveredHeader;
     private readonly GridView _grid = new() { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = false };
@@ -44,10 +44,12 @@ internal sealed class ImportDialog : IWallDialogSession
     private IReadOnlyList<StartMenuImportCandidate> _visibleCandidates = [];
     private Task _pending = Task.CompletedTask;
     private bool _saved, _closed, _allowDiscard, _discarded, _scanComplete, _scanReceived, _scanFailed;
+    private bool _synchronizingSelection;
+    private long _scanGeneration;
     private int _tileSize = 2, _skipped;
 
     public ImportDialog(Window owner, WallImageService images,
-        Func<StartMenuScanResult, IReadOnlyList<StartMenuImportCandidate>> prepare,
+        Func<StartMenuScanResult, CancellationToken, Task<IReadOnlyList<StartMenuImportCandidate>>> prepare,
         Func<IReadOnlyList<ImportBatchItem>, bool, string?> save, WallVisualStyle style)
     {
         _images = images; _prepare = prepare; _save = save; _style = style;
@@ -58,6 +60,7 @@ internal sealed class ImportDialog : IWallDialogSession
             <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="GridViewItem">
                 <Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" />
                 <Setter Property="MinWidth" Value="0" /><Setter Property="MinHeight" Value="0" />
+                <Setter Property="IsTabStop" Value="False" />
                 <Setter Property="HorizontalContentAlignment" Value="Left" />
                 <Setter Property="VerticalContentAlignment" Value="Top" />
             </Style>
@@ -176,8 +179,12 @@ internal sealed class ImportDialog : IWallDialogSession
         };
         _dialog.Closing += (_, e) =>
         {
-            if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); }
-            else if (!_discarded && HasUnsavedDraft) { e.Cancel = true; OfferDiscard(); }
+            try
+            {
+                if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); }
+                else if (!_discarded && HasUnsavedDraft) { e.Cancel = true; OfferDiscard(); }
+            }
+            finally { if (!e.Cancel) StopRequests(); }
         };
         RefreshStrings();
     }
@@ -191,25 +198,30 @@ internal sealed class ImportDialog : IWallDialogSession
 
     private async Task ScanAsync()
     {
+        var generation = ++_scanGeneration;
+        var token = _lifetime.Token;
+        _scanComplete = false;
         _status.Text = ProductStrings.Get("Import.Scanning");
         try
         {
-            var result = await StartMenuImportScan.RunAsync(_lifetime.Token);
-            if (_closed || _lifetime.IsCancellationRequested) return;
+            var result = await StartMenuImportScan.RunAsync(token);
+            if (_closed || token.IsCancellationRequested || generation != _scanGeneration) return;
+            var candidates = await _prepare(result, token);
+            if (_closed || token.IsCancellationRequested || generation != _scanGeneration) return;
             _scanReceived = true;
-            _candidates = _prepare(result);
+            _candidates = candidates;
             _skipped = result.SkippedDirectories;
             _scanComplete = _skipped == 0 && _candidates.All(candidate => !candidate.ReadFailed);
 
             // Keep the former recommended default without exposing a separate preset action.
             foreach (var candidate in _candidates.Where(candidate => candidate.CanAdd && candidate.Exclusion == StartMenuExclusion.None))
-                _selected.Add(candidate.SelectionKey);
+                SetSelection(candidate.SelectionKey, true, refresh: false);
             RefreshProjection();
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            if (!_closed)
+            if (!_closed && generation == _scanGeneration && !token.IsCancellationRequested)
             {
                 _scanFailed = true;
                 _status.Text = string.Format(ProductStrings.Get("Import.ScanFailed"), ex.Message);
@@ -224,8 +236,7 @@ internal sealed class ImportDialog : IWallDialogSession
         var clear = candidates.All(candidate => _selected.Contains(candidate.SelectionKey));
         foreach (var candidate in candidates)
         {
-            if (clear) _selected.Remove(candidate.SelectionKey);
-            else _selected.Add(candidate.SelectionKey);
+            SetSelection(candidate.SelectionKey, !clear, refresh: false);
         }
         SelectionChanged();
     }
@@ -233,8 +244,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private void RefreshProjection()
     {
         _visibleCandidates = StartMenuImportProjection.Project(_candidates, _autoTrim.IsOn, _recognizeGroups.IsOn);
-        foreach (var request in _rowRequests.ToArray()) ReleaseRowRequest(request);
-        _selectionVisuals.Clear();
+        foreach (var row in _rows.ToArray()) ReleaseRow(row);
         _grid.ItemsSource = null;
         var source = new CollectionViewSource { IsSourceGrouped = true,
             Source = _visibleCandidates.GroupBy(candidate => candidate.Bucket.Key)
@@ -262,7 +272,18 @@ internal sealed class ImportDialog : IWallDialogSession
     }
 
     private sealed record CandidateRow(CancellationTokenSource Request, string SelectionKey, PuzzleCanvasView View,
-        Border Outline, Border Check);
+        ToggleButton Toggle, bool CanAdd, RoutedEventHandler Changed, Action ResetInteraction, Border Outline, Border Check);
+
+    private void ReleaseRow(CandidateRow row)
+    {
+        if (!_rows.Remove(row)) return;
+        ReleaseRowRequest(row.Request);
+        row.Toggle.Checked -= row.Changed;
+        row.Toggle.Unchecked -= row.Changed;
+        row.ResetInteraction();
+        row.View.StopTransientFeedback();
+        row.Toggle.IsChecked = false;
+    }
 
     private void ClearGroupOutline()
     {
@@ -317,9 +338,7 @@ internal sealed class ImportDialog : IWallDialogSession
     {
         if (e.ItemContainer.Tag is CandidateRow old)
         {
-            ReleaseRowRequest(old.Request); old.View.StopTransientFeedback();
-            if (_selectionVisuals.TryGetValue(old.SelectionKey, out var selection) && ReferenceEquals(selection.Outline, old.Outline))
-                _selectionVisuals.Remove(old.SelectionKey);
+            ReleaseRow(old);
             e.ItemContainer.Tag = null;
         }
         if (e.ItemContainer.ContentTemplateRoot is not Grid host) return;
@@ -344,26 +363,33 @@ internal sealed class ImportDialog : IWallDialogSession
         if (reason.Length != 0) tooltip += "\n" + reason;
         if (!candidate.IsImportable) tooltip += "\n" + string.Join("; ", candidate.NotImportableReasons);
         var view = WallMemberVisualFactory.Create(tile, null, _metrics, _dialog.XamlRoot?.RasterizationScale ?? 1,
-            _style, (button, _) =>
-            {
-                button.IsEnabled = item.CanAdd;
-                ActionIcon.SetTip(button, tooltip);
-                var accessibleName = string.IsNullOrWhiteSpace(candidate.DisplayName)
-                    ? Path.GetFileNameWithoutExtension(candidate.FullPath) ?? candidate.FullPath : candidate.DisplayName;
-                AutomationProperties.SetName(button, accessibleName);
-                AutomationProperties.SetHelpText(button, tooltip);
-                AutomationProperties.SetAutomationId(button, "import-candidate-" + candidate.FullPath);
-                button.Click += (_, _) =>
-                {
-                    if (!_selected.Add(selectionKey)) _selected.Remove(selectionKey);
-                    SelectionChanged();
-                };
-            });
+            _style, interactive: false, externalInteraction: true);
+        view.IsHitTestVisible = false;
         card.Children.Add(view);
         var visual = WallMemberVisualFactory.AddSelection(card, _style);
-        _selectionVisuals[selectionKey] = visual;
-        e.ItemContainer.Tag = new CandidateRow(request, selectionKey, view, visual.Outline, visual.Check);
-        host.Children.Add(card); UpdateSelectionFeedback();
+        var toggle = new ToggleButton
+        {
+            Content = card, Width = size, Height = size, MinWidth = 0, MinHeight = 0,
+            Padding = new Thickness(0), BorderThickness = new Thickness(0),
+            CornerRadius = WallCornerStyle.Corners(_style), IsEnabled = item.CanAdd,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch,
+        };
+        ActionIcon.SetTip(toggle, tooltip);
+        var accessibleName = string.IsNullOrWhiteSpace(candidate.DisplayName)
+            ? Path.GetFileNameWithoutExtension(candidate.FullPath) ?? candidate.FullPath : candidate.DisplayName;
+        AutomationProperties.SetName(toggle, accessibleName);
+        AutomationProperties.SetHelpText(toggle, tooltip);
+        AutomationProperties.SetAutomationId(toggle, "import-candidate-" + candidate.FullPath);
+        var reset = WallMemberVisualFactory.ConfigureInteraction(toggle, card, toggle.CornerRadius, view.SetExternalHover);
+        RoutedEventHandler changed = (_, _) =>
+        {
+            if (!_synchronizingSelection && item.CanAdd) SetSelection(selectionKey, toggle.IsChecked == true);
+        };
+        toggle.Checked += changed; toggle.Unchecked += changed;
+        var row = new CandidateRow(request, selectionKey, view, toggle, item.CanAdd, changed, reset, visual.Outline, visual.Check);
+        _rows.Add(row);
+        e.ItemContainer.Tag = row;
+        host.Children.Add(toggle); UpdateSelectionFeedback();
         _ = LoadIconAsync();
 
         async Task LoadIconAsync()
@@ -391,13 +417,27 @@ internal sealed class ImportDialog : IWallDialogSession
         UpdateSelectionFeedback(); RefreshStrings(); UpdateStatus();
     }
 
+    private void SetSelection(string key, bool selected, bool refresh = true)
+    {
+        if (selected) _selected.Add(key);
+        else _selected.Remove(key);
+        if (refresh) SelectionChanged();
+    }
+
     private void UpdateSelectionFeedback()
     {
-        foreach (var (key, visual) in _selectionVisuals)
+        _synchronizingSelection = true;
+        try
         {
-            var visible = _selected.Contains(key) ? Visibility.Visible : Visibility.Collapsed;
-            visual.Outline.Visibility = visible; visual.Check.Visibility = visible;
+            foreach (var row in _rows)
+            {
+                var selected = row.CanAdd && _selected.Contains(row.SelectionKey);
+                row.Toggle.IsChecked = selected;
+                var visible = selected ? Visibility.Visible : Visibility.Collapsed;
+                row.Outline.Visibility = visible; row.Check.Visibility = visible;
+            }
         }
+        finally { _synchronizingSelection = false; }
     }
 
     private void UpdateStatus()
@@ -416,21 +456,28 @@ internal sealed class ImportDialog : IWallDialogSession
     private void StopRequests()
     {
         if (_closed) return;
-        _closed = true; _lifetime.Cancel();
+        _closed = true; _scanGeneration++; _lifetime.Cancel();
+        foreach (var row in _rows.ToArray()) ReleaseRow(row);
         foreach (var request in _rowRequests.ToArray()) ReleaseRowRequest(request);
     }
 
     public bool HasUnsavedDraft => !_saved && _selected.Count != 0;
     public async Task WaitForPendingAsync()
     {
-        try { await _pending.WaitAsync(TimeSpan.FromSeconds(2)); }
-        catch (TimeoutException) { }
+        // Exit cancels an unfinished scan before draining its accepted STA work.
+        // A single synchronous system call may finish, but no cancelled result is published.
+        if (!_closed && !_pending.IsCompleted) _lifetime.Cancel();
+        try { await _pending; }
         catch (OperationCanceledException) { }
     }
     public Task<ExitDecision> ConfirmExitAsync() => _exit.ConfirmAsync();
     public void RequestDismiss() => _dialog.Hide();
     public void Close() { _discarded = true; StopRequests(); _dialog.Hide(); }
-    public void DiscardDraft() { _selected.Clear(); _discarded = true; }
+    public void DiscardDraft()
+    {
+        foreach (var key in _selected.ToArray()) SetSelection(key, false, refresh: false);
+        UpdateSelectionFeedback(); _discarded = true;
+    }
 
     private ImportBatchItem[] SelectedItems() => _visibleCandidates
         .Where(candidate => candidate.CanAdd && _selected.Contains(candidate.SelectionKey)).Select(candidate =>

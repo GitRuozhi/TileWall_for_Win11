@@ -1,4 +1,5 @@
 using TileWall.Core.Grid;
+using TileWall.Core.Storage;
 using TileWall.Core.Wall;
 using Xunit;
 
@@ -36,6 +37,148 @@ public sealed class StartMenuImportPlannerTests
         ImportSource = GroupSource(id),
         Members = members,
     };
+
+    private static WallViewportBudget Budget(int columns, int rows, int? physicalRows = null)
+    {
+        var metrics = new WallMetrics();
+        return new(metrics.WallWidth(columns), metrics.WallHeight(physicalRows ?? rows), columns, rows, false);
+    }
+
+    private static StartGroup TallGroup() => Group("tall",
+        Tile("tall-a", 4, 3, "tall"), Tile("tall-b", 4, 3, "tall"), Tile("tall-c", 4, 3, "tall"));
+
+    [Fact]
+    public void LargerViewportBudgetKeepsCurrentHeightAndUnneededManualEmptyLanes()
+    {
+        var left = new WallLane { Groups = [] };
+        var kept = Group("kept", Tile("kept-member", groupId: "kept") with { UserClaimed = true }) with { UserClaimed = true };
+        var middle = new WallLane { Groups = [kept] };
+        var right = new WallLane { Groups = [] };
+        var current = WallDocument.Empty(3, 16) with { Generation = 5, Lanes = [left, middle, right] };
+        var before = WallJson.Serialize(current);
+
+        var result = StartMenuImportPlanner.TryPlan(current, 5,
+            [Group("imported", Tile("imported-member", groupId: "imported"))], budget: Budget(4, 24));
+
+        Assert.True(result.Success, result.Detail);
+        var proposed = result.Proposal!.Document;
+        Assert.Equal(16, proposed.Rows);
+        Assert.Equal(4, proposed.Columns);
+        Assert.Same(left, proposed.Lanes[1]);
+        Assert.Same(middle, proposed.Lanes[2]);
+        Assert.Same(right, proposed.Lanes[3]);
+        Assert.Same(kept, proposed.Lanes[2].Groups[0]);
+        Assert.True(proposed.Lanes[2].Groups[0].UserClaimed);
+        Assert.True(proposed.Lanes[2].Groups[0].Members[0].UserClaimed);
+        Assert.Equal(before, WallJson.Serialize(current));
+    }
+
+    [Fact]
+    public void ImportCompactsNewMemberGapsAndOnlyNecessaryRightmostEmptyLaneToKeepHeight()
+    {
+        var left = new WallLane { Groups = [] };
+        var retainedMember = Tile("retained-member", groupId: "retained") with
+            { LocalBounds = new GridRect(4, 1, 1, 1), UserClaimed = true };
+        var retained = Group("retained", retainedMember) with { UserClaimed = true };
+        var middle = new WallLane { Groups = [retained], ImportBatchId = "original-lane" };
+        var right = new WallLane { Groups = [] };
+        var current = WallDocument.Empty(3, 4) with { Generation = 8, Lanes = [left, middle, right] };
+        var incomingA = Tile("incoming-a", groupId: "incoming") with { LocalBounds = new GridRect(1, 15, 1, 1) };
+        var incomingB = Tile("incoming-b", groupId: "incoming") with { LocalBounds = new GridRect(7, 20, 1, 1) };
+        var incoming = Group("incoming", incomingA, incomingB);
+        var before = WallJson.Serialize(current);
+
+        var result = StartMenuImportPlanner.TryPlan(current, 8, [incoming], budget: Budget(3, 24));
+
+        Assert.True(result.Success, result.Detail);
+        var proposed = result.Proposal!.Document;
+        Assert.Equal(4, proposed.Rows);
+        Assert.Equal(3, proposed.Columns);
+        Assert.Same(left, proposed.Lanes[1]);
+        Assert.Same(middle, proposed.Lanes[2]);
+        Assert.Same(retained, proposed.Lanes[2].Groups[0]);
+        Assert.Same(retainedMember, proposed.Lanes[2].Groups[0].Members[0]);
+        Assert.Equal("original-lane", proposed.Lanes[2].ImportBatchId);
+        var imported = Assert.Single(proposed.Lanes[0].Groups);
+        Assert.Equal(new[] { "incoming-a", "incoming-b" }, imported.Members.Select(member => member.Id));
+        Assert.All(imported.Members, member => Assert.Equal(0, member.LocalBounds.Row));
+        Assert.Same(incoming.ImportSource, imported.ImportSource);
+        Assert.Same(incomingA.ImportSource, imported.Members[0].ImportSource);
+        Assert.Equal(new GridRect(1, 15, 1, 1), incomingA.LocalBounds);
+        Assert.Equal(new GridRect(7, 20, 1, 1), incomingB.LocalBounds);
+        Assert.Equal(before, WallJson.Serialize(current));
+    }
+
+    [Fact]
+    public void WholeTallGroupRaisesOnlyToSmallestHeightThatFits()
+    {
+        var current = WallDocument.Empty(1, 4);
+        var before = WallJson.Serialize(current);
+        var imported = TallGroup();
+
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [imported], budget: Budget(4, 24));
+
+        Assert.True(result.Success, result.Detail);
+        var proposed = result.Proposal!.Document;
+        Assert.Equal(7, proposed.Rows); // Six occupied member rows plus the group's title row.
+        var group = Assert.Single(proposed.Lanes[0].Groups);
+        Assert.Equal(imported.Members.Select(member => member.Id), group.Members.Select(member => member.Id));
+        Assert.Equal(6, group.Members.Max(member => member.LocalBounds.Bottom));
+        Assert.Equal(before, WallJson.Serialize(current));
+    }
+
+    [Fact]
+    public void ColumnPressureRaisesOnlyEnoughToStackCompleteGroupsWithoutMovingExistingContent()
+    {
+        var retained = Group("kept", Tile("kept-member", groupId: "kept")) with { UserClaimed = true };
+        var current = WallDocument.Empty(1, 2) with { Lanes = [new WallLane { Groups = [retained] }] };
+        var groups = new[] { Group("one", Tile("one-member", groupId: "one")), Group("two", Tile("two-member", groupId: "two")) };
+        var before = WallJson.Serialize(current);
+
+        var result = StartMenuImportPlanner.TryPlan(current, 0, groups, budget: Budget(2, 24));
+
+        Assert.True(result.Success, result.Detail);
+        var proposed = result.Proposal!.Document;
+        Assert.Equal(4, proposed.Rows);
+        Assert.Equal(2, proposed.Columns);
+        Assert.Equal(new[] { "one", "two" }, proposed.Lanes[0].Groups.Select(group => group.Id));
+        Assert.Same(current.Lanes[0], proposed.Lanes[1]);
+        Assert.Same(retained, proposed.Lanes[1].Groups[0]);
+        Assert.Equal(before, WallJson.Serialize(current));
+    }
+
+    [Theory]
+    [InlineData(6, 6)]
+    [InlineData(24, 6)]
+    public void MaximumRowOrPhysicalHeightLimitRejectsWholeGroupWithoutChangingInputs(int maxRows, int physicalRows)
+    {
+        var retained = Group("kept", Tile("kept-member", groupId: "kept") with { UserClaimed = true }) with { UserClaimed = true };
+        var current = WallDocument.Empty(1, 4) with { Lanes = [new WallLane { Groups = [retained] }] };
+        var imported = TallGroup();
+        var before = WallJson.Serialize(current);
+        var oldBounds = imported.Members.Select(member => member.LocalBounds).ToArray();
+
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [imported], budget: Budget(3, maxRows, physicalRows));
+
+        Assert.Null(result.Proposal);
+        Assert.Equal(WallRejection.NoSpace, result.Rejection);
+        Assert.Equal("GROUP_TOO_TALL:tall", result.Detail);
+        Assert.Equal(before, WallJson.Serialize(current));
+        Assert.Equal(oldBounds, imported.Members.Select(member => member.LocalBounds));
+        Assert.Same(retained, current.Lanes[0].Groups[0]);
+    }
+
+    [Fact]
+    public void SmallerViewportCannotShrinkSavedHeightForImport()
+    {
+        var current = WallDocument.Empty(1, 16);
+        var before = WallJson.Serialize(current);
+        var result = StartMenuImportPlanner.TryPlan(current, 0,
+            [Group("imported", Tile("item", groupId: "imported"))], budget: Budget(3, 12));
+        Assert.Null(result.Proposal);
+        Assert.Equal(WallRejection.WorkAreaTooSmall, result.Rejection);
+        Assert.Equal(before, WallJson.Serialize(current));
+    }
 
     [Fact]
     public void NewGroupsArePrependedInOrderAndExistingLanesKeepTheirContent()
@@ -123,9 +266,15 @@ public sealed class StartMenuImportPlannerTests
     }
 
     [Fact]
-    public void StructuralColumnLimitRejectsTheWholeImport()
+    public void StructuralColumnLimitRejectsTheWholeImportWhenNoEmptyLaneCanBeReused()
     {
-        var current = WallDocument.Empty(64, 1);
+        var current = WallDocument.Empty(64, 2) with
+        {
+            Lanes = Enumerable.Range(0, 64).Select(index => new WallLane
+            {
+                Groups = [Group("old-" + index, Tile("old-member-" + index, groupId: "old-" + index))],
+            }).ToArray(),
+        };
         var result = StartMenuImportPlanner.TryPlan(current, current.Generation,
             [Group("imported", Tile("item"))]);
 

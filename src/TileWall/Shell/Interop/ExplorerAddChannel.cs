@@ -6,9 +6,9 @@ namespace TileWall.Shell.Interop;
 
 /// <summary>
 /// 携带负载的单实例通道发送端（M9 设计 §4.3）：FindWindowW 定位本模式宿主窗 + WM_COPYDATA
-/// （数据由系统在投递期间跨进程封送）。C1/F-01：dwData 携带私有魔数（'TWL1'），wParam 携带
-/// 发送方身份窗口句柄——接收端据此反查发送进程映像完成鉴权；身份窗口为本进程隐藏令牌窗
-/// （<see cref="SenderWindowToken"/>，每次同步投递在当前线程创建并释放），COM/二次启动进程都无窗也由此获得身份。
+/// （数据由系统在投递期间跨进程封送）。dwData 携带私有魔数（'TWL1'），wParam 携带
+/// 本进程临时 HWND，接收端据此查询其所属进程映像路径作路由过滤；该声明 HWND 不认证实际发送进程。
+/// 临时窗口（<see cref="SenderWindowReference"/>）在当前线程创建并释放，供 COM/二次启动进程使用。
 /// 供 <see cref="SingleInstanceGate.PostPaths"/>（二次启动进程）与 <see cref="ExplorerAddRouter"/>（-Embedding 进程）共用。
 /// </summary>
 internal static class ExplorerAddChannel
@@ -27,10 +27,10 @@ internal static class ExplorerAddChannel
     public static bool TryPostPaths(IntPtr hostHwnd, IReadOnlyList<string> paths, bool truncated = false)
     {
         ArgumentNullException.ThrowIfNull(paths);
-        using var sender = SenderWindowToken.TryCreate();
-        if (sender is null)
+        using var senderWindow = SenderWindowReference.TryCreate();
+        if (senderWindow is null)
         {
-            AppLog.Error("IpcAuth", "发送方身份窗口创建失败：本次投递已放弃");
+            AppLog.Error("IpcRoute", "声明 HWND 创建失败：本次投递已放弃");
             return false;
         }
 
@@ -41,14 +41,14 @@ internal static class ExplorerAddChannel
             Marshal.Copy(payload, 0, buffer, payload.Length);
             var cds = new Win32Api.CopyDataStruct
             {
-                DwData = new IntPtr(ExplorerAddAuth.Magic), // C1：私有魔数，接收端不符即拒
+                DwData = new IntPtr(ExplorerAddRoutingFilter.Magic), // 私有魔数，接收端不符即拒
                 CbData = payload.Length,
                 LpData = buffer,
             };
             var sent = Win32Api.SendMessageTimeoutW(
                 hostHwnd,
                 Win32Api.WmCopydata,
-                sender.Hwnd, // C1：wParam 带本次投递的发送窗口句柄，供对端反查进程映像
+                senderWindow.Hwnd, // wParam 声明本次投递的 HWND，供对端查询映像路径作路由过滤
                 ref cds,
                 SmtoAbortifhung,
                 SendTimeoutMs,
@@ -64,28 +64,27 @@ internal static class ExplorerAddChannel
 }
 
 /// <summary>
-/// C1：发送方身份令牌窗（隐藏 0×0 顶层窗，类名 TileWall_Sender_Class）。
-/// WM_COPYDATA 的鉴权需要「可归属进程的窗口句柄」作内核级发送方凭证；Explorer COM 进程与
-/// 二次启动进程都没有常驻窗，这是唯一可行身份载体。它不是宿主窗：类名不同、不收任何业务消息
-/// （WndProc 直通 DefWindowProc），不干扰 FindWindow 定位，也不构成「建窗副作用」红线所指的
-/// 可见窗/XAML（红线本意：不弹墙、不碰宿主身份）。
+/// WM_COPYDATA 中声明 HWND 的临时引用窗（隐藏 0×0 顶层窗，类名 TileWall_Sender_Class）。
+/// 接收端将它映射到所属进程映像路径进行路由过滤；这是路由线索，不是实际发送方凭证。
+/// 它不是宿主窗：类名不同、不收任何业务消息（WndProc 直通 DefWindowProc），不干扰 FindWindow
+/// 定位，也不创建可见窗/XAML。
 /// </summary>
-internal sealed class SenderWindowToken : IDisposable
+internal sealed class SenderWindowReference : IDisposable
 {
     internal const string WindowClassName = "TileWall_Sender_Class";
 
     private static readonly Win32Api.WndProc WndProcStub = DefWindowProcThunk; // 根引用防 GC 后原生回调野指针
 
-    private SenderWindowToken(IntPtr hwnd)
+    private SenderWindowReference(IntPtr hwnd)
     {
         Hwnd = hwnd;
     }
 
     public IntPtr Hwnd { get; }
 
-    public static SenderWindowToken? TryCreate()
+    public static SenderWindowReference? TryCreate()
     {
-        var hInstance = Marshal.GetHINSTANCE(typeof(SenderWindowToken).Module);
+        var hInstance = Marshal.GetHINSTANCE(typeof(SenderWindowReference).Module);
         var windowClass = new Win32Api.WndClassExW
         {
             cbSize = (uint)Marshal.SizeOf<Win32Api.WndClassExW>(),
@@ -99,7 +98,7 @@ internal sealed class SenderWindowToken : IDisposable
             var registerError = Marshal.GetLastWin32Error();
             if (registerError != 1410) // 1410 = ERROR_CLASS_ALREADY_EXISTS（进程内二次创建直接复用）
             {
-                AppLog.Error("IpcAuth", $"身份窗注册失败：RegisterClassExW 错误码 {registerError}");
+                AppLog.Error("IpcRoute", $"声明 HWND 窗口类注册失败：RegisterClassExW 错误码 {registerError}");
                 return null;
             }
         }
@@ -113,11 +112,11 @@ internal sealed class SenderWindowToken : IDisposable
             IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
         if (hwnd == IntPtr.Zero)
         {
-            AppLog.Error("IpcAuth", $"身份窗创建失败：CreateWindowExW 错误码 {Marshal.GetLastWin32Error()}");
+            AppLog.Error("IpcRoute", $"声明 HWND 创建失败：CreateWindowExW 错误码 {Marshal.GetLastWin32Error()}");
             return null;
         }
 
-        return new SenderWindowToken(hwnd);
+        return new SenderWindowReference(hwnd);
     }
 
     public void Dispose()

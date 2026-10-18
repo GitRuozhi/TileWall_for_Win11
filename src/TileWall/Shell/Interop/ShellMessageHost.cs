@@ -5,17 +5,14 @@ using TileWall.Core.Shell;
 
 namespace TileWall.Shell.Interop;
 
-/// <summary>托盘回调通知（v4 协议：事件在 lParam 低字；屏幕坐标在 wParam 低/高字）。</summary>
+/// <summary>托盘回调通知（v4 协议：事件在 lParam 低字、图标 ID 在高字；仅特定事件定义 wParam 坐标）。</summary>
 public readonly record struct TrayNotification(uint Message, IntPtr WParam, IntPtr LParam)
 {
     /// <summary>通知事件（WM_LBUTTONDBLCLK / WM_CONTEXTMENU / WM_MOUSEMOVE …）。</summary>
     public uint Event => Win32Api.LowWord(LParam);
 
-    /// <summary>锚点 X（屏幕像素；键盘触发 WM_CONTEXTMENU 时为 -1）。</summary>
-    public int AnchorX => (int)Win32Api.LowWord(WParam);
-
-    /// <summary>锚点 Y（屏幕像素）。</summary>
-    public int AnchorY => (int)Win32Api.HighWord(WParam);
+    /// <summary>仅当 v4 协议为此事件定义 wParam 锚点时，提取有符号屏幕坐标。</summary>
+    public bool TryGetAnchor(out int x, out int y) => NotifyIconV4Coordinates.TryDecode(Event, WParam, out x, out y);
 }
 
 /// <summary>
@@ -133,7 +130,7 @@ public sealed class ShellMessageHost : IDisposable
             if (msg == Win32Api.WmCopydata)
             {
                 // M9 §4.3：负载只在本次投递期间有效——先同步拷贝并解码，再转 UI 线程事件；返回 1 表示已处理。
-                // C1/F-01：先双重鉴权（dwData 私有魔数 + 发送方进程映像），拒绝 → 返回 0 不处理（不崩不弹）。
+                // 先按私有魔数和声明 HWND 的进程映像路径过滤；这不认证真实发送进程。
                 if (TryReceiveCopyData(wParam, lParam, out var message))
                 {
                     if (self.AcceptPaths is not null && !self.AcceptPaths(message)) return IntPtr.Zero;
@@ -173,10 +170,11 @@ public sealed class ShellMessageHost : IDisposable
     }
 
     /// <summary>
-    /// M9 §4.3 + C1/F-01：先鉴权（dwData 魔数 'TWL1' + wParam 反查发送方进程映像 == 本进程），
+    /// M9 §4.3：按 dwData 魔数 'TWL1' + wParam 声明 HWND 所属进程的映像路径做路由过滤；
+    /// 这不证明实际发送进程身份，也不作为 IPC 安全认证，
     /// 通过才从 COPYDATASTRUCT 同步拷出字节并解码校验；任一步失败按拒绝丢弃（返回 0，记 WARN 可追溯）。
     /// </summary>
-    private static bool TryReceiveCopyData(IntPtr senderHwnd, IntPtr lParam, out ExplorerAddMessage message)
+    private static bool TryReceiveCopyData(IntPtr declaredWindowHwnd, IntPtr lParam, out ExplorerAddMessage message)
     {
         message = ExplorerAddMessage.Empty;
         if (lParam == IntPtr.Zero)
@@ -186,12 +184,12 @@ public sealed class ShellMessageHost : IDisposable
 
         var cds = Marshal.PtrToStructure<Win32Api.CopyDataStruct>(lParam);
 
-        // C1 双重鉴权：判定逻辑在 Core（ExplorerAddAuth），本层只做 Win32 解值与接日志
-        var senderImage = TryGetWindowImagePath(senderHwnd, out var senderDescribe);
-        var verdict = ExplorerAddAuth.Verify(unchecked((uint)cds.DwData.ToInt64()), senderImage, Environment.ProcessPath);
-        if (verdict != ExplorerAddAuthVerdict.Accept)
+        // 声明 HWND 映像路由过滤在 Core 纯函数完成；本层只做 Win32 解值与接日志。
+        var declaredWindowImage = TryGetWindowImagePath(declaredWindowHwnd, out var declaredWindowDescribe);
+        var verdict = ExplorerAddRoutingFilter.Evaluate(unchecked((uint)cds.DwData.ToInt64()), declaredWindowImage, Environment.ProcessPath);
+        if (verdict != ExplorerAddRoutingVerdict.Accept)
         {
-            AppLog.Warn("IpcAuth", $"WM_COPYDATA 拒绝（{verdict}）：{senderDescribe}");
+            AppLog.Warn("IpcRoute", $"WM_COPYDATA 声明 HWND 路由过滤拒绝（{verdict}）：{declaredWindowDescribe}");
             return false;
         }
 
@@ -206,8 +204,8 @@ public sealed class ShellMessageHost : IDisposable
     }
 
     /// <summary>
-    /// C1：发送方窗口句柄 → 所属进程 ID → 进程映像路径。任一步失败返回 null（保守拒绝）。
-    /// 拒绝时返回 0 不处理，绝不因鉴权失败崩溃或弹窗。
+    /// 声明 HWND → 所属进程 ID → 进程映像路径。任一步失败返回 null（保守拒绝）。
+    /// 过滤拒绝时返回 0 不处理，绝不因过滤失败崩溃或弹窗。
     /// </summary>
     private static string? TryGetWindowImagePath(IntPtr hwnd, out string describe)
     {

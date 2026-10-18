@@ -63,7 +63,7 @@ public sealed class ShellNotifyIconHost : IDisposable
     private void Add()
     {
         var data = Win32Api.NewNotifyIconData(_host.Hwnd, IconId);
-        data.uFlags = Win32Api.NifMessage | Win32Api.NifIcon | Win32Api.NifTip;
+        data.uFlags = Win32Api.NifMessage | Win32Api.NifIcon | Win32Api.NifTip | Win32Api.NifShowTip;
         data.uCallbackMessage = _host.TrayCallbackMessage;
         data.hIcon = _icon;
         data.szTip = TooltipText;
@@ -91,17 +91,19 @@ public sealed class ShellNotifyIconHost : IDisposable
         }
 
         var data = Win32Api.NewNotifyIconData(_host.Hwnd, IconId);
-        data.uFlags = Win32Api.NifTip;
+        data.uFlags = Win32Api.NifTip | Win32Api.NifShowTip;
         data.szTip = text;
         _ = Win32Api.Shell_NotifyIconW(Win32Api.NimModify, ref data);
     }
 
     private void OnTrayNotified(TrayNotification notification)
     {
+        var hasAnchor = notification.TryGetAnchor(out var anchorX, out var anchorY);
         if (_trace)
         {
+            var anchorText = hasAnchor ? $"{anchorX},{anchorY}" : "undefined";
             if (notification.Event != Win32Api.WmMousemove || ++_tracedMoves <= 16)
-                Trace($"Notification event=0x{notification.Event:X} id={Win32Api.HighWord(notification.LParam)} anchor={notification.AnchorX},{notification.AnchorY} message=0x{notification.Message:X} wParam=0x{notification.WParam.ToInt64():X} lParam=0x{notification.LParam.ToInt64():X}");
+                Trace($"Notification event=0x{notification.Event:X} id={Win32Api.HighWord(notification.LParam)} anchor={anchorText} message=0x{notification.Message:X} lParam=0x{notification.LParam.ToInt64():X}");
             else if (_tracedMoves == 17) Trace("Further WM_MOUSEMOVE notification traces suppressed");
         }
         switch (notification.Event)
@@ -111,7 +113,7 @@ public sealed class ShellNotifyIconHost : IDisposable
                 ShowOrFocusRequested?.Invoke();
                 break;
             case Win32Api.WmContextmenu:
-                ShowMenu(notification.AnchorX, notification.AnchorY);
+                ShowMenu();
                 break;
             default:
                 // WM_LBUTTONDOWN/UP/MOUSEMOVE：无分支 = B9「单击动作一律不注册」（分发表里根本不存在）
@@ -120,22 +122,14 @@ public sealed class ShellNotifyIconHost : IDisposable
     }
 
     /// <summary>托盘右键菜单：固定两项、即建即毁（R3）；KB135788 时序硬验收（T-MANUAL-④）。</summary>
-    private void ShowMenu(int anchorX, int anchorY)
+    private void ShowMenu()
     {
-        Trace($"Menu requested anchor={anchorX},{anchorY}");
-        var x = anchorX;
-        var y = anchorY;
-        if (x < 0 || y < 0)
+        if (!TryGetMenuAnchor(out var x, out var y, out var alignBottom))
         {
-            if (!Win32Api.GetCursorPos(out var point)) // 键盘（Shift+F10）触发：坐标为 -1，退回光标处
-            {
-                Trace("Menu canceled: cursor unavailable");
-                return;
-            }
-
-            x = point.X;
-            y = point.Y;
+            Trace("Menu canceled: icon rectangle and cursor are unavailable");
+            return;
         }
+        Trace($"Menu requested anchor={x},{y}");
 
         var menu = Win32Api.CreatePopupMenu();
         if (menu == IntPtr.Zero)
@@ -153,7 +147,8 @@ public sealed class ShellNotifyIconHost : IDisposable
 
             var foreground = Win32Api.SetForegroundWindow(_host.Hwnd); // 经典 KB135788：缺此步点外不消失
             Trace($"Menu track position={x},{y} foregroundAccepted={foreground}");
-            command = Win32Api.TrackPopupMenuEx(menu, Win32Api.TpmReturncmd | Win32Api.TpmRightbutton, x, y, _host.Hwnd, IntPtr.Zero);
+            var flags = Win32Api.TpmReturncmd | Win32Api.TpmRightbutton | (alignBottom ? Win32Api.TpmBottomalign : 0u);
+            command = Win32Api.TrackPopupMenuEx(menu, flags, x, y, _host.Hwnd, IntPtr.Zero);
             Trace($"Menu command={command}");
             _ = Win32Api.PostMessageW(_host.Hwnd, Win32Api.WmNull, IntPtr.Zero, IntPtr.Zero); // 前置消息泵收尾
         }
@@ -174,6 +169,41 @@ public sealed class ShellNotifyIconHost : IDisposable
                 ExitRequested?.Invoke();
                 break;
         }
+    }
+
+    private bool TryGetMenuAnchor(out int x, out int y, out bool alignBottom)
+    {
+        alignBottom = false;
+        var identifier = new Win32Api.NotifyIconIdentifier
+        {
+            cbSize = (uint)Marshal.SizeOf<Win32Api.NotifyIconIdentifier>(),
+            hWnd = _host.Hwnd,
+            uID = IconId,
+        };
+        var result = Win32Api.Shell_NotifyIconGetRect(ref identifier, out var iconRectangle);
+        if (result == 0 && iconRectangle.Right > iconRectangle.Left && iconRectangle.Bottom > iconRectangle.Top)
+        {
+            x = iconRectangle.Left;
+            // Win32 RECT excludes its bottom edge. At a shared monitor boundary,
+            // Bottom itself selects the adjacent monitor before menu alignment.
+            y = iconRectangle.Bottom - 1;
+            alignBottom = true;
+            Trace($"Menu anchor from icon rectangle left={x} bottom={y}");
+            return true;
+        }
+
+        if (Win32Api.GetCursorPos(out var cursor))
+        {
+            x = cursor.X;
+            y = cursor.Y;
+            Trace($"Menu anchor from cursor x={x} y={y} iconRectHresult=0x{result:X8}");
+            return true;
+        }
+
+        x = 0;
+        y = 0;
+        Trace($"Menu anchor unavailable iconRectHresult=0x{result:X8}");
+        return false;
     }
 
     private void OnTaskbarCreated()

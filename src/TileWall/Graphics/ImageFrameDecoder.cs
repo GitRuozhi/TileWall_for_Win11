@@ -56,12 +56,15 @@ public sealed class ImageFrameDecoder
     /// <summary>Decode both complete image planes from one open file and one decoder.</summary>
     public async Task<PuzzleDecodeResult> DecodePuzzlePairAsync(
         string? sourcePath, int requiredWidthPx, int requiredHeightPx,
-        CancellationToken cancellationToken = default, bool preserveSourceResolution = false)
+        CancellationToken cancellationToken = default, bool preserveSourceResolution = false,
+        int sharpMaxEdge = MaxDecodedEdge, int blurMaxEdge = 512)
     {
         if (string.IsNullOrWhiteSpace(sourcePath))
             return new(ImageDecodeStatus.MissingFile, null);
         if (requiredWidthPx <= 0 || requiredHeightPx <= 0)
             throw new ArgumentOutOfRangeException(nameof(requiredWidthPx));
+        if (sharpMaxEdge is < 1 or > MaxDecodedEdge || blurMaxEdge is < 1 or > 512)
+            throw new ArgumentOutOfRangeException(nameof(sharpMaxEdge));
 
         string path;
         try { path = Path.GetFullPath(sourcePath); }
@@ -96,11 +99,11 @@ public sealed class ImageFrameDecoder
             var sharp = await DecodePlaneAsync(decoder, path, fileBytes, lastWriteUtc,
                 rawWidth, rawHeight, orientedWidth, orientedHeight,
                 preserveSourceResolution ? orientedWidth : requiredWidthPx,
-                preserveSourceResolution ? orientedHeight : requiredHeightPx, cancellationToken);
+                preserveSourceResolution ? orientedHeight : requiredHeightPx, cancellationToken, maxEdge: sharpMaxEdge);
             // A second WIC read uses the same open stream and decoder, never a second file version.
             var blur = await DecodePlaneAsync(decoder, path, fileBytes, lastWriteUtc,
                 rawWidth, rawHeight, orientedWidth, orientedHeight,
-                512, 512, cancellationToken, maxEdge: 512);
+                blurMaxEdge, blurMaxEdge, cancellationToken, maxEdge: blurMaxEdge);
             if (sharp is null || blur is null)
                 return new(ImageDecodeStatus.InvalidImage, null, "UnexpectedPixelCount");
 
@@ -125,16 +128,18 @@ public sealed class ImageFrameDecoder
         int rawWidth, int rawHeight, int orientedWidth, int orientedHeight,
         int requiredWidthPx, int requiredHeightPx, CancellationToken ct, int maxEdge = MaxDecodedEdge)
     {
+        ct.ThrowIfCancellationRequested();
+        var maxPixels = Math.Min(MaxDecodedPixels, (long)maxEdge * maxEdge);
         var scale = Math.Min(1.0,
             Math.Max((double)requiredWidthPx / orientedWidth, (double)requiredHeightPx / orientedHeight));
         scale = Math.Min(scale, (double)maxEdge / Math.Max(rawWidth, rawHeight));
-        scale = Math.Min(scale, Math.Sqrt((double)MaxDecodedPixels / ((long)rawWidth * rawHeight)));
+        scale = Math.Min(scale, Math.Sqrt((double)maxPixels / ((long)rawWidth * rawHeight)));
         var scaledRawWidth = Math.Max(1, (int)Math.Round(rawWidth * scale));
         var scaledRawHeight = Math.Max(1, (int)Math.Round(rawHeight * scale));
         var swapsAxes = rawWidth != rawHeight && orientedWidth == rawHeight && orientedHeight == rawWidth;
         var resultWidth = swapsAxes ? scaledRawHeight : scaledRawWidth;
         var resultHeight = swapsAxes ? scaledRawWidth : scaledRawHeight;
-        if ((long)resultWidth * resultHeight > MaxDecodedPixels ||
+        if ((long)resultWidth * resultHeight > maxPixels ||
             Math.Max(resultWidth, resultHeight) > maxEdge)
             return null;
         var transform = scale < 1.0

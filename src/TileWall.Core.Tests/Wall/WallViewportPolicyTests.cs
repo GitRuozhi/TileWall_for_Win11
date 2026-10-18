@@ -100,7 +100,7 @@ public sealed class WallViewportPolicyTests
     public void WindowedImportBeyondAvailableColumnsIsAtomic()
     {
         var metrics = new WallMetrics();
-        var source = WallDocument.Empty(1, 4);
+        var source = WallDocument.Empty(1, 4) with { Lanes = [new WallLane { Groups = [Group("retained")] }] };
         var budget = new WallViewportBudget(metrics.WallWidth(2), metrics.WallHeight(4), 2, 4, false);
         var result = StartMenuImportPlanner.TryPlan(source, 0, [Group("one"), Group("two")], metrics, budget);
         Assert.False(result.Success);

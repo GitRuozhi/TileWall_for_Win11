@@ -84,7 +84,10 @@ public sealed partial class MainWindow
             var result = await _session.CommitAsync(proposal, changes, recordUndo);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);
             if (!result.Committed)
+            {
                 error = string.Format(ProductStrings.Get("Common.SaveFailed"), string.Join("；", result.Diagnostics));
+                if (_session.ViewBlocked) BlockView(error);
+            }
             if (result.ViewFailed)
                 BlockView(string.Format(ProductStrings.Get("Wall.CommitViewFailed"), string.Join("；", result.Diagnostics)), retry: true);
             if (result.NeedsCleanup) Status(ProductStrings.Get("Wall.CleanupPending"));
@@ -93,7 +96,8 @@ public sealed partial class MainWindow
         {
             if (_session.ViewBlocked && !_windowClosing)
                 BlockView(string.Format(ProductStrings.Get("Wall.CommitViewFailed"), ex.Message), retry: true);
-            error = string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message);
+            error = _session.RequiresReopen ? ProductStrings.Get("Wall.RequiresReopen")
+                : string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message);
         }
         finally
         {

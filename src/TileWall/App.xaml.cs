@@ -11,6 +11,7 @@ public partial class App : Application
     private readonly RuntimeScope _scope;
     private readonly StartupIntent _intent;
     private WallApplicationLifetime? _lifetime;
+    private bool _ownsInstance;
 
     internal App(RuntimeScope scope, StartupIntent intent)
     {
@@ -19,33 +20,47 @@ public partial class App : Application
         InitializeComponent();
         UnhandledException += (_, e) =>
         {
-            AppLog.Error("UnhandledXaml", e.Exception?.ToString() ?? e.Message);
-            AppLog.Flush();
+            var message = e.Exception?.ToString() ?? e.Message;
+            if (_ownsInstance)
+            {
+                AppLog.Error("UnhandledXaml", message);
+                AppLog.Flush();
+            }
+            else Shell.AppLogSetup.WriteWindowsEventLogError($"TileWall startup: {message}");
         };
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        var gate = SingleInstanceGate.Acquire(_scope.InstanceMutexName, _scope.ShellWindowName,
-            !_intent.Background && _intent.Add is null, out var acquired);
-        if (acquired != SingleInstanceAcquireResult.Acquired)
-        {
-            if (_intent.Add is { } add && !gate.PostPaths(add))
-                AppLog.Error("Startup", "外部添加请求未送达；请重试。");
-            gate.Dispose();
-            Exit();
-            return;
-        }
+        SingleInstanceGate? gate = null;
         try
         {
+            gate = SingleInstanceGate.Acquire(_scope.InstanceMutexName, _scope.ShellWindowName,
+                !_intent.Background && _intent.Add is null, out var acquired);
+            if (acquired != SingleInstanceAcquireResult.Acquired)
+            {
+                if (_intent.Add is { } add && !gate.PostPaths(add))
+                    Shell.AppLogSetup.WriteWindowsEventLogError("TileWall：外部添加请求未送达；请重试。");
+                else if (acquired == SingleInstanceAcquireResult.GaveUp)
+                    Shell.AppLogSetup.WriteWindowsEventLogError("TileWall：未能取得单实例所有权或找到既有实例。");
+                gate.Dispose();
+                Exit();
+                return;
+            }
+            _ownsInstance = true;
+            Shell.AppLogSetup.InitializeForCurrentProcess(_scope.LogRoot);
             _lifetime = new WallApplicationLifetime(_scope, gate, this);
             _ = _lifetime.StartAsync(_intent);
         }
         catch (Exception ex)
         {
-            AppLog.Error("Startup", ex.ToString());
-            AppLog.Flush();
-            gate.Dispose();
+            if (_ownsInstance)
+            {
+                AppLog.Error("Startup", ex.ToString());
+                AppLog.Shutdown();
+            }
+            else Shell.AppLogSetup.WriteWindowsEventLogError($"TileWall startup: {ex}");
+            gate?.Dispose();
             Exit();
         }
     }

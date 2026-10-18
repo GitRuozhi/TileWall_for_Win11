@@ -24,7 +24,7 @@ public sealed partial class MainWindow
         try
         {
             await BeginModalAsync();
-            var dialog = new ImportDialog(DialogOwner, _images, PrepareStartMenuCandidates, SaveStartMenuImport,
+            var dialog = new ImportDialog(DialogOwner, _images, PrepareStartMenuCandidatesAsync, SaveStartMenuImport,
                 Document.Settings.VisualStyle);
             ActiveDialog = dialog;
             await dialog.ShowAsync();
@@ -33,78 +33,23 @@ public sealed partial class MainWindow
         finally { EndModal(); }
     }
 
-    private IReadOnlyList<StartMenuImportCandidate> PrepareStartMenuCandidates(StartMenuScanResult scan)
+    private Task<IReadOnlyList<StartMenuImportCandidate>> PrepareStartMenuCandidatesAsync(StartMenuScanResult scan,
+        CancellationToken token)
     {
-        var identities = ImportIdentities;
-        var pruned = StartMenuReimport.Prune(Document);
-        var retained = IdentitySet(pruned.Document, identities);
-        var replacing = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var member in pruned.Removed)
-            if (TryIdentity(member, identities) is { } identity) replacing.Add(identity.Key);
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var companies = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        var output = new List<StartMenuImportCandidate>();
-        foreach (var candidate in scan.Candidates.OrderBy(c => c.Source)
-                     .ThenBy(c => c.FullPath, StringComparer.OrdinalIgnoreCase))
-        {
-            LaunchIdentity? identity = null;
-            string? error = null;
-            var readFailed = false;
-            try
-            {
-                identity = identities.ResolveInput(candidate.FullPath);
-                if (identity is null) { error = ProductStrings.Get("Import.InvalidTarget"); readFailed = true; }
-                else if (identity.IsUrl && !RegisteredUrlProtocols.IsSupported(identity.Target))
-                    error = ProductStrings.Get("Import.UnsupportedProtocol");
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException)
-            { error = ex.Message; readFailed = true; }
-            var duplicate = identity is not null && !seen.Add(identity.Key);
-            output.Add(new(candidate, new StartMenuBucket("pending", string.Empty, 0), identity,
-                identity is null ? StartMenuExclusion.None : StartMenuSelectionRules.Classify(candidate.DisplayName, identity),
-                duplicate, identity is not null && retained.Contains(identity.Key),
-                identity is not null && replacing.Contains(identity.Key), error, readFailed, Company(identity)));
-        }
-        return output;
-
-        string? Company(LaunchIdentity? identity)
-        {
-            if (identity is null || identity.IsUrl || !Path.IsPathFullyQualified(identity.Target)) return null;
-            if (companies.TryGetValue(identity.Target, out var cached)) return cached;
-            string? company = null;
-            try
-            {
-                if (File.Exists(identity.Target)) company = System.Diagnostics.FileVersionInfo.GetVersionInfo(identity.Target).CompanyName;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.ComponentModel.Win32Exception) { }
-            companies[identity.Target] = company;
-            return company;
-        }
-    }
-
-    private HashSet<string> IdentitySet(WallDocument snapshot, LaunchIdentityService identities)
-    {
-        var result = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var member in snapshot.Lanes.SelectMany(l => l.Groups).SelectMany(g => g.Members))
-            if (TryIdentity(member, identities) is { } identity) result.Add(identity.Key);
-        return result;
-    }
-
-    private LaunchIdentity? TryIdentity(WallMember member, LaunchIdentityService identities)
-    {
-        try { return identities.ResolveMember(member, _session.ManagedEntryPath(member)); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException)
-        {
-            AppLog.Warn("LaunchIdentity", $"member={member.Id} identity unreadable: {ex.Message}");
-            return null;
-        }
+        token.ThrowIfCancellationRequested();
+        var executor = _storageExecutor ?? throw new InvalidOperationException("Storage worker is unavailable.");
+        // Everything that belongs to the UI/session is captured before queueing.
+        var input = StartMenuImportPreparation.Capture(Document, scan, _session.DataRoot, ImportIdentities,
+            new(ProductStrings.Get("Import.InvalidTarget"), ProductStrings.Get("Import.UnsupportedProtocol")),
+            static target => RegisteredUrlProtocols.IsSupported(target));
+        return StartMenuImportPreparation.PrepareAsync(executor, input, token);
     }
 
     private IReadOnlyList<ImportBatchItem> DeduplicateItems(IReadOnlyList<ImportBatchItem> items,
         WallDocument against, out int skipped)
     {
         var identities = ImportIdentities;
-        var seen = IdentitySet(against, identities);
+        var seen = StartMenuImportPreparation.IdentitySet(against, _session.DataRoot, identities);
         var accepted = new List<ImportBatchItem>();
         skipped = 0;
         foreach (var item in items)

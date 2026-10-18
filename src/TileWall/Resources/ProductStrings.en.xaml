@@ -188,6 +188,8 @@
   <x:String x:Key="Wall.RebuildFailed">Rebuild failed. Saved data is unchanged. Try again or restart.</x:String>
   <x:String x:Key="Wall.ViewBlocked">The wall view is blocked. Please restart.</x:String>
   <x:String x:Key="Wall.CommitViewFailed">Saved to disk, but the wall could not be refreshed: {0}</x:String>
+  <x:String x:Key="Wall.RequiresReopen">Changes were saved to disk, but this session could not accept the new state. Close and reopen TileWall to load the saved wall.</x:String>
+  <x:String x:Key="Wall.RecoveryBlocked">Storage recovery is incomplete and wall actions are blocked. Close and reopen TileWall to retry recovery.</x:String>
   <x:String x:Key="Wall.CleanupPending">Saved. Cleanup will continue during recovery.</x:String>
   <x:String x:Key="Wall.LocationUnavailable">Location unavailable: {0} {1}</x:String>
   <x:String x:Key="Wall.Rejection.None">Cannot complete this operation.</x:String>

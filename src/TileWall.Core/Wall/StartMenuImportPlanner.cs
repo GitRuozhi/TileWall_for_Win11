@@ -12,6 +12,7 @@ public static class StartMenuImportPlanner
     /// <summary>
     /// Plans a replacement import against an already-pruned snapshot. The snapshot generation must remain
     /// the expected generation so pruning and insertion can be committed as one transaction.
+    /// With a viewport budget, keep the saved height if possible, then grow only as much as required.
     /// </summary>
     public static WallLayoutResult TryPlan(WallDocument prunedSnapshot, long expectedGeneration,
         IReadOnlyList<StartGroup> importedGroups, WallMetrics? metrics = null, WallViewportBudget? budget = null)
@@ -45,27 +46,55 @@ public static class StartMenuImportPlanner
         var batches = groups.Select(group => group.ImportSource?.BatchId).Distinct(StringComparer.Ordinal).ToArray();
         if (batches.Length != 1 || string.IsNullOrWhiteSpace(batches[0]))
             return Reject(WallRejection.InvalidAction, "Import groups must share a non-empty source batch.");
-        if (prunedSnapshot.Columns >= MaxColumns)
-            return Reject(WallRejection.NoSpace, "The wall has reached the structural column limit.");
-
-        var rows = budget?.MaxRows ?? prunedSnapshot.Rows;
-        if (rows < 1) return Reject(WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE");
+        // Saved height is the first choice. A viewport budget supplies the upper
+        // bound for growth, never a requested height for an otherwise small import.
+        var maxRows = Math.Min(MaxRows, budget?.MaxRows ?? prunedSnapshot.Rows);
+        var maxColumns = Math.Min(MaxColumns, budget?.MaxColumns ?? MaxColumns);
+        if (budget is not null)
+        {
+            while (maxRows > 0 && metrics.WallHeight(maxRows) > budget.MaxHeightDip + 1e-8) maxRows--;
+            while (maxColumns > 0 && metrics.WallWidth(maxColumns) > budget.MaxWidthDip + 1e-8) maxColumns--;
+        }
+        if (maxRows < prunedSnapshot.Rows || maxColumns < 1)
+            return Reject(WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE");
         foreach (var group in groups)
         {
             var height = metrics.TopMargin + metrics.Margin + metrics.TitleHeight + metrics.TitleToMembersGap +
                 metrics.HeightOf(group.Members.Max(m => m.LocalBounds.Bottom));
-            if (height > metrics.WallHeight(rows) + 1e-8)
+            if (height > metrics.WallHeight(maxRows) + 1e-8)
                 return Reject(WallRejection.NoSpace, "GROUP_TOO_TALL:" + (string.IsNullOrWhiteSpace(group.Title) ? group.Id : group.Title));
         }
-        var maxNewColumns = MaxColumns - prunedSnapshot.Columns;
-        for (var columns = 1; columns <= maxNewColumns; columns++)
+        // Existing non-empty lanes are never repacked. Empty lanes are removed
+        // only when needed to make room for the new whole-group lanes.
+        var maxNewColumns = maxColumns - prunedSnapshot.Lanes.Count(lane => lane.Groups.Count != 0);
+        if (maxNewColumns < 1) return Reject(WallRejection.NoSpace, "CONTENT_TOO_LARGE");
+        for (var rows = prunedSnapshot.Rows; rows <= maxRows; rows++)
         {
-            if (!TryPack(groups, columns, rows, metrics, out var lanes)) continue;
-            var proposal = BuildProposal(prunedSnapshot, expectedGeneration, lanes, columns, rows, metrics);
-            return proposal.Proposal is { } complete && budget is not null
-                ? WallViewportPolicy.Validate(complete.Document, budget, metrics) : proposal;
+            for (var columns = 1; columns <= maxNewColumns; columns++)
+            {
+                if (!TryPack(groups, columns, rows, metrics, out var lanes)) continue;
+                var retained = MakeRoomForLanes(prunedSnapshot, columns, maxColumns);
+                var proposal = BuildProposal(retained, expectedGeneration, lanes, columns, rows, metrics);
+                return proposal.Proposal is { } complete && budget is not null
+                    ? WallViewportPolicy.Validate(complete.Document, budget, metrics) : proposal;
+            }
         }
         return Reject(WallRejection.NoSpace, "CONTENT_TOO_LARGE");
+    }
+
+    private static WallDocument MakeRoomForLanes(WallDocument snapshot, int addedColumns, int maxColumns)
+    {
+        var remaining = snapshot.Columns + addedColumns - maxColumns;
+        if (remaining <= 0) return snapshot;
+        var lanes = snapshot.Lanes.ToList();
+        // Match ordinary resize's least-displacement rule for empty columns.
+        for (var index = lanes.Count - 1; index >= 0 && remaining > 0; index--)
+        {
+            if (lanes[index].Groups.Count != 0) continue;
+            lanes.RemoveAt(index);
+            remaining--;
+        }
+        return snapshot with { Columns = lanes.Count, Lanes = lanes.ToArray() };
     }
     private static WallLayoutResult BuildProposal(WallDocument snapshot, long expectedGeneration,
         IReadOnlyList<IReadOnlyList<StartGroup>> newLanes,

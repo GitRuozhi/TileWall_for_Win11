@@ -71,7 +71,6 @@ public sealed partial class MainWindow : Window
         _puzzles.FrameChanged += Surface.UpdatePuzzleFrame;
         _session.SetViewRefresh(RenderCommitted);
         InitializePersistence();
-        Surface.Images = _images;
         Surface.ResolveEntryPath = _session.ManagedEntryPath;
         Surface.ResolvePuzzleFrame = _puzzles.FrameFor;
         Surface.ResolvePuzzleProgress = _puzzles.ProgressFor;
@@ -166,7 +165,7 @@ public sealed partial class MainWindow : Window
             TerminateGesture();
             _puzzles.Dispose();
             _clockTimer.Stop();
-            Surface.CancelImageRequests();
+            Surface.ClearTransientInteraction();
             _images.Dispose();
         };
     }
@@ -252,6 +251,16 @@ public sealed partial class MainWindow : Window
 
     private void BlockView(string message, bool retry = false)
     {
+        if (_session.RequiresReopen)
+        {
+            message = ProductStrings.Get("Wall.RequiresReopen");
+            retry = false;
+        }
+        else if (_session.RecoveryBlocked)
+        {
+            message = ProductStrings.Get("Wall.RecoveryBlocked");
+            retry = false;
+        }
         _viewBlocked = true;
         UpdateNativeSizingRegion();
         UpdatePuzzleGate();
@@ -264,7 +273,12 @@ public sealed partial class MainWindow : Window
 
     private void OnRetryViewClicked(object sender, RoutedEventArgs e)
     {
-        Surface.CancelImageRequests();
+        if (_session.RequiresReopen || _session.RecoveryBlocked)
+        {
+            BlockView(ProductStrings.Get("Wall.RequiresReopen"));
+            return;
+        }
+        Surface.ClearTransientInteraction();
         Surface.ResetProjection();
         if (_session.RefreshViewFromCurrent())
         {
@@ -295,7 +309,12 @@ public sealed partial class MainWindow : Window
         var commitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         var result = _session.Commit(proposal, changes, recordUndo);
         _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - commitStarted);
-        if (!result.Committed) return string.Format(ProductStrings.Get("Common.SaveFailed"), string.Join("；", result.Diagnostics));
+        if (!result.Committed)
+        {
+            var error = string.Format(ProductStrings.Get("Common.SaveFailed"), string.Join("；", result.Diagnostics));
+            if (_session.ViewBlocked) BlockView(error);
+            return error;
+        }
         if (result.ViewFailed)
             BlockView(string.Format(ProductStrings.Get("Wall.CommitViewFailed"), string.Join("；", result.Diagnostics)), retry: true);
         if (result.NeedsCleanup) Status(ProductStrings.Get("Wall.CleanupPending"));
@@ -343,7 +362,7 @@ public sealed partial class MainWindow : Window
             { State: OverlappedPresenterState.Minimized };
         var imagesWereActive = Surface.ImagesActive;
         Surface.ImagesActive = !hidden && !_viewBlocked;
-        if (!Surface.ImagesActive) Surface.CancelImageRequests();
+        if (!Surface.ImagesActive) Surface.ClearTransientInteraction();
         else if (!imagesWereActive && _hasDocument)
         {
             Surface.Render(Document);
@@ -440,7 +459,7 @@ public sealed partial class MainWindow : Window
             {
                 var duplicate = Document.Lanes.SelectMany(l => l.Groups).SelectMany(g => g.Members)
                     .FirstOrDefault(other => other.Id != replacement.Id &&
-                        TryIdentity(other, identities)?.Key == desired.Key);
+                        StartMenuImportPreparation.TryIdentity(other, _session.DataRoot, identities)?.Key == desired.Key);
                 if (duplicate is not null)
                 {
                     if (!isNewPlaceholder) return ProductStrings.Get("SharedEditor.Duplicate");
@@ -571,7 +590,7 @@ public sealed partial class MainWindow : Window
                 var fit = WallViewportPolicy.Validate(candidate, CurrentViewportBudget, _metrics);
                 return fit.Success ? null : ViewportFailure(fit);
             });
-            if (result.ViewFailed)
+            if (result.ViewFailed || _session.ViewBlocked)
                 BlockView(string.Format(ProductStrings.Get("Wall.UndoViewFailed"), string.Join("；", result.Diagnostics)), retry: true);
             else if (!result.Committed) Status(string.Join("；", result.Diagnostics));
             e.Handled = true;

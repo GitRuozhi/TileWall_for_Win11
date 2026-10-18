@@ -12,8 +12,34 @@ public static class Program
     {
         if (IsEmbedding(args))
         {
-            return Shell.Interop.ExplorerCommandServer.Run();
+            try
+            {
+                var result = Shell.Interop.ExplorerCommandServer.Run();
+                if (result < 0)
+                    Shell.AppLogSetup.WriteWindowsEventLogError($"TileWall -Embedding COM server failed (HRESULT 0x{result:X8}).");
+                return result;
+            }
+            catch (Exception ex)
+            {
+                Shell.AppLogSetup.WriteWindowsEventLogError($"TileWall -Embedding COM server exception: {ex}");
+                throw;
+            }
         }
+        try { return RunApplication(args); }
+        catch (Exception ex)
+        {
+            if (Core.Shell.AppLog.IsInitialized)
+            {
+                Core.Shell.AppLog.Error("Startup", ex.ToString());
+                Core.Shell.AppLog.Shutdown();
+            }
+            else Shell.AppLogSetup.WriteWindowsEventLogError($"TileWall startup: {ex}");
+            return 1;
+        }
+    }
+
+    private static int RunApplication(string[] args)
+    {
         global::WinRT.ComWrappersSupport.InitializeComWrappers();
         var startupTask = false;
 #if TILEWALL_PACKAGED
@@ -27,7 +53,6 @@ public static class Program
 #endif
         var scope = ApplicationModel.RuntimeScope.FromArguments(args);
         var intent = ApplicationModel.StartupIntent.Parse(args, startupTask);
-        Shell.AppLogSetup.InitializeForCurrentProcess(scope.LogRoot);
 
         // Preserve the generated Main's XAML dispatcher/synchronization-context startup sequence.
         global::Microsoft.UI.Xaml.Application.Start(p =>

@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
@@ -15,23 +16,27 @@ namespace TileWall.Views;
 internal static class WallMemberVisualFactory
 {
     private static ControlTemplate? _memberButtonTemplate;
+    private static ControlTemplate? _memberToggleTemplate;
     private static readonly Windows.UI.ViewManagement.UISettings MotionSettings = new();
 
     /// <summary>Shared pointer/focus states for wall, import and gallery buttons; hit targets never move.</summary>
-    internal static Action ConfigureInteraction(Button button, Grid content, CornerRadius corners,
+    internal static Action ConfigureInteraction(ButtonBase button, Grid content, CornerRadius corners,
         Action<bool>? hoverChanged = null, bool drawHoverEdge = true)
     {
-        // The default Button template adds theme-dependent fills over image content.
+        // Stock button templates add theme-dependent fills over image content.
         // Keep its activation/accessibility behavior while drawing our shared states once.
-        button.Template = _memberButtonTemplate ??= (ControlTemplate)XamlReader.Load("""
-            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+        button.Template = button is ToggleButton
+            ? (_memberToggleTemplate ??= CreateInteractionTemplate("ToggleButton"))
+            : (_memberButtonTemplate ??= CreateInteractionTemplate("Button"));
+        button.UseSystemFocusVisuals = false;
+        static ControlTemplate CreateInteractionTemplate(string targetType) => (ControlTemplate)XamlReader.Load($$"""
+            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="{{targetType}}">
                 <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
                     HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
                     VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
                     Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}" Background="Transparent" />
             </ControlTemplate>
             """);
-        button.UseSystemFocusVisuals = false;
         var edge = new Border
         {
             BorderThickness = new Thickness(1), CornerRadius = corners,
@@ -167,9 +172,10 @@ internal static class WallMemberVisualFactory
     };
 
     internal static PuzzleCanvasView Create(WallMember member, PuzzleFrame? frame, WallMetrics metrics,
-        double scale, WallVisualStyle style, Action<Button, int>? partitionCreated = null, bool interactive = true)
+        double scale, WallVisualStyle style, Action<Button, int>? partitionCreated = null, bool interactive = true,
+        bool externalInteraction = false)
     {
-        var view = new PuzzleCanvasView { Interactive = interactive };
+        var view = new PuzzleCanvasView { Interactive = interactive, ExternalInteraction = externalInteraction };
         if (partitionCreated is not null) view.PartitionCreated += partitionCreated;
         view.SetScene(Project(member), frame, metrics, scale, style);
         return view;

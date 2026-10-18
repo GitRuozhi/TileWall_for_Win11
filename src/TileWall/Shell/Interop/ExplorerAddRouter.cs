@@ -20,6 +20,20 @@ internal static class ExplorerAddRouter
 {
     public static void Route(IReadOnlyList<string> paths)
     {
+        try
+        {
+            RouteCore(paths);
+        }
+        catch (Exception ex)
+        {
+            var message = $"Explorer「添加到 TileWall」路由异常，本次添加已放弃。原因：{ex}";
+            AppLog.Error("ExplorerAdd", message);
+            WriteRouteFailureEvent(message);
+        }
+    }
+
+    private static void RouteCore(IReadOnlyList<string> paths)
+    {
         ArgumentNullException.ThrowIfNull(paths);
         var routable = ExplorerAddPathClassifier.PrepareForRouting(paths);
         var filtered = routable.Count != paths.Count;
@@ -34,7 +48,9 @@ internal static class ExplorerAddRouter
                     return;
                 }
 
-                AppLog.Warn("ExplorerAdd", $"未送达：宿主窗存在但 WM_COPYDATA 投递失败（拒绝/超时），放弃（{routable.Count} 条路径）");
+                var message = $"未送达：宿主窗存在但 WM_COPYDATA 投递失败（拒绝/超时），放弃（{routable.Count} 条路径）";
+                AppLog.Warn("ExplorerAdd", message);
+                WriteRouteFailureEvent(message);
                 return;
             case ExplorerAddRouteAction.ActivatePackagedSelf:
 #if TILEWALL_PACKAGED
@@ -86,12 +102,16 @@ internal static class ExplorerAddRouter
                 return;
             }
 
-            AppLog.Error("ExplorerAdd", $"packaged 激活失败（hr=0x{hr:X8}），放弃投递：不退化直启 exe（避免无身份进程落入 unpackaged 数据目录形成影子实例）");
+            var message = $"packaged 激活失败（hr=0x{hr:X8}），放弃投递：不退化直启 exe（避免无身份进程落入 unpackaged 数据目录形成影子实例）";
+            AppLog.Error("ExplorerAdd", message);
+            WriteRouteFailureEvent(message);
             return;
         }
         catch (Exception ex) when (ex is COMException or InvalidOperationException or PlatformNotSupportedException)
         {
-            AppLog.Error("ExplorerAdd", $"packaged 激活异常（{ex.Message}），放弃投递：不退化直启 exe（避免影子实例）");
+            var message = $"packaged 激活异常（{ex.Message}），放弃投递：不退化直启 exe（避免影子实例）";
+            AppLog.Error("ExplorerAdd", message);
+            WriteRouteFailureEvent(message);
         }
     }
 #endif
@@ -102,7 +122,9 @@ internal static class ExplorerAddRouter
         var exe = Environment.ProcessPath;
         if (string.IsNullOrEmpty(exe))
         {
-            AppLog.Error("ExplorerAdd", "unpackaged 冷启动失败：无法取得进程可执行文件路径，放弃投递");
+            const string message = "unpackaged 冷启动失败：无法取得进程可执行文件路径，放弃投递";
+            AppLog.Error("ExplorerAdd", message);
+            WriteRouteFailureEvent(message);
             return;
         }
 
@@ -118,9 +140,12 @@ internal static class ExplorerAddRouter
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
         {
-            // C2/F-03：冷启动失败不再静默——日志 + 事件日志双通道（若失败早于日志可用，事件日志是唯一落地面）
-            AppLog.Error("ExplorerAdd", $"unpackaged 冷启动失败（{ex.Message}），放弃投递");
-            AppLogSetup.WriteWindowsEventLogError($"TileWall：Explorer「添加到 TileWall」冷启动自身失败，本次添加已放弃。原因：{ex.Message}");
+            var message = $"unpackaged 冷启动失败（{ex.Message}），放弃投递";
+            AppLog.Error("ExplorerAdd", message);
+            WriteRouteFailureEvent(message);
         }
     }
+
+    private static void WriteRouteFailureEvent(string message) =>
+        AppLogSetup.WriteWindowsEventLogError($"TileWall：Explorer「添加到 TileWall」失败，本次添加已放弃。原因：{message}");
 }
