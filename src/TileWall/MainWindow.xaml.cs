@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using TileWall.ApplicationModel;
+using TileWall.Core.Application;
 using TileWall.Core.Entries;
 using TileWall.Core.Grid;
 using TileWall.Core.Shell;
@@ -54,7 +55,7 @@ public sealed partial class MainWindow : Window
     {
         _traceInput = scope.IsTest || Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1";
         _session = new WallSession(scope.DataRoot);
-        _images = new WallImageService(_session.LinkFiles, scope.CacheRoot);
+        _images = new WallImageService(_session.LinkFiles);
         InitializeComponent();
         CreateWindowsSidebar();
         _clockTimer = DispatcherQueue.CreateTimer();
@@ -251,14 +252,19 @@ public sealed partial class MainWindow : Window
 
     private void BlockView(string message, bool retry = false)
     {
-        if (_session.RequiresReopen)
+        if (_session.ResultUnknown)
         {
-            message = ProductStrings.Get("Wall.RequiresReopen");
+            message = WithDiagnostic(ProductStrings.Get("Wall.ResultUnknown"), message);
+            retry = false;
+        }
+        else if (_session.RequiresReopen)
+        {
+            message = WithDiagnostic(ProductStrings.Get("Wall.RequiresReopen"), message);
             retry = false;
         }
         else if (_session.RecoveryBlocked)
         {
-            message = ProductStrings.Get("Wall.RecoveryBlocked");
+            message = WithDiagnostic(ProductStrings.Get("Wall.RecoveryBlocked"), message);
             retry = false;
         }
         _viewBlocked = true;
@@ -271,9 +277,13 @@ public sealed partial class MainWindow : Window
         AppWindow.MoveAndResize(new RectInt32(_workArea.Left, _workArea.Top, 560, 120));
     }
 
+    private static string WithDiagnostic(string summary, string detail) =>
+        string.IsNullOrWhiteSpace(detail) || string.Equals(detail, summary, StringComparison.Ordinal)
+            ? summary : summary + "\n" + detail;
+
     private void OnRetryViewClicked(object sender, RoutedEventArgs e)
     {
-        if (_session.RequiresReopen || _session.RecoveryBlocked)
+        if (_session.RequiresReopen || _session.RecoveryBlocked || _session.ResultUnknown)
         {
             BlockView(ProductStrings.Get("Wall.RequiresReopen"));
             return;
@@ -304,14 +314,32 @@ public sealed partial class MainWindow : Window
     {
         if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (_viewBlocked) return ProductStrings.Get("Wall.ViewBlocked");
-        var fit = WallViewportPolicy.Validate(proposal.Document, ViewportBudget(proposal.Document.Settings.FullScreen), _metrics);
+        var fit = WallViewportPolicy.Validate(proposal, ViewportBudget(proposal.Document.Settings.FullScreen), _metrics);
         if (fit.Proposal is null) return ViewportFailure(fit);
-        var commitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-        var result = _session.Commit(proposal, changes, recordUndo);
-        _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - commitStarted);
+        try
+        {
+            var commitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+            var result = _session.Commit(proposal, changes, recordUndo);
+            _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - commitStarted);
+            return DescribeCommit(result);
+        }
+        catch (Exception ex)
+        {
+            var error = _session.ResultUnknown
+                ? ProductStrings.Get("Wall.ResultUnknown")
+                : string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message);
+            if (_session.ViewBlocked) BlockView(error);
+            return error;
+        }
+    }
+
+    private string? DescribeCommit(WallSessionResult result)
+    {
         if (!result.Committed)
         {
-            var error = string.Format(ProductStrings.Get("Common.SaveFailed"), string.Join("；", result.Diagnostics));
+            var error = _session.ResultUnknown ? ProductStrings.Get("Wall.ResultUnknown")
+                : _session.RequiresReopen ? ProductStrings.Get("Wall.RequiresReopen")
+                : string.Format(ProductStrings.Get("Common.SaveFailed"), string.Join("；", result.Diagnostics));
             if (_session.ViewBlocked) BlockView(error);
             return error;
         }
@@ -431,7 +459,7 @@ public sealed partial class MainWindow : Window
             var dialog = new SharedMemberEditorDialog(DialogOwner, member, _images,
                 _session.ManagedEntryPath(member), _session.LinkFiles, MaxMemberRows(),
                 (replacement, changes) => SaveSharedMember(replacement, changes, isNewPlaceholder,
-                    existing => duplicateToFocus = existing), Settings.VisualStyle, isNewPlaceholder);
+                    existing => duplicateToFocus = existing), Settings.VisualStyle);
             ActiveDialog = dialog;
             await dialog.ShowAsync();
         }
@@ -453,21 +481,30 @@ public sealed partial class MainWindow : Window
         if (FindMember(replacement.Id) is not { } current) return ProductStrings.Get("Wall.PuzzleMissing");
         try
         {
-            var identities = ImportIdentities;
-            var desired = DesiredEditorIdentity(current, replacement, changes, identities);
-            if (desired is not null)
+            // Title/colour/size saves cannot change launch identity. Scanning every
+            // member's shortcut (COM + file IO) was the dominant cost of those saves.
+            var identityMayChange = replacement.TargetInput != current.TargetInput ||
+                replacement.Entry != current.Entry ||
+                changes.Any(c => c is EntryChange.CopyShortcut or EntryChange.CreateLink or
+                    EntryChange.CreateUrl or EntryChange.ChangeTarget);
+            if (identityMayChange)
             {
-                var duplicate = Document.Lanes.SelectMany(l => l.Groups).SelectMany(g => g.Members)
-                    .FirstOrDefault(other => other.Id != replacement.Id &&
-                        StartMenuImportPreparation.TryIdentity(other, _session.DataRoot, identities)?.Key == desired.Key);
-                if (duplicate is not null)
+                var identities = ImportIdentities;
+                var desired = DesiredEditorIdentity(current, replacement, changes, identities);
+                if (desired is not null)
                 {
-                    if (!isNewPlaceholder) return ProductStrings.Get("SharedEditor.Duplicate");
-                    IReadOnlyList<EntryChange> removals = current.Entry is null ? [] : [new EntryChange.Remove(current.Id)];
-                    var error = Apply(new RemoveMemberAction(Document.Generation, current.Id), removals);
-                    if (error is not null) return error;
-                    locateDuplicate(duplicate.Id);
-                    return null;
+                    var duplicate = Document.Lanes.SelectMany(l => l.Groups).SelectMany(g => g.Members)
+                        .FirstOrDefault(other => other.Id != replacement.Id &&
+                            StartMenuImportPreparation.TryIdentity(other, _session.DataRoot, identities)?.Key == desired.Key);
+                    if (duplicate is not null)
+                    {
+                        if (!isNewPlaceholder) return ProductStrings.Get("SharedEditor.Duplicate");
+                        IReadOnlyList<EntryChange> removals = current.Entry is null ? [] : [new EntryChange.Remove(current.Id)];
+                        var error = Apply(new RemoveMemberAction(Document.Generation, current.Id), removals);
+                        if (error is not null) return error;
+                        locateDuplicate(duplicate.Id);
+                        return null;
+                    }
                 }
             }
             if (changes.Count == 0 && !MemberPresentationRules.HasUserPropertyChanges(current, replacement)) return null;
@@ -585,11 +622,22 @@ public sealed partial class MainWindow : Window
         if (e.Key == Windows.System.VirtualKey.Z && (GetKeyState(0x11) & 0x8000) != 0 &&
             !_modal && !_viewBlocked && !WithinTextBox(e.OriginalSource as DependencyObject))
         {
-            var result = _session.Undo(candidate =>
+            WallSessionResult result;
+            try
             {
-                var fit = WallViewportPolicy.Validate(candidate, CurrentViewportBudget, _metrics);
-                return fit.Success ? null : ViewportFailure(fit);
-            });
+                result = _session.Undo(candidate =>
+                {
+                    var fit = WallViewportPolicy.Validate(candidate, CurrentViewportBudget, _metrics);
+                    return fit.Success ? null : ViewportFailure(fit);
+                });
+            }
+            catch (Exception ex)
+            {
+                BlockView(_session.ResultUnknown ? ProductStrings.Get("Wall.ResultUnknown")
+                    : string.Format(ProductStrings.Get("Wall.UndoViewFailed"), ex.Message));
+                e.Handled = true;
+                return;
+            }
             if (result.ViewFailed || _session.ViewBlocked)
                 BlockView(string.Format(ProductStrings.Get("Wall.UndoViewFailed"), string.Join("；", result.Diagnostics)), retry: true);
             else if (!result.Committed) Status(string.Join("；", result.Diagnostics));

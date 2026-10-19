@@ -15,11 +15,16 @@ public sealed class MemberSizeRulesTests
     public void TileBoundaries(int width, int height, bool valid) => Assert.Equal(valid, MemberSizeRules.IsTileSize(width, height));
 
     [Fact]
-    public void PuzzleTwelveRowsAndOneCellArePermitted()
+    public void PuzzleWholeSizeIsTwoThroughEightByTwelve()
     {
+        Assert.True(MemberSizeRules.IsPuzzleSize(2, 2));
         Assert.True(MemberSizeRules.IsPuzzleSize(8, 12));
-        Assert.True(MemberSizeRules.IsPuzzleSize(1, 1));
+        Assert.False(MemberSizeRules.IsPuzzleSize(1, 1));
+        Assert.False(MemberSizeRules.IsPuzzleSize(1, 2));
+        Assert.False(MemberSizeRules.IsPuzzleSize(2, 1));
         Assert.False(MemberSizeRules.IsPuzzleSize(8, 13));
+        Assert.False(MemberSizeRules.IsPuzzleSize(9, 12));
+        Assert.True(MemberSizeRules.IsPartitionSize(1, 1));
         var initial = PartitionLayout.FullGrid(new GridSize(7, 11));
         var session = new PartitionEditSession(initial.Size, initial.Partitions);
         Assert.True(session.AddRow()); Assert.True(session.AddColumn());

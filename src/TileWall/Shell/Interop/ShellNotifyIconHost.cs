@@ -44,9 +44,6 @@ public sealed class ShellNotifyIconHost : IDisposable
     /// <summary>托盘菜单「退出 TileWall」→ Router.RequestExit。</summary>
     public event Action? ExitRequested;
 
-    /// <summary>NIM_ADD 是否成功（极端 shell 状态下为 false：托盘缺席但热键/右键入口仍可用，§4.2 失真路径）。</summary>
-    public bool IsAdded => _added;
-
     public ShellNotifyIconHost(ShellMessageHost host, string iconFilePath, bool trace = false)
     {
         ArgumentNullException.ThrowIfNull(host);

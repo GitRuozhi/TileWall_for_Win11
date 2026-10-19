@@ -31,15 +31,9 @@ public sealed partial class WallImageService : IDisposable
     private long _cacheBytes;
     private bool _disposed;
 
-    public WallImageService(ILnkFileService links, string cacheRoot)
+    public WallImageService(ILnkFileService links)
     {
         _links = links ?? throw new ArgumentNullException(nameof(links));
-        ArgumentException.ThrowIfNullOrWhiteSpace(cacheRoot);
-        if (!Path.IsPathFullyQualified(cacheRoot))
-            throw new ArgumentException("Cache root must be absolute.", nameof(cacheRoot));
-        // No disk cache is used. Keeping this argument validates the caller's data scope
-        // without creating directories or touching a custom-image source.
-        _ = Path.GetFullPath(cacheRoot);
     }
 
     public Task<WallImageResult> LoadBackgroundAsync(

@@ -176,7 +176,7 @@ public sealed class PartitionStrokeTests
         Assert.True(session.Undo());
 
         // 到界拒绝：栈与布局不动
-        var tight = new PartitionEditSession(new GridSize(1, 1), PartitionLayout.FullGrid(new GridSize(1, 1)).Partitions);
+        var tight = new PartitionEditSession(new GridSize(2, 2), PartitionLayout.FullGrid(new GridSize(2, 2)).Partitions);
         Assert.False(tight.RemoveColumn());
         Assert.False(tight.RemoveRow());
         Assert.Equal(0, tight.UndoDepth);

@@ -189,6 +189,7 @@
   <x:String x:Key="Wall.ViewBlocked">The wall view is blocked. Please restart.</x:String>
   <x:String x:Key="Wall.CommitViewFailed">Saved to disk, but the wall could not be refreshed: {0}</x:String>
   <x:String x:Key="Wall.RequiresReopen">Changes were saved to disk, but this session could not accept the new state. Close and reopen TileWall to load the saved wall.</x:String>
+  <x:String x:Key="Wall.ResultUnknown">The result of this save cannot be confirmed. Close and reopen TileWall before changing the wall in this session.</x:String>
   <x:String x:Key="Wall.RecoveryBlocked">Storage recovery is incomplete and wall actions are blocked. Close and reopen TileWall to retry recovery.</x:String>
   <x:String x:Key="Wall.CleanupPending">Saved. Cleanup will continue during recovery.</x:String>
   <x:String x:Key="Wall.LocationUnavailable">Location unavailable: {0} {1}</x:String>
@@ -259,6 +260,7 @@
   <x:String x:Key="Import.Count">{0} candidates, {1} selected; skipped {2} unreadable or unsafe directories.</x:String>
   <x:String x:Key="Import.Confirm">Confirm batch import</x:String>
   <x:String x:Key="Import.SelectFirst">Choose shortcuts to import first.</x:String>
+  <x:String x:Key="Import.SelectionRemoved">Removed {0} selected items that are not in the new list.</x:String>
   <x:String x:Key="Import.Blocked">Finish the current edit or layout adaptation before adding objects.</x:String>
   <x:String x:Key="Import.SourceMissing">A source is missing or can no longer be added. Nothing in this batch was added: {0}</x:String>
   <x:String x:Key="Import.NoSpace">The batch cannot fit. Select fewer entries or rearrange the wall: {0}</x:String>

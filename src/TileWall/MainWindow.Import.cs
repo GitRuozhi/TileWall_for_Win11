@@ -1,4 +1,5 @@
 using TileWall.ApplicationModel;
+using TileWall.Core.Application;
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Import;

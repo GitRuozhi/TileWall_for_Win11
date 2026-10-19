@@ -32,7 +32,7 @@ public sealed class JournalPathGuardTests
         var files = new CountingFiles();
         var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "journal-guard-memory"));
         var paths = Activator.CreateInstance(typeof(WallStore).Assembly.GetType("TileWall.Core.Storage.WallStoragePaths")!,
-            files, new FileSystemDataDirectory(root))!;
+            files, root)!;
         return (files, paths, root);
     }
 

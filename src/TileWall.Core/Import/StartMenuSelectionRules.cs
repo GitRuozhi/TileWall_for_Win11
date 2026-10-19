@@ -5,6 +5,7 @@ using TileWall.Core.Entries;
 namespace TileWall.Core.Import;
 
 public sealed record StartMenuBucket(string Key, string Title, int Order);
+public sealed record StartMenuSelectionMigration(IReadOnlyList<string> SelectedKeys, int RemovedCount);
 public enum StartMenuExclusion { None, WindowsBuiltIn, Uninstall, Maintenance, DocumentOrWeb }
 
 /// <summary>Deterministic local selection policy. It describes purpose, never usage frequency.</summary>
@@ -43,6 +44,24 @@ public static partial class StartMenuSelectionRules
         "{D20EA4E1-3957-11D2-A40B-0C5020524153}", // Administrative tools
         "{2559A1F3-21D7-11D4-BDAF-00C04F60B9F0}", // Run
     ];
+
+    /// <summary>Keeps previous SelectionKey values that are still addable. Matching is ordinal and ignores display names.</summary>
+    public static StartMenuSelectionMigration MigrateSelection(IEnumerable<string> previousKeys, IEnumerable<string> addableKeys)
+    {
+        ArgumentNullException.ThrowIfNull(previousKeys);
+        ArgumentNullException.ThrowIfNull(addableKeys);
+        var addable = new HashSet<string>(addableKeys.Where(key => !string.IsNullOrEmpty(key)), StringComparer.Ordinal);
+        var selected = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var removed = 0;
+        foreach (var key in previousKeys)
+        {
+            if (string.IsNullOrEmpty(key) || !seen.Add(key)) continue;
+            if (addable.Contains(key)) selected.Add(key);
+            else removed++;
+        }
+        return new StartMenuSelectionMigration(selected, removed);
+    }
 
     public static char Initial(string name)
     {

@@ -171,7 +171,7 @@ public sealed class PartitionEditSession
     /// <summary>缩列（INV-P9）；已到 2 列返回 false 且布局不变。</summary>
     public bool RemoveColumn() => ApplyResize(PartitionOps.RemoveColumn(Current));
 
-    /// <summary>下扩一行（INV-P8）；已到 25 行返回 false 且布局不变。</summary>
+    /// <summary>下扩一行（INV-P8）；已到 12 行返回 false 且布局不变。</summary>
     public bool AddRow() => ApplyResize(PartitionOps.AddRow(Current));
 
     /// <summary>缩行（INV-P9）；已到 2 行返回 false 且布局不变。</summary>

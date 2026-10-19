@@ -62,6 +62,37 @@ public static class WallViewportPolicy
         return new(new(document, geometry), WallRejection.None);
     }
 
+    /// <summary>
+    /// Reuses geometry from a proposal that already came from layout, import, drag, resize, or settings validation.
+    /// A mismatched geometry falls back to a full document check.
+    /// </summary>
+    public static WallLayoutResult Validate(WallProposal proposal, WallViewportBudget budget, WallMetrics? metrics = null)
+    {
+        ArgumentNullException.ThrowIfNull(proposal);
+        metrics ??= new();
+        var document = proposal.Document;
+        if (MemberHeightRejection(document) is { } memberRejection) return memberRejection;
+        var expected = document.Lanes.SelectMany(lane => lane.Groups).Where(group => group.Members.Count > 0)
+            .Select(group => group.Id).ToArray();
+        var placed = proposal.Geometry.Groups;
+        if (placed.Count != expected.Length || !placed.Select(group => group.GroupId).SequenceEqual(expected))
+            return Validate(document, budget, metrics);
+        foreach (var group in placed)
+        {
+            if (metrics.TopMargin + metrics.Margin + group.Bounds.Height > budget.MaxHeightDip + 1e-8)
+            {
+                var source = document.Lanes.SelectMany(lane => lane.Groups).First(item => item.Id == group.GroupId);
+                var name = string.IsNullOrWhiteSpace(source.Title) ? source.Id : source.Title;
+                return new(null, WallRejection.NoSpace, "GROUP_TOO_TALL:" + name);
+            }
+        }
+        if (document.Columns > budget.MaxColumns || document.Rows > budget.MaxRows ||
+            proposal.Geometry.WallWidth > budget.MaxWidthDip + 1e-8 ||
+            proposal.Geometry.WallHeight > budget.MaxHeightDip + 1e-8)
+            return new(null, WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE");
+        return new(proposal, WallRejection.None);
+    }
+
     /// <summary>Resize/compact a copy. Failed fits never expose partial lane or row removal.</summary>
     public static WallLayoutResult TryResize(WallDocument source, int columns, int rows,
         WallSettings settings, WallViewportBudget budget, WallMetrics? metrics = null)
@@ -77,7 +108,7 @@ public static class WallViewportPolicy
             if (result.Rejection != WallRejection.NoSpace) return result;
             foreach (var group in source.Lanes.SelectMany(l => l.Groups))
             {
-                var occupiedRows = group.Members.SelectMany(m => Enumerable.Range(m.LocalBounds.Row, m.LocalBounds.Height)).Distinct().Count();
+                var occupiedRows = group.Members.Max(m => m.LocalBounds.Bottom);
                 if (occupiedRows > 0 && metrics.TopMargin + metrics.Margin + metrics.TitleHeight +
                     metrics.TitleToMembersGap + metrics.HeightOf(occupiedRows) > budget.MaxHeightDip + 1e-8)
                     return new(null, WallRejection.NoSpace, "GROUP_TOO_TALL:" + (string.IsNullOrWhiteSpace(group.Title) ? group.Id : group.Title));

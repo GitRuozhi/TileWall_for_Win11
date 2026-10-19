@@ -1,6 +1,6 @@
 using TileWall.Core.Shell;
 
-namespace TileWall.ApplicationModel;
+namespace TileWall.Core.Application;
 
 /// <summary>Allows only the existing participant's synchronous exit-save call.</summary>
 internal sealed class ExitDraftSavePermission

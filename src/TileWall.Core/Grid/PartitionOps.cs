@@ -179,7 +179,7 @@ public static class PartitionOps
             kept));
     }
 
-    /// <summary>下扩一行：旧分区逐条不变 + 底部整行 1×1（INV-P8）；行已到 25 → AtLimit。</summary>
+    /// <summary>下扩一行：旧分区逐条不变 + 底部整行 1×1（INV-P8）；行已到 12 → AtLimit。</summary>
     public static PartitionOpResult AddRow(PartitionLayout layout)
     {
         ArgumentNullException.ThrowIfNull(layout);

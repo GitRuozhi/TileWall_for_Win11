@@ -84,20 +84,6 @@ public sealed class ExplorerAddPathClassifierTests : IDisposable
     }
 
     [Fact]
-    public void FilterExisting_KeepsOnlyAddable_InOrder()
-    {
-        var lnk = Touch("A.lnk");
-        var file = Touch("B.txt");
-        var dir = Path.Combine(_tempDir, "C目录");
-        Directory.CreateDirectory(dir);
-
-        var kept = ExplorerAddPathClassifier.FilterExisting(
-            [lnk, file, dir, @"C:\不存在_单测\never.bin", "相对.txt", ""]);
-
-        Assert.Equal([lnk, file, dir], [.. kept]);
-    }
-
-    [Fact]
     public void PrepareForRouting_DropsBareDriveRoots_KeepsSubPaths()
     {
         // 纯逻辑（零 IO）：裸本地盘符根在投递侧剔除（本机盘符不可添加，§4.2）；子路径与 UNC 共享根照常保留

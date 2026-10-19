@@ -6,6 +6,33 @@ namespace TileWall.Core.Tests.Import;
 
 public sealed class StartMenuSelectionRulesTests
 {
+    [Fact]
+    public void ProjectionKeepsAddableKeysAndCountsRemovedOnes()
+    {
+        var trimmed = StartMenuSelectionRules.MigrateSelection(["A", "B"], ["B"]);
+        Assert.Equal(["B"], trimmed.SelectedKeys);
+        Assert.Equal(1, trimmed.RemovedCount);
+
+        var restored = StartMenuSelectionRules.MigrateSelection(trimmed.SelectedKeys, ["A", "B"]);
+        Assert.Equal(["B"], restored.SelectedKeys);
+        Assert.Equal(0, restored.RemovedCount);
+
+        var cleared = StartMenuSelectionRules.MigrateSelection(["A", "B"], []);
+        Assert.Empty(cleared.SelectedKeys);
+        Assert.Equal(2, cleared.RemovedCount);
+    }
+
+    [Fact]
+    public void SameDisplayNameAndDuplicateKeysStayOnSelectionKey()
+    {
+        var migrated = StartMenuSelectionRules.MigrateSelection(
+            ["path-a", "path-a", "path-b"], ["path-b", "other-name"]);
+        Assert.Equal(["path-b"], migrated.SelectedKeys);
+        Assert.Equal(1, migrated.RemovedCount);
+        Assert.Equal(1, StartMenuSelectionRules.MigrateSelection(["A"], ["a"]).RemovedCount);
+        Assert.Empty(StartMenuSelectionRules.MigrateSelection(["A"], ["a"]).SelectedKeys);
+    }
+
     [Theory]
     [InlineData("Alpha", 'A')]
     [InlineData("中文", 'Z')]

@@ -118,21 +118,8 @@ public static class StartMenuScanner
                         continue;
                     }
 
-                    try
-                    {
-                        var pathInfo = files.GetPathInfo(normalizedSubDirectory);
-                        if (!pathInfo.Exists || !pathInfo.IsDirectory || pathInfo.IsReparsePoint)
-                        {
-                            skipped++;
-                            continue;
-                        }
-                    }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        skipped++;
-                        continue;
-                    }
-
+                    // The dequeue path checks existence, directory kind and reparse once.
+                    // Pre-checking here duplicated a metadata call for every child.
                     if (!scheduled.Add(normalizedSubDirectory))
                     {
                         skipped++; // 包括回指祖先目录的循环边

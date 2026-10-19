@@ -15,7 +15,7 @@ public sealed record PuzzleFrameResult(PuzzleFrame? Frame,
 
 public sealed record PuzzleFrame(string CanonicalPath, long SourceBytes, DateTime LastWriteUtc,
     PixelSize SourcePixels, PixelSize SharpDecodedPixels, PixelSize BlurDecodedPixels,
-    ImageSource Sharp, ImageSource BlurredUnderfill);
+    ImageSource Sharp, ImageSource? BlurredUnderfill);
 
 public enum MemberImagePurpose { Content, Thumbnail }
 
@@ -101,8 +101,9 @@ public sealed partial class WallImageService
         heightPixels = (int)Math.Clamp(Math.Ceiling(heightPixels * reserve), 1, 4096);
         var edge = thumbnail ? Math.Clamp(Math.Max(widthPixels, heightPixels), 64, 256) : 4096;
         if (thumbnail) widthPixels = heightPixels = edge;
+        var needsBlur = member.Visual.BackgroundMode == MemberBackgroundMode.Blur;
         var budget = new PuzzleDecodeBudget(purpose, widthPixels, heightPixels,
-            !thumbnail && member.ImageDisplay.Mode == ImageDisplayMode.Original, edge, thumbnail ? edge : 512);
+            !thumbnail && member.ImageDisplay.Mode == ImageDisplayMode.Original, edge, thumbnail ? edge : 512, needsBlur);
         if (previewImagePath is not null)
             return await LoadImageFileFrameAsync(previewImagePath, budget, ct);
         if (member.Images.Kind == MemberImageSourceKind.Single)
@@ -127,6 +128,10 @@ public sealed partial class WallImageService
             if (prepared.Pixels is null) return new(null, prepared.Status, prepared.Diagnostic);
             var sharp = new DecodedImageFrame(entryOrTarget ?? $"automatic:{member.Id}", 0, DateTime.MinValue,
                 prepared.Width, prepared.Height, prepared.Width, prepared.Height, prepared.Pixels);
+            if (member.Visual.BackgroundMode != MemberBackgroundMode.Blur)
+                return new(new PuzzleFrame(sharp.SourcePath, 0, DateTime.MinValue,
+                    new PixelSize(sharp.SourceWidth, sharp.SourceHeight), new PixelSize(sharp.Width, sharp.Height),
+                    default, MakeBitmap(sharp), null), prepared.Status);
             var blurred = LowResolutionBlur.Apply(sharp);
             return new(new PuzzleFrame(sharp.SourcePath, 0, DateTime.MinValue,
                 new PixelSize(sharp.SourceWidth, sharp.SourceHeight), new PixelSize(sharp.Width, sharp.Height),
@@ -164,12 +169,12 @@ public sealed partial class WallImageService
             var sharp = prepared.Pair.Sharp;
             var blur = prepared.Pair.BlurSource;
             var sharpSource = MakeBitmap(sharp);
-            var blurredSource = MakeBitmap(blur);
+            var blurredSource = blur is null ? null : MakeBitmap(blur);
             if (ct.IsCancellationRequested)
                 return new(null, WallImageStatus.Cancelled);
             return new(new PuzzleFrame(sharp.SourcePath, sharp.SourceBytes, sharp.LastWriteUtc,
                 new PixelSize(sharp.SourceWidth, sharp.SourceHeight),
-                new PixelSize(sharp.Width, sharp.Height), new PixelSize(blur.Width, blur.Height),
+                new PixelSize(sharp.Width, sharp.Height), blur is null ? default : new PixelSize(blur.Width, blur.Height),
                 sharpSource, blurredSource), WallImageStatus.Loaded);
         }
         catch (OperationCanceledException)
@@ -193,7 +198,7 @@ public sealed partial class WallImageService
             return cached;
 
         var decoded = await _decoder.DecodePuzzlePairAsync(canonicalPath, budget.Width, budget.Height, ct,
-            budget.PreserveSourceResolution, budget.SharpMaxEdge, budget.BlurMaxEdge);
+            budget.PreserveSourceResolution, budget.SharpMaxEdge, budget.BlurMaxEdge, budget.NeedsBlur);
         if (decoded.Pair is null)
             return new(decoded.Status switch
             {
@@ -202,9 +207,14 @@ public sealed partial class WallImageService
                 _ => WallImageStatus.Invalid,
             }, null, decoded.ErrorType ?? decoded.Status.ToString());
 
-        var blurred = LowResolutionBlur.Apply(decoded.Pair.BlurSource);
-        var result = new PuzzlePrepared(WallImageStatus.Loaded,
-            new PuzzleDecodedPair(decoded.Pair.Sharp, blurred));
+        PuzzleDecodedPair pair = decoded.Pair;
+        if (budget.NeedsBlur)
+        {
+            if (decoded.Pair.BlurSource is null)
+                return new(WallImageStatus.Invalid, null, "MissingBlurPlane");
+            pair = new PuzzleDecodedPair(decoded.Pair.Sharp, LowResolutionBlur.Apply(decoded.Pair.BlurSource));
+        }
+        var result = new PuzzlePrepared(WallImageStatus.Loaded, pair);
         var verifiedKey = PuzzleCacheKey(decoded.Pair.Sharp.SourcePath, decoded.Pair.Sharp.SourceBytes,
             decoded.Pair.Sharp.LastWriteUtc, budget);
         CachePuzzle(verifiedKey, result);
@@ -214,7 +224,7 @@ public sealed partial class WallImageService
     private static string PuzzleCacheKey(string canonicalPath, long sourceBytes, DateTime lastWriteUtc,
         PuzzleDecodeBudget budget) =>
         $"puzzle:{budget.Purpose}:{budget.Width}x{budget.Height}:{budget.PreserveSourceResolution}:" +
-        $"{budget.SharpMaxEdge}:{budget.BlurMaxEdge}|{canonicalPath}|{sourceBytes}|{lastWriteUtc.Ticks}";
+        $"{budget.SharpMaxEdge}:{budget.BlurMaxEdge}:{budget.NeedsBlur}|{canonicalPath}|{sourceBytes}|{lastWriteUtc.Ticks}";
 
     private static string? PuzzleFingerprint(string canonicalPath, PuzzleDecodeBudget budget)
     {
@@ -250,7 +260,7 @@ public sealed partial class WallImageService
     private void CachePuzzle(string key, PuzzlePrepared prepared)
     {
         var pair = prepared.Pair!;
-        var bytes = pair.Sharp.BgraPremultiplied.Length + (long)pair.BlurSource.BgraPremultiplied.Length;
+        var bytes = pair.Sharp.BgraPremultiplied.Length + (pair.BlurSource?.BgraPremultiplied.Length ?? 0);
         if (bytes > CacheLimitBytes / 2) return;
         lock (_cacheLock)
         {
@@ -283,5 +293,5 @@ public sealed partial class WallImageService
         string? Diagnostic = null);
 
     private readonly record struct PuzzleDecodeBudget(MemberImagePurpose Purpose, int Width, int Height,
-        bool PreserveSourceResolution, int SharpMaxEdge, int BlurMaxEdge);
+        bool PreserveSourceResolution, int SharpMaxEdge, int BlurMaxEdge, bool NeedsBlur);
 }

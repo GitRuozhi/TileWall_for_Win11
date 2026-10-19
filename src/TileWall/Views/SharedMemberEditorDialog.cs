@@ -62,6 +62,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private CancellationTokenSource? _thumbnailRequest;
     private bool _thumbnailCandidatesReady, _thumbnailPreviewPending = true;
     private int _thumbnailEdge;
+    private bool _thumbnailNeedsBlur;
     private long _generation;
     private long _candidateEnumerationGeneration = -1;
     private XamlRoot? _previewRoot;
@@ -78,10 +79,9 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
 
     internal SharedMemberEditorDialog(Window owner, WallMember original, WallImageService images,
         string? managedEntryPath, ILnkFileService links, int maxRows,
-        Func<WallMember, IReadOnlyList<EntryChange>, string?> save, WallVisualStyle visualStyle = WallVisualStyle.Win10, bool isNewPlaceholder = false)
+        Func<WallMember, IReadOnlyList<EntryChange>, string?> save, WallVisualStyle visualStyle = WallVisualStyle.Win10)
     {
         if (original is not (TileMember or PuzzleMember)) throw new ArgumentException("A tile or puzzle is required.", nameof(original));
-        _ = isNewPlaceholder; // The host's save callback owns duplicate-placeholder removal and selection.
         _owner = owner; _original = original; _draft = original; _images = images;
         _managedEntryPath = managedEntryPath; _links = links; _save = save;
         _visualStyle = visualStyle;
@@ -89,7 +89,12 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _originalInput = original.TargetInput ?? ReadManagedTarget();
         _draft = original with { TargetInput = _originalInput };
         if (original is PuzzleMember puzzle) _layout = new(puzzle.LocalBounds.Size, puzzle.Partitions);
-        _height.Minimum = _width.Minimum = 1;
+        if (original is PuzzleMember)
+        {
+            _width.Minimum = MemberSizeRules.PuzzleMinimumColumns;
+            _height.Minimum = MemberSizeRules.PuzzleMinimumRows;
+        }
+        else _height.Minimum = _width.Minimum = 1;
         _height.Maximum = Math.Min(_maxRows, original is PuzzleMember ? MemberSizeRules.PuzzleMaximumRows : MemberSizeRules.TileMaximumRows);
         _width.Maximum = original is PuzzleMember ? MemberSizeRules.PuzzleMaximumColumns : MemberSizeRules.TileMaximumColumns;
         _transparencyInput.Width = 56; _transparencyInput.Resources["TextControlThemeMinWidth"] = 0d;
@@ -580,13 +585,15 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private void RestartThumbnailBatch()
     {
         var edge = (int)Math.Clamp(Math.Ceiling(48 * PreviewRasterizationScale), 64, 256);
-        if (_thumbnailRequest is not null && _thumbnailEdge == edge) return;
+        var needsBlur = _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur;
+        if (_thumbnailRequest is not null && _thumbnailEdge == edge && _thumbnailNeedsBlur == needsBlur) return;
         CancelThumbnailRequests(resetCandidates: false);
         if (_closed || _previewClosing || _saved || _discardConfirmed || _sourceDirty || _targetDirty ||
             !_thumbnailCandidatesReady || _thumbnailPreviewPending || _candidates.Count == 0) return;
         var batch = _thumbnailRequest = new CancellationTokenSource();
         var token = batch.Token;
         _thumbnailEdge = edge;
+        _thumbnailNeedsBlur = needsBlur;
         _ = LoadThumbnailsAsync(_candidates.ToArray(), _draft, edge, batch, token);
     }
     private async Task LoadThumbnailsAsync(IReadOnlyList<Thumbnail> candidates, WallMember member, int edge,

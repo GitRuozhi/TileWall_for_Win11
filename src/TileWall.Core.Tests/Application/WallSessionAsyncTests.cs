@@ -1,7 +1,7 @@
 using TileWall.Core.Configuration;
 using System.Threading.Channels;
 using System.Text;
-using TileWall.ApplicationModel;
+using TileWall.Core.Application;
 using TileWall.Core.Grid;
 using TileWall.Core.Storage;
 using TileWall.Core.Tests.Fixtures;
@@ -163,7 +163,6 @@ public sealed class WallSessionAsyncTests
         files.InjectedFault = FaultPoint.BeforeMove;
         var operation = session.CommitAsync(proposal);
         await executor.RunNextAsync();
-        (await acceptance.TakeAsync())();
         var result = await operation;
         Assert.False(result.Committed);
         Assert.False(session.WritePending);
@@ -227,7 +226,6 @@ public sealed class WallSessionAsyncTests
         var failedOperation = session.CommitAsync(changed.Proposal!,
             [new EntryChange.ChangeTarget("tile1", "https://new.example")]);
         await executor.RunNextAsync();
-        (await acceptance.TakeAsync())();
         var failed = await failedOperation;
         Assert.False(failed.Committed);
         Assert.Empty(files.Rules);
@@ -286,6 +284,27 @@ public sealed class WallSessionAsyncTests
         Assert.False(session.RefreshViewFromCurrent());
         Assert.False(session.WritePending);
         Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+    }
+
+    [Fact]
+    public async Task RejectedAsyncCommitDoesNotRequireUiDispatcher()
+    {
+        var (session, _, _, executor, _) = Harness();
+        session.ConfigureAsyncExecution(executor, _ => Task.FromException(new InvalidOperationException("dispatcher closed")));
+        var proposal = Add(session);
+        proposal = proposal with
+        {
+            Document = proposal.Document with { Generation = session.Current.Generation + 9 },
+        };
+
+        var operation = session.CommitAsync(proposal);
+        await executor.RunNextAsync();
+        var result = await operation;
+
+        Assert.False(result.Committed);
+        Assert.Contains("GENERATION", result.Diagnostics);
+        Assert.False(session.ViewBlocked);
+        Assert.False(session.WritePending);
     }
 
     [Fact]

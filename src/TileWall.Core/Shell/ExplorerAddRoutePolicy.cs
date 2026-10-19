@@ -16,15 +16,6 @@ public enum ExplorerAddRouteAction
 
     /// <summary>unpackaged 无宿主：直启自身冷启动（--add 参数）。</summary>
     LaunchUnpackagedSelf,
-
-    /// <summary>投递失败（接收方拒绝/超时/不在）：记 WARN 后放弃。</summary>
-    AbandonDeliveryFailed,
-
-    /// <summary>packaged 激活失败：记 ERROR 后放弃（不直启 exe）。</summary>
-    AbandonPackagedActivationFailed,
-
-    /// <summary>unpackaged 冷启动失败：记 ERROR 后放弃。</summary>
-    AbandonUnpackagedLaunchFailed,
 }
 
 /// <summary>
@@ -48,16 +39,4 @@ public static class ExplorerAddRoutePolicy
             : ExplorerAddRouteAction.LaunchUnpackagedSelf;
     }
 
-    /// <summary>
-    /// 所计划动作执行失败的收口：三路各对应一个「放弃」终态。
-    /// 关键断言点：ActivatePackagedSelf 的失败态**不是** LaunchUnpackagedSelf——
-    /// 退化直启正是 F-03 影子实例的成因。
-    /// </summary>
-    public static ExplorerAddRouteAction ResolveStepFailure(ExplorerAddRouteAction planned) => planned switch
-    {
-        ExplorerAddRouteAction.DeliverToHost => ExplorerAddRouteAction.AbandonDeliveryFailed,
-        ExplorerAddRouteAction.ActivatePackagedSelf => ExplorerAddRouteAction.AbandonPackagedActivationFailed,
-        ExplorerAddRouteAction.LaunchUnpackagedSelf => ExplorerAddRouteAction.AbandonUnpackagedLaunchFailed,
-        _ => planned,
-    };
 }

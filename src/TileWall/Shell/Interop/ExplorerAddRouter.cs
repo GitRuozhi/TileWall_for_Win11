@@ -60,9 +60,6 @@ internal static class ExplorerAddRouter
             case ExplorerAddRouteAction.LaunchUnpackagedSelf:
                 LaunchSelfUnpackaged(routable, filtered);
                 return;
-            default:
-                // Plan 不产出放弃态；防御性兜底（不可达）
-                return;
         }
     }
 

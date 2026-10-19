@@ -1,4 +1,4 @@
-namespace TileWall.Graphics;
+namespace TileWall.Core.Imaging;
 
 /// <summary>Presentation timing only; no image identity or carousel state belongs here.</summary>
 internal static class PartitionTransitionTiming

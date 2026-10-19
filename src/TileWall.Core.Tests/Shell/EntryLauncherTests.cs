@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using TileWall.Core.Entries;
-using TileWall.Shell;
+using TileWall.Core.Shell;
 using Xunit;
 
 namespace TileWall.Core.Tests.Shell;

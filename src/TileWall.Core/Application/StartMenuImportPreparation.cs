@@ -4,7 +4,7 @@ using TileWall.Core.Shell;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
 
-namespace TileWall.ApplicationModel;
+namespace TileWall.Core.Application;
 
 internal sealed record StartMenuPreparationStrings(string InvalidTarget, string UnsupportedProtocol);
 

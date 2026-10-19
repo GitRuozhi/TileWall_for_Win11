@@ -17,7 +17,7 @@ public sealed record DecodedImageFrame(
     ReadOnlyMemory<byte> BgraPremultiplied);
 
 public sealed record ImageDecodeResult(ImageDecodeStatus Status, DecodedImageFrame? Frame, string? ErrorType = null);
-public sealed record PuzzleDecodedPair(DecodedImageFrame Sharp, DecodedImageFrame BlurSource);
+public sealed record PuzzleDecodedPair(DecodedImageFrame Sharp, DecodedImageFrame? BlurSource);
 public sealed record PuzzleDecodeResult(ImageDecodeStatus Status, PuzzleDecodedPair? Pair, string? ErrorType = null);
 
 /// <summary>Bounded, orientation-correct WIC decode. Safe to call away from the XAML UI thread.</summary>
@@ -57,7 +57,7 @@ public sealed class ImageFrameDecoder
     public async Task<PuzzleDecodeResult> DecodePuzzlePairAsync(
         string? sourcePath, int requiredWidthPx, int requiredHeightPx,
         CancellationToken cancellationToken = default, bool preserveSourceResolution = false,
-        int sharpMaxEdge = MaxDecodedEdge, int blurMaxEdge = 512)
+        int sharpMaxEdge = MaxDecodedEdge, int blurMaxEdge = 512, bool needsBlur = true)
     {
         if (string.IsNullOrWhiteSpace(sourcePath))
             return new(ImageDecodeStatus.MissingFile, null);
@@ -100,11 +100,15 @@ public sealed class ImageFrameDecoder
                 rawWidth, rawHeight, orientedWidth, orientedHeight,
                 preserveSourceResolution ? orientedWidth : requiredWidthPx,
                 preserveSourceResolution ? orientedHeight : requiredHeightPx, cancellationToken, maxEdge: sharpMaxEdge);
-            // A second WIC read uses the same open stream and decoder, never a second file version.
-            var blur = await DecodePlaneAsync(decoder, path, fileBytes, lastWriteUtc,
-                rawWidth, rawHeight, orientedWidth, orientedHeight,
-                blurMaxEdge, blurMaxEdge, cancellationToken, maxEdge: blurMaxEdge);
-            if (sharp is null || blur is null)
+            DecodedImageFrame? blur = null;
+            if (needsBlur)
+            {
+                // A second WIC read uses the same open stream and decoder, never a second file version.
+                blur = await DecodePlaneAsync(decoder, path, fileBytes, lastWriteUtc,
+                    rawWidth, rawHeight, orientedWidth, orientedHeight,
+                    blurMaxEdge, blurMaxEdge, cancellationToken, maxEdge: blurMaxEdge);
+            }
+            if (sharp is null || needsBlur && blur is null)
                 return new(ImageDecodeStatus.InvalidImage, null, "UnexpectedPixelCount");
 
             info.Refresh();

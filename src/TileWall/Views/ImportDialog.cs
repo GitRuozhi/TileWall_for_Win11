@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using TileWall.ApplicationModel;
+using TileWall.Core.Application;
 using TileWall.Core.Import;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
@@ -39,6 +40,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly GridView _grid = new() { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = false };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
     private readonly HashSet<string> _selected = new(StringComparer.Ordinal);
+    private string? _projectionNotice;
     private readonly Dictionary<string, ImportBatchItem> _items = new(StringComparer.Ordinal);
     private IReadOnlyList<StartMenuImportCandidate> _candidates = [];
     private IReadOnlyList<StartMenuImportCandidate> _visibleCandidates = [];
@@ -238,12 +240,19 @@ internal sealed class ImportDialog : IWallDialogSession
         {
             SetSelection(candidate.SelectionKey, !clear, refresh: false);
         }
+        _projectionNotice = null;
         SelectionChanged();
     }
 
     private void RefreshProjection()
     {
         _visibleCandidates = StartMenuImportProjection.Project(_candidates, _autoTrim.IsOn, _recognizeGroups.IsOn);
+        var migration = StartMenuSelectionRules.MigrateSelection(_selected,
+            _visibleCandidates.Where(candidate => candidate.CanAdd).Select(candidate => candidate.SelectionKey));
+        _selected.Clear();
+        foreach (var key in migration.SelectedKeys) _selected.Add(key);
+        _projectionNotice = migration.RemovedCount > 0
+            ? string.Format(ProductStrings.Get("Import.SelectionRemoved"), migration.RemovedCount) : null;
         foreach (var row in _rows.ToArray()) ReleaseRow(row);
         _grid.ItemsSource = null;
         var source = new CollectionViewSource { IsSourceGrouped = true,
@@ -380,6 +389,11 @@ internal sealed class ImportDialog : IWallDialogSession
         AutomationProperties.SetName(toggle, accessibleName);
         AutomationProperties.SetHelpText(toggle, tooltip);
         AutomationProperties.SetAutomationId(toggle, "import-candidate-" + candidate.FullPath);
+        // The default GridViewItem name is the data record's ToString(), which dumps
+        // every candidate field into UIA and screen readers. Give the container the
+        // same concise name as its interactive child.
+        AutomationProperties.SetName(e.ItemContainer, accessibleName);
+        AutomationProperties.SetHelpText(e.ItemContainer, tooltip);
         var reset = WallMemberVisualFactory.ConfigureInteraction(toggle, card, toggle.CornerRadius, view.SetExternalHover);
         RoutedEventHandler changed = (_, _) =>
         {
@@ -421,7 +435,9 @@ internal sealed class ImportDialog : IWallDialogSession
     {
         if (selected) _selected.Add(key);
         else _selected.Remove(key);
-        if (refresh) SelectionChanged();
+        if (!refresh) return;
+        _projectionNotice = null;
+        SelectionChanged();
     }
 
     private void UpdateSelectionFeedback()
@@ -443,6 +459,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private void UpdateStatus()
     {
         if (!_scanReceived || _scanFailed) return;
+        if (_projectionNotice is not null) { _status.Text = _projectionNotice; return; }
         var selectedCount = _visibleCandidates.Count(candidate => candidate.CanAdd && _selected.Contains(candidate.SelectionKey));
         _status.Text = string.Format(ProductStrings.Get("Import.Count"), _visibleCandidates.Count, selectedCount, _skipped);
     }

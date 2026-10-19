@@ -47,12 +47,6 @@ public static class ExplorerAddPathClassifier
             : ExplorerAddKind.CreateLink;
     }
 
-    /// <summary>接收侧过滤（主应用 HandleExplorerAdd 第 1 步）：保留可分类为复制/建链的路径。</summary>
-    public static IReadOnlyList<string> FilterExisting(IEnumerable<string?> paths) =>
-        paths.Where(p => Classify(p) != ExplorerAddKind.Drop)
-            .Cast<string>()
-            .ToArray();
-
     /// <summary>
     /// 投递侧过滤（COM 服务器 Invoke，零 IO）：完全限定路径且不是裸本机盘符根。
     /// 本机盘符（C:\）在 Invoke 时剔除（§4.2 约束 2）；回收站等虚拟对象取不到 FILESYSPATH，天然不在此列。

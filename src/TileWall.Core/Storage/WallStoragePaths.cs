@@ -4,10 +4,10 @@ using TileWall.Core.Wall;
 
 namespace TileWall.Core.Storage;
 
-internal sealed class WallStoragePaths(IFileStore files, IDataDirectory directory)
+internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
 {
     private readonly IFileStore _files = files;
-    public string Root { get; } = RequireRoot(directory.RootPath);
+    public string Root { get; } = RequireRoot(dataRoot);
     public string Config => Under("config.json");
     public string Previous => Under("Recovery", "config.prev.json");
     public string Staging => Under("Staging");
@@ -40,9 +40,6 @@ internal sealed class WallStoragePaths(IFileStore files, IDataDirectory director
         var parts = entry.RelativePath.Split('/');
         return Under(parts);
     }
-
-    public string Entry(string memberId, string fileName, ManagedEntryKind kind) =>
-        Entry(new ManagedEntryReference(memberId, $"Objects/{memberId}/{fileName}", kind));
 
     public static bool ValidId(string? id) =>
         id is { Length: > 0 and <= 200 } && id != "." && id != ".." &&

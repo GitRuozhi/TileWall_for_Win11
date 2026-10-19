@@ -1,4 +1,4 @@
-﻿using TileWall.Core.Entries;
+using TileWall.Core.Entries;
 using TileWall.Core.Grid;
 using TileWall.Core.Components;
 
@@ -230,7 +230,7 @@ public static class WallLayoutEngine
                         errors.Add("CLOCK_FORMAT");
                     if (member is PuzzleMember puzzle)
                     {
-                        if (b.Width is < 1 or > 8 || b.Height is < 1 or > 12 || puzzle.Partitions is null)
+                        if (!MemberSizeRules.IsPuzzleSize(b.Width, b.Height) || puzzle.Partitions is null)
                             errors.Add("PUZZLE_SIZE");
                         else if (puzzle.Partitions.Any(p => p.Column < 0 || p.Row < 0 || p.Width < 1 || p.Height < 1 ||
                             (long)p.Column + p.Width > b.Width || (long)p.Row + p.Height > b.Height) ||
@@ -648,18 +648,8 @@ public static class WallLayoutEngine
             errors.Add("EMPTY_ID");
             return;
         }
-        if (!EntryPathGuard.IsObjectIdValid(id) || EntryNames.Validate(id).Count > 0 ||
-            IsSuperscriptDeviceName(id)) errors.Add("INVALID_ID");
+        if (!EntryPathGuard.IsObjectIdValid(id) || EntryNames.Validate(id).Count > 0) errors.Add("INVALID_ID");
         if (!ids.Add(id)) errors.Add("DUPLICATE_ID");
-    }
-
-    private static bool IsSuperscriptDeviceName(string id)
-    {
-        var stem = id.Split('.')[0];
-        return stem.Length == 4 &&
-            (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) ||
-             stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) &&
-            stem[3] is '\u00B9' or '\u00B2' or '\u00B3';
     }
 
     private static WallLayoutResult Reject(WallRejection rejection, string? detail = null) =>

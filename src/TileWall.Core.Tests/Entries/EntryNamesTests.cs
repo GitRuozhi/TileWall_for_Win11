@@ -87,14 +87,6 @@ public class EntryNamesTests
         Assert.Contains(EntryNames.NameTrailingJunk, errors);
     }
 
-    [Fact]
-    public void CombineName_扩展名由类型决定_用户不可编辑()
-    {
-        Assert.Equal("工作浏览器.lnk", EntryNames.CombineName("工作浏览器", EntryKind.Lnk));
-        Assert.Equal("工作浏览器.url", EntryNames.CombineName("工作浏览器", EntryKind.Url));
-        Assert.Throws<ArgumentOutOfRangeException>(() => EntryNames.CombineName("x", EntryKind.None));
-    }
-
     [Theory]
     [InlineData("Objects/o1/工作浏览器.lnk", EntryKind.Lnk)]
     [InlineData("Objects/o1/page.URL", EntryKind.Url)]
@@ -105,11 +97,4 @@ public class EntryNamesTests
         Assert.Equal(expected, EntryNames.KindOfRelativePath(path));
     }
 
-    [Fact]
-    public void SuggestBaseName_网址取主机_路径取主体_文件夹取名()
-    {
-        Assert.Equal("example.com", EntryNames.SuggestBaseName("https://example.com/path?q=1", targetIsDirectory: false));
-        Assert.Equal("notepad", EntryNames.SuggestBaseName("C:\\Windows\\System32\\notepad.exe", targetIsDirectory: false));
-        Assert.Equal("项目文件夹", EntryNames.SuggestBaseName("D:\\work\\项目文件夹\\", targetIsDirectory: true));
-    }
 }

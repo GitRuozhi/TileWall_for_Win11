@@ -8,4 +8,8 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <DefaultItemExcludes>$(DefaultItemExcludes);artifacts\**</DefaultItemExcludes>
   </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="TileWall" />
+    <InternalsVisibleTo Include="TileWall.Core.Tests" />
+  </ItemGroup>
 </Project>

@@ -1,4 +1,4 @@
-using TileWall.ApplicationModel;
+using TileWall.Core.Application;
 using TileWall.Core.Grid;
 using TileWall.Core.Storage;
 using TileWall.Core.Tests.Fixtures;
@@ -58,6 +58,25 @@ public sealed class WallMemberHeightLimitTests
             Assert.Null(geometryProposal.Proposal);
         }
         Assert.Equal(before, WallJson.Serialize(source));
+    }
+
+    [Fact]
+    public void ProposalCheckRejectsAThirteenRowClockAndAShrunkBudget()
+    {
+        var clock = new ClockMember { Id = "clock", LocalBounds = new(0, 0, 2, 13) };
+        var document = Document(clock);
+        var proposal = new WallProposal(document, WallLayoutEngine.Measure(document));
+        var tooTall = WallViewportPolicy.Validate(proposal, RuntimeBudget);
+        Assert.False(tooTall.Success);
+        Assert.Contains("MEMBER_TOO_TALL", tooTall.Detail);
+
+        var tile = new TileMember { Id = "member", LocalBounds = new(0, 0, 2, 2) };
+        var small = Document(tile);
+        var fitted = new WallProposal(small, WallLayoutEngine.Measure(small));
+        var tiny = WallViewportPolicy.Create(200, 200, false);
+        var rejected = WallViewportPolicy.Validate(fitted, tiny);
+        Assert.False(rejected.Success);
+        Assert.Equal(WallJson.Serialize(small), WallJson.Serialize(fitted.Document));
     }
 
     [Theory]

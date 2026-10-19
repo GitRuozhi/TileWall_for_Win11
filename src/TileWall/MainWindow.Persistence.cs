@@ -1,4 +1,5 @@
 using TileWall.ApplicationModel;
+using TileWall.Core.Application;
 using TileWall.Core.Shell;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
@@ -61,7 +62,7 @@ public sealed partial class MainWindow
         Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
         if (PersistenceInteractionBlocked) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
         if (_viewBlocked) return Reject(ProductStrings.Get("Wall.ViewBlocked"));
-        var fit = WallViewportPolicy.Validate(proposal.Document, ViewportBudget(proposal.Document.Settings.FullScreen), _metrics);
+        var fit = WallViewportPolicy.Validate(proposal, ViewportBudget(proposal.Document.Settings.FullScreen), _metrics);
         if (fit.Proposal is null) return Reject(ViewportFailure(fit));
         _persistencePending = true;
         _pendingCarouselCommit = carousel;
@@ -83,21 +84,14 @@ public sealed partial class MainWindow
         {
             var result = await _session.CommitAsync(proposal, changes, recordUndo);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);
-            if (!result.Committed)
-            {
-                error = string.Format(ProductStrings.Get("Common.SaveFailed"), string.Join("；", result.Diagnostics));
-                if (_session.ViewBlocked) BlockView(error);
-            }
-            if (result.ViewFailed)
-                BlockView(string.Format(ProductStrings.Get("Wall.CommitViewFailed"), string.Join("；", result.Diagnostics)), retry: true);
-            if (result.NeedsCleanup) Status(ProductStrings.Get("Wall.CleanupPending"));
+            error = DescribeCommit(result);
         }
         catch (Exception ex)
         {
-            if (_session.ViewBlocked && !_windowClosing)
-                BlockView(string.Format(ProductStrings.Get("Wall.CommitViewFailed"), ex.Message), retry: true);
-            error = _session.RequiresReopen ? ProductStrings.Get("Wall.RequiresReopen")
+            error = _session.ResultUnknown ? ProductStrings.Get("Wall.ResultUnknown")
+                : _session.RequiresReopen ? ProductStrings.Get("Wall.RequiresReopen")
                 : string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message);
+            if (_session.ViewBlocked && !_windowClosing) BlockView(error);
         }
         finally
         {

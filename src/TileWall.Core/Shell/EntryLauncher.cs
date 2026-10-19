@@ -2,7 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using TileWall.Core.Entries;
 
-namespace TileWall.Shell;
+namespace TileWall.Core.Shell;
 
 /// <summary>启动结果（M4 设计 §6.1）。</summary>
 public enum LaunchOutcome

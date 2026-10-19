@@ -16,9 +16,9 @@ public sealed class WallStore
     private const string JournalName = "commit.json";
     private const string IntentName = "install.intent";
 
-    public WallStore(IFileStore files, ILnkFileService links, IDataDirectory directory)
+    public WallStore(IFileStore files, ILnkFileService links, string dataRoot)
     {
-        _paths = new WallStoragePaths(files, directory);
+        _paths = new WallStoragePaths(files, dataRoot);
         _files = new GuardedWallFiles(files, _paths);
         _links = new GuardedWallLinks(links, _paths);
     }
@@ -98,11 +98,14 @@ public sealed class WallStore
         }
         catch (Exception ex) when (IsStorageError(ex))
         {
-            if (temp is not null)
+            if (temp is not null && _files.Exists(temp))
                 try { _paths.Guard(temp); _files.Delete(temp); }
                 catch (Exception cleanup) when (IsStorageError(cleanup))
                 { return OpenResult(WallOpenStatus.RecoveryBlocked, null, $"{ex.Message}; cleanup: {cleanup.Message}"); }
-            return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message);
+            // Open already returned Fresh before this write. A second Open would only guess.
+            if (_files.Exists(_paths.Config) || temp is not null && _files.Exists(temp))
+                return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message);
+            return OpenResult(WallOpenStatus.OpenFailed, null, ex.GetType().Name + ": " + ex.Message);
         }
     }
 
@@ -255,7 +258,7 @@ public sealed class WallStore
                 ? new WallPlanResult(new WallCommitRequest(current.Generation, WallJson.Freeze(normalized), changes.ToArray()), [])
                 : new WallPlanResult(null, errors);
         }
-        catch (Exception ex) when (IsStorageError(ex) || ex is InvalidDataException or ArgumentException)
+        catch (Exception ex) when (IsStorageError(ex))
         {
             return new WallPlanResult(null, [ex.Message]);
         }
@@ -278,20 +281,24 @@ public sealed class WallStore
                 plan = PlanEntries(current, request.Proposed, request.EntryChanges);
             using (timings?.Measure("store.canonicalValidation"))
             {
-                if (plan.Request is null || !DocumentEqual(plan.Request.Proposed, request.Proposed))
+                // Commit owns one planning pass. Use the canonical request it produced;
+                // the caller supplies the candidate document and entry intents, not a
+                // second trusted representation of the same wall.
+                if (plan.Request is null)
                     return CommitResult(WallCommitStatus.Rejected, null, null,
                         plan.Diagnostics.Count == 0 ? "Entry references differ from canonical plan." : string.Join("; ", plan.Diagnostics));
-                if (!recordUndo && !NonUndoOnly(current, request.Proposed, request.EntryChanges))
+                if (!recordUndo && !NonUndoOnly(current, plan.Request.Proposed, plan.Request.EntryChanges))
                     return CommitResult(WallCommitStatus.Rejected, null, null, "Non-undo commit may only change settings or carousel state.");
             }
-            WallOpenResult opened;
-            using (timings?.Measure("store.openPreflight")) opened = Open();
-            if (opened.Status != WallOpenStatus.Loaded || opened.Document is null)
-                return CommitResult(WallCommitStatus.RecoveryBlocked, null, null, $"Store is {opened.Status}.");
+            using (timings?.Measure("store.openPreflight"))
+            {
+                var blocked = PreflightForCommit(current, expectedHash);
+                if (blocked is not null) return blocked;
+            }
             return CommitCore(current, plan.Request.Proposed, plan.Request.EntryChanges,
                 recordUndo, false, null, expectedHash, timings);
         }
-        catch (Exception ex) when (IsStorageError(ex) || ex is InvalidDataException or ArgumentException)
+        catch (Exception ex) when (IsStorageError(ex))
         {
             return CommitResult(WallCommitStatus.RecoveryBlocked, null, null, ex.Message);
         }
@@ -349,10 +356,42 @@ public sealed class WallStore
             if (Validate(merged).Count > 0) return CommitResult(WallCommitStatus.Rejected, null, null, "Undo document is invalid.");
             return CommitCore(current, merged, [], false, true, overrides, expectedHash);
         }
-        catch (Exception ex) when (IsStorageError(ex) || ex is InvalidDataException or ArgumentException)
+        catch (Exception ex) when (IsStorageError(ex))
         {
             return CommitResult(WallCommitStatus.RecoveryBlocked, null, null, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Commit preflight after CurrentMatchesDisk. It does not parse the current config again.
+    /// Sweep may still change disk; the hash is checked again before any entry is installed.
+    /// </summary>
+    private WallCommitResult? PreflightForCommit(WallDocument current, string expectedHash)
+    {
+        _paths.Guard(_paths.Root);
+        _paths.Guard(_paths.Config);
+        _paths.Guard(_paths.Previous);
+        var previous = Classify(_paths.Previous);
+        if (previous.Schema > WallDocument.CurrentSchemaVersion)
+            return CommitResult(WallCommitStatus.RecoveryBlocked, null, null, "Future schema remains untouched.");
+        if (previous.Schema is > 0 and < WallDocument.CurrentSchemaVersion)
+            return CommitResult(WallCommitStatus.RecoveryBlocked, null, null, "Older wall state requires reset.");
+        if (previous.Present && previous.Schema != WallDocument.CurrentSchemaVersion)
+            return CommitResult(WallCommitStatus.RecoveryBlocked, null, null, "Previous schema is missing or ambiguous.");
+        var initTemp = _paths.Under("config.init.tmp");
+        _paths.Guard(initTemp);
+        if (_files.Exists(initTemp))
+            return CommitResult(WallCommitStatus.RecoveryBlocked, null, null,
+                $"Unjournaled initialization file requires inspection: {initTemp}");
+        var recover = Sweep(new FileClass(true, WallDocument.CurrentSchemaVersion), previous);
+        if (recover is not null)
+            return CommitResult(WallCommitStatus.RecoveryBlocked, null, null,
+                $"Store is {recover.Status}: {string.Join("; ", recover.Diagnostics)}");
+        AuditRecoveryMaterials();
+        if (Hash(_files.ReadAllBytes(_paths.Config)) != expectedHash)
+            return CommitResult(WallCommitStatus.Rejected, null, null, "Config changed during commit preflight.");
+        CheckActiveEntries(current);
+        return null;
     }
 
     private WallCommitResult CommitCore(WallDocument current, WallDocument proposed,
@@ -403,20 +442,10 @@ public sealed class WallStore
             _paths.Guard(stageDir);
             _paths.Guard(materialDir);
         }
-        var intentPublished = false;
-        var committed = false;
-        try
-        {
-            string configTemp;
-            using (timings?.Measure("store.transactionWrite"))
+        InstallTransactionResult installed;
+        using (timings?.Measure("store.transactionWrite"))
+            installed = ExecuteInstallTransaction(journal, newBytes, oldBytes, null, () =>
             {
-                _files.CreateDirectory(_paths.Staging);
-                _files.CreateDirectory(stageDir);
-                _files.CreateDirectory(_paths.Under("Recovery"));
-                _files.CreateDirectory(_paths.RecoveryEntries);
-                _files.CreateDirectory(materialDir);
-                configTemp = _paths.Under("Staging", commitId, "config.tmp");
-                _files.WriteAllBytes(configTemp, newBytes);
                 for (var i = 0; i < ops.Count; i++)
                 {
                     var op = ops[i];
@@ -428,10 +457,8 @@ public sealed class WallStore
                         staged, overrideBytes);
                     ops[i] = op with { NewHash = Hash(bytes), NewLength = bytes.LongLength };
                 }
-                var journalTemp = _paths.Under("Staging", commitId, "commit.tmp");
-                var journalPath = _paths.Under("Staging", commitId, JournalName);
-                _files.WriteAllBytes(journalTemp, JsonSerializer.SerializeToUtf8Bytes(journal, JournalJson));
-                _files.Move(journalTemp, journalPath, false);
+            }, () =>
+            {
                 foreach (var op in ops.Where(o => o.OldPath is not null))
                 {
                     var backupDir = _paths.Under("Recovery", "Entries", commitId, op.MemberId);
@@ -441,58 +468,115 @@ public sealed class WallStore
                     _files.Copy(_paths.Entry(old[op.MemberId].Entry!), backup, false);
                     if (!Verify(backup, op.OldHash, op.OldLength)) throw new IOException("Entry backup verification failed.");
                 }
-                var markerTemp = _paths.Under("Staging", commitId, "intent.tmp");
-                var marker = _paths.Under("Staging", commitId, IntentName);
-                _files.WriteAllBytes(markerTemp, []);
-                _files.Move(markerTemp, marker, false);
-                intentPublished = true;
-            }
-            using (timings?.Measure("store.transactionInstall"))
-            {
-                Install(journal);
-                if (Hash(_files.ReadAllBytes(_paths.Config)) != journal.OldHash)
-                    throw new IOException("Config changed during entry installation.");
-            }
-            using (timings?.Measure("store.transactionPublish"))
-            {
-                _paths.Guard(_paths.Previous);
-                var prevTemp = _paths.Under("Recovery", "config.prev.tmp");
-                _files.WriteAllBytes(prevTemp, oldBytes);
-                _files.Move(prevTemp, _paths.Previous, true);
-                _files.Move(configTemp, _paths.Config, true);
-                committed = true;
-            }
-            WallCommitStatus cleanupStatus;
-            using (timings?.Measure("store.transactionCleanup")) cleanupStatus = CleanupAfterCommit(journal);
-            WallDocument frozen;
-            using (timings?.Measure("store.resultFreeze")) frozen = WallJson.Freeze(proposed);
-            return CommitResult(cleanupStatus, frozen,
-                recordUndo && cleanupStatus == WallCommitStatus.Committed
-                    ? new WallUndoToken(commitId, proposed.Generation) : null,
-                cleanupStatus == WallCommitStatus.CommittedNeedsCleanup ? "Committed; cleanup or undo material needs attention." : null);
-        }
-        catch (Exception ex) when (IsStorageError(ex) || ex is InvalidDataException or ArgumentException)
+            });
+        if (installed.Error is not null)
+            return FinishFailedInstall(installed, commitId, stageDir, materialDir, journal, timings,
+                () => CommitResult(WallCommitStatus.CommittedNeedsCleanup, WallJson.Freeze(proposed), null, installed.Error.Message));
+        WallCommitStatus cleanupStatus;
+        using (timings?.Measure("store.transactionCleanup")) cleanupStatus = CleanupAfterCommit(journal);
+        WallDocument frozen;
+        using (timings?.Measure("store.resultFreeze")) frozen = WallJson.Freeze(proposed);
+        return CommitResult(cleanupStatus, frozen,
+            recordUndo && cleanupStatus == WallCommitStatus.Committed
+                ? new WallUndoToken(commitId, proposed.Generation) : null,
+            cleanupStatus == WallCommitStatus.CommittedNeedsCleanup ? "Committed; cleanup or undo material needs attention." : null);
+    }
+
+    private readonly record struct InstallTransactionResult(bool IntentPublished, bool Committed, bool Blocked, Exception? Error);
+
+    /// <summary>
+    /// Shared staging, intent, install and config replacement. Callers supply entry bytes and which
+    /// previous document to publish. The config Move is the commit point.
+    /// </summary>
+    private InstallTransactionResult ExecuteInstallTransaction(WallJournal journal, byte[] newConfig,
+        byte[] previousBytes, byte[]? corruptDiagnostic, Action stageEntries, Action backupEntries)
+    {
+        var intentPublished = false;
+        try
         {
-            if (committed) return CommitResult(WallCommitStatus.CommittedNeedsCleanup, WallJson.Freeze(proposed),
-                null, ex.Message);
-            try
+            var stageDir = _paths.Under("Staging", journal.CommitId);
+            var materialDir = _paths.Under("Recovery", "Entries", journal.CommitId);
+            GuardCommitPaths(journal);
+            _paths.Guard(stageDir);
+            _paths.Guard(materialDir);
+            _files.CreateDirectory(_paths.Staging);
+            _files.CreateDirectory(stageDir);
+            _files.CreateDirectory(_paths.Under("Recovery"));
+            _files.CreateDirectory(_paths.RecoveryEntries);
+            _files.CreateDirectory(materialDir);
+            var configTemp = _paths.Under("Staging", journal.CommitId, "config.tmp");
+            _files.WriteAllBytes(configTemp, newConfig);
+            stageEntries();
+            var journalTemp = _paths.Under("Staging", journal.CommitId, "commit.tmp");
+            _files.WriteAllBytes(journalTemp, JsonSerializer.SerializeToUtf8Bytes(journal, JournalJson));
+            _files.Move(journalTemp, _paths.Under("Staging", journal.CommitId, JournalName), false);
+            backupEntries();
+            var markerTemp = _paths.Under("Staging", journal.CommitId, "intent.tmp");
+            _files.WriteAllBytes(markerTemp, []);
+            _files.Move(markerTemp, _paths.Under("Staging", journal.CommitId, IntentName), false);
+            intentPublished = true;
+            Install(journal);
+            if (journal.OldHash is not null && Hash(_files.ReadAllBytes(_paths.Config)) != journal.OldHash)
+                throw new IOException("Config changed during entry installation.");
+            if (corruptDiagnostic is not null)
             {
-                using var rollbackTiming = timings?.Measure("store.rollback");
-                if (intentPublished) Rollback(journal);
-                else
-                {
-                    _paths.GuardTree(stageDir);
-                    _paths.GuardTree(materialDir);
-                    _files.DeleteDirectory(stageDir);
-                    _files.DeleteDirectory(materialDir);
-                }
-                return CommitResult(WallCommitStatus.Rejected, null, null, ex.Message);
+                var corrupt = _paths.Under("Recovery", $"corrupt-{journal.CommitId}.json");
+                _paths.Guard(corrupt);
+                _files.WriteAllBytes(corrupt, corruptDiagnostic);
             }
-            catch (Exception rollback) when (IsStorageError(rollback))
+            _paths.Guard(_paths.Previous);
+            var prevTemp = _paths.Under("Recovery", "config.prev.tmp");
+            _files.WriteAllBytes(prevTemp, previousBytes);
+            _files.Move(prevTemp, _paths.Previous, true);
+            _files.Move(configTemp, _paths.Config, true);
+            return new(true, true, false, null);
+        }
+        catch (Exception ex) when (IsStorageError(ex))
+        {
+            var hash = TryConfigHash();
+            if (hash == journal.NewHash) return new(true, true, false, ex);
+            if (intentPublished && hash != journal.OldHash) return new(true, false, true, ex);
+            return new(intentPublished, false, false, ex);
+        }
+    }
+
+    private string? TryConfigHash()
+    {
+        try
+        {
+            return _files.Exists(_paths.Config) ? Hash(_files.ReadAllBytes(_paths.Config)) : null;
+        }
+        catch (Exception ex) when (IsStorageError(ex))
+        {
+            return "unreadable";
+        }
+    }
+
+    private WallCommitResult FinishFailedInstall(InstallTransactionResult installed, string commitId,
+        string stageDir, string materialDir, WallJournal journal, WallCommitTimings? timings,
+        Func<WallCommitResult> committedResult)
+    {
+        if (installed.Committed) return committedResult();
+        if (installed.Blocked)
+            return CommitResult(WallCommitStatus.RecoveryBlocked, null, null,
+                $"Commit {commitId}: {installed.Error!.Message}");
+        try
+        {
+            using var rollbackTiming = timings?.Measure("store.rollback");
+            if (installed.IntentPublished) Rollback(journal);
+            else
             {
-                return CommitResult(WallCommitStatus.RecoveryBlocked, null, null,
-                    $"Commit {commitId}: {ex.Message}; rollback: {rollback.Message}");
+                _paths.GuardTree(stageDir);
+                _paths.GuardTree(materialDir);
+                _files.DeleteDirectory(stageDir);
+                _files.DeleteDirectory(materialDir);
             }
+            return CommitResult(WallCommitStatus.Rejected, null, null, installed.Error!.Message);
+        }
+        catch (Exception rollback) when (IsStorageError(rollback))
+        {
+            return CommitResult(WallCommitStatus.RecoveryBlocked, null, null,
+                $"Commit {commitId}: {installed.Error!.Message}; rollback: {rollback.Message}");
         }
     }
 
@@ -589,14 +673,68 @@ public sealed class WallStore
         {
             var stage = _paths.Under("Staging", journal.CommitId);
             PreserveCommittedMaterial(journal, _paths.Under("Staging", journal.CommitId, JournalName));
+            var keepMaterialId = RecoverySourceToKeep(journal);
+            PruneMaterials(journal, keepMaterialId);
+            PruneCorruptDiagnostics(journal);
             _files.DeleteDirectory(stage);
-            PruneMaterials(journal);
             return WallCommitStatus.Committed;
         }
         catch (Exception ex) when (IsStorageError(ex))
         {
             return WallCommitStatus.CommittedNeedsCleanup;
         }
+    }
+
+    /// <summary>
+    /// Recovery publishes trusted previous bytes into config.prev and invalidates undo.
+    /// The source journal is the one whose hash matches that previous, not the corrupt OldHash.
+    /// </summary>
+    private string? RecoverySourceToKeep(WallJournal journal)
+    {
+        if (!journal.InvalidateUndo || !_files.Exists(_paths.Previous)) return null;
+        var previousHash = Hash(_files.ReadAllBytes(_paths.Previous));
+        if (journal.OldHash is not null && journal.OldHash == previousHash) return null;
+        if (!TryReadDocument(_paths.Previous, out var previous, out var error))
+            throw new IOException($"Trusted previous cannot be read before cleanup: {error}");
+        var match = FindPreviousJournal(previousHash);
+        var hasEntries = Members(previous!).Values.Any(member => member.Entry is not null);
+        if (match is null)
+        {
+            if (hasEntries) throw new IOException("Cleanup refused: previous entries have no trusted source journal.");
+            return null;
+        }
+        if (match.PreviousIsNew) VerifyNewStateCoverage(match.Journal, previous!);
+        else
+        {
+            VerifyOldStateCoverage(match.Journal, previous!);
+            VerifyObserved(match.Journal);
+        }
+        return match.Journal.CommitId;
+    }
+
+    private void PruneCorruptDiagnostics(WallJournal journal)
+    {
+        if (!journal.InvalidateUndo) return;
+        var keepName = $"corrupt-{journal.CommitId}.json";
+        foreach (var file in _files.ListFiles(_paths.Under("Recovery")))
+        {
+            var name = Path.GetFileName(file);
+            if (!IsCorruptDiagnosticName(name) || name.Equals(keepName, StringComparison.OrdinalIgnoreCase)) continue;
+            _paths.Guard(file);
+            _files.Delete(file);
+        }
+    }
+
+    private static bool IsCorruptDiagnosticName(string name)
+    {
+        const string prefix = "corrupt-";
+        const string suffix = ".json";
+        if (name.Length != prefix.Length + 32 + suffix.Length ||
+            !name.StartsWith(prefix, StringComparison.Ordinal) ||
+            !name.EndsWith(suffix, StringComparison.Ordinal)) return false;
+        foreach (var ch in name.AsSpan(prefix.Length, 32))
+            if (!Uri.IsHexDigit(ch)) return false;
+        return true;
     }
 
     private void PreserveCommittedMaterial(WallJournal journal, string stagingJournal)
@@ -630,7 +768,7 @@ public sealed class WallStore
         }
     }
 
-    private void PruneMaterials(WallJournal newest)
+    private void PruneMaterials(WallJournal newest, string? keepMaterialId = null)
     {
         var materials = new List<(string Id, WallJournal Journal, bool Undo)>();
         foreach (var directory in _files.ListDirectories(_paths.RecoveryEntries))
@@ -646,7 +784,7 @@ public sealed class WallStore
             .OrderByDescending(m => m.Journal.NewGeneration).Select(m => m.Id).FirstOrDefault();
         foreach (var material in materials)
         {
-            if (material.Id == newest.CommitId || material.Id == latestUndo) continue;
+            if (material.Id == newest.CommitId || material.Id == latestUndo || material.Id == keepMaterialId) continue;
             var directory = _paths.Under("Recovery", "Entries", material.Id);
             _files.DeleteDirectory(directory);
         }
@@ -702,13 +840,7 @@ public sealed class WallStore
             var journal = ReadJournal(journalPath, id);
             var hash = primary.Present ? Hash(_files.ReadAllBytes(_paths.Config)) : null;
             if (hash == journal.NewHash)
-            {
-                var material = _paths.Under("Recovery", "Entries", id);
-                _paths.GuardTree(material);
-                PreserveCommittedMaterial(journal, journalPath);
-                _files.DeleteDirectory(stage);
-                PruneMaterials(journal);
-            }
+                CleanupAfterCommit(journal);
             else if (hash == journal.OldHash || hash is null && journal.OldHash is null)
             {
                 if (_files.Exists(marker)) Rollback(journal);
@@ -876,23 +1008,12 @@ public sealed class WallStore
             oldBytes is null ? null : Hash(oldBytes), Hash(newBytes), false, true, operations, observed);
         var stageDir = _paths.Under("Staging", commitId);
         var materialDir = _paths.Under("Recovery", "Entries", commitId);
-        var intent = false;
-        var committed = false;
-        try
+        var installed = ExecuteInstallTransaction(journal, newBytes, previousBytes, oldBytes, () =>
         {
-            GuardCommitPaths(journal);
-            _files.CreateDirectory(_paths.Staging);
-            _files.CreateDirectory(stageDir);
-            _files.CreateDirectory(_paths.Under("Recovery"));
-            _files.CreateDirectory(_paths.RecoveryEntries);
-            _files.CreateDirectory(materialDir);
-            var configTemp = _paths.Under("Staging", commitId, "config.tmp");
-            _files.WriteAllBytes(configTemp, newBytes);
             foreach (var entry in entries.Where(e => e.PreviousBytes is not null))
                 _files.WriteAllBytes(StageEntryPath(commitId, entry.MemberId), entry.PreviousBytes!);
-            var journalTemp = _paths.Under("Staging", commitId, "commit.tmp");
-            _files.WriteAllBytes(journalTemp, JsonSerializer.SerializeToUtf8Bytes(journal, JournalJson));
-            _files.Move(journalTemp, _paths.Under("Staging", commitId, JournalName), false);
+        }, () =>
+        {
             foreach (var entry in entries.Where(e => e.CurrentBytes is not null))
             {
                 var backupDir = _paths.Under("Recovery", "Entries", commitId, entry.MemberId);
@@ -902,33 +1023,21 @@ public sealed class WallStore
                 if (!Verify(BackupPath(commitId, entry.MemberId), op.OldHash, op.OldLength))
                     throw new IOException("Recovery backup verification failed.");
             }
-            var markerTemp = _paths.Under("Staging", commitId, "intent.tmp");
-            _files.WriteAllBytes(markerTemp, []);
-            _files.Move(markerTemp, _paths.Under("Staging", commitId, IntentName), false);
-            intent = true;
-            Install(journal);
-            if (oldBytes is not null)
-            {
-                var corrupt = _paths.Under("Recovery", $"corrupt-{commitId}.json");
-                _paths.Guard(corrupt);
-                _files.WriteAllBytes(corrupt, oldBytes);
-            }
-            var prevTemp = _paths.Under("Recovery", "config.prev.tmp");
-            _files.WriteAllBytes(prevTemp, previousBytes);
-            _files.Move(prevTemp, _paths.Previous, true);
-            _files.Move(configTemp, _paths.Config, true);
-            committed = true;
+        });
+        if (installed.Error is null)
+        {
             var cleanup = CleanupAfterCommit(journal);
             return OpenResult(WallOpenStatus.RecoveredPrevious, WallJson.Freeze(recovered),
                 cleanup == WallCommitStatus.CommittedNeedsCleanup ? "Recovered; cleanup remains." : null);
         }
-        catch (Exception ex) when (IsStorageError(ex))
+        if (installed.Committed)
+            return OpenResult(WallOpenStatus.RecoveredPrevious, WallJson.Freeze(recovered),
+                $"Recovered; cleanup remains: {installed.Error.Message}");
+        if (!installed.Blocked)
         {
-            if (committed) return OpenResult(WallOpenStatus.RecoveredPrevious, WallJson.Freeze(recovered),
-                $"Recovered; cleanup remains: {ex.Message}");
             try
             {
-                if (intent) Rollback(journal);
+                if (installed.IntentPublished) Rollback(journal);
                 else
                 {
                     _paths.GuardTree(stageDir);
@@ -938,9 +1047,12 @@ public sealed class WallStore
                 }
             }
             catch (Exception rollback) when (IsStorageError(rollback))
-            { return OpenResult(WallOpenStatus.RecoveryBlocked, null, $"{ex.Message}; rollback: {rollback.Message}"); }
-            return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message);
+            {
+                return OpenResult(WallOpenStatus.RecoveryBlocked, null,
+                    $"{installed.Error.Message}; rollback: {rollback.Message}");
+            }
         }
+        return OpenResult(WallOpenStatus.RecoveryBlocked, null, installed.Error.Message);
     }
 
     private sealed record RecoveryEntry(string MemberId, string? CurrentPath, string? PreviousPath,
@@ -956,6 +1068,10 @@ public sealed class WallStore
         }
     }
 
+    /// <summary>
+    /// Hashes every unchanged managed entry at this transaction. The bytes are not a duplicate of an
+    /// earlier read in the same commit, so the full observation stays.
+    /// </summary>
     private List<WallObservedEntry> ObserveUnchanged(WallDocument document, List<WallJournalOp> operations)
     {
         var changed = operations.Select(o => o.MemberId).ToHashSet(StringComparer.Ordinal);
@@ -1025,7 +1141,7 @@ public sealed class WallStore
         {
             return TryReadDocument(_files.ReadAllBytes(path), out document, out error);
         }
-        catch (Exception ex) when (IsStorageError(ex) || ex is JsonException or ArgumentException)
+        catch (Exception ex) when (IsStorageError(ex))
         {
             error = ex.Message;
             document = null;
@@ -1042,7 +1158,7 @@ public sealed class WallStore
             if (issues.Count == 0) { error = ""; return true; }
             error = string.Join("; ", issues);
         }
-        catch (Exception ex) when (IsStorageError(ex) || ex is JsonException or ArgumentException)
+        catch (Exception ex) when (IsStorageError(ex))
         { error = ex.Message; }
         document = null;
         return false;

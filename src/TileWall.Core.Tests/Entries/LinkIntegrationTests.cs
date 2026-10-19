@@ -158,7 +158,7 @@ internal sealed class LinkTestBed : IDisposable
         Probe2 = Path.Combine(SourceRoot, "probe2.cmd");
         File.WriteAllText(Probe1, ProbeScript("P1"));
         File.WriteAllText(Probe2, ProbeScript("P2"));
-        Store = new WallStore(new LocalFileStore(), Links, new FileSystemDataDirectory(Root));
+        Store = new WallStore(new LocalFileStore(), Links, Root);
         Assert.Equal(WallOpenStatus.Loaded, Store.InitializeFresh(WallDocument.Empty(1, 4)).Status);
     }
 

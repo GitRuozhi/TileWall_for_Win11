@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using TileWall.Core.Application;
 using TileWall.Core.Shell;
 
 namespace TileWall.ApplicationModel;

@@ -259,21 +259,34 @@ public sealed class WallSurface : Canvas
         var channel = ActualTheme == ElementTheme.Dark ? (byte)255 : (byte)0;
         var brush = new SolidColorBrush(Color.FromArgb(GridCellOpacity, channel, channel, channel));
         var radius = WallCornerStyle.Radius(_document!.Settings.VisualStyle);
+        var cells = new GeometryGroup();
         for (var lane = 0; lane < columns; lane++)
         for (var row = 1; row < rows; row++)
         for (var column = 0; column < 8; column++)
         {
-            var bounds = new DipRect(
-                _metrics.Margin + lane * (_metrics.LaneWidth + _metrics.ColumnGap) + column * _metrics.Pitch,
-                _metrics.TopMargin + row * _metrics.Pitch,
-                _metrics.Cell,
-                _metrics.Cell);
-            var cell = new Rectangle { Fill = brush, RadiusX = radius, RadiusY = radius,
-                Width = bounds.Width, Height = bounds.Height, IsHitTestVisible = false };
-            SetLeft(cell, bounds.X); SetTop(cell, bounds.Y); background.Children.Add(cell);
+            var x = _metrics.Margin + lane * (_metrics.LaneWidth + _metrics.ColumnGap) + column * _metrics.Pitch;
+            var y = _metrics.TopMargin + row * _metrics.Pitch;
+            cells.Children.Add(GridCellGeometry(x, y, _metrics.Cell, _metrics.Cell, radius));
         }
+        background.Children.Add(new Microsoft.UI.Xaml.Shapes.Path { Data = cells, Fill = brush, IsHitTestVisible = false });
         _gridBackground = background;
         Children.Insert(0, background);
+    }
+
+    private static Geometry GridCellGeometry(double x, double y, double width, double height, double radius)
+    {
+        if (radius <= 0) return new RectangleGeometry { Rect = new Rect(x, y, width, height) };
+        var r = Math.Min(radius, Math.Min(width, height) / 2);
+        var figure = new PathFigure { StartPoint = new Point(x + r, y), IsClosed = true };
+        figure.Segments.Add(new LineSegment { Point = new Point(x + width - r, y) });
+        figure.Segments.Add(new ArcSegment { Point = new Point(x + width, y + r), Size = new Size(r, r), SweepDirection = SweepDirection.Clockwise });
+        figure.Segments.Add(new LineSegment { Point = new Point(x + width, y + height - r) });
+        figure.Segments.Add(new ArcSegment { Point = new Point(x + width - r, y + height), Size = new Size(r, r), SweepDirection = SweepDirection.Clockwise });
+        figure.Segments.Add(new LineSegment { Point = new Point(x + r, y + height) });
+        figure.Segments.Add(new ArcSegment { Point = new Point(x, y + height - r), Size = new Size(r, r), SweepDirection = SweepDirection.Clockwise });
+        figure.Segments.Add(new LineSegment { Point = new Point(x, y + r) });
+        figure.Segments.Add(new ArcSegment { Point = new Point(x + r, y), Size = new Size(r, r), SweepDirection = SweepDirection.Clockwise });
+        return new PathGeometry { Figures = { figure } };
     }
 
     private void ClearGroupFeedback()

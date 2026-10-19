@@ -31,7 +31,7 @@ public sealed record PartitionInvariants(IReadOnlyList<string> Violations)
 /// <summary>
 /// 分区布局不可变值（M5 设计 §3）：权威表示 = 分区矩形列表（承 M2 §4.4 决策），
 /// 「墙」为纯派生视图（<see cref="Edges"/>：实线 ⇔ 两侧格属不同分区）。
-/// 构造期建 cell→分区索引表（≤ 8×25=200 格）→ <see cref="PartitionAt"/> O(1)。
+/// 构造期建 cell→分区索引表（≤ 8×12=96 格）→ <see cref="PartitionAt"/> O(1)。
 /// record 值相等按 Size + 分区逐条比较（INV-P11 撤销快照往返的判等基础）。
 /// 允许构造不变式非法的实例（Check 负例测试需要）；引擎操作只在合法布局上进行。
 /// </summary>
@@ -68,7 +68,7 @@ public sealed record PartitionLayout
         }
     }
 
-    /// <summary>组总行列（列 2–8、行 2–25，设计 §4.4；界限谓词在 Check/GroupDraftValidator）。</summary>
+    /// <summary>组总行列（列 2–8、行 2–12；界限谓词在 Check/GroupDraftValidator）。</summary>
     public GridSize Size { get; }
 
     /// <summary>组内相对坐标分区列表（M2 §4.4 权威表示）。</summary>

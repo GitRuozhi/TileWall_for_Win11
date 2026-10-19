@@ -72,14 +72,6 @@ public static class EntryNames
         return errors;
     }
 
-    /// <summary>"&lt;base&gt;.lnk|.url"（扩展名由 <paramref name="kind"/> 决定；None 非法）。</summary>
-    public static string CombineName(string baseName, EntryKind kind) => kind switch
-    {
-        EntryKind.Lnk => baseName + ".lnk",
-        EntryKind.Url => baseName + ".url",
-        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "入口类型必须为 Lnk 或 Url。"),
-    };
-
     /// <summary>相对路径/文件名 → 入口类型（OrdinalIgnoreCase 比较 .lnk/.url；其余为 None）。</summary>
     public static EntryKind KindOfRelativePath(string relativePath)
     {
@@ -91,20 +83,4 @@ public static class EntryNames
 
     /// <summary>相对路径/文件名 → 主体名（「文件名主体」即名称真值来源，设计 §16.2）。</summary>
     public static string BaseNameOf(string relativePathOrName) => Path.GetFileNameWithoutExtension(relativePathOrName);
-
-    /// <summary>
-    /// 默认名推导（仅表单初值/提交兜底，推导失败就地报错由用户改字——不静默替换，设计 §6.3）：
-    /// 直接网址 → 主机名；程序/文件 → 文件名主体；文件夹 → 文件夹名。
-    /// </summary>
-    public static string SuggestBaseName(string targetOrUrl, bool targetIsDirectory)
-    {
-        if (Uri.TryCreate(targetOrUrl, UriKind.Absolute, out var uri)
-            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
-        {
-            return uri.Host; // §5.1「不能把含冒号和斜线的整个 URL 当作文件名」
-        }
-
-        var trimmed = targetOrUrl.TrimEnd('\\', '/');
-        return targetIsDirectory ? Path.GetFileName(trimmed) : Path.GetFileNameWithoutExtension(trimmed);
-    }
 }

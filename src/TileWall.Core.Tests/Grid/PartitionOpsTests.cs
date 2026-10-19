@@ -277,7 +277,7 @@ public sealed class PartitionOpsTests
     public void Resize_AtLimits_RefusesAllFourDirections()
     {
         var max = PartitionLayout.FullGrid(new GridSize(8, 12));
-        var min = PartitionLayout.FullGrid(new GridSize(1, 1));
+        var min = PartitionLayout.FullGrid(new GridSize(2, 2));
 
         Assert.Equal(PartitionOpStatus.AtLimit, PartitionOps.AddColumn(max).Status);
         Assert.Equal(PartitionOpStatus.AtLimit, PartitionOps.AddRow(max).Status);

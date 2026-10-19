@@ -1,4 +1,4 @@
-using TileWall.ApplicationModel;
+using TileWall.Core.Application;
 using TileWall.Core.Shell;
 using TileWall.Core.Tests.Shell;
 using Xunit;

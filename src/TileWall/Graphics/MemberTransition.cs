@@ -1,3 +1,5 @@
+using TileWall.Core.Imaging;
+
 namespace TileWall.Graphics;
 
 /// <summary>Presentation-only effects; selection never consumes the image shuffle sequence.</summary>

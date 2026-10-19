@@ -153,7 +153,9 @@ public sealed partial class MainWindow
             return CommitProposal(mode.Proposal, recordUndo: changesLayout);
         }
         var next = Document with { Generation = checked(Document.Generation + 1), Settings = settings };
-        return CommitProposal(new WallProposal(next, WallLayoutEngine.Measure(next, _metrics)), recordUndo: false);
+        var fit = WallViewportPolicy.Validate(next, ViewportBudget(settings.FullScreen), _metrics);
+        if (fit.Proposal is null) return ViewportFailure(fit);
+        return CommitProposal(fit.Proposal, recordUndo: false);
     }
 
     internal async Task OpenSettingsAsync(Func<SettingsDialogState> read,

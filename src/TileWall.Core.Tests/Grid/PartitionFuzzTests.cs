@@ -40,7 +40,9 @@ public sealed class PartitionFuzzTests
         var random = new Random(seed);
 
         // —— 随机初始剖分（合法构造器路径：FullGrid + 随机适用操作）——
-        var size = new GridSize(1 + random.Next(8), 1 + random.Next(12)); // 列 1–8、行 1–12
+        var size = new GridSize(
+            Math.Max(PartitionLimits.GroupMinColumns, 1 + random.Next(8)),
+            Math.Max(PartitionLimits.GroupMinRows, 1 + random.Next(12)));
         var layout = PartitionLayout.FullGrid(size);
         log.Add($"init FullGrid({size.Columns},{size.Rows})");
         var initOps = random.Next(8);

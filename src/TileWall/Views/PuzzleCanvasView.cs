@@ -189,8 +189,8 @@ public sealed class PuzzleCanvasView : Canvas
         var layer = new Canvas { Width = plane.Host.Width, Height = plane.Host.Height, IsHitTestVisible = false,
             Clip = new RectangleGeometry { Rect = new Rect(0, 0, plane.Host.Width, plane.Host.Height) },
             RenderTransform = new CompositeTransform { CenterX = plane.Host.Width / 2, CenterY = plane.Host.Height / 2 } };
-        if (member.Visual.BackgroundMode == MemberBackgroundMode.Blur)
-            AddImage(layer, frame.BlurredUnderfill, frame.SourcePixels, scene.BackgroundTransform, plane.X, plane.Y, backgroundOpacity);
+        if (member.Visual.BackgroundMode == MemberBackgroundMode.Blur && frame.BlurredUnderfill is { } underfill)
+            AddImage(layer, underfill, frame.SourcePixels, scene.BackgroundTransform, plane.X, plane.Y, backgroundOpacity);
         AddImage(layer, frame.Sharp, frame.SourcePixels, scene.SharpTransform, plane.X, plane.Y, 1);
         plane.Host.Children.Add(layer);
         return layer;

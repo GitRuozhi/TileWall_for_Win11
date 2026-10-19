@@ -1,5 +1,5 @@
 using System.Text;
-using TileWall.ApplicationModel;
+using TileWall.Core.Application;
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Grid;
@@ -210,5 +210,85 @@ public sealed class WallSessionTests
         var disk = WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json")));
         Assert.Equal(session.Current.Generation, disk.Generation);
         Assert.Empty(disk.Lanes[0].Groups);
+    }
+
+    [Fact]
+    public void OpenFailedDoesNotLatchRecoveryOrUnlockAnExistingBlock()
+    {
+        var (session, files, root) = Harness();
+        files.InjectedFault = FaultPoint.BeforeMove;
+        var failed = session.Open(1, 6);
+        Assert.Equal(WallOpenStatus.OpenFailed, failed.Status);
+        Assert.Contains("IOException", string.Join(" ", failed.Diagnostics), StringComparison.Ordinal);
+        Assert.False(session.RecoveryBlocked);
+        Assert.False(session.RequiresReopen);
+        Assert.Throws<InvalidOperationException>(() => session.Current);
+
+        files.InjectedFault = FaultPoint.None;
+        Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
+        var current = session.Current;
+        files.Delete(Path.Combine(root, "config.json"));
+        files.InjectedFault = FaultPoint.BeforeMove;
+        var again = session.Open(1, 6);
+        Assert.Equal(WallOpenStatus.OpenFailed, again.Status);
+        Assert.False(session.RecoveryBlocked);
+        Assert.True(session.ViewBlocked);
+        Assert.Same(current, session.Current);
+        Assert.Null(session.Propose(new RemoveMemberAction(current.Generation, "missing"), 500, 500).Proposal);
+
+        var blocked = new WallSession(root + "-blocked", files, new FakeLinkFileService(files));
+        files.WriteAllBytes(Path.Combine(root + "-blocked", "config.init.tmp"), Encoding.UTF8.GetBytes("{}"));
+        Assert.Equal(WallOpenStatus.RecoveryBlocked, blocked.Open(1, 6).Status);
+        Assert.True(blocked.RecoveryBlocked);
+        files.Delete(Path.Combine(root + "-blocked", "config.init.tmp"));
+        files.InjectedFault = FaultPoint.BeforeMove;
+        Assert.Equal(WallOpenStatus.OpenFailed, blocked.Open(1, 6).Status);
+        Assert.True(blocked.RecoveryBlocked);
+        Assert.True(blocked.ViewBlocked);
+        Assert.Throws<InvalidOperationException>(() => blocked.Current);
+    }
+
+    [Fact]
+    public void NonStorageFailureLatchesUnknownResultUntilOpen()
+    {
+        var inner = new InMemoryFileStore();
+        var files = new ThrowingFiles(inner);
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-session-" + Guid.NewGuid().ToString("N")));
+        var session = new WallSession(root, files, new FakeLinkFileService(inner));
+        Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
+        var added = Add(session);
+        files.ThrowOnWrite = true;
+        var error = Assert.Throws<InvalidOperationException>(() => session.Commit(added.Proposal!));
+        Assert.Equal("boom", error.Message);
+        Assert.True(session.ResultUnknown);
+        Assert.False(session.RequiresReopen);
+        Assert.True(session.ViewBlocked);
+        Assert.Null(session.Propose(new RemoveMemberAction(session.Current.Generation, "tile1"), 500, 500).Proposal);
+        Assert.False(session.Commit(added.Proposal!).Committed);
+        Assert.False(session.Undo().Committed);
+        files.ThrowOnWrite = false;
+        Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
+        Assert.False(session.ResultUnknown);
+        Assert.False(session.ViewBlocked);
+    }
+
+    private sealed class ThrowingFiles(IFileStore inner) : IFileStore
+    {
+        public bool ThrowOnWrite;
+        public FileStorePathInfo GetPathInfo(string path) => inner.GetPathInfo(path);
+        public bool Exists(string path) => inner.Exists(path);
+        public byte[] ReadAllBytes(string path) => inner.ReadAllBytes(path);
+        public void WriteAllBytes(string path, byte[] bytes)
+        {
+            if (ThrowOnWrite) throw new InvalidOperationException("boom");
+            inner.WriteAllBytes(path, bytes);
+        }
+        public void Move(string source, string destination, bool overwrite) => inner.Move(source, destination, overwrite);
+        public void Copy(string source, string destination, bool overwrite) => inner.Copy(source, destination, overwrite);
+        public void Delete(string path) => inner.Delete(path);
+        public void CreateDirectory(string path) => inner.CreateDirectory(path);
+        public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
+        public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);
+        public void DeleteDirectory(string path) => inner.DeleteDirectory(path);
     }
 }

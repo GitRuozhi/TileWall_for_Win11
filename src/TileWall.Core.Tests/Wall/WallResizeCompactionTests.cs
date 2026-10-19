@@ -1,4 +1,4 @@
-using TileWall.ApplicationModel;
+using TileWall.Core.Application;
 using TileWall.Core.Grid;
 using TileWall.Core.Storage;
 using TileWall.Core.Tests.Fixtures;

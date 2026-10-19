@@ -190,6 +190,7 @@
     <x:String x:Key="Wall.ViewBlocked">墙面视图已阻断，请重新启动。</x:String>
     <x:String x:Key="Wall.CommitViewFailed">已写入磁盘，但墙面刷新失败：{0}</x:String>
     <x:String x:Key="Wall.RequiresReopen">更改已写入磁盘，但当前会话未能接受新状态。请关闭并重新打开 TileWall 以读取已保存的墙面。</x:String>
+    <x:String x:Key="Wall.ResultUnknown">这次保存的写入结果还不能确认。请关闭并重新打开 TileWall，不要继续修改当前会话。</x:String>
     <x:String x:Key="Wall.RecoveryBlocked">存储恢复尚未完成，墙面操作已阻断。请关闭并重新打开 TileWall 以重试恢复。</x:String>
     <x:String x:Key="Wall.CleanupPending">已保存；清理将在恢复时继续。</x:String>
     <x:String x:Key="Wall.LocationUnavailable">位置不可用：{0} {1}</x:String>
@@ -260,6 +261,7 @@
     <x:String x:Key="Import.Count">候选 {0} 项，已选 {1} 项；跳过不可读或不安全目录 {2} 个。</x:String>
     <x:String x:Key="Import.Confirm">确认导入整批</x:String>
     <x:String x:Key="Import.SelectFirst">请先选择要导入的快捷方式。</x:String>
+    <x:String x:Key="Import.SelectionRemoved">已移除 {0} 个不在新列表中的已选项。</x:String>
     <x:String x:Key="Import.Blocked">请先完成当前编辑或布局适配，再添加对象。</x:String>
     <x:String x:Key="Import.SourceMissing">来源已消失或不再是可添加的对象，整批未添加：{0}</x:String>
     <x:String x:Key="Import.NoSpace">整批无法安置，请减少选择或整理墙面：{0}</x:String>

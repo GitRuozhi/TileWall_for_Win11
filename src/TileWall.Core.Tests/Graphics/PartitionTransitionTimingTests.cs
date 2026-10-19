@@ -1,4 +1,4 @@
-using TileWall.Graphics;
+using TileWall.Core.Imaging;
 using Xunit;
 
 namespace TileWall.Core.Tests.Graphics;

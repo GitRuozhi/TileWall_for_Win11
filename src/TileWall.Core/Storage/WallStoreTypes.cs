@@ -5,7 +5,7 @@ namespace TileWall.Core.Storage;
 public enum WallOpenStatus
 {
     Fresh, Loaded, RecoveredPrevious, LegacyResetRequired,
-    CorruptBlocked, FutureVersionBlocked, RecoveryBlocked
+    CorruptBlocked, FutureVersionBlocked, RecoveryBlocked, OpenFailed
 }
 
 public sealed record WallOpenResult(WallOpenStatus Status, WallDocument? Document,

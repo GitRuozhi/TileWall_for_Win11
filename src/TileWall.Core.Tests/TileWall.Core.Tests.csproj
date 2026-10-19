@@ -12,12 +12,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\TileWall.Core\TileWall.Core.csproj" />
-    <Compile Include="..\TileWall\Application\WallSession.cs" Link="Application\WallSession.cs" />
-    <Compile Include="..\TileWall\Application\ExitDraftSavePermission.cs" Link="Application\ExitDraftSavePermission.cs" />
-    <Compile Include="..\TileWall\Application\StartMenuImportCandidate.cs" Link="Application\StartMenuImportCandidate.cs" />
-    <Compile Include="..\TileWall\Application\StartMenuImportPreparation.cs" Link="Application\StartMenuImportPreparation.cs" />
-    <Compile Include="..\TileWall\Shell\EntryLauncher.cs" Link="Shell\EntryLauncher.cs" />
-    <Compile Include="..\TileWall\Graphics\PartitionTransitionTiming.cs" Link="Graphics\PartitionTransitionTiming.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />

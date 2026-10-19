@@ -13,8 +13,6 @@ internal sealed class RuntimeScope
     {
         DataRoot = dataRoot;
         IsTest = isTest;
-        ConfigRoot = dataRoot;
-        CacheRoot = Path.Combine(dataRoot, "Cache");
         LogRoot = Path.Combine(dataRoot, "logs");
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(dataRoot.ToUpperInvariant())))[..24];
         InstanceMutexName = $@"Local\TileWall.Instance.{hash}";
@@ -23,8 +21,6 @@ internal sealed class RuntimeScope
     }
 
     public string DataRoot { get; }
-    public string ConfigRoot { get; }
-    public string CacheRoot { get; }
     public string LogRoot { get; }
     public string InstanceMutexName { get; }
     public string ShellWindowName { get; }

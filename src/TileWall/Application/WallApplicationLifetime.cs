@@ -44,7 +44,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         _instance = instance;
         _application = application;
         _host = new ShellMessageHost(scope.ShellWindowName);
-        _instance.BindHost(_host);
+        _host.ActivateRequested += () => Request(WallShowTrigger.Show);
         _hotKey = new GlobalHotKeyRegistrar(_host);
         _tray = new ShellNotifyIconHost(_host, Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"), scope.IsTest);
         _login = new LoginStartupController(scope);
@@ -75,7 +75,6 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         _host.HotKeyPressed += () => { if (!_hotKeyRecording) Request(WallShowTrigger.Toggle); };
         _host.DisplayChanged += _window.QueueEnvironmentRefresh;
         _host.AcceptPaths = ReceiveAdd;
-        _instance.Activated += () => Request(WallShowTrigger.Show);
         _hotKey.RegistrationChanged += UpdateTray;
     }
 

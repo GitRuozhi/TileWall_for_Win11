@@ -63,11 +63,6 @@ public sealed class ShellMessageHost : IDisposable
     /// <summary>二次启动汇入 → Router.ShowOrFocus（与托盘双击同一条命令）。</summary>
     public event Action? ActivateRequested;
 
-    /// <summary>
-    /// M9 §4.3：WM_COPYDATA 负载到达（已校验解码、逐条过滤后的添加消息）。
-    /// 解码/拷贝在 WndProc 内同步完成（数据仅投递期间有效），随即转事件；WndProc 立即返回不阻塞发送方。
-    /// </summary>
-    public event Action<ExplorerAddMessage>? PathsReceived;
     internal Func<ExplorerAddMessage, bool>? AcceptPaths { get; set; }
 
     /// <summary>
@@ -133,8 +128,7 @@ public sealed class ShellMessageHost : IDisposable
                 // 先按私有魔数和声明 HWND 的进程映像路径过滤；这不认证真实发送进程。
                 if (TryReceiveCopyData(wParam, lParam, out var message))
                 {
-                    if (self.AcceptPaths is not null && !self.AcceptPaths(message)) return IntPtr.Zero;
-                    self.PathsReceived?.Invoke(message);
+                    if (self.AcceptPaths is null || !self.AcceptPaths(message)) return IntPtr.Zero;
                     return (IntPtr)1;
                 }
 

@@ -174,7 +174,9 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                     state.Progress = 1;
                     state.Effect = MemberTransitionEffect.None;
                     state.PartitionOrdinals = null;
-                    state.Candidates = null;
+                    // Only a different image source invalidates the enumerated snapshot.
+                    // Size, display quality and the selected image reload frames from it.
+                    if (changed) state.Candidates = null;
                     state.NeedsInitial = true;
                     state.Runtime = new(false, 0, [], null);
                     Publish(state);
@@ -316,16 +318,19 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 Publish(state);
                 return;
             }
-            var candidates = await _images.EnumerateMemberCandidatesAsync(state.Member.Images, token);
+            // Sync clears Candidates when the folder source changes. Reuse the
+            // ordered snapshot for display/next-page requests instead of re-probing
+            // every file in the folder each time.
+            var candidates = state.Candidates ?? (await _images.EnumerateMemberCandidatesAsync(state.Member.Images, token)).Paths;
             if (!Current(state, generation)) return;
-            state.Candidates = candidates.Paths;
+            state.Candidates = candidates;
             var current = state.Member.Carousel?.CurrentImageId;
-            var restoring = candidates.Paths.FirstOrDefault(path => StringComparer.OrdinalIgnoreCase.Equals(path, current));
+            var restoring = candidates.FirstOrDefault(path => StringComparer.OrdinalIgnoreCase.Equals(path, current));
             var tentative = state.Member.Carousel;
-            for (var attempt = 0; attempt < Math.Min(3, candidates.Paths.Count); attempt++)
+            for (var attempt = 0; attempt < Math.Min(3, candidates.Count); attempt++)
             {
                 var restore = attempt == 0 && restoring is not null;
-                if (!restore) tentative = ImageCarouselSequence.Next(candidates.Paths, tentative,
+                if (!restore) tentative = ImageCarouselSequence.Next(candidates, tentative,
                     DateTimeOffset.UtcNow);
                 var candidate = restore ? restoring! : tentative?.CurrentImageId;
                 if (candidate is null) break;
@@ -377,7 +382,8 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         try
         {
             // A folder is sampled at a due read, never polled while hidden or watched in the background.
-            if (state.Member.Images.Kind == MemberImageSourceKind.Folder || manual && state.Candidates is null)
+            // Sync discards the candidate snapshot on source changes; until then, reuse it.
+            if (state.Candidates is null && (state.Member.Images.Kind == MemberImageSourceKind.Folder || manual))
             {
                 var candidates = await _images.EnumerateMemberCandidatesAsync(state.Member.Images, token);
                 if (!Current(state, generation)) return;

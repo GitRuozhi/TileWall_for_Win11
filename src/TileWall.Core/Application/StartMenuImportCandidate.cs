@@ -1,7 +1,7 @@
 using TileWall.Core.Entries;
 using TileWall.Core.Import;
 
-namespace TileWall.ApplicationModel;
+namespace TileWall.Core.Application;
 
 internal sealed record StartMenuImportCandidate(StartMenuCandidate Candidate, StartMenuBucket Bucket,
     LaunchIdentity? Identity, StartMenuExclusion Exclusion, bool IsDuplicate, bool AlreadyPresent, bool Replacing,
