@@ -691,7 +691,9 @@ public sealed class WallStore
     /// </summary>
     private string? RecoverySourceToKeep(WallJournal journal)
     {
-        if (!journal.InvalidateUndo || !_files.Exists(_paths.Previous)) return null;
+        if (!journal.InvalidateUndo) return null;
+        if (!_files.Exists(_paths.Previous))
+            throw new IOException("Cleanup refused: trusted previous is missing.");
         var previousHash = Hash(_files.ReadAllBytes(_paths.Previous));
         if (journal.OldHash is not null && journal.OldHash == previousHash) return null;
         if (!TryReadDocument(_paths.Previous, out var previous, out var error))
@@ -709,13 +711,22 @@ public sealed class WallStore
             VerifyOldStateCoverage(match.Journal, previous!);
             VerifyObserved(match.Journal);
         }
+        foreach (var op in match.Journal.Ops.Where(operation => operation.OldPath is not null))
+            if (!Verify(BackupPath(match.Journal.CommitId, op.MemberId), op.OldHash, op.OldLength))
+                throw new IOException($"Cleanup refused: source backup is incomplete: {match.Journal.CommitId}/{op.MemberId}");
+        var sourceSnapshot = _paths.Under("Recovery", "Entries", match.Journal.CommitId, "new.snapshot.json");
+        if (!_files.Exists(sourceSnapshot) || Hash(_files.ReadAllBytes(sourceSnapshot)) != match.Journal.NewHash)
+            throw new IOException($"Cleanup refused: source snapshot is incomplete: {match.Journal.CommitId}");
         return match.Journal.CommitId;
     }
 
     private void PruneCorruptDiagnostics(WallJournal journal)
     {
-        if (!journal.InvalidateUndo) return;
+        // Ordinary undo also invalidates its own undo slot. Only a recovery publish
+        // writes corrupt-{this commit}.json, and only that publish may prune diagnostics.
+        if (!journal.InvalidateUndo || journal.RecordUndo) return;
         var keepName = $"corrupt-{journal.CommitId}.json";
+        if (!_files.Exists(_paths.Under("Recovery", keepName))) return;
         foreach (var file in _files.ListFiles(_paths.Under("Recovery")))
         {
             var name = Path.GetFileName(file);
@@ -840,7 +851,10 @@ public sealed class WallStore
             var journal = ReadJournal(journalPath, id);
             var hash = primary.Present ? Hash(_files.ReadAllBytes(_paths.Config)) : null;
             if (hash == journal.NewHash)
-                CleanupAfterCommit(journal);
+            {
+                if (CleanupAfterCommit(journal) != WallCommitStatus.Committed)
+                    throw new IOException($"Committed cleanup remains: {id}");
+            }
             else if (hash == journal.OldHash || hash is null && journal.OldHash is null)
             {
                 if (_files.Exists(marker)) Rollback(journal);

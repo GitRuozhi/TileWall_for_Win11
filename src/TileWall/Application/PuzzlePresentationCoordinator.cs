@@ -159,14 +159,17 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 state.TargetHeight = height;
                 var selectedChanged = !StringComparer.OrdinalIgnoreCase.Equals(
                     state.Member.Carousel?.CurrentImageId, member.Carousel?.CurrentImageId);
+                var blurChanged = (state.Member.Visual.BackgroundMode == MemberBackgroundMode.Blur)
+                    != (member.Visual.BackgroundMode == MemberBackgroundMode.Blur);
                 state.Member = member;
                 if (partitionsChanged && state.Flipping) FinishFlip(state);
-                if (changed || sizeChanged || qualityChanged || selectedChanged && !state.Persisting)
+                if (changed || sizeChanged || qualityChanged || blurChanged || selectedChanged && !state.Persisting)
                 {
                     Cancel(state);
                     // A captured next image is already the committed carousel image. Never
                     // leave its old half-frame behind when editing or replacing a source.
-                    state.Frame = changed ? null : state.NextFrame ?? state.Frame;
+                    // A blur-demand change cannot keep a frame decoded for the other demand.
+                    state.Frame = changed || blurChanged ? null : state.NextFrame ?? state.Frame;
                     state.Flipping = false;
                     state.Capture = null;
                     state.NextFrame = null;
@@ -175,7 +178,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                     state.Effect = MemberTransitionEffect.None;
                     state.PartitionOrdinals = null;
                     // Only a different image source invalidates the enumerated snapshot.
-                    // Size, display quality and the selected image reload frames from it.
+                    // Size, display quality, blur demand and the selected image reload frames from it.
                     if (changed) state.Candidates = null;
                     state.NeedsInitial = true;
                     state.Runtime = new(false, 0, [], null);

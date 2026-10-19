@@ -60,7 +60,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private string? _previewPath;
     private CancellationTokenSource? _request;
     private CancellationTokenSource? _thumbnailRequest;
-    private bool _thumbnailCandidatesReady, _thumbnailPreviewPending = true;
+    private bool _thumbnailCandidatesReady, _thumbnailPreviewPending = true, _enumeratingCandidates;
     private int _thumbnailEdge;
     private bool _thumbnailNeedsBlur;
     private long _generation;
@@ -227,9 +227,21 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _background.SelectionChanged += (_, _) =>
         {
             if (_refreshing) return;
+            var neededBlur = _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur;
             _draft = _draft with { Visual = _draft.Visual with { BackgroundMode = (MemberBackgroundMode)_background.SelectedIndex,
                 BackgroundColor = _background.SelectedIndex == (int)MemberBackgroundMode.Color ? ColorText(_color.Color) : _draft.Visual.BackgroundColor } };
-            Changed(); RefreshFields(); if (_draft.Visual.BackgroundMode == MemberBackgroundMode.Color) colorFlyout.ShowAt(_colorButton);
+            var needsBlur = _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur;
+            Changed(); RefreshFields();
+            // The first folder enumeration owns this generation. Cancelling it
+            // drops the only candidate fill. The draft already has the new demand;
+            // that enumeration loads the preview and thumbnails when it returns.
+            if (neededBlur != needsBlur && !_enumeratingCandidates)
+            {
+                CancelRequest();
+                _pending = LoadPreviewAsync();
+                RestartThumbnailBatch();
+            }
+            if (_draft.Visual.BackgroundMode == MemberBackgroundMode.Color) colorFlyout.ShowAt(_colorButton);
         };
         _color.ColorChanged += (_, e) => { if (!_refreshing) { _draft = _draft with { Visual = _draft.Visual with { BackgroundColor = ColorText(e.NewColor) } }; Changed(); RefreshPreview(); } };
         _transparencyInput.ValueChanged += (_, e) => { if (!_refreshing && !double.IsNaN(e.NewValue)) SetTransparency(e.NewValue); };
@@ -424,7 +436,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         var width = Math.Max(1, (int)Math.Round(source.Width * scale));
         var height = Math.Max(1, (int)Math.Round(source.Height * scale));
         // One pixel of rounding tolerance avoids retrying an already capped plane.
-        if (frame.SharpDecodedPixels.Width + 1 >= width && frame.SharpDecodedPixels.Height + 1 >= height) return;
+        var blurMissing = _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur && frame.BlurredUnderfill is null;
+        if (!blurMissing && frame.SharpDecodedPixels.Width + 1 >= width && frame.SharpDecodedPixels.Height + 1 >= height) return;
         _pending = LoadPreviewAsync();
     }
     private void Changed()
@@ -521,9 +534,15 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         var request = BeginRequest(); _sourceStatus.Text = T("Puzzle.ReadingSource");
         _candidateEnumerationGeneration = request.Generation;
         CancelThumbnailRequests();
+        var enumerating = cached is null;
+        // This request owns the state, including when it replaces a still-running
+        // enumeration with prepared candidates. An older finally cannot clear it.
+        _enumeratingCandidates = enumerating;
         try
         {
             var result = cached ?? await _images.EnumerateMemberCandidatesAsync(_draft.Images, request.Token);
+            if (enumerating && _candidateEnumerationGeneration == request.Generation)
+                _enumeratingCandidates = false;
             if (!Active(request.Generation)) return;
             var preferred = _previewPath ?? _draft.Carousel?.CurrentImageId;
             _refreshing = true; _candidates.Clear(); _thumbnailStrip.Children.Clear(); foreach (var path in result.Paths) { var item = new Thumbnail(path); _candidates.Add(item); AddThumbnail(item); }
@@ -540,6 +559,11 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (Active(request.Generation)) _sourceStatus.Text = string.Format(T("Puzzle.SourceFailed"), ex.Message); }
+        finally
+        {
+            if (enumerating && _candidateEnumerationGeneration == request.Generation)
+                _enumeratingCandidates = false;
+        }
     }
 
     private async Task LoadPreviewAsync()
@@ -561,10 +585,12 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                 _frame = result.Frame;
                 if (_draft.Images.Kind == MemberImageSourceKind.Automatic) _sourceStatus.Text = string.Empty;
                 RefreshPreview();
-                // A mode/size/DPI edit can occur while the new source has no
-                // usable frame yet. Check that changed requirement once here;
-                // rendering and SetScene never initiate image requests.
-                if (requestedMember.ImageDisplay != _draft.ImageDisplay ||
+                // A mode, size, DPI, or blur-demand edit can land while this frame
+                // was still decoding. Check that requirement once here; rendering
+                // and SetScene never initiate image requests.
+                var blurDemandChanged = (requestedMember.Visual.BackgroundMode == MemberBackgroundMode.Blur)
+                    != (_draft.Visual.BackgroundMode == MemberBackgroundMode.Blur);
+                if (blurDemandChanged || requestedMember.ImageDisplay != _draft.ImageDisplay ||
                     requestedMember.LocalBounds.Size != _draft.LocalBounds.Size || requestedScale != PreviewRasterizationScale)
                     EnsurePreviewQuality();
             }

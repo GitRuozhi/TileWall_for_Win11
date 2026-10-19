@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using TileWall.Core.Configuration;
@@ -15,8 +16,12 @@ public sealed partial class WallStoreTests
     private sealed class FaultingFiles(IFileStore inner) : IFileStore
     {
         public List<Func<string, string?, string?, bool>> Rules { get; } = [];
+        public List<Func<string, string?, string?, bool>> Sticky { get; } = [];
         private void Trip(string kind, string? src, string? dst)
         {
+            foreach (var rule in Sticky)
+                if (rule(kind, src, dst))
+                    throw new IOException($"Injected {kind}: {src} -> {dst}");
             for (var i = 0; i < Rules.Count; i++)
                 if (Rules[i](kind, src, dst))
                 {
@@ -1205,6 +1210,267 @@ public sealed partial class WallStoreTests
         Assert.Equal(WallCommitStatus.RecoveryBlocked, blocked.Status);
         Assert.Equal(config, files.ReadAllBytes(Path.Combine(root, "config.json")));
         Assert.Empty(files.ListDirectories(Path.Combine(root, "Staging")));
+    }
+
+    [Fact]
+    public void PersistentCleanupFailureBlocksOpenAndCommitUntilRetry()
+    {
+        var (store, files, root, recovered) = RecoverWithStickyStagingCleanup();
+        var configPath = Path.Combine(root, "config.json");
+        var config = files.ReadAllBytes(configPath).ToArray();
+        var stages = files.ListDirectories(Path.Combine(root, "Staging")).Order(StringComparer.Ordinal).ToArray();
+        Assert.NotEmpty(stages);
+        Assert.Equal(recovered.Generation, WallJson.Deserialize(config).Generation);
+
+        var blockedOpen = store.Open();
+        Assert.Equal(WallOpenStatus.RecoveryBlocked, blockedOpen.Status);
+        Assert.Contains("Committed cleanup remains", string.Join(" ", blockedOpen.Diagnostics), StringComparison.Ordinal);
+        Assert.Equal(config, files.ReadAllBytes(configPath));
+        Assert.Equal(stages, files.ListDirectories(Path.Combine(root, "Staging")).Order(StringComparer.Ordinal).ToArray());
+
+        var candidate = recovered with
+        {
+            Generation = recovered.Generation + 1,
+            Settings = recovered.Settings with { ShowGrid = !recovered.Settings.ShowGrid },
+        };
+        var blockedCommit = store.Commit(recovered, Plan(store, recovered, candidate), true);
+        Assert.Equal(WallCommitStatus.RecoveryBlocked, blockedCommit.Status);
+        Assert.Contains("Committed cleanup remains", string.Join(" ", blockedCommit.Diagnostics), StringComparison.Ordinal);
+        Assert.Equal(config, files.ReadAllBytes(configPath));
+        Assert.Equal(stages, files.ListDirectories(Path.Combine(root, "Staging")).Order(StringComparer.Ordinal).ToArray());
+
+        files.Sticky.Clear();
+        var loaded = store.Open();
+        Assert.Equal(WallOpenStatus.Loaded, loaded.Status);
+        Assert.Equal(recovered.Generation, loaded.Document!.Generation);
+        Assert.Empty(files.ListDirectories(Path.Combine(root, "Staging")));
+        Assert.Equal(config, files.ReadAllBytes(configPath));
+
+        var saved = store.Commit(loaded.Document, Plan(store, loaded.Document, candidate), true);
+        Assert.Equal(WallCommitStatus.Committed, saved.Status);
+        Assert.Equal(recovered.Generation + 1, saved.CommittedDocument!.Generation);
+        Assert.Empty(files.ListDirectories(Path.Combine(root, "Staging")));
+    }
+
+    [Fact]
+    public void OrdinaryUndoKeepsTheLatestCorruptDiagnostic()
+    {
+        var (store, files, _, root) = Harness();
+        var initial = Wall();
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
+        var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
+            new EntryChange.CreateUrl("a", "https://old.example")), true);
+        var withEntry = added.CommittedDocument!;
+        var edited = store.Commit(withEntry, Plan(store, withEntry, withEntry with { Generation = 2 },
+            new EntryChange.ChangeTarget("a", "https://new.example")), true);
+        Assert.Equal(WallCommitStatus.Committed, edited.Status);
+        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes("{\"schemaVersion\":3,\"lanes\":null}"));
+
+        var recovered = store.Open();
+        Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
+        var loaded = store.Open();
+        Assert.Equal(WallOpenStatus.Loaded, loaded.Status);
+        var current = loaded.Document!;
+        var latest = Assert.Single(StrictCorruptNames(files, root));
+        var decoy = "corrupt-" + new string('a', 32) + ".json";
+        files.WriteAllBytes(Path.Combine(root, "Recovery", decoy), [1]);
+
+        var saved = store.Commit(current, Plan(store, current, current with
+        {
+            Generation = current.Generation + 1,
+            Settings = current.Settings with { ShowGrid = !current.Settings.ShowGrid },
+        }), true);
+        Assert.Equal(WallCommitStatus.Committed, saved.Status);
+        Assert.NotNull(saved.Undo);
+        Assert.Contains(latest, StrictCorruptNames(files, root));
+        Assert.True(files.Exists(Path.Combine(root, "Recovery", decoy)));
+
+        var undone = store.Undo(saved.CommittedDocument!, current, saved.Undo!, saved.CommittedDocument!.Generation);
+        Assert.Equal(WallCommitStatus.Committed, undone.Status);
+        Assert.Contains(latest, StrictCorruptNames(files, root));
+        Assert.True(files.Exists(Path.Combine(root, "Recovery", decoy)));
+        Assert.DoesNotContain(StrictCorruptNames(files, root), name => name.Contains(saved.Undo!.CommitId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void CleanupRetryWithoutReadablePreviousDoesNotPruneSources(bool missing)
+    {
+        var (store, files, root, recovered) = OpenRecoveryStoppedBeforePrune();
+        var configPath = Path.Combine(root, "config.json");
+        var config = files.ReadAllBytes(configPath).ToArray();
+        var previous = Path.Combine(root, "Recovery", "config.prev.json");
+        var materials = MaterialIds(files, root);
+        var sourceId = OldMatchSourceId(files, root);
+        Assert.Contains(sourceId, materials);
+        Assert.True(materials.Length >= 2);
+        if (missing) files.Delete(previous);
+        else files.WriteAllBytes(previous, Encoding.UTF8.GetBytes("{\"schemaVersion\":3}"));
+        var retained = RecoveryEntryFiles(files, root);
+        var stages = files.ListDirectories(Path.Combine(root, "Staging")).Order(StringComparer.Ordinal).ToArray();
+
+        var blocked = store.Open();
+        Assert.Equal(WallOpenStatus.RecoveryBlocked, blocked.Status);
+        Assert.Equal(config, files.ReadAllBytes(configPath));
+        Assert.Equal(missing, !files.Exists(previous));
+        if (!missing) Assert.Equal(Encoding.UTF8.GetBytes("{\"schemaVersion\":3}"), files.ReadAllBytes(previous));
+        Assert.Equal(materials, MaterialIds(files, root));
+        Assert.True(files.Exists(Path.Combine(root, "Recovery", "Entries", sourceId, "journal.json")));
+        Assert.Equal(stages, files.ListDirectories(Path.Combine(root, "Staging")).Order(StringComparer.Ordinal).ToArray());
+        foreach (var path in retained) Assert.True(files.Exists(path));
+
+        var candidate = recovered with
+        {
+            Generation = recovered.Generation + 1,
+            Settings = recovered.Settings with { ShowGrid = !recovered.Settings.ShowGrid },
+        };
+        var commit = store.Commit(recovered, Plan(store, recovered, candidate), false);
+        Assert.Equal(WallCommitStatus.RecoveryBlocked, commit.Status);
+        Assert.Equal(config, files.ReadAllBytes(configPath));
+        Assert.Equal(materials, MaterialIds(files, root));
+        foreach (var path in retained) Assert.True(files.Exists(path));
+    }
+
+    [Fact]
+    public void DamagedOldMatchBackupRefusesCleanupAndKeepsEverySource()
+    {
+        var (store, files, root) = FaultedHarness();
+        var initial = Wall();
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
+        var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
+            new EntryChange.CreateUrl("a", "https://old.example")), true);
+        var alternateId = Assert.Single(MaterialIds(files, root));
+        var alternateJournal = files.ReadAllBytes(Path.Combine(root, "Recovery", "Entries", alternateId, "journal.json")).ToArray();
+        var withEntry = added.CommittedDocument!;
+        var edited = store.Commit(withEntry, Plan(store, withEntry, withEntry with { Generation = 2 },
+            new EntryChange.ChangeTarget("a", "https://new.example")), true);
+        Assert.Equal(WallCommitStatus.Committed, edited.Status);
+        Assert.DoesNotContain(alternateId, MaterialIds(files, root));
+
+        files.Rules.Add((kind, _, destination) => kind == "copy" &&
+            destination?.EndsWith(Path.DirectorySeparatorChar + "new.snapshot.json", StringComparison.Ordinal) == true);
+        var configPath = Path.Combine(root, "config.json");
+        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes("{\"schemaVersion\":3,\"lanes\":null}"));
+        var recovered = store.Open();
+        Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
+        Assert.NotEmpty(files.ListDirectories(Path.Combine(root, "Staging")));
+
+        var alternateDir = Path.Combine(root, "Recovery", "Entries", alternateId);
+        files.CreateDirectory(alternateDir);
+        files.WriteAllBytes(Path.Combine(alternateDir, "journal.json"), alternateJournal);
+        var sourceId = OldMatchSourceId(files, root);
+        Assert.NotEqual(alternateId, sourceId);
+        var backup = Path.Combine(root, "Recovery", "Entries", sourceId, "a", "old.entry");
+        Assert.True(files.Exists(backup));
+        var damaged = new byte[] { 9, 9, 9 };
+        files.WriteAllBytes(backup, damaged);
+        var config = files.ReadAllBytes(configPath).ToArray();
+        var materials = MaterialIds(files, root);
+        Assert.Contains(alternateId, materials);
+        Assert.Contains(sourceId, materials);
+        Assert.True(materials.Length >= 3);
+        var retained = RecoveryEntryFiles(files, root);
+
+        var blocked = store.Open();
+        Assert.Equal(WallOpenStatus.RecoveryBlocked, blocked.Status);
+        Assert.Equal(config, files.ReadAllBytes(configPath));
+        Assert.Equal(materials, MaterialIds(files, root));
+        Assert.Equal(damaged, files.ReadAllBytes(backup));
+        Assert.NotEmpty(files.ListDirectories(Path.Combine(root, "Staging")));
+        foreach (var path in retained) Assert.True(files.Exists(path));
+        Assert.True(files.Exists(Path.Combine(alternateDir, "journal.json")));
+        Assert.True(files.Exists(Path.Combine(root, "Recovery", "Entries", sourceId, "journal.json")));
+    }
+
+    private static (WallStore Store, FaultingFiles Files, string Root, WallDocument Recovered) RecoverWithStickyStagingCleanup()
+    {
+        var (store, files, root) = FaultedHarness();
+        SeedEntryThenChangeTarget(store);
+        files.Sticky.Add((kind, source, _) => kind == "rmdir" &&
+            source?.Contains(Path.DirectorySeparatorChar + "Staging" + Path.DirectorySeparatorChar, StringComparison.Ordinal) == true);
+        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes("{\"schemaVersion\":3,\"lanes\":null}"));
+        var recovered = store.Open();
+        Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
+        Assert.Contains("cleanup", string.Join(" ", recovered.Diagnostics), StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(recovered.Document);
+        return (store, files, root, recovered.Document);
+    }
+
+    private static (WallStore Store, FaultingFiles Files, string Root, WallDocument Recovered) OpenRecoveryStoppedBeforePrune()
+    {
+        var (store, files, root) = FaultedHarness();
+        var edited = SeedEntryThenChangeTarget(store);
+        files.Rules.Add((kind, _, destination) => kind == "copy" &&
+            destination?.EndsWith(Path.DirectorySeparatorChar + "new.snapshot.json", StringComparison.Ordinal) == true);
+        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes("{\"schemaVersion\":3,\"lanes\":null}"));
+        var recovered = store.Open();
+        Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
+        Assert.Contains("cleanup", string.Join(" ", recovered.Diagnostics), StringComparison.OrdinalIgnoreCase);
+        Assert.NotEmpty(files.ListDirectories(Path.Combine(root, "Staging")));
+        Assert.NotNull(recovered.Document);
+        Assert.Equal(edited.Generation, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "Recovery", "config.prev.json"))).Generation + 1);
+        return (store, files, root, recovered.Document);
+    }
+
+    private static (WallStore Store, FaultingFiles Files, string Root) FaultedHarness()
+    {
+        var inner = new InMemoryFileStore();
+        var files = new FaultingFiles(inner);
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-storage-" + Guid.NewGuid().ToString("N")));
+        return (new WallStore(files, new FakeLinkFileService(inner), root), files, root);
+    }
+
+    private static WallDocument SeedEntryThenChangeTarget(WallStore store)
+    {
+        var initial = Wall();
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
+        var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
+            new EntryChange.CreateUrl("a", "https://old.example")), true);
+        var withEntry = added.CommittedDocument!;
+        var edited = store.Commit(withEntry, Plan(store, withEntry, withEntry with { Generation = 2 },
+            new EntryChange.ChangeTarget("a", "https://new.example")), true);
+        Assert.Equal(WallCommitStatus.Committed, edited.Status);
+        return edited.CommittedDocument!;
+    }
+
+    private static string[] MaterialIds(IFileStore files, string root) =>
+        [.. files.ListDirectories(Path.Combine(root, "Recovery", "Entries")).Select(Path.GetFileName).Order(StringComparer.Ordinal)!];
+
+    private static string[] RecoveryEntryFiles(IFileStore files, string root)
+    {
+        var found = new List<string>();
+        void Walk(string directory)
+        {
+            found.AddRange(files.ListFiles(directory));
+            foreach (var child in files.ListDirectories(directory)) Walk(child);
+        }
+        Walk(Path.Combine(root, "Recovery", "Entries"));
+        return [.. found.Order(StringComparer.Ordinal)];
+    }
+
+    private static string[] StrictCorruptNames(IFileStore files, string root) =>
+        [.. files.ListFiles(Path.Combine(root, "Recovery")).Select(Path.GetFileName)
+            .Where(name => name!.Length == "corrupt-".Length + 32 + ".json".Length &&
+                name.StartsWith("corrupt-", StringComparison.Ordinal) &&
+                name.EndsWith(".json", StringComparison.Ordinal) &&
+                name.Skip("corrupt-".Length).Take(32).All(Uri.IsHexDigit))!];
+
+    private static string OldMatchSourceId(IFileStore files, string root)
+    {
+        var previousHash = Convert.ToHexString(SHA256.HashData(
+            files.ReadAllBytes(Path.Combine(root, "Recovery", "config.prev.json"))));
+        string? match = null;
+        foreach (var id in MaterialIds(files, root))
+        {
+            var journal = JsonNode.Parse(files.ReadAllBytes(
+                Path.Combine(root, "Recovery", "Entries", id, "journal.json")))!;
+            if (!string.Equals((string?)journal["oldHash"], previousHash, StringComparison.Ordinal)) continue;
+            Assert.Null(match);
+            match = id;
+        }
+        Assert.NotNull(match);
+        return match;
     }
 
     private sealed class CountingFiles(IFileStore inner) : IFileStore
