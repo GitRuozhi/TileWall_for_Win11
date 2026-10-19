@@ -56,23 +56,36 @@ public static class WallBatchPlanner
         var maxCandidateRows = Math.Clamp((int)Math.Floor((workHeightDip - metrics.TopMargin - metrics.Margin + metrics.Gap) /
             metrics.Pitch + 1e-8), 0, MaxRows);
         var accepted = new List<AddBatchItem>(members.Count);
-        var snapshot = current;
+        var lanes = current.Lanes.Select(lane => new SimLane
+        {
+            Groups = lane.Groups.Select(group => new SimGroup
+            {
+                Id = group.Id,
+                Title = group.Title,
+                Members = group.Members.Select(member => member.LocalBounds).ToList(),
+            }).ToList(),
+        }).ToList();
+        var columns = current.Columns;
+        var placedIds = new HashSet<string>(
+            current.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members).Select(member => member.Id),
+            StringComparer.OrdinalIgnoreCase);
         var activeGroupId = targetGroupId;
         var laneCursor = 0;
         var groupNumber = 1;
 
         foreach (var incoming in members)
         {
+            if (placedIds.Contains(incoming.Id))
+                return Reject(WallRejection.DuplicateId);
             if (activeGroupId is not null)
             {
-                var attempt = TryAddToGroup(snapshot, incoming, activeGroupId,
-                    maxCandidateRows, workWidthDip, workHeightDip, metrics, out var item);
-                if (attempt?.Success == true)
+                var item = TryAddToGroup(lanes, incoming, activeGroupId, maxCandidateRows,
+                    columns, current.Rows, workWidthDip, workHeightDip, metrics);
+                if (item is not null)
                 {
-                    Accept(attempt, item!, accepted, ref snapshot);
+                    AcceptLocal(lanes, item, accepted, placedIds);
                     continue;
                 }
-                if (attempt is not null) return attempt;
                 activeGroupId = null;
             }
 
@@ -80,46 +93,55 @@ public static class WallBatchPlanner
             var id = NextGroupId(newGroupIdPrefix, reservedIds, ref groupNumber);
             while (laneCursor < MaxLanes)
             {
-                var lane = laneCursor < laneOrder.Count ? laneOrder[laneCursor] : snapshot.Columns;
+                var lane = laneCursor < laneOrder.Count ? laneOrder[laneCursor] : columns;
                 if (lane >= MaxLanes) break;
                 var item = new AddBatchItem(incoming with { LocalBounds = new GridRect(0, 0,
                         incoming.LocalBounds.Width, incoming.LocalBounds.Height) },
-                    null, lane, lane < snapshot.Columns ? snapshot.Lanes[lane].Groups.Count : 0, id);
-                var attempt = WallLayoutEngine.TryApply(snapshot,
-                    new AddBatchAction(snapshot.Generation, [item]), workWidthDip, workHeightDip, metrics);
-                if (attempt.Success)
+                    null, lane, lane < columns ? lanes[lane].Groups.Count : 0, id);
+                var trial = Copy(lanes);
+                var trialColumns = Math.Max(columns, lane + 1);
+                while (trial.Count <= lane) trial.Add(new SimLane());
+                trial[lane].Groups.Insert(item.GroupInsertIndex, new SimGroup
+                {
+                    Id = id,
+                    Members = [item.Member.LocalBounds],
+                });
+                var fit = Fit(trial, trialColumns, current.Rows, workWidthDip, workHeightDip, metrics);
+                if (fit == WallRejection.None)
                 {
                     if (laneCursor >= laneOrder.Count) laneOrder.Add(lane);
                     reservedIds.Add(id);
-                    Accept(attempt, item, accepted, ref snapshot);
+                    columns = trialColumns;
+                    lanes = trial;
+                    AcceptLocal(lanes, item, accepted, placedIds);
                     activeGroupId = id;
                     placed = true;
                     break;
                 }
-                if (attempt.Rejection is not (WallRejection.NoSpace or WallRejection.WorkAreaTooSmall))
-                    return attempt;
-                if (lane == snapshot.Columns && laneCursor >= laneOrder.Count) break;
+                if (fit is not (WallRejection.NoSpace or WallRejection.WorkAreaTooSmall))
+                    return Reject(fit);
+                if (lane == columns && laneCursor >= laneOrder.Count) break;
                 laneCursor++;
             }
             if (!placed) return Reject(WallRejection.NoSpace, $"Tile {accepted.Count + 1} does not fit.");
         }
 
-        // Every probe was disposable. Only this single complete action is offered for commit.
         return WallLayoutEngine.TryApply(current,
             new AddBatchAction(current.Generation, accepted), workWidthDip, workHeightDip, metrics);
     }
 
-    private static WallLayoutResult? TryAddToGroup(WallDocument snapshot, TileMember incoming,
-        string groupId, int maxRows, double workWidthDip, double workHeightDip, WallMetrics metrics,
-        out AddBatchItem? acceptedItem)
+    private static AddBatchItem? TryAddToGroup(List<SimLane> lanes, TileMember incoming, string groupId,
+        int maxRows, int columns, int currentRows, double workWidthDip, double workHeightDip, WallMetrics metrics)
     {
-        acceptedItem = null;
-        var group = snapshot.Lanes.SelectMany(lane => lane.Groups).First(candidate =>
-            string.Equals(candidate.Id, groupId, StringComparison.OrdinalIgnoreCase));
+        var location = FindGroup(lanes, groupId);
+        if (location is null) return null;
+        var (laneIndex, groupIndex) = location.Value;
+        var group = lanes[laneIndex].Groups[groupIndex];
+        if (maxRows < 1) return null;
         var occupied = new bool[maxRows, CellsPerLane];
         foreach (var member in group.Members)
-        for (var row = member.LocalBounds.Row; row < Math.Min(member.LocalBounds.Bottom, maxRows); row++)
-        for (var col = member.LocalBounds.Column; col < member.LocalBounds.Right; col++)
+        for (var row = member.Row; row < Math.Min(member.Bottom, maxRows); row++)
+        for (var col = member.Column; col < member.Right; col++)
             occupied[row, col] = true;
 
         for (var row = 0; row + incoming.LocalBounds.Height <= maxRows; row++)
@@ -135,19 +157,82 @@ public static class WallBatchPlanner
                     break;
                 }
             if (overlaps) continue;
-            var item = new AddBatchItem(incoming with { LocalBounds = bounds }, groupId);
-            var attempt = WallLayoutEngine.TryApply(snapshot,
-                new AddBatchAction(snapshot.Generation, [item]), workWidthDip, workHeightDip, metrics);
-            if (attempt.Success)
-            {
-                acceptedItem = item;
-                return attempt;
-            }
-            if (attempt.Rejection is not (WallRejection.NoSpace or WallRejection.WorkAreaTooSmall))
-                return attempt;
-            return null; // Higher rows cannot fix a height or work-area failure.
+            var trial = Copy(lanes);
+            trial[laneIndex].Groups[groupIndex].Members.Add(bounds);
+            var fit = Fit(trial, columns, currentRows, workWidthDip, workHeightDip, metrics);
+            if (fit == WallRejection.None)
+                return new AddBatchItem(incoming with { LocalBounds = bounds }, groupId);
+            return null;
         }
         return null;
+    }
+
+    private static WallRejection Fit(List<SimLane> lanes, int columns, int currentRows,
+        double workWidthDip, double workHeightDip, WallMetrics metrics)
+    {
+        var requiredHeight = lanes.Count == 0 ? metrics.TopMargin + metrics.Margin
+            : lanes.Max(lane => LaneHeight(lane, metrics));
+        var contentHeight = requiredHeight - metrics.TopMargin - metrics.Margin;
+        var requiredRows = contentHeight <= metrics.HeightOf(1) ? 1
+            : (int)Math.Ceiling((contentHeight + metrics.Gap) / metrics.Pitch - 1e-10);
+        if (requiredRows > MaxRows) return WallRejection.NoSpace;
+        var rows = Math.Max(currentRows, requiredRows);
+        if (requiredHeight > metrics.WallHeight(rows)) return WallRejection.NoSpace;
+        if (metrics.WallWidth(columns) > workWidthDip + 1e-8 || metrics.WallHeight(rows) > workHeightDip + 1e-8)
+            return WallRejection.WorkAreaTooSmall;
+        return WallRejection.None;
+    }
+
+    private static double LaneHeight(SimLane lane, WallMetrics metrics)
+    {
+        var height = metrics.TopMargin + metrics.Margin;
+        foreach (var group in lane.Groups)
+            height += metrics.TitleHeight + metrics.TitleToMembersGap + metrics.HeightOf(group.Bottom) + metrics.GroupGap;
+        return lane.Groups.Count > 0 ? height - metrics.GroupGap : height;
+    }
+
+    private static (int Lane, int Group)? FindGroup(List<SimLane> lanes, string groupId)
+    {
+        for (var lane = 0; lane < lanes.Count; lane++)
+        for (var group = 0; group < lanes[lane].Groups.Count; group++)
+            if (string.Equals(lanes[lane].Groups[group].Id, groupId, StringComparison.OrdinalIgnoreCase))
+                return (lane, group);
+        return null;
+    }
+
+    private static List<SimLane> Copy(List<SimLane> lanes) => lanes.Select(lane => new SimLane
+    {
+        Groups = lane.Groups.Select(group => new SimGroup
+        {
+            Id = group.Id,
+            Title = group.Title,
+            Members = [.. group.Members],
+        }).ToList(),
+    }).ToList();
+
+    private static void AcceptLocal(List<SimLane> lanes, AddBatchItem item,
+        List<AddBatchItem> accepted, HashSet<string> placedIds)
+    {
+        if (item.TargetGroupId is not null)
+        {
+            var location = FindGroup(lanes, item.TargetGroupId)!.Value;
+            lanes[location.Lane].Groups[location.Group].Members.Add(item.Member.LocalBounds);
+        }
+        accepted.Add(item);
+        placedIds.Add(item.Member.Id);
+    }
+
+    private sealed class SimLane
+    {
+        public List<SimGroup> Groups { get; set; } = [];
+    }
+
+    private sealed class SimGroup
+    {
+        public string Id { get; set; } = "";
+        public string? Title { get; set; }
+        public List<GridRect> Members { get; set; } = [];
+        public int Bottom => Members.Count == 0 ? 0 : Members.Max(member => member.Bottom);
     }
 
     private static string NextGroupId(string prefix, HashSet<string> reserved, ref int number)
@@ -155,13 +240,6 @@ public static class WallBatchPlanner
         string id;
         do { id = $"{prefix}-{number++:D4}"; } while (reserved.Contains(id));
         return id;
-    }
-
-    private static void Accept(WallLayoutResult result, AddBatchItem item,
-        List<AddBatchItem> accepted, ref WallDocument snapshot)
-    {
-        accepted.Add(item);
-        snapshot = result.Proposal!.Document;
     }
 
     private static WallLayoutResult Reject(WallRejection rejection, string? detail = null) =>

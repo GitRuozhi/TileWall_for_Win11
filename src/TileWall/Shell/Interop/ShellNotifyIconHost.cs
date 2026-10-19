@@ -65,6 +65,8 @@ public sealed class ShellNotifyIconHost : IDisposable
         data.hIcon = _icon;
         data.szTip = TooltipText;
         _added = Win32Api.Shell_NotifyIconW(Win32Api.NimAdd, ref data);
+        if (!_added)
+            AppLog.Warn("Phase4Tray", $"NIM_ADD failed win32={Marshal.GetLastWin32Error()} iconNull={_icon == IntPtr.Zero} hwnd={_host.Hwnd} cbSize={data.cbSize}");
         Trace($"NIM_ADD success={_added} hwnd={_host.Hwnd} id={IconId} callback=0x{_host.TrayCallbackMessage:X} icon={_icon}");
         if (_added)
         {
