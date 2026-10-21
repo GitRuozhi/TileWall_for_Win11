@@ -399,16 +399,9 @@ internal sealed class ImportDialog : IWallDialogSession
             header.Content as CandidateGroup ?? (header.Content as ICollectionViewGroup)?.Group as CandidateGroup;
         if (group is null) return;
         var origin = header.TransformToVisual(_groupOverlay).TransformPoint(new Windows.Foundation.Point());
-        var bottom = origin.Y + _metrics.TitleHeight;
-        foreach (var candidate in group)
-        {
-            if (_grid.ContainerFromItem(candidate) is not FrameworkElement item || !item.IsLoaded) continue;
-            var point = item.TransformToVisual(_groupOverlay).TransformPoint(new Windows.Foundation.Point());
-            bottom = Math.Max(bottom, point.Y + _metrics.WidthOf(_tileSize));
-        }
         var top = origin.Y + _metrics.TitleHeight - _metrics.TitleInteractionHeight;
-        var outline = WallGroupVisualFactory.Outline(_style, element.ActualTheme == ElementTheme.Dark);
-        outline.Width = _metrics.LaneWidth; outline.Height = Math.Max(0, bottom - top);
+        var outline = WallGroupVisualFactory.TitleFeedback(_style, element.ActualTheme == ElementTheme.Dark);
+        outline.Width = _metrics.LaneWidth; outline.Height = _metrics.TitleInteractionHeight;
         outline.Visibility = Visibility.Visible;
         Canvas.SetLeft(outline, origin.X); Canvas.SetTop(outline, top);
         _groupOverlay.Children.Add(outline);

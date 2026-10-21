@@ -209,7 +209,7 @@ internal static class WallGroupVisualFactory
         </DataTemplate>
         """);
 
-    internal static Border Outline(WallVisualStyle style, bool dark) => new()
+    internal static Border TitleFeedback(WallVisualStyle style, bool dark) => new()
     {
         BorderThickness = new Thickness(0), CornerRadius = WallCornerStyle.Corners(style),
         Background = new SolidColorBrush(dark ? Color.FromArgb(51, 255, 255, 255) : Color.FromArgb(51, 0, 0, 0)),

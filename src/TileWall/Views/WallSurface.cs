@@ -31,7 +31,7 @@ public sealed class WallSurface : Canvas
     private readonly Dictionary<string, TextBox> _titleEditors = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Func<bool, string?>> _titleEditFinishers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Action> _titleEditReleases = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Border> _groupOutlines = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Border> _groupTitleFeedback = new(StringComparer.Ordinal);
     private readonly Dictionary<string, FrameworkElement> _titleViews = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> _groupTitles = new(StringComparer.Ordinal);
     private readonly Dictionary<string, WallMember> _memberModels = new(StringComparer.Ordinal);
@@ -112,8 +112,9 @@ public sealed class WallSurface : Canvas
                     content.Background = MemberBackground(clock.Member);
                 clock.Time.Foreground = clock.Date.Foreground = ClockForeground(clock.Member);
             }
-            foreach (var outline in _groupOutlines.Values)
-                outline.Background = WallGroupVisualFactory.Outline(_document!.Settings.VisualStyle, ActualTheme == ElementTheme.Dark).Background;
+            foreach (var feedback in _groupTitleFeedback.Values)
+                feedback.Background = WallGroupVisualFactory.TitleFeedback(_document!.Settings.VisualStyle, ActualTheme == ElementTheme.Dark).Background;
+            if (_dragGroupId is not null) ApplyDragCue(_dragMemberId, _dragAllowed, _dragGroupId);
         };
     }
 
@@ -188,10 +189,10 @@ public sealed class WallSurface : Canvas
                 AddAt(button, memberPlace.Bounds);
                 _memberModels[member.Id] = member;
             }
-            if (!_groupOutlines.TryGetValue(placed.GroupId, out var outline))
-                _groupOutlines.Add(placed.GroupId, outline = WallGroupVisualFactory.Outline(document.Settings.VisualStyle, ActualTheme == ElementTheme.Dark));
-            AddAt(outline, new DipRect(placed.Bounds.X, placed.Bounds.Y + 12, placed.Bounds.Width, Math.Max(0, placed.Bounds.Height - 12)));
-            Canvas.SetZIndex(outline, -1);
+            if (!_groupTitleFeedback.TryGetValue(placed.GroupId, out var feedback))
+                _groupTitleFeedback.Add(placed.GroupId, feedback = WallGroupVisualFactory.TitleFeedback(document.Settings.VisualStyle, ActualTheme == ElementTheme.Dark));
+            AddAt(feedback, TitleControlBounds(placed.TitleBounds, _metrics.TitleInteractionHeight));
+            Canvas.SetZIndex(feedback, -1);
         }
         if (_dragMemberId is not null || _dragGroupId is not null)
             ApplyDragCue(_dragMemberId, _dragAllowed, _dragGroupId);
@@ -225,7 +226,7 @@ public sealed class WallSurface : Canvas
         // older editor draft back into the new document through LostFocus.
         if (_titleEditReleases.Remove(id, out var release)) release();
         if (_titleViews.Remove(id, out var title)) Children.Remove(title);
-        if (_groupOutlines.Remove(id, out var outline)) Children.Remove(outline);
+        if (_groupTitleFeedback.Remove(id, out var feedback)) Children.Remove(feedback);
         _titleEditors.Remove(id); _titleEditFinishers.Remove(id); _groupTitles.Remove(id);
     }
 
@@ -310,7 +311,7 @@ public sealed class WallSurface : Canvas
 
     private void ClearGroupFeedback()
     {
-        foreach (var outline in _groupOutlines.Values) outline.Visibility = Visibility.Collapsed;
+        foreach (var feedback in _groupTitleFeedback.Values) feedback.Visibility = Visibility.Collapsed;
     }
 
     private void OnWallDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
@@ -392,11 +393,9 @@ public sealed class WallSurface : Canvas
             puzzle.Opacity = !dragging ? 1 : id == memberId || groupMembers?.Contains(id) == true ? 0 : 0.42;
         }
         foreach (var (id, title) in _titleViews) title.Opacity = !dragging ? 1 : id == groupId ? 0 : 0.42;
-        if (groupId is not null && _groupOutlines.TryGetValue(groupId, out var target))
+        if (groupId is not null && _groupTitleFeedback.TryGetValue(groupId, out var target))
         {
-            target.BorderThickness = new Thickness(2);
-            target.BorderBrush = new SolidColorBrush(allowed ? SystemAccentColor() : Colors.OrangeRed);
-            target.Background = null;
+            target.Background = new SolidColorBrush(allowed ? SystemAccentColor() : Colors.OrangeRed);
             Canvas.SetZIndex(target, 10);
             target.Visibility = Visibility.Visible;
         }
@@ -406,11 +405,10 @@ public sealed class WallSurface : Canvas
             if (!dragging) _groupDragVisual = null;
         }
         if (!dragging)
-            foreach (var outline in _groupOutlines.Values)
+            foreach (var feedback in _groupTitleFeedback.Values)
             {
-                outline.BorderThickness = new Thickness(0);
-                Canvas.SetZIndex(outline, -1);
-                outline.Background = WallGroupVisualFactory.Outline(_document!.Settings.VisualStyle, ActualTheme == ElementTheme.Dark).Background;
+                Canvas.SetZIndex(feedback, -1);
+                feedback.Background = WallGroupVisualFactory.TitleFeedback(_document!.Settings.VisualStyle, ActualTheme == ElementTheme.Dark).Background;
             }
     }
 
@@ -730,8 +728,8 @@ public sealed class WallSurface : Canvas
         var focused = false;
         void UpdateGroupFeedback()
         {
-            if (_groupOutlines.TryGetValue(group.Id, out var outline))
-                outline.Visibility = _dragMemberId is null && _dragGroupId is null && (hovering || focused)
+            if (_groupTitleFeedback.TryGetValue(group.Id, out var feedback))
+                feedback.Visibility = _dragMemberId is null && _dragGroupId is null && (hovering || focused)
                     ? Visibility.Visible : Visibility.Collapsed;
         }
         WallMemberVisualFactory.ConfigureInteraction(title, titleContent, WallCorners,
