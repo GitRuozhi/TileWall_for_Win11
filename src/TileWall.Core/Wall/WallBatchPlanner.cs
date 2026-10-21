@@ -23,6 +23,19 @@ public static class WallBatchPlanner
 
         var errors = WallLayoutEngine.ValidateGeometry(current, metrics);
         if (errors.Count > 0) return Reject(WallRejection.InvalidDocument, string.Join("; ", errors));
+
+        var ordinary = TryPlanCore(current, members, targetGroupId, preferredLaneIndex, newGroupIdPrefix,
+            workWidthDip, workHeightDip, metrics, allowCompression: false);
+        return ordinary.Rejection == WallRejection.NoSpace
+            ? TryPlanCore(current, members, targetGroupId, preferredLaneIndex, newGroupIdPrefix,
+                workWidthDip, workHeightDip, metrics, allowCompression: true)
+            : ordinary;
+    }
+
+    private static WallLayoutResult TryPlanCore(WallDocument current, IReadOnlyList<TileMember> members,
+        string? targetGroupId, int? preferredLaneIndex, string newGroupIdPrefix,
+        double workWidthDip, double workHeightDip, WallMetrics metrics, bool allowCompression)
+    {
         var targetLane = -1;
         if (targetGroupId is not null)
         {
@@ -80,7 +93,7 @@ public static class WallBatchPlanner
             if (activeGroupId is not null)
             {
                 var item = TryAddToGroup(lanes, incoming, activeGroupId, maxCandidateRows,
-                    columns, current.Rows, workWidthDip, workHeightDip, metrics);
+                    columns, current.Rows, workWidthDip, workHeightDip, metrics, current.Settings, allowCompression);
                 if (item is not null)
                 {
                     AcceptLocal(lanes, item, accepted, placedIds);
@@ -106,7 +119,7 @@ public static class WallBatchPlanner
                     Id = id,
                     Members = [item.Member.LocalBounds],
                 });
-                var fit = Fit(trial, trialColumns, current.Rows, workWidthDip, workHeightDip, metrics);
+                var fit = Fit(trial, trialColumns, current.Rows, workWidthDip, workHeightDip, metrics, current.Settings, allowCompression);
                 if (fit == WallRejection.None)
                 {
                     if (laneCursor >= laneOrder.Count) laneOrder.Add(lane);
@@ -131,20 +144,25 @@ public static class WallBatchPlanner
     }
 
     private static AddBatchItem? TryAddToGroup(List<SimLane> lanes, TileMember incoming, string groupId,
-        int maxRows, int columns, int currentRows, double workWidthDip, double workHeightDip, WallMetrics metrics)
+        int maxRows, int columns, int currentRows, double workWidthDip, double workHeightDip, WallMetrics metrics,
+        WallSettings settings, bool allowCompression)
     {
         var location = FindGroup(lanes, groupId);
         if (location is null) return null;
         var (laneIndex, groupIndex) = location.Value;
         var group = lanes[laneIndex].Groups[groupIndex];
         if (maxRows < 1) return null;
-        var occupied = new bool[maxRows, CellsPerLane];
+        // An append beyond the viewport may still fit after existing empty rows
+        // are compressed. Its uncompressed bounds must stay structurally valid.
+        var searchRows = allowCompression
+            ? Math.Max(maxRows, Math.Min(MaxRows, group.Bottom + incoming.LocalBounds.Height)) : maxRows;
+        var occupied = new bool[searchRows, CellsPerLane];
         foreach (var member in group.Members)
-        for (var row = member.Row; row < Math.Min(member.Bottom, maxRows); row++)
+        for (var row = member.Row; row < Math.Min(member.Bottom, searchRows); row++)
         for (var col = member.Column; col < member.Right; col++)
             occupied[row, col] = true;
 
-        for (var row = 0; row + incoming.LocalBounds.Height <= maxRows; row++)
+        for (var row = 0; row + incoming.LocalBounds.Height <= searchRows; row++)
         for (var col = 0; col + incoming.LocalBounds.Width <= CellsPerLane; col++)
         {
             var bounds = new GridRect(col, row, incoming.LocalBounds.Width, incoming.LocalBounds.Height);
@@ -159,7 +177,7 @@ public static class WallBatchPlanner
             if (overlaps) continue;
             var trial = Copy(lanes);
             trial[laneIndex].Groups[groupIndex].Members.Add(bounds);
-            var fit = Fit(trial, columns, currentRows, workWidthDip, workHeightDip, metrics);
+            var fit = Fit(trial, columns, currentRows, workWidthDip, workHeightDip, metrics, settings, allowCompression);
             if (fit == WallRejection.None)
                 return new AddBatchItem(incoming with { LocalBounds = bounds }, groupId);
             return null;
@@ -168,19 +186,45 @@ public static class WallBatchPlanner
     }
 
     private static WallRejection Fit(List<SimLane> lanes, int columns, int currentRows,
-        double workWidthDip, double workHeightDip, WallMetrics metrics)
+        double workWidthDip, double workHeightDip, WallMetrics metrics, WallSettings settings, bool allowCompression)
     {
         var requiredHeight = lanes.Count == 0 ? metrics.TopMargin + metrics.Margin
             : lanes.Max(lane => LaneHeight(lane, metrics));
         var contentHeight = requiredHeight - metrics.TopMargin - metrics.Margin;
         var requiredRows = contentHeight <= metrics.HeightOf(1) ? 1
             : (int)Math.Ceiling((contentHeight + metrics.Gap) / metrics.Pitch - 1e-10);
-        if (requiredRows > MaxRows) return WallRejection.NoSpace;
         var rows = Math.Max(currentRows, requiredRows);
-        if (requiredHeight > metrics.WallHeight(rows)) return WallRejection.NoSpace;
-        if (metrics.WallWidth(columns) > workWidthDip + 1e-8 || metrics.WallHeight(rows) > workHeightDip + 1e-8)
-            return WallRejection.WorkAreaTooSmall;
-        return WallRejection.None;
+        var expanded = settings.ExpandColumns;
+        var occupiedColumns = lanes.Count(lane => lane.Groups.Count > 0);
+        if (expanded && occupiedColumns >= MaxLanes) return WallRejection.NoSpace;
+        var projectedColumns = expanded ? occupiedColumns + 1 : columns;
+        if (requiredRows <= MaxRows && requiredHeight <= metrics.WallHeight(rows) &&
+            metrics.WallWidth(projectedColumns) <= workWidthDip + 1e-8 &&
+            metrics.WallHeight(rows) <= workHeightDip + 1e-8)
+            return WallRejection.None;
+        if (!allowCompression) return requiredRows > MaxRows ? WallRejection.NoSpace : WallRejection.WorkAreaTooSmall;
+
+        // A saved height, empty rows or whole-group arrangement may need the same
+        // capacity compression as the final engine. Probe detached shapes only;
+        // original coordinates and members remain owned by the final TryApply.
+        var memberNumber = 0;
+        var candidate = new WallDocument
+        {
+            Columns = columns,
+            Rows = currentRows,
+            Settings = settings,
+            Lanes = lanes.Select(lane => new WallLane
+            {
+                Groups = lane.Groups.Select(group => new StartGroup
+                {
+                    Id = group.Id,
+                    Title = group.Title,
+                    Members = group.Members.Select(bounds => (WallMember)new TileMember
+                    { Id = $"capacity-{memberNumber++}", LocalBounds = bounds }).ToArray(),
+                }).ToArray(),
+            }).ToArray(),
+        };
+        return WallLayoutEngine.ProbeCapacity(candidate, workWidthDip, workHeightDip, metrics);
     }
 
     private static double LaneHeight(SimLane lane, WallMetrics metrics)

@@ -181,7 +181,8 @@ public sealed class StartMenuScannerTests
         var files = new InMemoryFileStore();
         var result = StartMenuScanner.Enumerate(files, [(Dir("C:", "does", "not", "exist"), SourceKind.User)]);
         Assert.Empty(result.Candidates);
-        Assert.Equal(0, result.SkippedDirectories); // 目录不存在 → 空列表（IFileStore 契约），非「不可读」
+        Assert.Equal(1, result.SkippedDirectories);
+        Assert.False(Assert.Single(result.Roots).Complete); // An unavailable root cannot confirm deletion.
     }
 
     [Fact]

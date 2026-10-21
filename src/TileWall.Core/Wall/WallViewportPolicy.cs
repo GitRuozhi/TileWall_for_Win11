@@ -9,37 +9,60 @@ public static class WallViewportPolicy
     public const int MaximumMemberRows = 12;
 
     public static WallViewportBudget Create(double screenWidthDip, double screenHeightDip,
-        bool fullScreen, WallMetrics? metrics = null)
+        bool fullScreen, WallMetrics? metrics = null, bool expandColumns = true, bool menuStart = false)
     {
         metrics ??= new();
-        // Both modes budget complete cells inside ninety percent. Fullscreen's logical
-        // horizontal extent remains independent of its centered, clipped visible viewport.
-        var width = Math.Max(1, screenWidthDip * .9 - (fullScreen ? 0 : SidebarWidthDip));
-        var height = Math.Max(1, screenHeightDip * .9);
+        // Fullscreen leaves five percent on the side opposite its fixed rail. Windowed
+        // mode limits the entire outer width to ninety percent of the primary screen.
+        var width = Math.Max(0, screenWidthDip * (fullScreen ? .95 : .9) - FixedWidth(menuStart));
+        var height = Math.Max(0, screenHeightDip * .9);
         var columns = Math.Clamp((int)Math.Floor((width - 2 * metrics.Margin + metrics.ColumnGap) /
             (metrics.LaneWidth + metrics.ColumnGap) + 1e-8), 0, 64);
         var rows = Math.Clamp((int)Math.Floor((height - metrics.TopMargin - metrics.Margin + metrics.Gap) /
             metrics.Pitch + 1e-8), 0, 256);
-        return new(fullScreen ? metrics.WallWidth(64) : width, height,
-            fullScreen ? 64 : columns, rows, fullScreen);
+        var expanded = expandColumns && columns > 0;
+        return new(expanded ? metrics.WallWidth(64) : width, height,
+            expanded ? 64 : columns, rows, fullScreen);
     }
 
     public const double SidebarWidthDip = 48;
+    public const double MenuWidthDip = 256;
+
+    public static double FixedWidth(bool menuStart) => SidebarWidthDip + (menuStart ? MenuWidthDip : 0);
+
+    /// <summary>Display mode changes preserve the explicitly requested expansion and anchor.</summary>
+    public static WallSettings ForModeTransition(WallSettings previous, WallSettings requested) => requested;
+
+    /// <summary>Display-only filler lanes append at the real tail, never create persisted holes.</summary>
+    public static int MapCreationLane(WallDocument document, int requestedLane)
+    {
+        if ((!document.Settings.FullScreen && !document.Settings.ExpandColumns) ||
+            requestedLane < document.Columns) return requestedLane;
+        return document.Settings.ExpandColumns && document.Lanes[^1].Groups.Count == 0
+            ? document.Columns - 1 : document.Columns;
+    }
 
     public static (double Width, double Height) FullScreenVisibleSize(double screenWidthDip,
-        double screenHeightDip, WallMetrics? metrics = null)
+        double screenHeightDip, WallMetrics? metrics = null, bool menuStart = false)
     {
-        metrics ??= new();
-        var widthLimit = Math.Max(1, Math.Min(screenWidthDip * .9, screenWidthDip - SidebarWidthDip * 2));
-        var heightLimit = Math.Max(1, screenHeightDip * .9);
-        // The viewport may clip a partial next lane horizontally; vertical capacity is
-        // always a whole row, and its remaining pixels become symmetric outer whitespace.
-        var rows = Math.Max(0, (int)Math.Floor((heightLimit - metrics.TopMargin - metrics.Margin + metrics.Gap) /
-            metrics.Pitch + 1e-8));
-        var columns = Math.Max(0, (int)Math.Floor((widthLimit - 2 * metrics.Margin + metrics.ColumnGap) /
-            (metrics.LaneWidth + metrics.ColumnGap) + 1e-8));
-        return (Math.Min(widthLimit, columns > 0 ? metrics.WallWidth(columns) : widthLimit),
-            Math.Min(heightLimit, rows > 0 ? metrics.WallHeight(rows) : heightLimit));
+        return (Math.Max(0, screenWidthDip * .95 - FixedWidth(menuStart)),
+            Math.Max(0, screenHeightDip * .9));
+    }
+
+    /// <summary>
+    /// Probes the ordinary layout on manual narrowing. An unsuccessful fit or a complete
+    /// remaining empty lane keeps expansion enabled; the caller owns committing the proposal.
+    /// </summary>
+    public static WallLayoutResult? TryCloseWindowedExpansion(WallDocument source,
+        WallViewportBudget visibleBudget, WallMetrics? metrics = null)
+    {
+        if (source.Settings.FullScreen || !source.Settings.ExpandColumns || visibleBudget.FullScreen ||
+            visibleBudget.MaxColumns < 1 || visibleBudget.MaxRows < 1) return null;
+        var fitted = TryResize(source, visibleBudget.MaxColumns,
+            visibleBudget.MaxRows, source.Settings with { ExpandColumns = false },
+            visibleBudget, metrics);
+        return fitted.Proposal is { } candidate && candidate.Document.Lanes.All(lane => lane.Groups.Count > 0)
+            ? fitted : null;
     }
 
     public static WallLayoutResult Validate(WallDocument document, WallViewportBudget budget,
@@ -101,21 +124,21 @@ public static class WallViewportPolicy
         if (MemberHeightRejection(source) is { } memberRejection) return memberRejection;
         if (columns < 1 || rows < 1 || columns > budget.MaxColumns || rows > budget.MaxRows)
             return new(null, WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE");
-        var result = WallLayoutEngine.TryApply(source, new ResizeWallAction(source.Generation, columns, rows),
+        var result = WallLayoutEngine.TryApply(source with { Settings = settings }, new ResizeWallAction(source.Generation, columns, rows),
             metrics.WallWidth(64), metrics.WallHeight(256), metrics);
         if (result.Proposal is null)
         {
             if (result.Rejection != WallRejection.NoSpace) return result;
             foreach (var group in source.Lanes.SelectMany(l => l.Groups))
             {
-                var occupiedRows = group.Members.Max(m => m.LocalBounds.Bottom);
+                var occupiedRows = WallLayoutEngine.MinimumGroupRows(group);
                 if (occupiedRows > 0 && metrics.TopMargin + metrics.Margin + metrics.TitleHeight +
                     metrics.TitleToMembersGap + metrics.HeightOf(occupiedRows) > budget.MaxHeightDip + 1e-8)
                     return new(null, WallRejection.NoSpace, "GROUP_TOO_TALL:" + (string.IsNullOrWhiteSpace(group.Title) ? group.Id : group.Title));
             }
             return result;
         }
-        return Validate(result.Proposal.Document with { Settings = settings }, budget, metrics);
+        return Validate(result.Proposal, budget, metrics);
     }
 
     private static WallLayoutResult? MemberHeightRejection(WallDocument document)

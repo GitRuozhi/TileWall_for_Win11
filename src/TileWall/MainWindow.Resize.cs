@@ -18,6 +18,7 @@ public sealed partial class MainWindow
 {
     private Point _resizeStart;
     private AnchorCorner _resizeAnchor;
+    private AnchorCorner _resizePointerAnchor;
     private bool _resizeModeLocked;
     private bool _resizeModeTarget;
     private double _resizeScrollOffset;
@@ -30,8 +31,10 @@ public sealed partial class MainWindow
     private double _resizeScale;
     private int _resizeDeltaCount;
     private int _resizeLastColumns = -1, _resizeLastRows = -1;
+    private bool _resizeLastNarrowing;
     private WallDocument? _resizePreviewDocument;
     private WallLayoutResult? _resizeFullResult;
+    private WallLayoutResult? _resizeWindowedResult;
     private readonly Dictionary<(int Columns, int Rows), WallLayoutResult> _resizeFits = [];
     private Point _resizeLastSample;
     private int _resizeSampleCount;
@@ -113,7 +116,8 @@ public sealed partial class MainWindow
         _resizeHeight = !ReferenceEquals(thumb, ResizeVerticalEdge);
         ShowResizeHighlight(thumb);
         _resizeSnapshot = Document;
-        _resizeAnchor = !Settings.FullScreen ? Settings.AnchorCorner : thumb.Tag?.ToString() switch
+        _resizeAnchor = Settings.AnchorCorner;
+        _resizePointerAnchor = !Settings.FullScreen ? Settings.AnchorCorner : thumb.Tag?.ToString() switch
         {
             "TopLeft" => AnchorCorner.BottomRight, "TopRight" => AnchorCorner.BottomLeft,
             "BottomLeft" => AnchorCorner.TopRight, _ => AnchorCorner.TopLeft,
@@ -128,10 +132,12 @@ public sealed partial class MainWindow
         _resizeProposal = null;
         _resizePreviewDocument = null;
         _resizeLastColumns = _resizeLastRows = -1;
+        _resizeLastNarrowing = false;
         _resizeDeltaCount = 0;
         _resizeSampleCount = 0;
         _resizeLastSample = _resizeStart;
         _resizeFullResult = null;
+        _resizeWindowedResult = null;
         _resizeFits.Clear();
         _resizeInputPending = false;
         _performance.Begin("resize", Document, Scale, Surface.VisualCreationCount, Surface.GridCreationCount);
@@ -163,8 +169,10 @@ public sealed partial class MainWindow
         }
         var right = _resizeAnchor is AnchorCorner.BottomRight or AnchorCorner.TopRight;
         var bottom = _resizeAnchor is AnchorCorner.BottomLeft or AnchorCorner.BottomRight;
-        var dx = (cursor.X - _resizeStart.X) * (right ? -1 : 1);
-        var dy = (cursor.Y - _resizeStart.Y) * (bottom ? -1 : 1);
+        var pointerRight = _resizePointerAnchor is AnchorCorner.BottomRight or AnchorCorner.TopRight;
+        var pointerBottom = _resizePointerAnchor is AnchorCorner.BottomLeft or AnchorCorner.BottomRight;
+        var dx = (cursor.X - _resizeStart.X) * (pointerRight ? -1 : 1);
+        var dy = (cursor.Y - _resizeStart.Y) * (pointerBottom ? -1 : 1);
         if (Math.Max(Math.Abs(dx), Math.Abs(dy)) < 7 * _resizeScale) return;
         var rawWidth = _resizeStartRect.Width + (_resizeWidth ? dx : 0);
         var rawHeight = _resizeStartRect.Height + (_resizeHeight ? dy : 0);
@@ -192,25 +200,48 @@ public sealed partial class MainWindow
                 Surface.Render(fullscreen.Document, fullscreen.Geometry);
                 _resizePreviewDocument = fullscreen.Document;
                 PresentViewport(new RectInt32(_screenArea.Left, _screenArea.Top,
-                    _screenArea.Right - _screenArea.Left, _screenArea.Bottom - _screenArea.Top), true, _resizeAnchor, animate: true);
+                    _screenArea.Right - _screenArea.Left, _screenArea.Bottom - _screenArea.Top), true, _resizeAnchor, animate: true,
+                    presentationSettings: fullscreen.Document.Settings);
                 _performance.View(System.Diagnostics.Stopwatch.GetTimestamp() - started);
             }
             return;
         }
+        if (source.Settings.FullScreen)
+        {
+            // Dragging any fullscreen corner changes mode only. The selected anchor
+            // and last committed manual window width belong to the settings, not the corner.
+            var restored = _resizeWindowedResult ??= ProposeMode(source, source.Settings with { FullScreen = false });
+            _resizeProposal = restored.Proposal; _resizeFailure = restored.Proposal is null ? restored : null;
+            if (preview && restored.Proposal is { } windowed && !ReferenceEquals(_resizePreviewDocument, windowed.Document))
+            {
+                Surface.Render(windowed.Document, windowed.Geometry);
+                _resizePreviewDocument = windowed.Document;
+                ApplyViewport(windowed.Document, windowed.Geometry);
+            }
+            return;
+        }
         var budget = ViewportBudget(false);
-        var width = Math.Clamp(rawWidth, Math.Min(maxWidth, Math.Ceiling((_metrics.WallWidth(1) + WallViewportPolicy.SidebarWidthDip) * _resizeScale) + _frameWidth), maxWidth);
+        var fixedWidth = WallViewportPolicy.FixedWidth(source.Settings.MenuStart);
+        var width = Math.Clamp(rawWidth, Math.Min(maxWidth, Math.Ceiling((_metrics.WallWidth(1) + fixedWidth) * _resizeScale) + _frameWidth), maxWidth);
         var height = Math.Clamp(rawHeight, Math.Min(maxHeight, Math.Ceiling(_metrics.WallHeight(1) * _resizeScale) + _frameHeight), maxHeight);
-        var widthDip = (width - _frameWidth) / _resizeScale - WallViewportPolicy.SidebarWidthDip;
+        var widthDip = (width - _frameWidth) / _resizeScale - fixedWidth;
         var heightDip = (height - _frameHeight) / _resizeScale;
         var columns = _resizeWidth ? Math.Clamp((int)Math.Floor((widthDip - 2 * _metrics.Margin + _metrics.ColumnGap) /
             (_metrics.LaneWidth + _metrics.ColumnGap) + 1e-8), 1, Math.Max(1, budget.MaxColumns)) : source.Columns;
         var rows = _resizeHeight ? Math.Clamp((int)Math.Floor((heightDip - _metrics.TopMargin - _metrics.Margin + _metrics.Gap) /
             _metrics.Pitch + 1e-8), 1, Math.Max(1, budget.MaxRows)) : source.Rows;
-        if (columns != _resizeLastColumns || rows != _resizeLastRows)
+        var narrowingExpansion = source.Settings.ExpandColumns && _resizeWidth && width < _resizeStartRect.Width;
+        if (columns != _resizeLastColumns || rows != _resizeLastRows || narrowingExpansion != _resizeLastNarrowing)
         {
             _resizeLastColumns = columns; _resizeLastRows = rows;
+            _resizeLastNarrowing = narrowingExpansion;
             var requested = source.Settings with { FullScreen = false, AnchorCorner = _resizeAnchor };
             var result = CachedResizeFit(source, requested, columns, rows);
+            if (narrowingExpansion)
+            {
+                var visible = new WallViewportBudget(widthDip, heightDip, columns, rows, false);
+                result = WallViewportPolicy.TryCloseWindowedExpansion(source, visible, _metrics) ?? result;
+            }
             _resizeProposal = result.Proposal; _resizeFailure = result.Proposal is null ? result : null;
             // During ordinary window resizing keep the minimum legal grid visible. Exiting
             // fullscreen must fit the user's requested target, and therefore never grows it.
@@ -230,8 +261,18 @@ public sealed partial class MainWindow
             }
         }
         if (_resizeProposal is not { } proposal) return;
-        width = Math.Max(width, Math.Ceiling((proposal.Geometry.WallWidth + WallViewportPolicy.SidebarWidthDip) * _resizeScale) + _frameWidth);
+        if (!proposal.Document.Settings.ExpandColumns)
+            width = Math.Max(width, Math.Ceiling((proposal.Geometry.WallWidth + fixedWidth) * _resizeScale) + _frameWidth);
         height = Math.Max(height, Math.Ceiling(proposal.Geometry.WallHeight * _resizeScale) + _frameHeight);
+        // Within one complete-cell budget only the visible width changes. Keep the
+        // cached layout geometry, but persist the final DIP width with this same proposal.
+        var clientWidthDip = (width - _frameWidth) / _resizeScale;
+        proposal = proposal with { Document = proposal.Document with { Settings = proposal.Document.Settings with
+        {
+            WindowedViewportWidthDip = clientWidthDip,
+            ManualWindowedViewportWidthDip = _resizeWidth ? clientWidthDip : source.Settings.ManualWindowedViewportWidthDip,
+        } } };
+        _resizeProposal = proposal;
         var w = (int)Math.Ceiling(width); var h = (int)Math.Ceiling(height);
         var x = right ? _resizeStartRect.X + _resizeStartRect.Width - w : _resizeStartRect.X;
         var y = bottom ? _resizeStartRect.Y + _resizeStartRect.Height - h : _resizeStartRect.Y;
@@ -239,12 +280,14 @@ public sealed partial class MainWindow
         if (preview)
         {
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (!ReferenceEquals(_resizePreviewDocument, proposal.Document))
+            if (_resizePreviewDocument is null || !ReferenceEquals(Surface.Geometry, proposal.Geometry) ||
+                _resizePreviewDocument.Settings.ExpandColumns != proposal.Document.Settings.ExpandColumns)
             {
                 Surface.Render(proposal.Document, proposal.Geometry); Surface.RefreshClocks(_clock.UtcNow);
                 _resizePreviewDocument = proposal.Document;
             }
-            PresentViewport(new RectInt32(x, y, w, h), false, _resizeAnchor, animate: source.Settings.FullScreen);
+            PresentViewport(new RectInt32(x, y, w, h), false, _resizeAnchor, animate: source.Settings.FullScreen,
+                presentationSettings: proposal.Document.Settings);
             _performance.View(System.Diagnostics.Stopwatch.GetTimestamp() - started);
         }
     }
@@ -298,7 +341,16 @@ public sealed partial class MainWindow
                 Surface.Render(Document); ApplyViewport(animateMode: false);
                 _performance.End("release-no-change", Surface.VisualCreationCount, Surface.GridCreationCount); return;
             }
-            _ = CommitProposalAsync(proposal, settle: SettleReleasePersistence);
+            var originalOffset = _resizeScrollOffset;
+            _ = CommitProposalAsync(proposal, settle: error =>
+            {
+                SettleReleasePersistence(error);
+                if (error is not null && !_viewBlocked && !_windowClosing)
+                {
+                    WallScroll.UpdateLayout();
+                    WallScroll.ChangeView(originalOffset, 0, null, disableAnimation: true);
+                }
+            });
         }
         catch (Exception ex) { CancelResize(); _performance.End("error", Surface.VisualCreationCount, Surface.GridCreationCount); Status(ex.Message); }
     }
@@ -322,6 +374,7 @@ public sealed partial class MainWindow
         _resizePreviewDocument = null;
         _resizeFits.Clear();
         _resizeFullResult = null;
+        _resizeWindowedResult = null;
         if (thumb?.IsDragging == true) thumb.CancelDrag();
         TraceInput($"ResizeCancel reason={reason} events={_resizeDeltaCount} samples={_resizeSampleCount}");
         StopFrameSubscriptionIfIdle();
@@ -330,7 +383,8 @@ public sealed partial class MainWindow
         {
             Surface.Render(Document);
             Surface.RefreshClocks(_clock.UtcNow);
-            ApplyViewport();
+            ApplyViewport(animateMode: false);
+            WallScroll.UpdateLayout();
             WallScroll.ChangeView(_resizeScrollOffset, 0, null, disableAnimation: true);
         }
         UpdatePuzzleGate();

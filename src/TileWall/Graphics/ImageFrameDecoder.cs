@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using Windows.Graphics.Imaging;
-using Windows.Storage;
 
 namespace TileWall.Graphics;
 
@@ -35,8 +34,8 @@ public sealed class ImageFrameDecoder
             ct.ThrowIfCancellationRequested();
             var info = new FileInfo(path);
             if (!info.Exists || info.Length is < 1 or > MaxSourceBytes) return false;
-            var file = await StorageFile.GetFileFromPathAsync(path);
-            using var stream = await file.OpenReadAsync();
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var stream = file.AsRandomAccessStream();
             var decoder = await BitmapDecoder.CreateAsync(stream);
             ct.ThrowIfCancellationRequested();
             if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 ||
@@ -82,9 +81,9 @@ public sealed class ImageFrameDecoder
             var fileBytes = info.Length;
             var lastWriteUtc = info.LastWriteTimeUtc;
 
-            var file = await StorageFile.GetFileFromPathAsync(path);
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             cancellationToken.ThrowIfCancellationRequested();
-            using var stream = await file.OpenReadAsync();
+            using var stream = file.AsRandomAccessStream();
             var decoder = await BitmapDecoder.CreateAsync(stream);
             cancellationToken.ThrowIfCancellationRequested();
             var rawWidth = checked((int)decoder.PixelWidth);
@@ -191,9 +190,9 @@ public sealed class ImageFrameDecoder
             var fileBytes = info.Length;
             var lastWriteUtc = info.LastWriteTimeUtc;
 
-            var file = await StorageFile.GetFileFromPathAsync(path);
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             cancellationToken.ThrowIfCancellationRequested();
-            using var stream = await file.OpenReadAsync();
+            using var stream = file.AsRandomAccessStream();
             var decoder = await BitmapDecoder.CreateAsync(stream);
             cancellationToken.ThrowIfCancellationRequested();
 

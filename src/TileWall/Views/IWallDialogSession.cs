@@ -27,6 +27,7 @@ internal sealed class DialogExitPrompt(ContentDialog dialog)
     public Task<ExitDecision> ConfirmAsync()
     {
         if (_completion is not null) return _completion.Task;
+        OwnedDialogWindow.ReleaseTextFocus(dialog);
         _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _content = dialog.Content; _title = dialog.Title;
         _primary = dialog.PrimaryButtonText; _secondary = dialog.SecondaryButtonText; _close = dialog.CloseButtonText;

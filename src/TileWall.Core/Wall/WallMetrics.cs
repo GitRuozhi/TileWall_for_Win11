@@ -11,6 +11,8 @@ public sealed record WallMetrics
     public double Margin { get; init; } = 12;
     public double TopMargin { get; init; } = 0;
     public double TitleHeight { get; init; } = 48;
+    public const double TitleInteractionHeightDip = 30;
+    public double TitleInteractionHeight => Math.Min(TitleHeight, TitleInteractionHeightDip);
     public double TitleToMembersGap { get; init; } = 4;
     public double GroupGap { get; init; } = 4;
 
@@ -30,6 +32,7 @@ public sealed record WallMetrics
         double.IsFinite(ColumnGap) && ColumnGap >= 0 && double.IsFinite(Margin) && Margin >= 0 &&
         double.IsFinite(TopMargin) && TopMargin >= 0 &&
         double.IsFinite(TitleHeight) && TitleHeight > 0 &&
+        double.IsFinite(TitleInteractionHeight) && TitleInteractionHeight > 0 && TitleInteractionHeight <= TitleHeight &&
         double.IsFinite(TitleToMembersGap) && TitleToMembersGap >= 0 &&
         double.IsFinite(GroupGap) && GroupGap >= 0 &&
         double.IsFinite(Pitch) && double.IsFinite(LaneWidth) &&

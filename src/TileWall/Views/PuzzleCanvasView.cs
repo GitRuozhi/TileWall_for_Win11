@@ -34,6 +34,7 @@ public sealed class PuzzleCanvasView : Canvas
     private TextBlock? _scrollTitle;
     private double _scrollMaximum;
     private double _scrollOffset;
+    private bool _scrollAtEnd;
     private DateTime _scrollStarts;
     public bool Interactive { get; set; }
     internal bool ExternalInteraction { get; set; }
@@ -283,7 +284,8 @@ public sealed class PuzzleCanvasView : Canvas
         title.Width = title.DesiredSize.Width;
         _scrollTitle = title;
         _scrollOffset = 0;
-        _scrollStarts = DateTime.UtcNow.AddMilliseconds(600);
+        _scrollAtEnd = false;
+        _scrollStarts = DateTime.UtcNow.AddMilliseconds(900);
         _scrollTimer ??= DispatcherQueue.CreateTimer();
         _scrollTimer.Interval = TimeSpan.FromMilliseconds(30);
         _scrollTimer.IsRepeating = true;
@@ -296,11 +298,17 @@ public sealed class PuzzleCanvasView : Canvas
     {
         if (!MotionSettings.AnimationsEnabled) { StopScrolling(); return; }
         if (_scrollTitle?.RenderTransform is not TranslateTransform transform || DateTime.UtcNow < _scrollStarts) return;
-        _scrollOffset += 0.75;
-        if (_scrollOffset > _scrollMaximum)
+        if (_scrollAtEnd)
         {
             _scrollOffset = 0;
+            _scrollAtEnd = false;
             _scrollStarts = DateTime.UtcNow.AddMilliseconds(900);
+        }
+        else
+        {
+            _scrollOffset = Math.Min(_scrollMaximum, _scrollOffset + 0.75);
+            if (_scrollOffset >= _scrollMaximum)
+            { _scrollAtEnd = true; _scrollStarts = DateTime.UtcNow.AddMilliseconds(900); }
         }
         transform.X = -_scrollOffset;
     }

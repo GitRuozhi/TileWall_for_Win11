@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Media;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
 using TileWall.Views;
+using TileWall.Graphics;
 using Windows.UI;
 using Windows.UI.ViewManagement;
 
@@ -15,6 +16,10 @@ public sealed partial class MainWindow
     private readonly AccessibilitySettings _accessibilitySettings = new();
     private readonly Grid _backgroundLayer = new() { IsHitTestVisible = false };
     private readonly Image _backgroundImage = new() { Stretch = Stretch.UniformToFill };
+    private readonly Image _snapshotImage = new() { Stretch = Stretch.Fill, Visibility = Visibility.Collapsed };
+    private readonly SemaphoreSlim _snapshotSlot = new(1, 1);
+    private CancellationTokenSource? _snapshotRequest;
+    private (int X, int Y, int W, int H, double Scale, bool Dark)? _snapshotKey;
     private CancellationTokenSource? _backgroundRequest;
     private string? _backgroundPath;
     private bool _themeDark, _materialFallback = true, _materialReduced;
@@ -24,6 +29,7 @@ public sealed partial class MainWindow
     private void InitializeAppearance()
     {
         _backgroundLayer.Children.Add(_backgroundImage);
+        _backgroundLayer.Children.Add(_snapshotImage);
         WallRoot.Children.Insert(0, _backgroundLayer);
         _appearanceSettings.ColorValuesChanged += OnSystemColorsChanged;
         _appearanceSettings.AdvancedEffectsEnabledChanged += OnAdvancedEffectsChanged;
@@ -64,8 +70,9 @@ public sealed partial class MainWindow
             : _themeDark ? Color.FromArgb(240, 32, 32, 32) : Color.FromArgb(240, 243, 243, 243);
         if (StatusPanel.Background is not SolidColorBrush statusBrush || !statusBrush.Color.Equals(statusBackground))
             StatusPanel.Background = new SolidColorBrush(statusBackground);
-        _wallBackdrop.Configure(settings, _backdropActive, _themeDark);
-        var path = settings.BackgroundMode == WallBackgroundMode.Custom ? settings.BackgroundImagePath : null;
+        InvalidateSnapshotIfGeometryChanged();
+        _wallBackdrop.Configure(settings, _backdropActive, _themeDark, HasValidSnapshot);
+        var path = settings.BackgroundMode == WallBackgroundMode.Custom ? settings.BackgroundMedia?.Sha256 ?? settings.BackgroundImagePath : null;
         if (!string.Equals(_backgroundPath, path, StringComparison.OrdinalIgnoreCase))
         {
             _backgroundPath = path;
@@ -76,7 +83,7 @@ public sealed partial class MainWindow
             if (path is not null)
             {
                 _backgroundRequest = new CancellationTokenSource();
-                _ = LoadCustomBackgroundAsync(path, _backgroundRequest.Token);
+                _ = LoadCustomBackgroundAsync(path, settings, _backgroundRequest.Token);
             }
         }
         UpdateBackgroundLayer();
@@ -103,7 +110,9 @@ public sealed partial class MainWindow
         var highContrast = _accessibilitySettings.HighContrast;
         var reduced = _materialReduced || highContrast || !_appearanceSettings.AdvancedEffectsEnabled;
         var settings = Settings;
-        var visibility = _materialFallback || settings.BackgroundMode == WallBackgroundMode.Custom || reduced
+        var snapshotReady = !reduced && settings.BackgroundMode == WallBackgroundMode.Acrylic && HasValidSnapshot &&
+            (!_backdropActive || _materialFallback);
+        var visibility = snapshotReady || _materialFallback || settings.BackgroundMode == WallBackgroundMode.Custom || reduced
             ? Visibility.Visible : Visibility.Collapsed;
         if (_backgroundLayer.Visibility != visibility) _backgroundLayer.Visibility = visibility;
         var opacity = reduced ? 1 : (100 - Math.Clamp(settings.BackgroundTransparency, 0, 100)) / 100d;
@@ -112,7 +121,7 @@ public sealed partial class MainWindow
             _backgroundImage.Source is not null;
         // Draw exactly one background plane. Keeping a tinted plane underneath the
         // image would attenuate the desktop twice when XAML applies layer opacity.
-        if (customImageReady)
+        if (customImageReady || snapshotReady)
         {
             if (_backgroundLayer.Background is not null) _backgroundLayer.Background = null;
         }
@@ -125,16 +134,69 @@ public sealed partial class MainWindow
         }
         var imageVisibility = customImageReady ? Visibility.Visible : Visibility.Collapsed;
         if (_backgroundImage.Visibility != imageVisibility) _backgroundImage.Visibility = imageVisibility;
+        _snapshotImage.Visibility = snapshotReady ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private async Task LoadCustomBackgroundAsync(string path, CancellationToken ct)
+    private async Task LoadCustomBackgroundAsync(string path, WallSettings settings, CancellationToken ct)
     {
         // The existing decoder bounds file/pixel budgets and only opens sources read-only.
-        var result = await _images.LoadBackgroundAsync(path, 2560, 1440, ct);
+        var result = await _images.LoadBackgroundAsync(settings.BackgroundMedia, settings.BackgroundImagePath, 2560, 1440, ct);
         if (ct.IsCancellationRequested || _windowClosing || !string.Equals(_backgroundPath, path, StringComparison.OrdinalIgnoreCase)) return;
         _backgroundImage.Source = result.Source;
         UpdateBackgroundLayer();
         if (result.Source is null) AppLog.Warn("WallBackdrop", $"Custom background unavailable: {result.Status}");
+    }
+
+    private (int X, int Y, int W, int H, double Scale, bool Dark) CurrentSnapshotKey =>
+        (AppWindow.Position.X, AppWindow.Position.Y, AppWindow.Size.Width, AppWindow.Size.Height, Scale, _themeDark);
+    private bool HasValidSnapshot => _snapshotImage.Source is not null && _snapshotKey == CurrentSnapshotKey;
+
+    private void InvalidateSnapshotIfGeometryChanged()
+    {
+        if (_snapshotKey is null || _snapshotKey == CurrentSnapshotKey) return;
+        ReleaseBackdropSnapshot();
+        _wallBackdrop.Configure(Settings, _backdropActive, _themeDark, false);
+        UpdateBackgroundLayer();
+    }
+
+    private void ReleaseBackdropSnapshot()
+    {
+        _snapshotRequest?.Cancel(); _snapshotRequest?.Dispose(); _snapshotRequest = null;
+        _snapshotKey = null;
+        _snapshotImage.Source = null;
+        _snapshotImage.Visibility = Visibility.Collapsed;
+    }
+
+    private void CaptureBackdropBeforeShow()
+    {
+        if (AppWindow.IsVisible || _modal || _windowClosing || Settings.BackgroundMode != WallBackgroundMode.Acrylic ||
+            _accessibilitySettings.HighContrast || !_appearanceSettings.AdvancedEffectsEnabled) return;
+        _snapshotRequest?.Cancel(); _snapshotRequest?.Dispose();
+        _snapshotRequest = new();
+        _snapshotImage.Source = null;
+        _wallBackdrop.Configure(Settings, _backdropActive, _themeDark, false);
+        var key = CurrentSnapshotKey;
+        _snapshotKey = key;
+        var captured = DesktopBackdropSnapshot.Capture(new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H));
+        if (captured is not null) _ = PrepareSnapshotAsync(captured, key, _snapshotRequest.Token);
+    }
+
+    private async Task PrepareSnapshotAsync(DecodedImageFrame capture,
+        (int X, int Y, int W, int H, double Scale, bool Dark) key, CancellationToken token)
+    {
+        try
+        {
+            await _snapshotSlot.WaitAsync(token);
+            DecodedImageFrame blurred;
+            try { blurred = await Task.Run(() => DesktopBackdropSnapshot.BlurAndTint(capture, key.Dark), token); }
+            finally { _snapshotSlot.Release(); }
+            if (token.IsCancellationRequested || _windowClosing || _snapshotKey != key || CurrentSnapshotKey != key) return;
+            _snapshotImage.Source = DesktopBackdropSnapshot.ToBitmap(blurred);
+            RefreshAppearance();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or IOException or ArgumentException)
+        { AppLog.Warn("BackdropSnapshot", ex.GetType().Name); }
     }
 
     private void OnSystemColorsChanged(UISettings sender, object args) => QueueAppearanceRefresh();
@@ -177,6 +239,7 @@ public sealed partial class MainWindow
         _backgroundRequest?.Cancel();
         _backgroundRequest?.Dispose();
         _backgroundRequest = null;
+        ReleaseBackdropSnapshot();
         SystemBackdrop = null;
     }
 }

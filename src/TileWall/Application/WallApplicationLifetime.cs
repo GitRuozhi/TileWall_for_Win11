@@ -84,6 +84,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         {
             // No Activate/Show is needed to open the committed session or register process resources.
             _window.InitializeSession();
+            _window.ScheduleStartMenuStartupRefresh();
             ProductStrings.ApplyLanguage(_window.Settings.LanguageMode);
             _window.RefreshAppearance();
             _window.RefreshProductStrings();
@@ -275,20 +276,30 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         try
         {
+            _window.TraceExit("admission-close");
             _window.SuspendPersistenceAdmission();
             await _window.DrainPersistenceAsync();
             var session = _window.ActiveDialog;
+            _window.TraceExit($"dialog-wait type={session?.GetType().Name ?? "none"}");
             if (session is not null) await session.WaitForPendingAsync();
             session = _window.ActiveDialog;
+            var modalClosed = _window.WaitForModalClosedAsync();
             if (_exit.ShouldConfirmDraft(session))
             {
                 _window.FocusTopSession();
                 if (!_window.ApplyExitDecision(_exit, session!, await session!.ConfirmExitAsync())) return;
             }
             else _exit.CloseDraftlessSession();
+            // ContentDialog.Hide starts an asynchronous close. Its ShowAsync/finally
+            // must release the owned host before Application.Exit destroys XAML;
+            // otherwise queued layout callbacks can still read a closed AppWindow.
+            await modalClosed;
+            _window.TraceExit("dialog-closed");
+            _window.TraceExit("shutdown-workers");
             try { await _window.ShutdownPersistenceAsync(); }
             catch (Exception ex) { AppLog.Warn("Exit", $"Storage worker shutdown: {ex.Message}"); }
             _tearingDown = true;
+            _window.TraceExit("teardown");
             _exit.RunTeardown();
         }
         catch (Exception ex) { _window.ShowStatus(string.Format(ProductStrings.Get("Wall.OperationFailed"), ex.Message)); }

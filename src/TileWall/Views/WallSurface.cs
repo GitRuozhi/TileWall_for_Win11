@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using Microsoft.UI.Xaml;
 using System.Numerics;
 using Microsoft.UI.Xaml.Hosting;
@@ -34,7 +34,7 @@ public sealed class WallSurface : Canvas
     private readonly Dictionary<string, string?> _groupTitles = new(StringComparer.Ordinal);
     private readonly Dictionary<string, WallMember> _memberModels = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string Time, string Date, string Culture, double Width, double Height)> _clockFits = new(StringComparer.Ordinal);
-    private (int Columns, int Rows, WallVisualStyle Style, ElementTheme Theme, bool Show)? _gridKey;
+    private (int Columns, int Rows, WallVisualStyle Style, ElementTheme Theme, bool Show, string Titles)? _gridKey;
     private double _renderScale;
     private WallLanguageMode? _renderLanguage;
     private bool _animatePlacement;
@@ -62,6 +62,7 @@ public sealed class WallSurface : Canvas
     private CornerRadius WallCorners => WallCornerStyle.Corners(_document!.Settings.VisualStyle);
 
     public Func<WallMember, string?>? ResolveEntryPath { get; set; }
+    public Func<WallMember, string?>? ResolveLocationTarget { get; set; }
     public Func<string, PuzzleFrame?>? ResolvePuzzleFrame { get; set; }
     public Func<string, double>? ResolvePuzzleProgress { get; set; }
     public Func<string, MemberTransition?>? ResolvePuzzleTransition { get; set; }
@@ -110,7 +111,7 @@ public sealed class WallSurface : Canvas
                 clock.Time.Foreground = clock.Date.Foreground = ClockForeground(clock.Member);
             }
             foreach (var outline in _groupOutlines.Values)
-                outline.BorderBrush = WallGroupVisualFactory.Outline(_document!.Settings.VisualStyle, ActualTheme == ElementTheme.Dark).BorderBrush;
+                outline.Background = WallGroupVisualFactory.Outline(_document!.Settings.VisualStyle, ActualTheme == ElementTheme.Dark).Background;
         };
     }
 
@@ -158,7 +159,7 @@ public sealed class WallSurface : Canvas
                 _groupTitles[group.Id] = group.Title;
                 VisualCreationCount++;
             }
-            AddAt(title, TitleControlBounds(placed.TitleBounds));
+            AddAt(title, TitleControlBounds(placed.TitleBounds, _metrics.TitleInteractionHeight));
             foreach (var memberPlace in placed.Members)
             {
                 var member = members[memberPlace.MemberId];
@@ -187,7 +188,8 @@ public sealed class WallSurface : Canvas
             }
             if (!_groupOutlines.TryGetValue(placed.GroupId, out var outline))
                 _groupOutlines.Add(placed.GroupId, outline = WallGroupVisualFactory.Outline(document.Settings.VisualStyle, ActualTheme == ElementTheme.Dark));
-            AddAt(outline, placed.Bounds);
+            AddAt(outline, new DipRect(placed.Bounds.X, placed.Bounds.Y + 12, placed.Bounds.Width, Math.Max(0, placed.Bounds.Height - 12)));
+            Canvas.SetZIndex(outline, -1);
         }
         if (_dragMemberId is not null || _dragGroupId is not null)
             ApplyDragCue(_dragMemberId, _dragAllowed, _dragGroupId);
@@ -238,7 +240,10 @@ public sealed class WallSurface : Canvas
         var columns = Math.Max(_document.Columns, visibleColumns);
         // Rows is the same complete-cell budget used by placement. Row zero belongs to titles.
         var rows = _document.Rows;
-        var key = (columns, rows, _document.Settings.VisualStyle, ActualTheme, _document.Settings.ShowGrid);
+        var titleRows = Geometry?.Groups.Select(group => (group.LaneIndex,
+            Row: (int)Math.Round((group.TitleBounds.Y - _metrics.TopMargin) / _metrics.Pitch))).ToHashSet() ?? [];
+        var titleMask = string.Join(";", titleRows.OrderBy(item => item.LaneIndex).ThenBy(item => item.Row));
+        var key = (columns, rows, _document.Settings.VisualStyle, ActualTheme, _document.Settings.ShowGrid, titleMask);
         if (_gridKey == key)
         {
             if (_gridBackground is not null)
@@ -260,33 +265,41 @@ public sealed class WallSurface : Canvas
         var brush = new SolidColorBrush(Color.FromArgb(GridCellOpacity, channel, channel, channel));
         var radius = WallCornerStyle.Radius(_document!.Settings.VisualStyle);
         var cells = new GeometryGroup();
+        var interiors = radius > 0 ? new GeometryGroup() : null;
         for (var lane = 0; lane < columns; lane++)
         for (var row = 1; row < rows; row++)
         for (var column = 0; column < 8; column++)
         {
+            if (titleRows.Contains((lane, row))) continue;
             var x = _metrics.Margin + lane * (_metrics.LaneWidth + _metrics.ColumnGap) + column * _metrics.Pitch;
             var y = _metrics.TopMargin + row * _metrics.Pitch;
-            cells.Children.Add(GridCellGeometry(x, y, _metrics.Cell, _metrics.Cell, radius));
+            cells.Children.Add(new RectangleGeometry
+            {
+                Rect = new Rect(x + radius, y + radius, _metrics.Cell - 2 * radius, _metrics.Cell - 2 * radius),
+            });
+            if (interiors is not null)
+                interiors.Children.Add(new RectangleGeometry
+                {
+                    Rect = new Rect(x + 2 * radius, y + 2 * radius, _metrics.Cell - 4 * radius, _metrics.Cell - 4 * radius),
+                });
         }
-        background.Children.Add(new Microsoft.UI.Xaml.Shapes.Path { Data = cells, Fill = brush, IsHitTestVisible = false });
+        var grid = new Microsoft.UI.Xaml.Shapes.Path { Data = cells, Fill = brush, IsHitTestVisible = false };
+        if (interiors is not null)
+        {
+            // The 8 DIP rounded stroke of the inset 40 DIP rectangle has a 32 DIP
+            // rectangular hole. Fill that exact hole in a separate path, so the two
+            // Alpha=13 brushes do not paint the same area twice.
+            grid.Fill = null;
+            grid.Stroke = brush;
+            grid.StrokeThickness = 2 * radius;
+            grid.StrokeLineJoin = PenLineJoin.Round;
+        }
+        background.Children.Add(grid);
+        if (interiors is not null)
+            background.Children.Add(new Microsoft.UI.Xaml.Shapes.Path { Data = interiors, Fill = brush, Stroke = null, IsHitTestVisible = false });
         _gridBackground = background;
+        Canvas.SetZIndex(background, -2);
         Children.Insert(0, background);
-    }
-
-    private static Geometry GridCellGeometry(double x, double y, double width, double height, double radius)
-    {
-        if (radius <= 0) return new RectangleGeometry { Rect = new Rect(x, y, width, height) };
-        var r = Math.Min(radius, Math.Min(width, height) / 2);
-        var figure = new PathFigure { StartPoint = new Point(x + r, y), IsClosed = true };
-        figure.Segments.Add(new LineSegment { Point = new Point(x + width - r, y) });
-        figure.Segments.Add(new ArcSegment { Point = new Point(x + width, y + r), Size = new Size(r, r), SweepDirection = SweepDirection.Clockwise });
-        figure.Segments.Add(new LineSegment { Point = new Point(x + width, y + height - r) });
-        figure.Segments.Add(new ArcSegment { Point = new Point(x + width - r, y + height), Size = new Size(r, r), SweepDirection = SweepDirection.Clockwise });
-        figure.Segments.Add(new LineSegment { Point = new Point(x + r, y + height) });
-        figure.Segments.Add(new ArcSegment { Point = new Point(x, y + height - r), Size = new Size(r, r), SweepDirection = SweepDirection.Clockwise });
-        figure.Segments.Add(new LineSegment { Point = new Point(x, y + r) });
-        figure.Segments.Add(new ArcSegment { Point = new Point(x + r, y), Size = new Size(r, r), SweepDirection = SweepDirection.Clockwise });
-        return new PathGeometry { Figures = { figure } };
     }
 
     private void ClearGroupFeedback()
@@ -319,7 +332,7 @@ public sealed class WallSurface : Canvas
                     return (null, placement.GroupId, false);
                 return (member.MemberId, placement.GroupId, false);
             }
-            if (Contains(TitleControlBounds(placement.TitleBounds), position))
+            if (Contains(TitleControlBounds(placement.TitleBounds, _metrics.TitleInteractionHeight), position))
             {
                 var editing = _titleEditors.TryGetValue(placement.GroupId, out var editor) &&
                     editor.Visibility == Visibility.Visible;
@@ -377,6 +390,8 @@ public sealed class WallSurface : Canvas
         {
             target.BorderThickness = new Thickness(2);
             target.BorderBrush = new SolidColorBrush(allowed ? SystemAccentColor() : Colors.OrangeRed);
+            target.Background = null;
+            Canvas.SetZIndex(target, 10);
             target.Visibility = Visibility.Visible;
         }
         if (_groupDragVisual is not null)
@@ -387,8 +402,9 @@ public sealed class WallSurface : Canvas
         if (!dragging)
             foreach (var outline in _groupOutlines.Values)
             {
-                outline.BorderThickness = new Thickness(1);
-                outline.BorderBrush = WallGroupVisualFactory.Outline(_document!.Settings.VisualStyle, ActualTheme == ElementTheme.Dark).BorderBrush;
+                outline.BorderThickness = new Thickness(0);
+                Canvas.SetZIndex(outline, -1);
+                outline.Background = WallGroupVisualFactory.Outline(_document!.Settings.VisualStyle, ActualTheme == ElementTheme.Dark).Background;
             }
     }
 
@@ -433,7 +449,7 @@ public sealed class WallSurface : Canvas
         };
         return _groupDragVisual = new Border
         {
-            Width = placed.Bounds.Width, Height = 24,
+            Width = placed.Bounds.Width, Height = 36,
             CornerRadius = WallCorners, Background = accent,
             BorderThickness = new Thickness(2), BorderBrush = accent,
             Child = heading, IsHitTestVisible = false,
@@ -460,11 +476,7 @@ public sealed class WallSurface : Canvas
             _document!.Settings.VisualStyle, (button, _) =>
             {
                 button.Click += (_, _) => MemberInvoked?.Invoke(member.Id);
-                var menu = CreateContextMenu();
-                AddMenuItem(menu, WallMenuAction.Edit, () => MemberEditRequested?.Invoke(member.Id));
-                AddMenuItem(menu, WallMenuAction.Remove, () => MemberRemoveRequested?.Invoke(member.Id));
-                AddManagedEntryMenuItems(menu, member);
-                button.ContextFlyout = menu;
+                button.ContextFlyout = CreateMemberContextMenu(member);
             });
         AutomationProperties.SetAutomationId(view, $"puzzle-{member.Id}");
         if (ResolvePuzzleTransition?.Invoke(member.Id) is { } transition) view.UpdateTransition(transition);
@@ -645,10 +657,10 @@ public sealed class WallSurface : Canvas
 
     private FrameworkElement CreateTitle(StartGroup group, DipRect bounds)
     {
-        var controlBounds = TitleControlBounds(bounds);
+        var controlBounds = TitleControlBounds(bounds, _metrics.TitleInteractionHeight);
         var grid = new Grid { CornerRadius = WallCorners };
         var titleContent = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
-        titleContent.Children.Add(WallGroupVisualFactory.Label(group.Title, bounds.Width));
+        titleContent.Children.Add(WallGroupVisualFactory.Label(group.Title, bounds.Width, _metrics.TitleInteractionHeight));
         AutomationProperties.SetAutomationId(grid, $"group-title-{group.Id}");
         var title = new Button
         {
@@ -841,11 +853,7 @@ public sealed class WallSurface : Canvas
         ToolTipService.SetToolTip(button, string.IsNullOrWhiteSpace(member.Visual.Title) ? null : member.Visual.Title);
         if (member is TileMember or ClockMember)
         {
-            var menu = CreateContextMenu();
-            AddMenuItem(menu, WallMenuAction.Edit, () => MemberEditRequested?.Invoke(member.Id));
-            AddMenuItem(menu, WallMenuAction.Remove, () => MemberRemoveRequested?.Invoke(member.Id));
-            AddManagedEntryMenuItems(menu, member);
-            button.ContextFlyout = menu;
+            button.ContextFlyout = CreateMemberContextMenu(member);
         }
         return button;
     }
@@ -905,7 +913,7 @@ public sealed class WallSurface : Canvas
         _titleScrollMaximum = textWidth - viewportWidth;
         _titleScrollOffset = 0;
         _titleScrollDirection = 1;
-        _titleScrollPauseUntil = DateTime.UtcNow.AddMilliseconds(600);
+        _titleScrollPauseUntil = DateTime.UtcNow.AddMilliseconds(900);
         if (title.RenderTransform is TranslateTransform transform) transform.X = 0;
         _titleScrollTimer.Start();
     }
@@ -960,13 +968,13 @@ public sealed class WallSurface : Canvas
         {
             _titleScrollOffset = _titleScrollMaximum;
             _titleScrollDirection = -1;
-            _titleScrollPauseUntil = DateTime.UtcNow.AddMilliseconds(600);
+            _titleScrollPauseUntil = DateTime.UtcNow.AddMilliseconds(900);
         }
         else if (_titleScrollOffset <= 0)
         {
             _titleScrollOffset = 0;
             _titleScrollDirection = 1;
-            _titleScrollPauseUntil = DateTime.UtcNow.AddMilliseconds(600);
+            _titleScrollPauseUntil = DateTime.UtcNow.AddMilliseconds(900);
         }
         if (title.RenderTransform is TranslateTransform transform)
             transform.X = -_titleScrollOffset;
@@ -974,6 +982,7 @@ public sealed class WallSurface : Canvas
 
     private void AddManagedEntryMenuItems(MenuFlyout menu, WallMember member)
     {
+        var open = AddAction(WallMenuAction.Open, () => MemberInvoked?.Invoke(member.Id));
         var admin = AddAction(WallMenuAction.Admin, () => MemberAdminRequested?.Invoke(member.Id));
         var location = AddAction(WallMenuAction.Location, () => MemberLocationRequested?.Invoke(member.Id));
         menu.Opening += (_, _) => RefreshAvailability();
@@ -995,15 +1004,14 @@ public sealed class WallSurface : Canvas
             var available = entryPath is not null && File.Exists(entryPath);
             var reason = available ? string.Empty : ProductStrings.Get(member.Entry is null
                 ? "Wall.NoManagedEntry" : "Wall.EntryMissing");
-            var suffix = available ? string.Empty : ProductStrings.Get(member.Entry is null
-                ? "Wall.NoManagedEntrySuffix" : "Wall.EntryMissingSuffix");
-            Update(admin, ProductStrings.Get("Wall.Admin"));
-            Update(location, ProductStrings.Get("Wall.Location"));
+            Update(open, ProductStrings.Get("Wall.Open"), available);
+            Update(admin, ProductStrings.Get("Wall.Admin"), available && member.Entry?.Kind == ManagedEntryKind.Lnk);
+            Update(location, ProductStrings.Get("Wall.Location"), available && ResolveLocationTarget?.Invoke(member) is not null);
 
-            void Update(MenuFlyoutItem item, string label)
+            void Update(MenuFlyoutItem item, string label, bool enabled)
             {
-                item.Text = label + suffix;
-                item.IsEnabled = available;
+                item.Text = label;
+                item.IsEnabled = enabled;
                 AutomationProperties.SetName(item, item.Text);
                 AutomationProperties.SetHelpText(item, reason);
                 ToolTipService.SetToolTip(item, available ? label : reason);
@@ -1047,13 +1055,23 @@ public sealed class WallSurface : Canvas
         return menu;
     }
 
-    private enum WallMenuAction { Edit, Remove, Settings, Import, PuzzleNextPage, Location, Admin, NewTile, NewPuzzle }
+    internal MenuFlyout CreateMemberContextMenu(WallMember member)
+    {
+        var menu = CreateContextMenu();
+        AddManagedEntryMenuItems(menu, member);
+        AddMenuItem(menu, WallMenuAction.Edit, () => MemberEditRequested?.Invoke(member.Id));
+        AddMenuItem(menu, WallMenuAction.Remove, () => MemberRemoveRequested?.Invoke(member.Id));
+        return menu;
+    }
+
+    private enum WallMenuAction { Open, Edit, Remove, Settings, Import, PuzzleNextPage, Location, Admin, NewTile, NewPuzzle }
     private static string MenuLabel(WallMenuAction action) => ProductStrings.Get("Wall." + action);
     private static string MenuGlyph(WallMenuAction action) => action switch
     {
         WallMenuAction.Edit => ActionIcon.Edit, WallMenuAction.Remove => ActionIcon.Delete,
         WallMenuAction.Settings => ActionIcon.Settings, WallMenuAction.Import => ActionIcon.Import,
         WallMenuAction.PuzzleNextPage => ActionIcon.Next, WallMenuAction.Location => ActionIcon.Browse,
+        WallMenuAction.Open => "\uE8E5",
         WallMenuAction.Admin => "\uE7EF", _ => ActionIcon.Add,
     };
 
@@ -1084,8 +1102,11 @@ public sealed class WallSurface : Canvas
         }
     }
 
-    private static DipRect TitleControlBounds(DipRect row) =>
-        new(row.X, row.Y + row.Height - Math.Min(24, row.Height), row.Width, Math.Min(24, row.Height));
+    private static DipRect TitleControlBounds(DipRect row, double interactionHeight)
+    {
+        var height = Math.Min(interactionHeight, row.Height);
+        return new(row.X, row.Y + row.Height - height, row.Width, height);
+    }
 
     private static bool Contains(DipRect r, Point p) =>
         p.X >= r.X && p.Y >= r.Y && p.X < r.X + r.Width && p.Y < r.Y + r.Height;

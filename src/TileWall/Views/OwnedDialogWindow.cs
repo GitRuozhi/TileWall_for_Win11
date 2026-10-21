@@ -68,7 +68,8 @@ internal sealed class OwnedDialogWindow : Window
         Win32Api.SetWindowLongPtrW(hwnd, -8, WinRT.Interop.WindowNative.GetWindowHandle(owner));
         if (AppWindow.Presenter is OverlappedPresenter presenter)
         {
-            presenter.SetBorderAndTitleBar(false, false);
+            // Keep chrome removal in RemoveNativeFrame; the SDK title-bar teardown
+            // can corrupt the Windows 10 heap while disconnecting its UIA providers.
             presenter.IsResizable = false;
             presenter.IsMaximizable = false;
             presenter.IsMinimizable = false;
@@ -156,6 +157,18 @@ internal sealed class OwnedDialogWindow : Window
         return root.Host.ShowDialogAsync(dialog);
     }
 
+    internal static void ReleaseTextFocus(ContentDialog dialog)
+    {
+        // WinUI's text service can remain active after its page is detached and
+        // later query input services during framework shutdown (#11653). Move
+        // focus while the text control still belongs to its live XamlRoot.
+        var previous = FocusManager.GetFocusedElement(dialog.XamlRoot)?.GetType().Name ?? "none";
+        dialog.IsTabStop = true;
+        var moved = dialog.Focus(FocusState.Programmatic);
+        if (Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1")
+            AppLog.Warn("OwnedDialogInput", $"CloseFocus previous={previous} moved={moved} current={FocusManager.GetFocusedElement(dialog.XamlRoot)?.GetType().Name ?? "none"}");
+    }
+
     internal static Size ContentBudget(Window owner)
     {
         var scale = (owner.Content as FrameworkElement)?.XamlRoot?.RasterizationScale ?? 1;
@@ -172,6 +185,7 @@ internal sealed class OwnedDialogWindow : Window
         dialog.HorizontalAlignment = HorizontalAlignment.Left;
         dialog.VerticalAlignment = VerticalAlignment.Top;
         dialog.Opened += OnDialogOpened;
+        dialog.Closing += OnDialogClosing;
         _root.Children.Add(dialog);
         try
         {
@@ -188,8 +202,14 @@ internal sealed class OwnedDialogWindow : Window
         finally
         {
             dialog.Opened -= OnDialogOpened;
+            dialog.Closing -= OnDialogClosing;
             _dialog = null; _title = null; _contentPresenter = null; _card = null; _root.Children.Clear();
         }
+    }
+
+    private static void OnDialogClosing(ContentDialog sender, ContentDialogClosingEventArgs args)
+    {
+        if (!args.Cancel) ReleaseTextFocus(sender);
     }
 
     private void OnDialogOpened(ContentDialog sender, ContentDialogOpenedEventArgs args)

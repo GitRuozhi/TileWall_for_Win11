@@ -116,6 +116,29 @@ public sealed class PartitionEditSession
         return true;
     }
 
+    /// <summary>Cancel an in-progress pointer gesture without consuming an undo or redo entry.</summary>
+    public bool CancelStroke()
+    {
+        var changed = _strokeEdges.Count > 0;
+        if (changed) Current = _strokeStart;
+        _strokeEdges.Clear();
+        return changed;
+    }
+
+    /// <summary>Replace a complete size/partition draft as one undoable action, including same-size presets.</summary>
+    public bool ReplaceLayout(GridSize size, IReadOnlyList<GridRect> partitions)
+    {
+        ArgumentNullException.ThrowIfNull(partitions);
+        if (!TileWall.Core.Wall.MemberSizeRules.IsPuzzleSize(size.Columns, size.Rows)) return false;
+        var replacement = new PartitionLayout(size, partitions);
+        if (!replacement.Check().IsValid || replacement.Equals(Current)) return false;
+        PushUndo(Current);
+        Current = replacement;
+        _strokeStart = Current;
+        _strokeEdges.Clear();
+        return true;
+    }
+
     /// <summary>悬停预览（未按下）：只出预览不改状态（§6.1）。</summary>
     public StrokePreview Preview(WallEdge edge, EditTool tool)
     {

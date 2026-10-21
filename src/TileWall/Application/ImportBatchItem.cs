@@ -1,5 +1,6 @@
 using TileWall.Core.Entries;
 using TileWall.Core.Grid;
+using TileWall.Core.Import;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
 
@@ -12,6 +13,11 @@ internal sealed record ImportBatchItem(string SourcePath, TileMember Member, Exp
     public int GroupOrder { get; init; }
     public string? SourceRoot { get; init; }
     public string? RelativePath { get; init; }
+    public StartMenuCandidate? CandidateSnapshot { get; init; }
+    public string? ExpectedIdentityKey { get; init; }
+    public string? ExpectedSourceSha256 { get; init; }
+    public string? IconDirectory { get; init; }
+    public string? IconKey { get; init; }
 
     public static ImportBatchItem Create(string sourcePath, string? displayName = null, int size = 2)
     {

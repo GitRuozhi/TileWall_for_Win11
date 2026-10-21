@@ -208,4 +208,98 @@ public sealed class WallBatchPlannerTests
         Assert.Equal(WallRejection.InvalidAction, WallBatchPlanner.TryPlan(before,
             [Tile("one")], null, -1, "batch", OneLaneWidth, OneGroupHeight).Rejection);
     }
+
+    [Fact]
+    public void SavedHeightBeyondViewportUsesFinalCapacityCompression()
+    {
+        var metrics = new WallMetrics();
+        var existing = Tile("existing") with { LocalBounds = new GridRect(0, 6, 2, 2) };
+        var before = Document(Lane(Group("target", existing))) with { Rows = 10 };
+        var serialized = WallJson.Serialize(before);
+        var incoming = Tile("incoming") with { LocalBounds = new GridRect(0, 0, 2, 2) };
+
+        var result = WallBatchPlanner.TryPlan(before, [incoming], "target", 0, "batch",
+            metrics.WallWidth(1), metrics.WallHeight(6), metrics);
+
+        Assert.True(result.Success, result.Detail);
+        Assert.Equal(6, result.Proposal!.Document.Rows);
+        Assert.Equal(before.Generation + 1, result.Proposal.Document.Generation);
+        var members = Assert.Single(result.Proposal.Document.Lanes[0].Groups).Members;
+        Assert.Equal(new GridRect(0, 3, 2, 2), members.Single(member => member.Id == existing.Id).LocalBounds);
+        Assert.Equal(new GridRect(0, 0, 2, 2), members.Single(member => member.Id == incoming.Id).LocalBounds);
+        Assert.Equal(serialized, WallJson.Serialize(before));
+    }
+
+    [Fact]
+    public void FragmentedEmptyRowsCanCompressAnAppendBeyondViewport()
+    {
+        var metrics = new WallMetrics();
+        var first = Tile("first") with { LocalBounds = new GridRect(0, 0, 4, 2) };
+        var firstRight = Tile("first-right") with { LocalBounds = new GridRect(4, 0, 4, 2) };
+        var second = Tile("second") with { LocalBounds = new GridRect(0, 4, 4, 2) };
+        var secondRight = Tile("second-right") with { LocalBounds = new GridRect(4, 4, 4, 2) };
+        var before = Document(Lane(Group("target", first, firstRight, second, secondRight))) with { Rows = 8 };
+        var incoming = Tile("incoming") with { LocalBounds = new GridRect(0, 0, 4, 3) };
+
+        var result = WallBatchPlanner.TryPlan(before, [incoming], "target", 0, "batch",
+            metrics.WallWidth(1), metrics.WallHeight(8), metrics);
+
+        Assert.True(result.Success, result.Detail);
+        Assert.Equal(8, result.Proposal!.Document.Rows);
+        var members = Assert.Single(result.Proposal.Document.Lanes[0].Groups).Members;
+        Assert.Equal(new GridRect(0, 2, 4, 2), members.Single(member => member.Id == second.Id).LocalBounds);
+        Assert.Equal(new GridRect(0, 4, 4, 3), members.Single(member => member.Id == incoming.Id).LocalBounds);
+        Assert.Equal(new GridRect(0, 4, 4, 2), second.LocalBounds);
+    }
+
+    [Fact]
+    public void LastTileStillRejectsWholeBatchAfterCompression()
+    {
+        var metrics = new WallMetrics();
+        var existing = Tile("existing") with { LocalBounds = new GridRect(0, 6, 4, 2) };
+        var existingRight = Tile("existing-right") with { LocalBounds = new GridRect(4, 6, 4, 2) };
+        var before = Document(Lane(Group("target", existing, existingRight))) with { Rows = 10 };
+        var serialized = WallJson.Serialize(before);
+        var first = Tile("first") with { LocalBounds = new GridRect(0, 0, 4, 2) };
+        var second = Tile("second") with { LocalBounds = new GridRect(0, 0, 4, 2) };
+        var last = Tile("last") with { LocalBounds = new GridRect(0, 0, 4, 2) };
+        var width = metrics.WallWidth(1);
+        var height = metrics.WallHeight(5);
+        Assert.True(WallBatchPlanner.TryPlan(before, [first, second], "target", 0, "batch", width, height, metrics).Success);
+
+        var result = WallBatchPlanner.TryPlan(before, [first, second, last], "target", 0, "batch", width, height, metrics);
+
+        Assert.False(result.Success);
+        Assert.Equal(WallRejection.NoSpace, result.Rejection);
+        Assert.Null(result.Proposal);
+        Assert.Equal(serialized, WallJson.Serialize(before));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CompressionReservesExpandedTrailingLane(bool fullScreen)
+    {
+        var metrics = new WallMetrics();
+        var existing = Tile("existing") with { LocalBounds = new GridRect(0, 6, 4, 2) };
+        var before = Document(Lane(Group("target", existing)), Lane()) with
+        {
+            Rows = 10,
+            Settings = new WallSettings { FullScreen = fullScreen, ExpandColumns = true },
+        };
+        var incoming = Tile("incoming") with { LocalBounds = new GridRect(0, 0, 4, 2) };
+
+        var fits = WallBatchPlanner.TryPlan(before, [incoming], "target", 0, "batch",
+            metrics.WallWidth(2), metrics.WallHeight(5), metrics);
+        Assert.True(fits.Success, fits.Detail);
+        Assert.Equal(2, fits.Proposal!.Document.Columns);
+        Assert.Equal(5, fits.Proposal.Document.Rows);
+        Assert.Empty(fits.Proposal.Document.Lanes[^1].Groups);
+
+        var cannotFitTail = WallBatchPlanner.TryPlan(before, [incoming], "target", 0, "batch",
+            metrics.WallWidth(1), metrics.WallHeight(5), metrics);
+        Assert.False(cannotFitTail.Success);
+        Assert.Null(cannotFitTail.Proposal);
+        Assert.Empty(before.Lanes[^1].Groups);
+    }
 }

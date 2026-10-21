@@ -273,6 +273,85 @@ public sealed class PartitionStrokeTests
         Assert.Empty(session.Preview(new WallEdge(true, 3, 3), EditTool.Draw).AffectedEdges);
     }
 
+    [Theory]
+    [InlineData(4, 4, 4)]
+    [InlineData(6, 4, 6)]
+    [InlineData(4, 6, 6)]
+    public void ReplaceLayout_PresetIsOneUndoUnitAndRestoresAllPartitions(int columns, int rows, int count)
+    {
+        var session = MixedSession();
+        var before = session.Current;
+        var partitions = new List<GridRect>();
+        for (var row = 0; row < rows; row += 2)
+            for (var column = 0; column < columns; column += 2)
+                partitions.Add(new GridRect(column, row, 2, 2));
+
+        Assert.True(session.ReplaceLayout(new GridSize(columns, rows), partitions));
+        var preset = session.Current;
+        Assert.Equal(count, preset.PartitionCount);
+        Assert.Equal(1, session.UndoDepth);
+        Assert.True(preset.Check().IsValid);
+        Assert.True(session.Undo());
+        Assert.Equal(before, session.Current);
+        Assert.True(session.Redo());
+        Assert.Equal(preset, session.Current);
+        Assert.False(session.ReplaceLayout(preset.Size, preset.Partitions));
+        Assert.Equal(1, session.UndoDepth);
+    }
+
+    [Fact]
+    public void ReplaceLayout_InvalidReplacementLeavesDraftAndRedoUnchanged()
+    {
+        var session = MixedSession();
+        DrawOne(session, new WallEdge(true, 1, 0));
+        Assert.True(session.Undo());
+        var before = session.Current;
+
+        Assert.False(session.ReplaceLayout(new GridSize(1, 4), [new(0, 0, 1, 4)]));
+        Assert.False(session.ReplaceLayout(new GridSize(6, 4), [new(0, 0, 6, 4)]));
+        Assert.False(session.ReplaceLayout(new GridSize(4, 4), [new(0, 0, 2, 2)]));
+        Assert.Equal(before, session.Current);
+        Assert.False(session.CanUndo);
+        Assert.True(session.CanRedo);
+    }
+
+    [Fact]
+    public void CancelStroke_RestoresDraftWithoutConsumingUndoOrRedo()
+    {
+        var session = MixedSession();
+        DrawOne(session, new WallEdge(true, 1, 0));
+        Assert.True(session.Undo());
+        var before = session.Current;
+        session.BeginStroke();
+        Assert.Equal(StrokeOutcome.Applied, session.Stroke(new WallEdge(false, 0, 1), EditTool.Draw));
+
+        Assert.True(session.CancelStroke());
+        Assert.Equal(before, session.Current);
+        Assert.False(session.EndStroke());
+        Assert.False(session.CanUndo);
+        Assert.True(session.CanRedo);
+    }
+
+    [Fact]
+    public void Preview_OverlargeMergeIncludesEveryRemovedBoundaryButCannotCommit()
+    {
+        var session = new PartitionEditSession(new GridSize(6, 4),
+            [new(0, 0, 2, 4), new(2, 0, 2, 2), new(2, 2, 4, 2), new(4, 0, 2, 2)]);
+        var before = session.Current;
+        var edge = new WallEdge(true, 2, 1);
+        var preview = session.Preview(edge, EditTool.Erase);
+
+        Assert.False(preview.Applicable);
+        Assert.Equal(StrokeOutcome.SizeLimit, preview.Outcome);
+        Assert.Equal(new GridRect(0, 0, 6, 4), preview.MergeExtent);
+        Assert.True(before.Edges().ToHashSet().SetEquals(preview.AffectedEdges));
+        session.BeginStroke();
+        Assert.Equal(StrokeOutcome.SizeLimit, session.Stroke(edge, EditTool.Erase));
+        Assert.False(session.EndStroke());
+        Assert.Equal(before, session.Current);
+        Assert.False(session.CanUndo);
+    }
+
     /// <summary>4×4：左上 2×2 大块 + 其余 12 格 1×1（13 块；画墙在大块内适用）。</summary>
     private static PartitionEditSession MixedSession()
     {

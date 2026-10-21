@@ -68,7 +68,7 @@ public static class StartMenuPresetRules
                 (rule.Key == "microsoft" && packageTarget[17..].StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase) ||
                  rule.Key == "office" && packageTarget[17..].StartsWith("Microsoft.Office.", StringComparison.OrdinalIgnoreCase));
             if (companyMatch || pathMatch || nameMatch || fileMatch || protocolMatch || packageMatch)
-                return new("preset:" + rule.Key, rule.Title, 0);
+                return new("preset:" + rule.Key, rule.Title, 200);
         }
         return null;
     }
@@ -99,14 +99,17 @@ public static class StartMenuGroupingRules
 
         var presets = items.Select(item => item.Identity is null ? null : StartMenuPresetRules.Match(item.Candidate, item.Identity, item.Company)).ToArray();
         var presetCounts = items.Select((item, index) => (item, index))
-            .Where(pair => pair.item.CanAdd && presets[pair.index] is not null)
+            .Where(pair => pair.item.CanAdd && pair.item.Identity is not null && presets[pair.index] is not null)
             .GroupBy(pair => presets[pair.index]!.Key, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(group => group.Key, group => group.Select(pair => pair.item.Identity!.Key)
+                .Distinct(StringComparer.Ordinal).Count(), StringComparer.OrdinalIgnoreCase);
         var folderCounts = items.Select((item, index) => (item, index))
-            .Where(pair => pair.item.CanAdd && presets[pair.index] is null)
-            .Select(pair => TopFolder(pair.item.Candidate)).Where(folder => folder.Length != 0)
-            .GroupBy(folder => folder, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+            .Where(pair => pair.item.CanAdd && pair.item.Identity is not null && presets[pair.index] is null)
+            .Select(pair => (Folder: TopFolder(pair.item.Candidate), pair.item.Identity))
+            .Where(pair => pair.Folder.Length != 0)
+            .GroupBy(pair => pair.Folder, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Select(pair => pair.Identity!.Key)
+                .Distinct(StringComparer.Ordinal).Count(), StringComparer.OrdinalIgnoreCase);
         return items.Select((item, index) =>
         {
             if (presets[index] is { } preset)
@@ -131,7 +134,7 @@ public static class StartMenuGroupingRules
     private static StartMenuBucket Letter(StartMenuCandidate candidate)
     {
         var initial = StartMenuSelectionRules.Initial(candidate.DisplayName);
-        return new StartMenuBucket("letter:" + initial, initial.ToString(), 200 + (initial == '#' ? 0 : initial - 'A' + 1));
+        return new StartMenuBucket("letter:" + initial, initial.ToString(), initial == '#' ? 0 : initial - 'A' + 1);
     }
 
     private static string TopFolder(StartMenuCandidate candidate) =>

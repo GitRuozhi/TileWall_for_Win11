@@ -3,129 +3,72 @@ using TileWall.Core.Import;
 using TileWall.Core.Shell;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
+using System.Globalization;
+using System.Text;
 
 namespace TileWall.Core.Application;
 
-internal sealed record StartMenuPreparationStrings(string InvalidTarget, string UnsupportedProtocol);
-
-internal sealed record StartMenuPreparationInput(WallDocument Document, StartMenuScanResult Scan,
-    string DataRoot, LaunchIdentityService Identities, StartMenuPreparationStrings Strings,
-    Func<string, bool> SupportsProtocol);
-
-/// <summary>Frozen import inputs and synchronous, cancellable preparation for the existing STA queue.</summary>
+/// <summary>One observed shortcut is one short STA job; background hashing never occupies the storage queue.</summary>
 internal static class StartMenuImportPreparation
 {
-    internal static StartMenuPreparationInput Capture(WallDocument document, StartMenuScanResult scan,
-        string dataRoot, LaunchIdentityService identities, StartMenuPreparationStrings strings,
-        Func<string, bool> supportsProtocol) => new(WallJson.Freeze(document),
-            scan with { Candidates = Array.AsReadOnly(scan.Candidates.Select(candidate => candidate with
-            {
-                NotImportableReasons = Array.AsReadOnly(candidate.NotImportableReasons.ToArray()),
-            }).ToArray()) }, dataRoot, identities, strings, supportsProtocol);
-
-    internal static async Task<IReadOnlyList<StartMenuImportCandidate>> PrepareAsync(
-        IWallStorageExecutor executor, StartMenuPreparationInput input, CancellationToken token)
+    internal static async Task<StartMenuCachedSource> PrepareSourceAsync(IWallStorageExecutor executor,
+        StartMenuCandidate candidate, byte[] observedBytes, string sha256, LaunchIdentityService identities,
+        ILnkFileService links, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        var result = await executor.ExecuteAsync(() => Prepare(input, token)).ConfigureAwait(false);
+        candidate = candidate with { NotImportableReasons = Array.AsReadOnly(candidate.NotImportableReasons.ToArray()) };
+        observedBytes = observedBytes.ToArray();
+        var prepared = await executor.ExecuteAsync(() =>
+        {
+            token.ThrowIfCancellationRequested();
+            var fields = candidate.Kind == EntryKind.Lnk ? links.Read(candidate.FullPath) : null;
+            token.ThrowIfCancellationRequested();
+            var identity = identities.ResolveObservedInput(candidate.Kind, candidate.FullPath, observedBytes, fields);
+            token.ThrowIfCancellationRequested();
+            var urlIcon = candidate.Kind == EntryKind.Url ? ReadUrlIcon(observedBytes) : default;
+            return new StartMenuCachedSource
+            {
+                Candidate = candidate, SourceSha256 = sha256, Identity = identity, LinkFields = fields,
+                UrlIconPath = urlIcon.Path, UrlIconIndex = urlIcon.Index,
+                ErrorCode = identity is null ? "InvalidTarget" : null,
+            };
+        }).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
-        return result;
+        return prepared;
     }
 
-    private static IReadOnlyList<StartMenuImportCandidate> Prepare(StartMenuPreparationInput input, CancellationToken token)
+    private static (string? Path, int? Index) ReadUrlIcon(byte[] bytes)
     {
-        // A cancelled job can still be sitting behind synchronous COM/storage work.
-        token.ThrowIfCancellationRequested();
-        var pruned = StartMenuReimport.Prune(input.Document);
-        var retained = IdentitySet(pruned.Document, input.DataRoot, input.Identities, token);
-        var replacing = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var member in pruned.Removed)
+        string text;
+        try { text = new UTF8Encoding(false, true).GetString(bytes); }
+        catch (DecoderFallbackException) { text = Encoding.Latin1.GetString(bytes); }
+        string? path = null;
+        int? index = null;
+        foreach (var line in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
-            token.ThrowIfCancellationRequested();
-            if (TryIdentity(member, input.DataRoot, input.Identities, token) is { } identity) replacing.Add(identity.Key);
+            if (line.StartsWith("IconFile=", StringComparison.OrdinalIgnoreCase)) path ??= line[9..];
+            if (line.StartsWith("IconIndex=", StringComparison.OrdinalIgnoreCase) && index is null &&
+                int.TryParse(line.AsSpan(10), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)) index = parsed;
         }
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var companies = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        var output = new List<StartMenuImportCandidate>();
-        foreach (var candidate in input.Scan.Candidates.OrderBy(c => c.Source)
-                     .ThenBy(c => c.FullPath, StringComparer.OrdinalIgnoreCase))
-        {
-            token.ThrowIfCancellationRequested();
-            LaunchIdentity? identity = null;
-            string? error = null;
-            var readFailed = false;
-            try
-            {
-                identity = input.Identities.ResolveInput(candidate.FullPath);
-                token.ThrowIfCancellationRequested();
-                if (identity is null) { error = input.Strings.InvalidTarget; readFailed = true; }
-                else if (identity.IsUrl && !input.SupportsProtocol(identity.Target))
-                    error = input.Strings.UnsupportedProtocol;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException)
-            { error = ex.Message; readFailed = true; }
-            token.ThrowIfCancellationRequested();
-            var duplicate = identity is not null && !seen.Add(identity.Key);
-            var company = Company(identity);
-            token.ThrowIfCancellationRequested();
-            output.Add(new(candidate, new StartMenuBucket("pending", string.Empty, 0), identity,
-                identity is null ? StartMenuExclusion.None : StartMenuSelectionRules.Classify(candidate.DisplayName, identity),
-                duplicate, identity is not null && retained.Contains(identity.Key),
-                identity is not null && replacing.Contains(identity.Key), error, readFailed, company));
-        }
-        token.ThrowIfCancellationRequested();
-        return output.AsReadOnly();
-
-        string? Company(LaunchIdentity? identity)
-        {
-            token.ThrowIfCancellationRequested();
-            if (identity is null || identity.IsUrl || !Path.IsPathFullyQualified(identity.Target)) return null;
-            if (companies.TryGetValue(identity.Target, out var cached)) return cached;
-            string? company = null;
-            try
-            {
-                var exists = File.Exists(identity.Target);
-                token.ThrowIfCancellationRequested();
-                if (exists) company = System.Diagnostics.FileVersionInfo.GetVersionInfo(identity.Target).CompanyName;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.ComponentModel.Win32Exception) { }
-            token.ThrowIfCancellationRequested();
-            companies[identity.Target] = company;
-            return company;
-        }
-    }
-
-    internal static HashSet<string> IdentitySet(WallDocument snapshot, string dataRoot,
-        LaunchIdentityService identities, CancellationToken token = default)
-    {
-        var result = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var member in snapshot.Lanes.SelectMany(l => l.Groups).SelectMany(g => g.Members))
-        {
-            token.ThrowIfCancellationRequested();
-            if (TryIdentity(member, dataRoot, identities, token) is { } identity) result.Add(identity.Key);
-        }
-        return result;
+        return (path, index);
     }
 
     internal static LaunchIdentity? TryIdentity(WallMember member, string dataRoot,
         LaunchIdentityService identities, CancellationToken token = default)
     {
         token.ThrowIfCancellationRequested();
-        LaunchIdentity? identity;
         try
         {
-            // Match the session's existing managed-path boundary without reading
-            // its live state from the worker. Actual reads retain the supplied IO.
             var managed = member.Entry is { } entry && EntryPathGuard.IsEntryRelativePathAllowed(dataRoot, member.Id, entry.RelativePath)
                 ? Path.GetFullPath(Path.Combine(dataRoot, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar))) : null;
-            identity = identities.ResolveMember(member, managed);
+            var result = identities.ResolveMember(member, managed);
+            token.ThrowIfCancellationRequested();
+            return result;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException)
         {
             AppLog.Warn("LaunchIdentity", $"member={member.Id} identity unreadable: {ex.Message}");
-            identity = null;
+            return null;
         }
-        token.ThrowIfCancellationRequested();
-        return identity;
     }
 }

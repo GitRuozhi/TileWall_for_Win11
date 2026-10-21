@@ -19,6 +19,7 @@ public sealed record MoveMemberAction(long ExpectedGeneration, string MemberId, 
 /// <summary>GroupInsertIndex is interpreted after removal of the moving group.</summary>
 public sealed record MoveGroupAction(long ExpectedGeneration, string GroupId, int LaneIndex, int GroupInsertIndex) : WallAction(ExpectedGeneration);
 public sealed record RemoveMemberAction(long ExpectedGeneration, string MemberId) : WallAction(ExpectedGeneration);
+public sealed record UnpinMemberAction(long ExpectedGeneration, string MemberId) : WallAction(ExpectedGeneration);
 public sealed record RenameGroupAction(long ExpectedGeneration, string GroupId, string? Title) : WallAction(ExpectedGeneration);
 public sealed record ResizeWallAction(long ExpectedGeneration, int Columns, int Rows) : WallAction(ExpectedGeneration);
 
@@ -48,6 +49,30 @@ public static class WallLayoutEngine
     private const int MaxColumns = 64;
     private const int MaxRows = 256;
 
+    /// <summary>Normalizes the same candidate that callers preview and commit; does not advance its generation.</summary>
+    public static WallLayoutResult NormalizeExpanded(WallDocument candidate, WallMetrics? metrics = null)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        metrics ??= new();
+        var errors = Validate(candidate);
+        if (!metrics.IsValid) return Reject(WallRejection.InvalidAction, "Invalid metrics.");
+        if (errors.Count != 0) return Reject(WallRejection.InvalidDocument, string.Join("; ", errors));
+        if (candidate.Settings.ExpandColumns)
+        {
+            var occupied = candidate.Lanes.Where(lane => lane.Groups.Count > 0).ToArray();
+            if (occupied.Length >= MaxColumns) return Reject(WallRejection.NoSpace, "COLUMN_LIMIT");
+            if (candidate.Lanes.Count != occupied.Length + 1 || candidate.Lanes[^1].Groups.Count != 0)
+                candidate = candidate with
+                {
+                    Columns = occupied.Length + 1,
+                    Lanes = [.. occupied, new WallLane { Groups = [] }],
+                };
+        }
+        errors = ValidateGeometry(candidate, metrics);
+        return errors.Count == 0 ? new(new(candidate, MeasureValidated(candidate, metrics)), WallRejection.None)
+            : Reject(WallRejection.InvalidDocument, string.Join("; ", errors));
+    }
+
     public static WallLayoutResult TryApply(WallDocument current, WallAction action,
         double workWidthDip, double workHeightDip, WallMetrics? metrics = null)
     {
@@ -71,6 +96,7 @@ public static class WallLayoutEngine
         }
 
         var lanes = current.Lanes.Select(l => l.Groups.ToList()).ToList();
+        var inactive = current.InactiveMembers.ToList();
         var laneSources = new Dictionary<List<StartGroup>, WallLane>(ReferenceEqualityComparer.Instance);
         for (var index = 0; index < lanes.Count; index++) laneSources.Add(lanes[index], current.Lanes[index]);
         WallRejection rejection;
@@ -94,6 +120,11 @@ public static class WallLayoutEngine
                 break;
             case RemoveMemberAction remove:
                 rejection = RemoveMember(lanes, remove.MemberId);
+                break;
+            case UnpinMemberAction unpin:
+                var retained = FindMember(lanes, unpin.MemberId);
+                rejection = retained is null ? WallRejection.ObjectNotFound : RemoveMember(lanes, unpin.MemberId);
+                if (rejection == WallRejection.None) inactive.Add(retained!.Value.Member);
                 break;
             case RenameGroupAction rename:
                 rejection = RenameGroup(lanes, rename.GroupId, rename.Title);
@@ -120,6 +151,7 @@ public static class WallLayoutEngine
             Lanes = lanes.Select(groups => laneSources.TryGetValue(groups, out var source)
                 ? source with { Groups = groups.ToArray() }
                 : new WallLane { Groups = groups.ToArray() }).ToArray(),
+            InactiveMembers = inactive.ToArray(),
         };
         errors = Validate(proposed);
         if (errors.Count > 0)
@@ -131,13 +163,20 @@ public static class WallLayoutEngine
         if (action is not ResizeWallAction)
         {
             var requiredRows = RowsForHeight(requiredHeight, metrics);
-            if (requiredRows > MaxRows) return Reject(WallRejection.NoSpace, "Required wall height exceeds the structural row limit.");
-            proposed = proposed with { Rows = Math.Max(proposed.Rows, requiredRows) };
+            // A temporary stack may exceed the structural height before empty rows or
+            // whole groups are compacted. Never reject that intermediate arrangement.
+            proposed = proposed with { Rows = Math.Max(proposed.Rows, Math.Min(MaxRows, requiredRows)) };
         }
 
-        if (requiredHeight > metrics.WallHeight(proposed.Rows))
+        var capacity = FitCapacity(ref proposed, requiredHeight, action is not ResizeWallAction,
+            workWidthDip, workHeightDip, metrics, out var capacityDetail);
+        if (capacity != WallRejection.None) return Reject(capacity, capacityDetail);
+
+        if (proposed.Settings.ExpandColumns)
         {
-            return Reject(WallRejection.NoSpace);
+            var normalized = NormalizeExpanded(proposed, metrics);
+            if (normalized.Proposal is null) return normalized;
+            proposed = normalized.Proposal.Document;
         }
 
         errors = ValidateGeometry(proposed, metrics);
@@ -146,16 +185,77 @@ public static class WallLayoutEngine
             return Reject(WallRejection.InvalidAction, string.Join("; ", errors));
         }
 
-        if (metrics.WallWidth(proposed.Columns) > workWidthDip + 1e-8 ||
-            metrics.WallHeight(proposed.Rows) > workHeightDip + 1e-8)
-        {
-            foreach (var group in proposed.Lanes.SelectMany(l => l.Groups))
-                if (group.Members.Count > 0 && metrics.TopMargin + metrics.Margin + metrics.TitleHeight +
-                    metrics.TitleToMembersGap + metrics.HeightOf(group.Members.Max(m => m.LocalBounds.Bottom)) > workHeightDip + 1e-8)
-                    return Reject(WallRejection.NoSpace, "GROUP_TOO_TALL:" + (string.IsNullOrWhiteSpace(group.Title) ? group.Id : group.Title));
-            return Reject(WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE");
-        }
         return new WallLayoutResult(new WallProposal(proposed, MeasureValidated(proposed, metrics)), WallRejection.None);
+    }
+
+    /// <summary>Geometry-only batch probe; final TryApply still owns validation, placement and the proposal.</summary>
+    internal static WallRejection ProbeCapacity(WallDocument candidate, double workWidthDip,
+        double workHeightDip, WallMetrics metrics)
+    {
+        var requiredHeight = RequiredHeight(candidate, metrics);
+        var requiredRows = RowsForHeight(requiredHeight, metrics);
+        candidate = candidate with { Rows = Math.Max(candidate.Rows, Math.Min(MaxRows, requiredRows)) };
+        return FitCapacity(ref candidate, requiredHeight, true, workWidthDip, workHeightDip, metrics, out _);
+    }
+
+    private static WallRejection FitCapacity(ref WallDocument proposed, double requiredHeight, bool allowCompression,
+        double workWidthDip, double workHeightDip, WallMetrics metrics, out string? detail)
+    {
+        detail = null;
+        var expanded = proposed.Settings.ExpandColumns;
+        var occupiedColumns = proposed.Lanes.Count(lane => lane.Groups.Count > 0);
+        if (expanded && occupiedColumns >= MaxColumns)
+        {
+            detail = "COLUMN_LIMIT";
+            return WallRejection.NoSpace;
+        }
+        var projectedColumns = expanded ? occupiedColumns + 1 : proposed.Columns;
+        if (allowCompression &&
+            (metrics.WallWidth(projectedColumns) > workWidthDip + 1e-8 ||
+             metrics.WallHeight(proposed.Rows) > workHeightDip + 1e-8 ||
+             requiredHeight > metrics.WallHeight(proposed.Rows) + 1e-8))
+        {
+            var maxColumns = Math.Clamp((int)Math.Floor((workWidthDip - 2 * metrics.Margin + metrics.ColumnGap) /
+                (metrics.LaneWidth + metrics.ColumnGap) + 1e-8), 0, MaxColumns);
+            var maxRows = Math.Clamp((int)Math.Floor((workHeightDip - metrics.TopMargin - metrics.Margin + metrics.Gap) /
+                metrics.Pitch + 1e-8), 0, MaxRows);
+            var contentColumns = maxColumns - (expanded ? 1 : 0);
+            if (contentColumns > 0 && maxRows > 0)
+            {
+                var fitted = proposed.Lanes.Select(lane => lane.Groups.ToList()).ToList();
+                var sources = new Dictionary<List<StartGroup>, WallLane>(ReferenceEqualityComparer.Instance);
+                for (var index = 0; index < fitted.Count; index++) sources.Add(fitted[index], proposed.Lanes[index]);
+                var fitRows = Math.Min(proposed.Rows, maxRows);
+                if (ResizeLanes(fitted, Math.Min(proposed.Columns, contentColumns), fitRows, proposed.Rows, metrics) == WallRejection.None)
+                {
+                    proposed = proposed with
+                    {
+                        Columns = fitted.Count, Rows = fitRows,
+                        Lanes = fitted.Select(groups => sources.TryGetValue(groups, out var source)
+                            ? source with { Groups = groups.ToArray() }
+                            : new WallLane { Groups = groups.ToArray() }).ToArray(),
+                    };
+                    requiredHeight = RequiredHeight(proposed, metrics);
+                }
+            }
+        }
+        if (requiredHeight > metrics.WallHeight(proposed.Rows) + 1e-8)
+            return WallRejection.NoSpace;
+
+        projectedColumns = expanded ? proposed.Lanes.Count(lane => lane.Groups.Count > 0) + 1 : proposed.Columns;
+        if (metrics.WallWidth(projectedColumns) <= workWidthDip + 1e-8 &&
+            metrics.WallHeight(proposed.Rows) <= workHeightDip + 1e-8)
+            return WallRejection.None;
+
+        foreach (var group in proposed.Lanes.SelectMany(lane => lane.Groups))
+            if (group.Members.Count > 0 && metrics.TopMargin + metrics.Margin + metrics.TitleHeight +
+                metrics.TitleToMembersGap + metrics.HeightOf(MinimumGroupRows(group)) > workHeightDip + 1e-8)
+            {
+                detail = "GROUP_TOO_TALL:" + (string.IsNullOrWhiteSpace(group.Title) ? group.Id : group.Title);
+                return WallRejection.NoSpace;
+            }
+        detail = "CONTENT_TOO_LARGE";
+        return WallRejection.WorkAreaTooSmall;
     }
 
     public static IReadOnlyList<string> Validate(WallDocument document)
@@ -177,16 +277,20 @@ public static class WallLayoutEngine
             if (document.Settings.WindowedColumns is < 1 or > MaxColumns ||
                 document.Settings.WindowedRows is < 1 or > MaxRows)
                 errors.Add("SETTINGS_WINDOWED_SIZE");
-            if (document.Settings.WindowedAnchorCorner is { } windowedAnchor && !Enum.IsDefined(windowedAnchor))
-                errors.Add("SETTINGS_WINDOWED_ANCHOR");
+            if (document.Settings.WindowedViewportWidthDip is { } viewportWidth &&
+                (!double.IsFinite(viewportWidth) || viewportWidth <= 0) ||
+                document.Settings.ManualWindowedViewportWidthDip is { } manualWidth &&
+                (!double.IsFinite(manualWidth) || manualWidth <= 0))
+                errors.Add("SETTINGS_WINDOWED_VIEWPORT_WIDTH");
             if (document.Settings.BackgroundTransparency is < 0 or > 100)
                 errors.Add("SETTINGS_TRANSPARENCY");
-            if (document.Settings.BackgroundMode == WallBackgroundMode.Custom &&
+            if (document.Settings.BackgroundMode == WallBackgroundMode.Custom && document.Settings.BackgroundMedia is null &&
                 string.IsNullOrWhiteSpace(document.Settings.BackgroundImagePath))
                 errors.Add("SETTINGS_BACKGROUND_PATH");
         }
 
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var lane in document.Lanes)
         {
             if (lane?.Groups is null) { errors.Add("LANE_NULL"); continue; }
@@ -194,6 +298,7 @@ public static class WallLayoutEngine
             {
                 if (group is null) { errors.Add("GROUP_NULL"); continue; }
                 CheckId(group.Id, ids, errors);
+                if (!string.IsNullOrWhiteSpace(group.Title) && !names.Add(group.Title.Trim())) errors.Add("DUPLICATE_GROUP_NAME");
                 if (MemberPresentationRules.ValidateImportSource(group.ImportSource) is { } groupImportError)
                     errors.Add(groupImportError);
                 if (group.Members is null || group.Members.Count == 0)
@@ -208,35 +313,8 @@ public static class WallLayoutEngine
                     var member = members[i];
                     if (member is null) { errors.Add("MEMBER_NULL"); continue; }
                     CheckId(member.Id, ids, errors);
-                    if (member is not (TileMember or PuzzleMember or ClockMember)) errors.Add("MEMBER_KIND");
                     var b = member.LocalBounds;
-                    if (b.Column < 0 || b.Row < 0 || b.Width < 1 || b.Height < 1 ||
-                        (long)b.Column + b.Width > CellsPerLane || (long)b.Row + b.Height > MaxRows)
-                        errors.Add("MEMBER_BOUNDS");
-                    if (MemberPresentationRules.Validate(member) is { } presentationError)
-                        errors.Add(presentationError);
-                    if (!MemberSizeRules.IsValid(member)) errors.Add("MEMBER_SIZE_LIMIT");
-                    if (member.Entry is { } entry &&
-                        (!string.Equals(entry.ObjectId, member.Id, StringComparison.Ordinal) ||
-                         !Enum.IsDefined(entry.Kind) ||
-                         !EntryPathGuard.IsEntryRelativePathAllowed(EntryPathGuard.VirtualRoot,
-                             member.Id, entry.RelativePath) ||
-                         entry.RelativePath is null ||
-                         !entry.RelativePath.EndsWith(entry.Kind == ManagedEntryKind.Lnk ? ".lnk" : ".url",
-                             StringComparison.OrdinalIgnoreCase))) errors.Add("ENTRY_REFERENCE");
-                    if (member is ClockMember && member.Entry is not null) errors.Add("CLOCK_ENTRY");
-                    if (member is ClockMember clock &&
-                        !ClockFormatOptions.IsValid(clock.TimeFormat, clock.DateFormat))
-                        errors.Add("CLOCK_FORMAT");
-                    if (member is PuzzleMember puzzle)
-                    {
-                        if (!MemberSizeRules.IsPuzzleSize(b.Width, b.Height) || puzzle.Partitions is null)
-                            errors.Add("PUZZLE_SIZE");
-                        else if (puzzle.Partitions.Any(p => p.Column < 0 || p.Row < 0 || p.Width < 1 || p.Height < 1 ||
-                            (long)p.Column + p.Width > b.Width || (long)p.Row + p.Height > b.Height) ||
-                            !new PartitionLayout(b.Size, puzzle.Partitions).Check().IsValid)
-                            errors.Add("PUZZLE_PARTITIONS");
-                    }
+                    ValidateMember(member, errors);
 
                     for (var j = 0; j < i; j++)
                         if (members[j] is not null && IntersectsSafe(b, members[j].LocalBounds)) errors.Add("MEMBER_OVERLAP");
@@ -244,6 +322,13 @@ public static class WallLayoutEngine
             }
         }
 
+        if (document.InactiveMembers is null) errors.Add("INACTIVE_NULL");
+        else foreach (var member in document.InactiveMembers)
+        {
+            if (member is null) { errors.Add("MEMBER_NULL"); continue; }
+            CheckId(member.Id, ids, errors);
+            ValidateMember(member, errors);
+        }
         return errors;
     }
 
@@ -543,6 +628,11 @@ public static class WallLayoutEngine
         if (location is null) return WallRejection.ObjectNotFound;
         var (lane, group) = location.Value;
         var current = lanes[lane][group];
+        title = title?.Trim();
+        if (!string.IsNullOrEmpty(title) && lanes.SelectMany(items => items).Any(item =>
+            !string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(item.Title?.Trim(), title, StringComparison.OrdinalIgnoreCase)))
+            return WallRejection.InvalidAction;
         var changed = !string.Equals(current.Title, title, StringComparison.Ordinal);
         lanes[lane][group] = current with
         {
@@ -555,6 +645,64 @@ public static class WallLayoutEngine
     private static WallRejection ResizeLanes(List<List<StartGroup>> lanes, int columns, int rows,
         int currentRows, WallMetrics metrics)
     {
+        var ordered = lanes.SelectMany(lane => lane).ToArray();
+        var local = ResizeOriginalLanes(lanes, columns, rows, currentRows, metrics);
+        if (local != WallRejection.NoSpace) return local;
+
+        // Probe with each whole group's minimum height, but keep its original coordinates
+        // until a final lane has been chosen. Never skip a taller group to fill a hole.
+        var minimum = ordered.Select(CompactGroupFully).ToArray();
+        var reflowed = new List<List<StartGroup>>();
+        var next = 0;
+        while (next < ordered.Length)
+        {
+            if (reflowed.Count >= columns) return WallRejection.NoSpace;
+            var start = next;
+            var probe = new List<StartGroup>();
+            while (next < ordered.Length)
+            {
+                probe.Add(minimum[next]);
+                if (RequiredLaneHeight(probe, metrics) > metrics.WallHeight(rows) + 1e-8)
+                {
+                    probe.RemoveAt(probe.Count - 1);
+                    break;
+                }
+                next++;
+            }
+            if (next == start) return WallRejection.NoSpace;
+            var final = ordered[start..next].ToList();
+            var fit = ResizeOriginalLanes([final], 1, rows, currentRows, metrics);
+            if (fit != WallRejection.None) return fit;
+            reflowed.Add(final);
+        }
+        while (reflowed.Count < columns) reflowed.Add([]);
+        lanes.Clear();
+        lanes.AddRange(reflowed);
+        return WallRejection.None;
+    }
+
+    private static StartGroup CompactGroupFully(StartGroup group)
+    {
+        var occupied = new bool[group.Members.Max(member => member.LocalBounds.Bottom)];
+        foreach (var member in group.Members)
+            for (var row = member.LocalBounds.Row; row < member.LocalBounds.Bottom; row++) occupied[row] = true;
+        var before = new int[occupied.Length + 1];
+        for (var row = 0; row < occupied.Length; row++) before[row + 1] = before[row] + (occupied[row] ? 0 : 1);
+        return group with { Members = group.Members.Select(member => member with
+            { LocalBounds = member.LocalBounds with { Row = member.LocalBounds.Row - before[member.LocalBounds.Row] } }).ToArray() };
+    }
+
+    internal static int MinimumGroupRows(StartGroup group)
+    {
+        var occupied = new bool[group.Members.Max(member => member.LocalBounds.Bottom)];
+        foreach (var member in group.Members)
+            for (var row = member.LocalBounds.Row; row < member.LocalBounds.Bottom; row++) occupied[row] = true;
+        return occupied.Count(row => row);
+    }
+
+    private static WallRejection ResizeOriginalLanes(List<List<StartGroup>> lanes, int columns, int rows,
+        int currentRows, WallMetrics metrics)
+    {
         if (columns is < 1 or > MaxColumns || rows is < 1 or > MaxRows)
             return WallRejection.InvalidAction;
         // Remove only the necessary empty lanes, starting at the right to move the least content.
@@ -563,7 +711,6 @@ public static class WallLayoutEngine
         if (lanes.Count > columns) return WallRejection.NoSpace;
         while (lanes.Count < columns) lanes.Add([]);
 
-        if (rows >= currentRows) return WallRejection.None;
         var availableHeight = metrics.WallHeight(rows);
         foreach (var lane in lanes)
         {
@@ -640,6 +787,40 @@ public static class WallLayoutEngine
         ClockMember clock => clock with { LocalBounds = bounds },
         _ => throw new InvalidOperationException("Unknown member type."),
     };
+
+    private static void ValidateMember(WallMember member, List<string> errors)
+    {
+        if (member is not (TileMember or PuzzleMember or ClockMember)) errors.Add("MEMBER_KIND");
+        var b = member.LocalBounds;
+        if (b.Column < 0 || b.Row < 0 || b.Width < 1 || b.Height < 1 ||
+            (long)b.Column + b.Width > CellsPerLane || (long)b.Row + b.Height > MaxRows)
+            errors.Add("MEMBER_BOUNDS");
+        if (MemberPresentationRules.Validate(member) is { } presentationError)
+            errors.Add(presentationError);
+        if (!MemberSizeRules.IsValid(member)) errors.Add("MEMBER_SIZE_LIMIT");
+        if (member.Entry is { } entry &&
+            (!string.Equals(entry.ObjectId, member.Id, StringComparison.Ordinal) ||
+             !Enum.IsDefined(entry.Kind) ||
+             !EntryPathGuard.IsEntryRelativePathAllowed(EntryPathGuard.VirtualRoot,
+                 member.Id, entry.RelativePath) ||
+             entry.RelativePath is null ||
+             !entry.RelativePath.EndsWith(entry.Kind == ManagedEntryKind.Lnk ? ".lnk" : ".url",
+                 StringComparison.OrdinalIgnoreCase))) errors.Add("ENTRY_REFERENCE");
+        if (member is ClockMember && member.Entry is not null) errors.Add("CLOCK_ENTRY");
+        if (member is ClockMember clock &&
+            !ClockFormatOptions.IsValid(clock.TimeFormat, clock.DateFormat))
+            errors.Add("CLOCK_FORMAT");
+        if (member is PuzzleMember puzzle)
+        {
+            if (!MemberSizeRules.IsPuzzleSize(b.Width, b.Height) || puzzle.Partitions is null)
+                errors.Add("PUZZLE_SIZE");
+            else if (puzzle.Partitions.Any(p => p.Column < 0 || p.Row < 0 || p.Width < 1 || p.Height < 1 ||
+                (long)p.Column + p.Width > b.Width || (long)p.Row + p.Height > b.Height) ||
+                !new PartitionLayout(b.Size, puzzle.Partitions).Check().IsValid)
+                errors.Add("PUZZLE_PARTITIONS");
+        }
+
+    }
 
     private static void CheckId(string id, HashSet<string> ids, List<string> errors)
     {

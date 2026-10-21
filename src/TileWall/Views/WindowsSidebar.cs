@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using TileWall.Core.Wall;
@@ -16,6 +17,8 @@ namespace TileWall.Views;
 /// <summary>A fixed Windows destination rail; expanded text overlays the wall.</summary>
 internal sealed class WindowsSidebar : Grid
 {
+    internal const double ExpandedWidth = WallViewportPolicy.MenuWidthDip;
+    private const double CollapsedWidth = 48;
     private sealed record Row(string Key, WindowsShortcut? Shortcut, Button Button, Grid Content, TextBlock Label);
     private readonly List<Row> _rows = [];
     private readonly StackPanel _items = new();
@@ -34,7 +37,7 @@ internal sealed class WindowsSidebar : Grid
     internal WindowsSidebar(Action<string> status, Action<bool> menuVisibility)
     {
         _status = status; _menuVisibility = menuVisibility;
-        Width = 48;
+        Width = CollapsedWidth;
         AutomationProperties.SetAutomationId(this, "windows-sidebar");
         _itemsHost.Children.Add(_items);
         _scroll = new ScrollViewer
@@ -56,7 +59,6 @@ internal sealed class WindowsSidebar : Grid
         };
         _itemsHost.SizeChanged += (_, _) => DispatcherQueue.TryEnqueue(ScrollToAnchor);
         _items.SizeChanged += (_, _) => ScrollToAnchor();
-        Children.Add(_scroll);
         // Standard Button visual states provide pointer, pressed, disabled and keyboard
         // focus feedback. Only the rail's transparent resting fill is overridden.
         Resources["ButtonBackground"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
@@ -72,6 +74,13 @@ internal sealed class WindowsSidebar : Grid
         Add("Downloads", "\uE896", WindowsShortcut.Downloads);
         Add("Documents", "\uE7C3", WindowsShortcut.Documents);
         Add("User", "\uE77B", null);
+        Add("TileWall", string.Empty, null);
+        var rail = new Grid();
+        rail.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        rail.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        rail.Children.Add(_rows.Single(row => row.Key == "TileWall").Button);
+        Grid.SetRow(_scroll, 1); rail.Children.Add(_scroll);
+        Children.Add(rail);
         PointerEntered += (_, _) => { _pointerInside = true; SetExpanded(true); };
         PointerExited += (_, args) =>
         {
@@ -110,9 +119,10 @@ internal sealed class WindowsSidebar : Grid
     private void Add(string key, string glyph, WindowsShortcut? shortcut)
     {
         var content = new Grid();
-        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(CollapsedWidth) });
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        FrameworkElement icon = key == "User" ? CreateUserIcon() : ActionIcon.Glyph(glyph);
+        FrameworkElement icon = key == "User" ? CreateUserIcon() : key == "TileWall" ?
+            new Image { Width = 16, Height = 16, Source = BrandSource() } : ActionIcon.Glyph(glyph);
         icon.HorizontalAlignment = HorizontalAlignment.Center;
         icon.VerticalAlignment = VerticalAlignment.Center;
         content.Children.Add(icon);
@@ -129,6 +139,7 @@ internal sealed class WindowsSidebar : Grid
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
         };
         AutomationProperties.SetAutomationId(button, "windows-sidebar-" + key.ToLowerInvariant());
+        if (key == "TileWall") { button.IsTabStop = false; button.AllowFocusOnInteraction = false; }
         if (shortcut is { } action) button.Click += async (_, _) => await InvokeAsync(action);
         _rows.Add(new Row(key, shortcut, button, content, label));
     }
@@ -169,12 +180,13 @@ internal sealed class WindowsSidebar : Grid
             var bottom = anchor is AnchorCorner.BottomLeft or AnchorCorner.BottomRight;
             _items.VerticalAlignment = bottom ? VerticalAlignment.Bottom : VerticalAlignment.Top;
             _items.Children.Clear();
-            var ordered = bottom ? _rows.AsEnumerable().Reverse() : _rows;
+            var entries = _rows.Where(row => row.Key != "TileWall");
+            var ordered = bottom ? entries.Reverse() : entries;
             foreach (var row in ordered) _items.Children.Add(row.Button);
             foreach (var row in _rows)
             {
-                row.Content.ColumnDefinitions[0].Width = right ? new GridLength(1, GridUnitType.Star) : new GridLength(48);
-                row.Content.ColumnDefinitions[1].Width = right ? new GridLength(48) : new GridLength(1, GridUnitType.Star);
+                row.Content.ColumnDefinitions[0].Width = right ? new GridLength(1, GridUnitType.Star) : new GridLength(CollapsedWidth);
+                row.Content.ColumnDefinitions[1].Width = right ? new GridLength(CollapsedWidth) : new GridLength(1, GridUnitType.Star);
                 Grid.SetColumn((FrameworkElement)row.Content.Children[0], right ? 1 : 0);
                 Grid.SetColumn(row.Label, right ? 0 : 1);
                 row.Label.Margin = right ? new Thickness(12, 0, 0, 0) : new Thickness(0, 0, 12, 0);
@@ -188,11 +200,11 @@ internal sealed class WindowsSidebar : Grid
             _language = ProductStrings.Language;
             foreach (var row in _rows)
             {
-                var text = ProductStrings.Get("Sidebar." + row.Key);
+                var text = row.Key == "TileWall" ? "TileWall" : ProductStrings.Get("Sidebar." + row.Key);
                 row.Label.Text = text;
                 AutomationProperties.SetName(row.Button, text);
                 ActionIcon.SetTip(row.Button, text);
-                if (row.Shortcut is null)
+                if (row.Shortcut is null && row.Key != "TileWall")
                 {
                     row.Button.Flyout?.Hide();
                     row.Button.Flyout = CreateMenu(row.Key == "Power");
@@ -204,7 +216,18 @@ internal sealed class WindowsSidebar : Grid
     private MenuFlyout CreateMenu(bool power)
     {
         // Auto is rejected by WinUI's native Flyout placement validator when assigned directly.
-        var menu = new MenuFlyout { Placement = FlyoutPlacementMode.Top };
+        var presenterStyle = (Style)XamlReader.Load($$"""
+            <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="MenuFlyoutPresenter">
+                <Setter Property="MinWidth" Value="{{ExpandedWidth}}" />
+                <Setter Property="Width" Value="{{ExpandedWidth}}" />
+                <Setter Property="MaxWidth" Value="{{ExpandedWidth}}" />
+            </Style>
+            """);
+        // Keep the shared MenuFlyoutPresenter theme while pinning all size constraints.
+        if (Application.Current.Resources.TryGetValue(typeof(MenuFlyoutPresenter), out var sharedStyle)
+            && sharedStyle is Style baseStyle)
+            presenterStyle.BasedOn = baseStyle;
+        var menu = new MenuFlyout { Placement = FlyoutPlacementMode.Top, MenuFlyoutPresenterStyle = presenterStyle };
         var actions = power
             ? new[] { WindowsShortcut.Sleep, WindowsShortcut.ShutDown, WindowsShortcut.Restart }
             : [WindowsShortcut.AccountSettings, WindowsShortcut.Lock, WindowsShortcut.SignOut];
@@ -264,7 +287,7 @@ internal sealed class WindowsSidebar : Grid
             if (expanded) StartPointerTracking();
             return;
         }
-        _expanded = expanded; Width = expanded ? 256 : 48;
+        _expanded = expanded; Width = expanded ? ExpandedWidth : CollapsedWidth;
         foreach (var row in _rows) row.Label.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
         if (expanded) StartPointerTracking(); else StopPointerTracking();
         RefreshBrush();
@@ -300,8 +323,15 @@ internal sealed class WindowsSidebar : Grid
         // ActualTheme inherits the wall's explicit/system theme. Native Button styles
         // retain their own high-contrast hover, pressed and keyboard focus resources.
         var contrast = _accessibility.HighContrast;
-        Background = new SolidColorBrush(contrast ? _colors.GetColorValue(UIColorType.Background)
-            : !_expanded ? Microsoft.UI.Colors.Transparent
-            : ActualTheme == ElementTheme.Dark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243));
+        var color = ActualTheme == ElementTheme.Dark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243);
+        Background = contrast ? new SolidColorBrush(_colors.GetColorValue(UIColorType.Background))
+            : !_expanded ? new SolidColorBrush(Microsoft.UI.Colors.Transparent)
+            : !_colors.AdvancedEffectsEnabled ? new SolidColorBrush(color)
+            : new AcrylicBrush { TintColor = color, TintOpacity = .65, FallbackColor = color };
+        foreach (var row in _rows.Where(row => row.Key == "TileWall"))
+            if (row.Content.Children[0] is Image brand) brand.Source = BrandSource();
     }
+
+    private SvgImageSource BrandSource() => new(new Uri(ActualTheme == ElementTheme.Dark
+        ? "ms-appx:///Assets/TileWallMonochromeLight.svg" : "ms-appx:///Assets/TileWallMonochrome.svg"));
 }

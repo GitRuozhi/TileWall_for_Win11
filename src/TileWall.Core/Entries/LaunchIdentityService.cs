@@ -20,22 +20,31 @@ public sealed class LaunchIdentityService(IFileStore files, ILnkFileService link
         var path = NormalizePath(input);
         var extension = Path.GetExtension(path);
         if (extension.Equals(".url", StringComparison.OrdinalIgnoreCase))
+            return ResolveObservedInput(EntryKind.Url, path, files.ReadAllBytes(path));
+        if (extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
+            return ResolveObservedInput(EntryKind.Lnk, path, files.ReadAllBytes(path));
+        return ForPath(path, string.Empty, string.Empty);
+    }
+
+    /// <summary>Resolve observed shortcut bytes, including a staged file whose extension is .tmp.</summary>
+    public LaunchIdentity? ResolveObservedInput(EntryKind kind, string originalSourcePath, byte[] observedBytes,
+        LinkFields? fields = null)
+    {
+        ArgumentNullException.ThrowIfNull(observedBytes);
+        if (kind == EntryKind.Url)
         {
-            var url = UrlShortcut.ReadUrlLine(files.ReadAllBytes(path));
+            var url = UrlShortcut.ReadUrlLine(observedBytes);
             return url is not null && UrlShortcut.ValidateUrl(url).Count == 0 ? ForUrl(url) : null;
         }
-        if (extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
-        {
-            var fields = links.Read(path);
-            if (!string.IsNullOrWhiteSpace(fields.TargetPath))
-                return ForPath(fields.TargetPath, fields.Arguments, fields.WorkingDirectory);
-            if (!string.IsNullOrWhiteSpace(fields.ShellParsingName))
-                return ForShell(fields.ShellParsingName, fields.Arguments, fields.WorkingDirectory);
-            // Identical copied shortcuts remain identical. Unknown, different PIDLs are never all merged.
-            var hash = Convert.ToHexString(SHA256.HashData(files.ReadAllBytes(path)));
-            return new("opaque:" + hash, path, fields.Arguments, fields.WorkingDirectory, false);
-        }
-        return ForPath(path, string.Empty, string.Empty);
+        if (kind != EntryKind.Lnk) return null;
+        fields ??= links.Read(originalSourcePath);
+        if (!string.IsNullOrWhiteSpace(fields.TargetPath))
+            return ForPath(fields.TargetPath, fields.Arguments, fields.WorkingDirectory);
+        if (!string.IsNullOrWhiteSpace(fields.ShellParsingName))
+            return ForShell(fields.ShellParsingName, fields.Arguments, fields.WorkingDirectory);
+        // Identical opaque shortcuts remain identical without guessing their PIDL target.
+        var hash = Convert.ToHexString(SHA256.HashData(observedBytes));
+        return new("opaque:" + hash, originalSourcePath, fields.Arguments, fields.WorkingDirectory, false);
     }
 
     public static LaunchIdentity ForPath(string target, string arguments = "", string workingDirectory = "")

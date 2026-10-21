@@ -37,9 +37,9 @@ internal static class WallMemberVisualFactory
                     Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}" Background="Transparent" />
             </ControlTemplate>
             """);
-        var edge = new Border
+        var stateCue = new Border
         {
-            BorderThickness = new Thickness(1), CornerRadius = corners,
+            BorderThickness = new Thickness(2), CornerRadius = corners,
             BorderBrush = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)),
             Opacity = 0, IsHitTestVisible = false,
         };
@@ -48,15 +48,10 @@ internal static class WallMemberVisualFactory
             CornerRadius = corners, Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255)),
             Opacity = 0, IsHitTestVisible = false,
         };
-        var focusCue = new Border
-        {
-            BorderThickness = new Thickness(2), CornerRadius = corners, Margin = new Thickness(2),
-            BorderBrush = new SolidColorBrush(WallSurface.SystemAccentColor()),
-            Opacity = 0, IsHitTestVisible = false,
-        };
         content.Children.Add(pressedCue);
-        content.Children.Add(edge);
-        content.Children.Add(focusCue);
+        content.Children.Add(stateCue);
+        var hoverBrush = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255));
+        var focusBrush = new SolidColorBrush(WallSurface.SystemAccentColor());
         var hovering = false;
         var keyboardFocus = false;
         var pointerPressed = false;
@@ -100,8 +95,8 @@ internal static class WallMemberVisualFactory
         {
             var enabled = button.IsEnabled;
             var hover = enabled && hovering;
-            SetCue(edge, drawHoverEdge && hover, immediate);
-            SetCue(focusCue, enabled && keyboardFocus, immediate);
+            stateCue.BorderBrush = keyboardFocus ? focusBrush : hoverBrush;
+            SetCue(stateCue, enabled && (keyboardFocus || drawHoverEdge && hover), immediate);
             SetCue(pressedCue, enabled && (pointerPressed || keyPressed), immediate);
             content.Opacity = enabled ? 1 : 0.45;
             if (displayedHover == hover) return;
@@ -184,7 +179,7 @@ internal static class WallMemberVisualFactory
     internal static (Border Outline, Border Check) AddSelection(Grid host, WallVisualStyle style)
     {
         var accent = new SolidColorBrush(WallSurface.SystemAccentColor());
-        var outline = new Border { BorderThickness = new Thickness(3), BorderBrush = accent,
+        var outline = new Border { BorderThickness = new Thickness(2), BorderBrush = accent,
             CornerRadius = WallCornerStyle.Corners(style), IsHitTestVisible = false, Visibility = Visibility.Collapsed };
         var mark = ActionIcon.Glyph("\uE73E", 12);
         mark.Foreground = new SolidColorBrush(Microsoft.UI.Colors.White);
@@ -200,24 +195,24 @@ internal static class WallMemberVisualFactory
 
 internal static class WallGroupVisualFactory
 {
-    internal static TextBlock Label(string? title, double width) => new()
+    internal static TextBlock Label(string? title, double width, double height) => new()
     {
-        Text = title ?? string.Empty, Width = Math.Max(0, width - 5), Height = 24, FontSize = 14,
+        Text = title ?? string.Empty, Width = Math.Max(0, width - 5), Height = height, FontSize = 14,
         VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap,
         TextTrimming = TextTrimming.CharacterEllipsis,
     };
 
     internal static DataTemplate HeaderTemplate(WallMetrics metrics, string? tag = null) => (DataTemplate)XamlReader.Load($$"""
         <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
-            <TextBlock Text="{Binding Title}" Tag="{{tag ?? string.Empty}}" Width="{{metrics.LaneWidth - 5}}" Height="24" Margin="5,{{metrics.TitleHeight - 24}},0,{{metrics.TitleToMembersGap}}"
+            <TextBlock Text="{Binding Title}" Tag="{{tag ?? string.Empty}}" Width="{{metrics.LaneWidth - 5}}" Height="{{metrics.TitleInteractionHeight}}" Margin="5,{{metrics.TitleHeight - metrics.TitleInteractionHeight}},0,{{metrics.TitleToMembersGap}}"
                 FontSize="14" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
         </DataTemplate>
         """);
 
     internal static Border Outline(WallVisualStyle style, bool dark) => new()
     {
-        BorderThickness = new Thickness(1), CornerRadius = WallCornerStyle.Corners(style),
-        BorderBrush = new SolidColorBrush(dark ? Color.FromArgb(150, 255, 255, 255) : Color.FromArgb(150, 0, 0, 0)),
+        BorderThickness = new Thickness(0), CornerRadius = WallCornerStyle.Corners(style),
+        Background = new SolidColorBrush(dark ? Color.FromArgb(51, 255, 255, 255) : Color.FromArgb(51, 0, 0, 0)),
         IsHitTestVisible = false, Visibility = Visibility.Collapsed,
     };
 }

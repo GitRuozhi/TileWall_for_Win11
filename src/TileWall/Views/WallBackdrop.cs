@@ -22,6 +22,7 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
     private WallBackgroundMode _mode = WallBackgroundMode.Acrylic;
     private int _transparency = 10;
     private bool _active = true, _dark, _acrylicFailed, _updating;
+    private bool _snapshotAvailable;
     private (bool Fallback, bool Reduced)? _lastNotifiedState;
     private (bool HighContrast, Color? Background)? _lastMaterialPolicy;
 
@@ -41,13 +42,14 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
         if (_diagnosticTrace) AppLog.Warn("BackdropDiagnostic", message);
     }
 
-    internal void Configure(WallSettings settings, bool active, bool dark)
+    internal void Configure(WallSettings settings, bool active, bool dark, bool snapshotAvailable = false)
     {
         if (_mode != settings.BackgroundMode || _active != active || _dark != dark) _acrylicFailed = false;
         _mode = settings.BackgroundMode;
         _transparency = Math.Clamp(settings.BackgroundTransparency, 0, 100);
         _active = active;
         _dark = dark;
+        _snapshotAvailable = snapshotAvailable;
         UpdateMaterial();
     }
 
@@ -142,7 +144,8 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             // can enqueue its refresh. Stop borrowing the active brush immediately.
             var effectiveActive = _active && _defaultConfiguration.IsInputActive;
             var reduced = !_uiSettings.AdvancedEffectsEnabled || _defaultConfiguration.IsHighContrast;
-            var selected = _mode == WallBackgroundMode.Acrylic && (!effectiveActive || _acrylicFailed || !DesktopAcrylicController.IsSupported())
+            var useSnapshot = !reduced && _snapshotAvailable && _mode == WallBackgroundMode.Acrylic && !effectiveActive;
+            var selected = useSnapshot ? WallBackgroundMode.Custom : _mode == WallBackgroundMode.Acrylic && (!effectiveActive || _acrylicFailed || !DesktopAcrylicController.IsSupported())
                 ? WallBackgroundMode.Mica : _mode;
             var supported = selected == WallBackgroundMode.Acrylic ? DesktopAcrylicController.IsSupported()
                 : selected == WallBackgroundMode.Mica && MicaController.IsSupported();
@@ -171,7 +174,7 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
                     _acrylicFailed = true;
                     queue.TryEnqueue(UpdateMaterial);
                 }
-                NotifyFallbackChanged(selected != WallBackgroundMode.Custom, reduced);
+                NotifyFallbackChanged(useSnapshot || selected != WallBackgroundMode.Custom, reduced);
             }
         }
         catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException)

@@ -3,6 +3,7 @@ using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using TileWall.Core.Entries;
+using TileWall.Core.Wall;
 using TileWall.Shell.Interop;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
@@ -16,7 +17,7 @@ public sealed record WallImageResult(ImageSource? Source, WallImageStatus Status
 /// <summary>
 /// Bounded read-only image resolution for a tile. Call from the XAML thread: file, shell,
 /// PE and WIC work runs on a worker, then WriteableBitmap is created back on the caller thread.
-/// A small decoded-pixel cache lives only in memory; cacheRoot is never written.
+/// Bounded memory decoding and scoped, disposable image/icon caches share verified source identities.
 /// </summary>
 public sealed partial class WallImageService : IDisposable
 {
@@ -25,6 +26,7 @@ public sealed partial class WallImageService : IDisposable
     private readonly ImageFrameDecoder _decoder = new();
     private readonly PeIconResourceReader _peReader = new();
     private readonly SemaphoreSlim _slots = new(2, 2);
+    private readonly SemaphoreSlim _automaticSlots = new(2, 2);
     private readonly object _cacheLock = new();
     private readonly Dictionary<string, LinkedListNode<CacheItem>> _cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly LinkedList<CacheItem> _lru = new();
@@ -86,7 +88,7 @@ public sealed partial class WallImageService : IDisposable
         }
     }
 
-    private async Task<Prepared> PrepareAutoAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct)
+    private async Task<Prepared> PrepareAutoAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct, bool skipNative = false)
     {
         ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(entryOrTargetPath))
@@ -128,7 +130,7 @@ public sealed partial class WallImageService : IDisposable
             iconPath = ReadUrlIconPath(entry);
         }
 
-        if (target is not null && Path.GetExtension(target).Equals(".exe", StringComparison.OrdinalIgnoreCase))
+        if (!skipNative && target is not null && Path.GetExtension(target).Equals(".exe", StringComparison.OrdinalIgnoreCase))
         {
             var direct = await PreparePeIconAsync(target, iconPath, iconIndex, entry, width, height, ct);
             if (direct.Pixels is not null || direct.Status == WallImageStatus.Cancelled)
@@ -151,54 +153,32 @@ public sealed partial class WallImageService : IDisposable
     private async Task<Prepared> PreparePeIconAsync(string exe, string? iconPath, int? iconIndex,
         string entry, int width, int height, CancellationToken ct)
     {
-        var key = Fingerprint(exe, $"pe:{entry}:{Fingerprint(entry, "entry")}:" +
-            $"{iconPath}:{iconIndex}:{width}x{height}");
+        var dependency = Fingerprint(exe, "native-icon-v1:" + System.Globalization.CultureInfo.CurrentUICulture.Name + ":" + NormalizePath(iconPath) + ":" + iconIndex);
+        var key = dependency is null ? null : dependency + $":{width}x{height}";
         if (key is not null && TryGetCached(key, out var cached))
             return cached;
         ct.ThrowIfCancellationRequested();
-        var read = _peReader.Read(exe);
-        if (read.Catalog is null)
-            return new(WallImageStatus.Fallback, null, 0, 0, $"PE:{read.Status}");
-        var group = read.Catalog.SelectGroup(iconPath, iconIndex);
-        var frame = group is null ? null : PeIconResourceReader.SelectFrame(group, Math.Max(width, height));
-        if (frame is null)
-            return new(WallImageStatus.Fallback, null, 0, 0, "PE:NoFrame");
-        try
-        {
-            var ico = PeIconResourceReader.WrapSingleFrameIco(frame);
-            using var stream = new InMemoryRandomAccessStream();
-            using var writer = new DataWriter(stream);
-            writer.WriteBytes(ico);
-            await writer.StoreAsync();
-            stream.Seek(0);
-            var decoder = await BitmapDecoder.CreateAsync(stream);
-            var data = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8,
-                BitmapAlphaMode.Premultiplied, new BitmapTransform(),
-                ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb);
-            ct.ThrowIfCancellationRequested();
-            var pixels = data.DetachPixelData();
-            var decodedWidth = checked((int)decoder.PixelWidth);
-            var decodedHeight = checked((int)decoder.PixelHeight);
-            if (decodedWidth != frame.Width || decodedHeight != frame.Height ||
-                pixels.Length != decodedWidth * decodedHeight * 4)
-                return new(WallImageStatus.Fallback, null, 0, 0, "PE:InvalidFramePixels");
-            var result = new Prepared(WallImageStatus.Loaded, pixels, decodedWidth, decodedHeight,
-                $"PE:{group!.ResourceId}:{frame.ResourceId}:{frame.Width}x{frame.Height}");
-            if (key is not null) Cache(key, result);
-            return result;
-        }
-        catch (Exception ex) when (ex is COMException or IOException or ArgumentException or InvalidOperationException)
-        {
-            return new(WallImageStatus.Fallback, null, 0, 0, $"PE:{ex.GetType().Name}");
-        }
+        if (dependency is null) return new(WallImageStatus.Fallback, null, 0, 0, "PE:MissingFile");
+        var package = await NativePackageAsync(exe, iconPath, iconIndex, dependency).WaitAsync(ct).ConfigureAwait(false);
+        if (package.Group is null || package.Frames.Count == 0) return new(WallImageStatus.Fallback, null, 0, 0, "PE:NoFrame");
+        var available = package.Group with { Frames = package.Frames.Select(frame => frame.Native).ToArray() };
+        var selected = PeIconResourceReader.SelectFrame(available, Math.Max(width, height));
+        var prepared = package.Frames.First(frame => frame.Native == selected).Decoded;
+        if (key is not null) Cache(key, prepared);
+        return prepared;
     }
 
     private async Task<Prepared> PrepareFileAsync(string? path, string semantic, int width, int height,
-        CancellationToken ct)
+        CancellationToken ct, ManagedMediaReference? media = null)
     {
         var canonicalPath = NormalizeImageFilePath(path);
         if (canonicalPath is null)
-            return new(WallImageStatus.Missing, null, 0, 0, "MissingFile");
+            return media is null ? new(WallImageStatus.Missing, null, 0, 0, "MissingFile")
+                : new(WallImageStatus.Invalid, null, 0, 0, "InvalidManagedMediaReference");
+        var verified = media is null ? default : OpenVerifiedMedia(canonicalPath, media);
+        using var mediaRead = verified.Lease;
+        if (verified.Diagnostic is { } diagnostic)
+            return new(WallImageStatus.Invalid, null, 0, 0, diagnostic);
         var key = Fingerprint(canonicalPath, $"{semantic}:{width}x{height}");
         if (key is not null && TryGetCached(key, out var cached))
             return cached;
@@ -310,6 +290,7 @@ public sealed partial class WallImageService : IDisposable
 
     public void Dispose()
     {
+        _cacheStopping = true; _cacheLifetime.Cancel();
         lock (_cacheLock)
         {
             _disposed = true;

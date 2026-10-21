@@ -28,6 +28,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly StackPanel _anchor = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
     private readonly ToggleButton[] _anchorButtons = Enumerable.Range(0, 4).Select(_ => new ToggleButton { Width = 32, Height = 32 }).ToArray();
     private readonly ToggleSwitch _fullScreen = new();
+    private readonly ToggleSwitch _expandColumns = new(), _menuStart = new();
     private readonly ComboBox _language = new(), _visualStyle = new(), _theme = new(), _background = new();
     private readonly ToggleSwitch _topmost = new(), _stayVisible = new(), _runAtLogin = new(), _showGrid = new();
     private readonly HotKeyRecorder _hotKey = new();
@@ -85,6 +86,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         AddRow("Settings.ShowGrid", _showGrid);
         AddSeparator();
         AddRow("Settings.FullScreen", _fullScreen);
+        AddRow("Settings.ExpandColumns", _expandColumns);
+        AddRow("Settings.MenuStart", _menuStart);
         AddRow("Settings.Anchor", _anchor);
         var hotKeyRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         hotKeyRow.Children.Add(_resetHotKey); hotKeyRow.Children.Add(_hotKey);
@@ -147,6 +150,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         _transparency.LostFocus += (_, _) => ApplyTransparency();
         _transparencyInput.ValueChanged += (_, e) => { if (!double.IsNaN(e.NewValue)) SetTransparency(e.NewValue, apply: true); };
         _fullScreen.Toggled += (_, _) => BeginApply(s => s with { FullScreen = _fullScreen.IsOn });
+        _expandColumns.Toggled += (_, _) => BeginApply(s => s with { ExpandColumns = _expandColumns.IsOn });
+        _menuStart.Toggled += (_, _) => BeginApply(s => s with { MenuStart = _menuStart.IsOn });
         _topmost.Toggled += (_, _) => BeginApply(s => s with { AlwaysOnTop = _topmost.IsOn });
         _stayVisible.Toggled += (_, _) => BeginApply(s => s with { StayVisibleOnFocusLoss = _stayVisible.IsOn });
         _showGrid.Toggled += (_, _) => BeginApply(s => s with { ShowGrid = _showGrid.IsOn });
@@ -202,7 +207,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         SetChoices(_background, "Settings.Background", ["Settings.Acrylic", "Settings.Mica", "Settings.Custom"]);
         foreach (var (key, label) in _labels) label.Text = ProductStrings.Get(key);
         foreach (var (toggle, key) in new[] { (_topmost, "Settings.Topmost"), (_stayVisible, "Settings.StayVisible"),
-            (_showGrid, "Settings.ShowGrid"), (_runAtLogin, "Settings.RunAtLogin"), (_fullScreen, "Settings.FullScreen") })
+            (_showGrid, "Settings.ShowGrid"), (_runAtLogin, "Settings.RunAtLogin"), (_fullScreen, "Settings.FullScreen"),
+            (_expandColumns, "Settings.ExpandColumns"), (_menuStart, "Settings.MenuStart") })
         {
             toggle.OnContent = string.Empty; toggle.OffContent = string.Empty;
             var name = ProductStrings.Get(key);
@@ -226,13 +232,16 @@ internal sealed class SettingsDialog : IWallDialogSession
         for (var index = 0; index < _anchorButtons.Length; index++)
         {
             _anchorButtons[index].IsChecked = index == (int)_state.Settings.AnchorCorner;
-            _anchorButtons[index].IsEnabled = !_state.Settings.FullScreen;
-            ActionIcon.SetTip(_anchorButtons[index], ProductStrings.Get(_state.Settings.FullScreen
-                ? "Settings.AnchorUnavailableFullScreen" : anchorKeys[index]));
+            _anchorButtons[index].IsEnabled = true;
+            ActionIcon.SetTip(_anchorButtons[index], ProductStrings.Get(anchorKeys[index]));
         }
         _fullScreen.IsOn = _state.Settings.FullScreen;
-        ToolTipService.SetToolTip(_labels["Settings.Anchor"], ProductStrings.Get(_state.Settings.FullScreen
-            ? "Settings.AnchorUnavailableFullScreen" : "Settings.Anchor"));
+        _expandColumns.IsOn = _state.Settings.ExpandColumns;
+        _expandColumns.IsEnabled = true;
+        ToolTipService.SetToolTip(_expandColumns, ProductStrings.Get("Settings.ExpandColumns"));
+        _menuStart.IsOn = _state.Settings.MenuStart;
+        Id(_expandColumns, "expand-columns"); Id(_menuStart, "menu-start");
+        ToolTipService.SetToolTip(_labels["Settings.Anchor"], ProductStrings.Get("Settings.Anchor"));
         _language.SelectedIndex = (int)_state.Settings.LanguageMode;
         _theme.SelectedIndex = (int)_state.Settings.ThemeMode; _visualStyle.SelectedIndex = (int)_state.Settings.VisualStyle;
         _background.SelectedIndex = (int)_state.Settings.BackgroundMode;
@@ -313,7 +322,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         }
         catch { _state = _readState() with { Error = ProductStrings.Get("Settings.BackgroundFailed") }; }
         finally { _busy = false; _formHost.IsEnabled = true; RestoreState(); }
-        if (path is not null) await ApplyAsync(_state.Settings with { BackgroundMode = WallBackgroundMode.Custom, BackgroundImagePath = path });
+        if (path is not null) await ApplyAsync(_state.Settings with { BackgroundMode = WallBackgroundMode.Custom, BackgroundImagePath = path, BackgroundMedia = null });
         else FinishPending();
     }
 

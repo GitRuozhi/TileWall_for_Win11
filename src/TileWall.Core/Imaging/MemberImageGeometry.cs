@@ -7,7 +7,7 @@ public enum ImageDisplayMode { Fit, Fill, Original, Custom }
 /// <summary>CustomScale is a multiplier of each image's fill scale. There is no translation.</summary>
 public sealed record MemberImageDisplay
 {
-    public ImageDisplayMode Mode { get; init; } = ImageDisplayMode.Fit;
+    public ImageDisplayMode Mode { get; init; } = ImageDisplayMode.Fill;
     public double CustomScale { get; init; } = 1;
 }
 
@@ -53,6 +53,28 @@ public static class MemberImageGeometry
         var value = imageScale / contain;
         if (!Positive(value)) throw new ArgumentOutOfRangeException(nameof(imageScale));
         return value;
+    }
+
+    /// <summary>Resolve one wheel/edge sample. Presets retain exact geometry; custom values use whole percentages of fill.</summary>
+    public static MemberImageDisplay InteractiveDisplay(double imageScale, double canvasWidthDip,
+        double canvasHeightDip, double imageWidthPixels, double imageHeightPixels, double rasterizationScale,
+        bool wheel)
+    {
+        if (!Positive(imageScale)) throw new ArgumentOutOfRangeException(nameof(imageScale));
+        var fill = Calculate(canvasWidthDip, canvasHeightDip, imageWidthPixels, imageHeightPixels,
+            rasterizationScale, new MemberImageDisplay { Mode = ImageDisplayMode.Fill }).Scale;
+        foreach (var mode in new[] { ImageDisplayMode.Fit, ImageDisplayMode.Fill, ImageDisplayMode.Original })
+        {
+            var preset = Calculate(canvasWidthDip, canvasHeightDip, imageWidthPixels, imageHeightPixels,
+                rasterizationScale, new MemberImageDisplay { Mode = mode }).Scale;
+            var near = wheel ? Math.Abs(imageScale / preset - 1) <= 0.025
+                : Math.Abs(imageScale - preset) * Math.Max(imageWidthPixels, imageHeightPixels) * rasterizationScale / 2 <= 7;
+            if (near) return new MemberImageDisplay { Mode = mode, CustomScale = preset / fill };
+        }
+
+        var percentage = Math.Clamp(Math.Round(imageScale / fill * 100, MidpointRounding.AwayFromZero),
+            MinimumCustomScale * 100, MaximumCustomScale * 100);
+        return new MemberImageDisplay { Mode = ImageDisplayMode.Custom, CustomScale = percentage / 100 };
     }
 
     private static bool Positive(double value) => double.IsFinite(value) && value > 0;

@@ -54,7 +54,7 @@ public sealed class StartMenuSelectionRulesTests
             new(user with { RelativeDir = "", DisplayName = "Z" }, LaunchIdentityService.ForPath(@"C:\Apps\Z.exe"), true),
         ]);
         Assert.Equal(buckets[0].Key, buckets[1].Key);
-        Assert.True(buckets[0].Order < buckets[2].Order);
+        Assert.True(buckets[2].Order < buckets[0].Order); // Letters are displayed before original folders.
     }
 
     [Theory]

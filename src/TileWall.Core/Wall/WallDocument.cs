@@ -8,13 +8,18 @@ namespace TileWall.Core.Wall;
 /// <summary>The sole persisted wall snapshot. Lane and group order, plus member-local cells, determine placement.</summary>
 public sealed record WallDocument
 {
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public long Generation { get; init; }
     public required int Columns { get; init; }
     public required int Rows { get; init; }
     public required IReadOnlyList<WallLane> Lanes { get; init; }
+    public IReadOnlyList<WallMember> InactiveMembers { get; init; } = [];
     public WallSettings Settings { get; init; } = new();
+
+    /// <summary>All formally owned members, including retained unpinned content.</summary>
+    public IEnumerable<WallMember> EnumerateAllMembers() =>
+        Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members).Concat(InactiveMembers);
 
     public static WallDocument Empty(int columns, int rows) => new()
     {
@@ -49,14 +54,20 @@ public sealed record WallSettings
 {
     public AnchorCorner AnchorCorner { get; init; } = AnchorCorner.BottomLeft;
     public bool FullScreen { get; init; }
+    public bool ExpandColumns { get; init; }
+    public bool MenuStart { get; init; }
     public int? WindowedColumns { get; init; }
     public int? WindowedRows { get; init; }
-    public AnchorCorner? WindowedAnchorCorner { get; init; }
+    /// <summary>Visible window client width, including the fixed sidebar and optional menu.</summary>
+    public double? WindowedViewportWidthDip { get; init; }
+    /// <summary>Last successfully committed manual window width; automatic sizing does not update it.</summary>
+    public double? ManualWindowedViewportWidthDip { get; init; }
     public WallVisualStyle VisualStyle { get; init; } = WallVisualStyle.Win10;
     public WallThemeMode ThemeMode { get; init; } = WallThemeMode.System;
     public WallBackgroundMode BackgroundMode { get; init; } = WallBackgroundMode.Acrylic;
     public int BackgroundTransparency { get; init; } = 10;
     public string? BackgroundImagePath { get; init; }
+    public ManagedMediaReference? BackgroundMedia { get; init; }
     public bool AlwaysOnTop { get; init; } = true;
     public bool StayVisibleOnFocusLoss { get; init; }
     public bool ShowGrid { get; init; }
@@ -67,6 +78,9 @@ public sealed record WallSettings
 
 public enum ManagedEntryKind { Lnk, Url }
 public sealed record ManagedEntryReference(string ObjectId, string RelativePath, ManagedEntryKind Kind);
+
+/// <summary>An immutable original whose SHA-256 is also its asset directory identity.</summary>
+public sealed record ManagedMediaReference(string Sha256, string Extension, long Length);
 
 public sealed record MemberVisual
 {
@@ -89,6 +103,7 @@ public sealed record MemberImageSource
 {
     public MemberImageSourceKind Kind { get; init; } = MemberImageSourceKind.Automatic;
     public string? Path { get; init; }
+    public ManagedMediaReference? Media { get; init; }
 }
 
 /// <summary>Queue position is persisted only when the asynchronously prepared image is adopted.</summary>

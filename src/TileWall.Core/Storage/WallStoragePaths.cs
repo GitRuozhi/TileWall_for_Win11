@@ -13,6 +13,7 @@ internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
     public string Staging => Under("Staging");
     public string RecoveryEntries => Under("Recovery", "Entries");
     public string Objects => Under("Objects");
+    public string MediaRoot => Under("Media");
 
     private static string RequireRoot(string path)
     {
@@ -39,6 +40,12 @@ internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
         if (!ValidId(entry.ObjectId) || !ValidEntry(entry)) throw new IOException("Unsafe managed entry reference.");
         var parts = entry.RelativePath.Split('/');
         return Under(parts);
+    }
+
+    public string Media(ManagedMediaReference media)
+    {
+        if (!PreparedMediaAsset.IsValidReference(media)) throw new IOException("Unsafe managed media reference.");
+        return Under("Media", media.Sha256, "original" + media.Extension);
     }
 
     public static bool ValidId(string? id) =>
@@ -101,9 +108,4 @@ internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
         foreach (var child in _files.ListDirectories(path)) GuardTree(child);
     }
 
-    public void GuardTreeOrFile(string path)
-    {
-        Guard(path);
-        if (_files.GetPathInfo(path).IsDirectory) GuardTree(path);
-    }
 }

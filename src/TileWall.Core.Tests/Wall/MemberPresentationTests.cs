@@ -11,6 +11,23 @@ public sealed class MemberPresentationTests
     private static TileMember Tile() => new() { Id = "tile", LocalBounds = new GridRect(0, 0, 2, 2) };
 
     [Theory]
+    [InlineData(ImageDisplayMode.Fit)]
+    [InlineData(ImageDisplayMode.Fill)]
+    [InlineData(ImageDisplayMode.Original)]
+    [InlineData(ImageDisplayMode.Custom)]
+    public void NewImagesDefaultToFillAndPersistedExplicitDisplayIsPreserved(ImageDisplayMode mode)
+    {
+        Assert.Equal(ImageDisplayMode.Fill, Tile().ImageDisplay.Mode);
+        var tile = Tile() with { ImageDisplay = new() { Mode = mode, CustomScale = 1.75 } };
+        var source = WallDocument.Empty(1, 4) with
+        {
+            Lanes = [new() { Groups = [new() { Id = "group", Members = [tile] }] }],
+        };
+        var restored = WallJson.Deserialize(WallJson.Serialize(source)).Lanes[0].Groups[0].Members[0];
+        Assert.Equal(tile.ImageDisplay, restored.ImageDisplay);
+    }
+
+    [Theory]
     [InlineData(ImageDisplayMode.Fit, 0.5, 0, 25, 100, 50)]
     [InlineData(ImageDisplayMode.Fill, 1, -50, 0, 200, 100)]
     [InlineData(ImageDisplayMode.Original, 2.0 / 3, -50.0 / 3, 50.0 / 3, 400.0 / 3, 200.0 / 3)]

@@ -14,8 +14,10 @@ public static class MemberPresentationRules
         if (visual.BackgroundMode == MemberBackgroundMode.Color && !IsColor(visual.BackgroundColor))
             return "VISUAL_COLOR";
         if (member.Images is not { } images || !Enum.IsDefined(images.Kind)) return "IMAGE_SOURCE";
-        if (images.Kind != MemberImageSourceKind.Automatic && string.IsNullOrWhiteSpace(images.Path))
+        if ((images.Kind == MemberImageSourceKind.Folder ||
+            images.Kind == MemberImageSourceKind.Single && images.Media is null) && string.IsNullOrWhiteSpace(images.Path))
             return "IMAGE_SOURCE_PATH";
+        if (images.Media is not null && images.Kind != MemberImageSourceKind.Single) return "IMAGE_SOURCE_MEDIA";
         if (member.ImageDisplay is not { } display || !Enum.IsDefined(display.Mode) ||
             !double.IsFinite(display.CustomScale) || display.CustomScale <= 0 ||
             display.Mode == ImageDisplayMode.Custom && (display.CustomScale < MemberImageGeometry.MinimumCustomScale || display.CustomScale > MemberImageGeometry.MaximumCustomScale)) return "IMAGE_DISPLAY";

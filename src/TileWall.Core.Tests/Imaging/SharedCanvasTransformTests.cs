@@ -31,7 +31,7 @@ public sealed class SharedCanvasTransformTests
         var image = new PixelSize(400, 200);
         var canvas = new DipSize(200, 200);
         var fit = MemberImageGeometry.Calculate(canvas.Width, canvas.Height,
-            image.Width, image.Height, 1, new MemberImageDisplay());
+            image.Width, image.Height, 1, new MemberImageDisplay { Mode = ImageDisplayMode.Fit });
         var transform = new ImageTransform(fit.Scale, fit.Bounds.X, fit.Bounds.Y);
 
         var inside = SharedCanvasTransform.ClipFor(transform, image, new DipRect(10, 60, 50, 50));

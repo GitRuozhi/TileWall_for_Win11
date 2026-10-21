@@ -26,6 +26,7 @@ public sealed partial class MainWindow
     private double _lastEnvironmentScale;
     private WorkAreaRect _lastEnvironmentWork;
     private OwnedDialogWindow? _dialogHost;
+    private TaskCompletionSource? _modalClosed;
     private Window DialogOwner => _dialogHost ?? throw new InvalidOperationException("No modal host is active.");
 
     internal FrameworkElement WallContent => WallRoot;
@@ -45,6 +46,8 @@ public sealed partial class MainWindow
     internal void ShowWall()
     {
         RefreshEnvironment(force: true);
+        RefreshAppearance();
+        CaptureBackdropBeforeShow();
         AppWindow.Show();
         FocusTopSession();
         UpdatePuzzleGate();
@@ -55,6 +58,7 @@ public sealed partial class MainWindow
         _focusCheckRetry?.Stop();
         CancelTransientState();
         AppWindow.Hide();
+        ReleaseBackdropSnapshot();
         Surface.ClearTransientInteraction();
         _needsVisualRefresh = true;
         UpdatePuzzleGate();
@@ -141,7 +145,7 @@ public sealed partial class MainWindow
     {
         if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (!_hasDocument || _viewBlocked) return ProductStrings.Get("Wall.SettingsBlocked");
-        if (settings.FullScreen != Settings.FullScreen)
+        if (settings.FullScreen != Settings.FullScreen || settings.ExpandColumns != Settings.ExpandColumns || settings.MenuStart != Settings.MenuStart)
         {
             var mode = ProposeMode(Document, settings);
             if (mode.Proposal is null) return ViewportFailure(mode);
@@ -149,14 +153,19 @@ public sealed partial class MainWindow
             // non-undo path is reserved for settings/carousel-only commits and keeps
             // the previous layout undo token when the grid itself did not change.
             var changesLayout = mode.Proposal.Document.Columns != Document.Columns ||
-                mode.Proposal.Document.Rows != Document.Rows;
+                mode.Proposal.Document.Rows != Document.Rows ||
+                !LayoutCoordinates(mode.Proposal.Document).SequenceEqual(LayoutCoordinates(Document));
             return CommitProposal(mode.Proposal, recordUndo: changesLayout);
         }
         var next = Document with { Generation = checked(Document.Generation + 1), Settings = settings };
-        var fit = WallViewportPolicy.Validate(next, ViewportBudget(settings.FullScreen), _metrics);
+        var fit = WallViewportPolicy.Validate(next, ViewportBudget(settings), _metrics);
         if (fit.Proposal is null) return ViewportFailure(fit);
         return CommitProposal(fit.Proposal, recordUndo: false);
     }
+
+    private static IEnumerable<(int Lane, string Group, string Member, TileWall.Core.Grid.GridRect Bounds)> LayoutCoordinates(WallDocument document) =>
+        document.Lanes.SelectMany((lane, index) => lane.Groups.SelectMany(group => group.Members.Select(member =>
+            (index, group.Id, member.Id, member.LocalBounds))));
 
     internal async Task OpenSettingsAsync(Func<SettingsDialogState> read,
         Func<WallSettings, bool, Task<SettingsDialogState>> apply,
@@ -165,7 +174,7 @@ public sealed partial class MainWindow
         if (PersistenceInteractionBlocked || _modal || !_hasDocument) return;
         try
         {
-            await BeginModalAsync();
+            if (!await BeginModalAsync()) return;
             var dialog = new SettingsDialog(DialogOwner, read, apply, hotKeyRecordingChanged);
             ActiveDialog = dialog;
             await dialog.ShowAsync();
@@ -183,8 +192,9 @@ public sealed partial class MainWindow
         return Task.CompletedTask;
     }
 
-    private async Task BeginModalAsync()
+    private async Task<bool> BeginModalAsync()
     {
+        _modalClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _modal = true;
         UpdateNativeSizingRegion(); // Remove the opt-in native edge before any asynchronous dialog setup.
         UpdatePuzzleGate();
@@ -192,23 +202,37 @@ public sealed partial class MainWindow
         DialogOpened?.Invoke();
         _dialogHost = new OwnedDialogWindow(this, () => ActiveDialog?.RequestDismiss());
         await _dialogHost.InitializeAsync();
+        // Exit can close admission while the host is still bootstrapping, before
+        // ActiveDialog exists. Let the caller's finally release that empty host.
+        if (_persistenceAdmissionClosed) return false;
         UpdateResizeZones();
+        return true;
     }
 
     private void EndModal()
     {
-        ActiveDialog = null;
-        _dialogHost?.Release();
-        _dialogHost = null;
-        _modal = false;
-        if (_hasDocument && !_viewBlocked)
+        var closed = _modalClosed;
+        try
         {
-            if (_needsVisualRefresh) { Surface.Render(Document); _needsVisualRefresh = false; }
+            DetachGalleryEditor();
+            ActiveDialog = null;
+            _dialogHost?.Release();
+            _dialogHost = null;
+            _modal = false;
+            if (_hasDocument && !_viewBlocked)
+            {
+                if (_needsVisualRefresh) { Surface.Render(Document); _needsVisualRefresh = false; }
+            }
+            UpdateResizeZones();
+            UpdatePuzzleGate();
+            DialogClosed?.Invoke();
+            closed?.TrySetResult();
         }
-        UpdateResizeZones();
-        UpdatePuzzleGate();
-        DialogClosed?.Invoke();
+        catch (Exception ex) { closed?.TrySetException(ex); throw; }
+        finally { _modalClosed = null; }
     }
+
+    internal Task WaitForModalClosedAsync() => _modalClosed?.Task ?? Task.CompletedTask;
 
     internal void QueueEnvironmentRefresh()
     {
@@ -266,8 +290,15 @@ public sealed partial class MainWindow
         var document = previewDocument ?? Document;
         var fullScreen = document.Settings.FullScreen;
         var geometry = previewGeometry ?? Surface.Geometry ?? WallLayoutEngine.Measure(document, _metrics);
+        var fixedWidth = WallViewportPolicy.FixedWidth(document.Settings.MenuStart);
+        var contentWidth = geometry.WallWidth + fixedWidth;
+        var visibleWidth = document.Settings.WindowedViewportWidthDip ??
+            (document.Settings.ExpandColumns ? (_screenArea.Right - _screenArea.Left) * .9 / Scale : contentWidth);
+        visibleWidth = Math.Max(visibleWidth, Math.Min((_screenArea.Right - _screenArea.Left) * .9 / Scale,
+            _metrics.WallWidth(1) + fixedWidth));
+        if (!document.Settings.ExpandColumns) visibleWidth = Math.Max(visibleWidth, contentWidth);
         var width = fullScreen ? _screenArea.Right - _screenArea.Left :
-            (int)Math.Ceiling((geometry.WallWidth + WallViewportPolicy.SidebarWidthDip) * Scale) + _frameWidth;
+            (int)Math.Ceiling(visibleWidth * Scale) + _frameWidth;
         var height = fullScreen ? _screenArea.Bottom - _screenArea.Top :
             (int)Math.Ceiling(geometry.WallHeight * Scale) + _frameHeight;
         if (!fullScreen)
@@ -284,7 +315,7 @@ public sealed partial class MainWindow
         var x = right && !fullScreen ? _screenArea.Right - width : _screenArea.Left;
         var y = bottom && !fullScreen ? _screenArea.Bottom - height : _screenArea.Top;
         PresentViewport(new RectInt32(x, y, Math.Max(1, width), Math.Max(1, height)), fullScreen,
-            document.Settings.AnchorCorner, animateMode);
+            document.Settings.AnchorCorner, animateMode, presentationSettings: document.Settings);
         if (AppWindow.Presenter is OverlappedPresenter presenter)
             presenter.IsAlwaysOnTop = Settings.AlwaysOnTop;
         UpdateResizeZones();

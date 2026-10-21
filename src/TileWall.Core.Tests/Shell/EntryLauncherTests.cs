@@ -98,9 +98,13 @@ public sealed class EntryLauncherTests
     }
 
     [Fact]
-    public void RevealSelectsManagedEntryAndReturnsExplorerFailure()
+    public void RevealSelectsRealFileAndReturnsExplorerFailure()
     {
-        using var entry = new EntryFixture(".url");
+        using var entry = new EntryFixture(".lnk");
+        var target = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(entry.Path)!, "real file.txt");
+        File.WriteAllText(target, "test");
+        var links = new ShellLinkFileService();
+        links.Create(entry.Path, target, "", "");
         ProcessStartInfo? request = null;
         var launcher = new EntryLauncher(info =>
         {
@@ -108,14 +112,32 @@ public sealed class EntryLauncherTests
             throw new IOException("explorer failed");
         });
 
-        var result = launcher.RevealInExplorer(entry.Path);
+        var result = launcher.RevealInExplorer(entry.Path, links);
 
         Assert.Equal(LaunchOutcome.LaunchFailed, result.Outcome);
         Assert.Equal("explorer failed", result.FailureReason);
         Assert.NotNull(request);
         Assert.Equal("explorer.exe", request.FileName);
-        Assert.Equal($"/select,\"{entry.Path}\"", request.Arguments);
+        Assert.Equal($"/select,\"{target}\"", request.Arguments);
         Assert.True(request.UseShellExecute);
+    }
+
+    [Fact]
+    public void RevealDirectoryOpensDirectoryAndUrlHasNoLocalTarget()
+    {
+        using var entry = new EntryFixture(".lnk");
+        var folder = System.IO.Path.GetDirectoryName(entry.Path)!;
+        var links = new ShellLinkFileService(); links.Create(entry.Path, folder, "", "");
+        ProcessStartInfo? request = null;
+        var launcher = new EntryLauncher(info => { request = info; return null; });
+        Assert.Equal(LaunchOutcome.Launched, launcher.RevealInExplorer(entry.Path, links).Outcome);
+        Assert.Equal($"\"{folder}\"", request!.Arguments);
+        using var web = new EntryFixture(".url");
+        File.WriteAllBytes(web.Path, UrlShortcut.CreateContent("https://example.test/"));
+        request = null;
+        Assert.Null(EntryLauncher.ResolveLocalTarget(web.Path, links));
+        Assert.Equal(LaunchOutcome.LaunchFailed, launcher.RevealInExplorer(web.Path, links).Outcome);
+        Assert.Null(request);
     }
 
     private sealed class EntryFixture : IDisposable

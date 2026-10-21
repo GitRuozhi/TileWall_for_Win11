@@ -24,6 +24,11 @@ public sealed record StartMenuCandidate(
     SourceKind Source,
     string RelativeDir)
 {
+    /// <summary>The actual known-folder root, retained independently from the mutable display group.</summary>
+    public string? RootPath { get; init; }
+    public string RelativePath => RootPath is { Length: > 0 }
+        ? Path.GetRelativePath(RootPath, FullPath) : Path.Combine(RelativeDir, Path.GetFileName(FullPath));
+    public string SourceKey => StartMenuSourceCache.SourceKey(Source, RootPath ?? Path.GetDirectoryName(FullPath)!, RelativePath);
     /// <summary>名称过不了 EntryNames.Validate 的原因列表；空 = 可导入。</summary>
     public IReadOnlyList<string> NotImportableReasons { get; init; } = [];
 
@@ -32,7 +37,14 @@ public sealed record StartMenuCandidate(
 }
 
 /// <param name="SkippedDirectories">跳过的不可读、reparse、越界或重复目录计数；缺失来源根不计。</param>
-public sealed record StartMenuScanResult(IReadOnlyList<StartMenuCandidate> Candidates, int SkippedDirectories);
+public sealed record StartMenuRootScan(SourceKind Source, string? Path, bool Complete, string? ErrorCode = null)
+{
+    public IReadOnlyList<string> RejectedPaths { get; init; } = [];
+}
+public sealed record StartMenuScanResult(IReadOnlyList<StartMenuCandidate> Candidates, int SkippedDirectories)
+{
+    public IReadOnlyList<StartMenuRootScan> Roots { get; init; } = [];
+}
 
 /// <summary>
 /// 开始菜单候选枚举流水线（M8 设计 §5.2；纯 Core 逻辑，经 IFileStore 可测）：
@@ -52,21 +64,28 @@ public static class StartMenuScanner
         var candidates = new List<StartMenuCandidate>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // 去重键：归一化完整路径
         var skipped = 0;
+        var results = new List<StartMenuRootScan>();
 
         foreach (var (rootPath, source) in roots)
         {
             if (string.IsNullOrWhiteSpace(rootPath))
             {
+                results.Add(new(source, null, false, "RootUnavailable"));
                 continue; // 来源查询失败（IKnownFolderPaths 返回 null）→ 来源整体跳过
             }
 
             var rootFullPath = NormalizePath(rootPath);
             if (string.IsNullOrEmpty(rootFullPath))
             {
+                results.Add(new(source, null, false, "RootUnavailable"));
                 continue;
             }
 
             var pending = new Queue<string>();
+            var skippedBeforeRoot = skipped;
+            var rootComplete = true;
+            string? rootError = null;
+            var rejected = new List<string>();
             var scheduled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             pending.Enqueue(rootFullPath);
             scheduled.Add(rootFullPath);
@@ -86,6 +105,11 @@ public static class StartMenuScanner
                     var pathInfo = files.GetPathInfo(directory);
                     if (!pathInfo.Exists)
                     {
+                        if (string.Equals(directory, rootFullPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            skipped++;
+                            rootError = "RootUnavailable";
+                        }
                         if (!string.Equals(directory, rootFullPath, StringComparison.OrdinalIgnoreCase))
                         {
                             skipped++; // 子目录在枚举后消失
@@ -96,12 +120,20 @@ public static class StartMenuScanner
 
                     if (!pathInfo.IsDirectory || pathInfo.IsReparsePoint)
                     {
+                        rejected.Add(directory);
                         skipped++;
                         continue;
                     }
 
                     subDirectories = files.ListDirectories(directory);
                     directoryFiles = files.ListFiles(directory);
+                    var after = files.GetPathInfo(directory);
+                    if (!after.Exists || !after.IsDirectory || after.IsReparsePoint)
+                    {
+                        if (after.IsReparsePoint) rejected.Add(directory);
+                        skipped++;
+                        continue;
+                    }
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
@@ -140,12 +172,36 @@ public static class StartMenuScanner
                     var normalized = NormalizePath(file);
                     if (!IsWithinRoot(rootFullPath, normalized))
                     {
+                        skipped++;
                         continue; // 防御异常文件枚举器返回根外路径
                     }
 
-                    if (!seen.Add(normalized))
+                    if (!seen.Add(normalized)) continue;
+
+                    try
                     {
-                        continue; // 同一原快捷方式只出现一次（全路径去重，不按显示名/EXE 合并）
+                        var info = files.GetPathInfo(normalized);
+                        if (!info.Exists || info.IsDirectory || info.IsReparsePoint)
+                        {
+                            // A known unsafe file stays visible and disabled; it is not a missing cache record.
+                            candidates.Add(new StartMenuCandidate(normalized, Path.GetFileNameWithoutExtension(normalized),
+                                kind, source, RelativeDirectoryOf(rootFullPath, Path.GetDirectoryName(normalized)))
+                            {
+                                RootPath = rootFullPath,
+                                NotImportableReasons = [info.IsReparsePoint ? "UnsafeSource" : "SourceMissing"],
+                            });
+                            continue;
+                        }
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        rootComplete = false;
+                        candidates.Add(new StartMenuCandidate(normalized, Path.GetFileNameWithoutExtension(normalized),
+                            kind, source, RelativeDirectoryOf(rootFullPath, Path.GetDirectoryName(normalized)))
+                        {
+                            RootPath = rootFullPath, NotImportableReasons = ["SourceUnavailable"],
+                        });
+                        continue;
                     }
 
                     var relativeDirectory = RelativeDirectoryOf(rootFullPath, Path.GetDirectoryName(normalized) ?? normalized);
@@ -156,13 +212,17 @@ public static class StartMenuScanner
                         source,
                         relativeDirectory)
                     {
+                        RootPath = rootFullPath,
                         NotImportableReasons = EntryNames.Validate(Path.GetFileNameWithoutExtension(normalized)),
                     });
                 }
             }
+            results.Add(new(source, rootFullPath, rootComplete && skippedBeforeRoot == skipped,
+                rootError ?? (rootComplete && skippedBeforeRoot == skipped ? null : "IncompleteRoot"))
+                { RejectedPaths = rejected.AsReadOnly() });
         }
 
-        return new StartMenuScanResult(candidates, skipped);
+        return new StartMenuScanResult(candidates, skipped) { Roots = results.AsReadOnly() };
     }
 
     /// <summary>

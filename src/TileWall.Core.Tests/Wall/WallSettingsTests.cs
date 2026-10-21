@@ -8,6 +8,22 @@ namespace TileWall.Core.Tests.Wall;
 
 public sealed class WallSettingsTests
 {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void WindowedViewportWidthsMustBeFiniteAndPositive(double width)
+    {
+        var source = WallDocument.Empty(1, 4);
+        Assert.Contains("SETTINGS_WINDOWED_VIEWPORT_WIDTH", WallLayoutEngine.Validate(source with
+            { Settings = new() { WindowedViewportWidthDip = width } }));
+        Assert.Contains("SETTINGS_WINDOWED_VIEWPORT_WIDTH", WallLayoutEngine.Validate(source with
+            { Settings = new() { ManualWindowedViewportWidthDip = width } }));
+        Assert.Empty(WallLayoutEngine.Validate(source));
+    }
+
     [Fact]
     public void MissingAppearanceFieldsUseProductDefaults()
     {

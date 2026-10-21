@@ -13,8 +13,9 @@ namespace TileWall.Views;
 /// <summary>One integer input, including its keyboard and adjacent decrement/increment actions.</summary>
 internal sealed partial class IntegerStepper : UserControl
 {
+    internal const double ControlWidth = 100;
     private readonly TextBox _input = new() { Width = 38, Height = 30, MinHeight = 0, MinWidth = 0, CornerRadius = new CornerRadius(0), Padding = new Thickness(2, 4, 2, 4),
-        TextAlignment = TextAlignment.Center, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0), IsSpellCheckEnabled = false };
+        TextAlignment = TextAlignment.Left, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0), IsSpellCheckEnabled = false };
     private readonly RepeatButton _minus = new() { Width = 30, Height = 30, MinWidth = 0, Padding = new Thickness(4), Delay = 350, Interval = 65, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0) },
         _plus = new() { Width = 30, Height = 30, MinWidth = 0, Padding = new Thickness(4), Delay = 350, Interval = 65, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0) };
     private readonly Border _frame = VisualStyles.InputFrame();
@@ -30,6 +31,7 @@ internal sealed partial class IntegerStepper : UserControl
 
     internal IntegerStepper()
     {
+        Width = _frame.Width = ControlWidth;
         _frame.Height = 32;
         var row = new StackPanel { Orientation = Orientation.Horizontal };
         _minus.Content = ActionIcon.Glyph(ActionIcon.Remove, 12); _plus.Content = ActionIcon.Glyph(ActionIcon.Add, 12);

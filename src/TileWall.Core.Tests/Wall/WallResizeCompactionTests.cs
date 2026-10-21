@@ -233,13 +233,70 @@ public sealed class WallResizeCompactionTests
     }
 
     [Fact]
-    public void NonemptyLanesCannotMergeToMeetSmallerWidth()
+    public void NonemptyLanesMergeAsWholeGroupsWhenEmptyLaneRemovalIsInsufficient()
     {
         var current = Document(8, [Group("first", Tile("a", 0))], [], [Group("second", Tile("b", 0))]);
         var before = WallJson.Serialize(current);
 
         var result = Resize(current, 1, 8);
 
+        Assert.True(result.Success, result.Detail);
+        var groups = Assert.Single(result.Proposal!.Document.Lanes).Groups;
+        Assert.Equal(new[] { "first", "second" }, groups.Select(group => group.Id));
+        Assert.Same(current.Lanes[0].Groups[0], groups[0]);
+        Assert.Same(current.Lanes[2].Groups[0], groups[1]);
+        Assert.Equal(before, WallJson.Serialize(current));
+    }
+
+    [Fact]
+    public void WholeGroupReflowTakesTheLongestContinuousPrefixAndPreservesMemberGeometry()
+    {
+        var a = Group("a", Tile("a-tile", 0));
+        var b = Group("b", Tile("b-tile", 0));
+        var c = Group("c", Tile("c-tile", 0));
+        var d = Group("d", Tile("d-tile", 0));
+        var e = Group("e", Tile("e-tile", 0));
+        var current = Document(8, [a, b], [c], [d, e]);
+
+        var result = Resize(current, 2, 6);
+
+        Assert.True(result.Success, result.Detail);
+        var lanes = result.Proposal!.Document.Lanes;
+        Assert.Equal(new[] { "a", "b", "c" }, lanes[0].Groups.Select(group => group.Id));
+        Assert.Equal(new[] { "d", "e" }, lanes[1].Groups.Select(group => group.Id));
+        Assert.Equal(new[] { a, b, c, d, e }, lanes.SelectMany(lane => lane.Groups));
+    }
+
+    [Fact]
+    public void ReflowProbesMinimumHeightsButOnlyDeletesNeededRowsInFinalLanes()
+    {
+        var a = Group("a", Tile("a-tile", 1));
+        var b = Group("b", Tile("b-tile", 1));
+        var c = Group("c", Tile("c-tile", 0));
+        var current = Document(8, [a], [b], [c]);
+
+        var result = Resize(current, 2, 5);
+
+        Assert.True(result.Success, result.Detail);
+        var lanes = result.Proposal!.Document.Lanes;
+        Assert.Equal(new[] { "a", "b" }, lanes[0].Groups.Select(group => group.Id));
+        Assert.Same(a, lanes[0].Groups[0]);
+        Assert.Equal(0, lanes[0].Groups[1].Members[0].LocalBounds.Row);
+        Assert.Same(c, Assert.Single(lanes[1].Groups));
+    }
+
+    [Fact]
+    public void ReflowNeverSkipsATallGroupToFillEarlierSpaceAndFailureIsAtomic()
+    {
+        var current = Document(12,
+            [Group("a", Tile("a-tile", 0, 2))],
+            [Group("b", Tile("b-tile", 0, 4))],
+            [Group("c", Tile("c-tile", 0))]);
+        var before = WallJson.Serialize(current);
+
+        var result = Resize(current, 2, 5);
+
+        Assert.False(result.Success);
         Assert.Equal(WallRejection.NoSpace, result.Rejection);
         Assert.Null(result.Proposal);
         Assert.Equal(before, WallJson.Serialize(current));

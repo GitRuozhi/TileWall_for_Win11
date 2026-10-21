@@ -9,7 +9,7 @@ namespace TileWall;
 public sealed partial class MainWindow
 {
     private sealed record ViewportTransition(RectInt32 From, RectInt32 To, Rect FromClip, Rect ToClip,
-        bool FullScreen, long Started, long SegmentStarted, double Scale);
+        bool FullScreen, WallSettings Settings, long Started, long SegmentStarted, double Scale);
     private ViewportTransition? _viewportTransition;
     private bool? _lastPresentedFullScreen;
     private bool _processingFrame;
@@ -69,8 +69,11 @@ public sealed partial class MainWindow
         finally { _performance.AbortWindowSubmission(); }
     }
 
-    private void PresentViewport(RectInt32 rectangle, bool fullScreen, AnchorCorner anchor, bool animate)
+    private void PresentViewport(RectInt32 rectangle, bool fullScreen, AnchorCorner anchor, bool animate,
+        WallSettings? presentationSettings = null)
     {
+        var settings = presentationSettings ?? Settings;
+        _presentedViewportSettings = settings;
         _sidebarFullScreen = fullScreen;
         _sidebarAnchor = anchor;
         UpdateWindowsSidebar();
@@ -79,7 +82,7 @@ public sealed partial class MainWindow
         var size = AppWindow.Size;
         var from = _pendingWindowRect ?? new RectInt32(position.X, position.Y, size.Width, size.Height);
         var toClip = ScrollRegionFor(fullScreen, (rectangle.Width - _frameWidth) / Scale,
-            (rectangle.Height - _frameHeight) / Scale, anchor);
+            (rectangle.Height - _frameHeight) / Scale, anchor, settings);
         if (_nativeSizingActive)
         {
             // The OS applies the WM_SIZING rectangle. Never race it with application
@@ -89,7 +92,7 @@ public sealed partial class MainWindow
             SetScrollRegion(fullScreen, toClip);
             return;
         }
-        if (_viewportTransition is { } running && running.FullScreen == fullScreen && running.ToClip == toClip &&
+        if (_viewportTransition is { } running && running.FullScreen == fullScreen && running.Settings == settings && running.ToClip == toClip &&
             running.To.X == rectangle.X && running.To.Y == rectangle.Y &&
             running.To.Width == rectangle.Width && running.To.Height == rectangle.Height)
             return; // A release adopting this exact endpoint keeps the in-flight transition.
@@ -110,7 +113,7 @@ public sealed partial class MainWindow
             // Continuous resize updates the legal endpoint while keeping the first mode
             // change's deadline. Rebase at the currently displayed/pending frame so a new
             // target cannot jump the clip or restart another full 200ms chase.
-            _viewportTransition = active with { From = from, FromClip = fromClip,
+            _viewportTransition = active with { From = from, FromClip = fromClip, Settings = settings,
                 To = rectangle, ToClip = toClip, SegmentStarted = now };
             Surface.SetViewportMinimum(Math.Max(fromClip.Width, toClip.Width), 0);
             EnsureFrameSubscription();
@@ -120,7 +123,7 @@ public sealed partial class MainWindow
         {
             // A replacement transition starts at the actual displayed rect/clip, never at
             // an old animation's origin. Normal pointer resizing does not use easing.
-            _viewportTransition = new(from, rectangle, fromClip, toClip, fullScreen, now, now, Scale);
+            _viewportTransition = new(from, rectangle, fromClip, toClip, fullScreen, settings, now, now, Scale);
             Surface.SetViewportMinimum(Math.Max(fromClip.Width, toClip.Width), 0);
             SetScrollRegion(fullScreen, fromClip, updateSurface: false);
             EnsureFrameSubscription();
@@ -147,7 +150,7 @@ public sealed partial class MainWindow
         var clip = new Rect(L(transition.FromClip.X, transition.ToClip.X, p),
             L(transition.FromClip.Y, transition.ToClip.Y, p), L(transition.FromClip.Width, transition.ToClip.Width, p),
             L(transition.FromClip.Height, transition.ToClip.Height, p));
-        SetScrollRegion(transition.FullScreen, clip, updateSurface: false);
+        SetScrollRegion(transition.FullScreen, clip, updateSurface: false, presentationSettings: transition.Settings);
         MoveWindowIfChanged(new RectInt32((int)Math.Round(L(transition.From.X, transition.To.X, p)),
             (int)Math.Round(L(transition.From.Y, transition.To.Y, p)),
             Math.Max(1, (int)Math.Round(L(transition.From.Width, transition.To.Width, p))),
@@ -155,7 +158,7 @@ public sealed partial class MainWindow
         if (t == 1)
         {
             _viewportTransition = null;
-            SetScrollRegion(transition.FullScreen, transition.ToClip);
+            SetScrollRegion(transition.FullScreen, transition.ToClip, presentationSettings: transition.Settings);
         }
     }
 
@@ -163,7 +166,7 @@ public sealed partial class MainWindow
     {
         if (_viewportTransition is not { } transition) return;
         _viewportTransition = null;
-        SetScrollRegion(transition.FullScreen, transition.ToClip);
+        SetScrollRegion(transition.FullScreen, transition.ToClip, presentationSettings: transition.Settings);
         MoveWindowIfChanged(transition.To);
         StopFrameSubscriptionIfIdle();
     }

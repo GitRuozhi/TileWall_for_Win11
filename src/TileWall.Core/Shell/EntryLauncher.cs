@@ -98,8 +98,35 @@ public sealed class EntryLauncher
         }
     }
 
-    /// <summary>「打开文件位置」：定位托管入口文件（非原始目录，§12.4）；同步失败返回可显示结果。</summary>
-    public LaunchResult RevealInExplorer(string entryFullPath)
+    /// <summary>Resolve the managed entry to its real filesystem target; URLs and shell-only targets have no location.</summary>
+    public LaunchResult RevealInExplorer(string entryFullPath) => RevealInExplorer(entryFullPath, new ShellLinkFileService());
+
+    public static string? ResolveLocalTarget(string? entryFullPath, ILnkFileService links)
+    {
+        if (entryFullPath is null || !EntryPathGuard.IsManagedEntryFullPath(entryFullPath) || !File.Exists(entryFullPath)) return null;
+        try
+        {
+            var path = entryFullPath;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var depth = 0; depth < 16; depth++)
+            {
+                if (!seen.Add(path)) return null;
+                if (Path.GetExtension(path).Equals(".url", StringComparison.OrdinalIgnoreCase)) return null;
+                if (!Path.GetExtension(path).Equals(".lnk", StringComparison.OrdinalIgnoreCase))
+                    return File.Exists(path) || Directory.Exists(path) ? path : null;
+                var target = links.Read(path).TargetPath;
+                if (string.IsNullOrWhiteSpace(target)) return null;
+                target = Environment.ExpandEnvironmentVariables(target);
+                if (!Path.IsPathFullyQualified(target)) return null;
+                path = LaunchIdentityService.NormalizePath(target);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
+            System.Runtime.InteropServices.COMException or NotSupportedException) { }
+        return null;
+    }
+
+    public LaunchResult RevealInExplorer(string entryFullPath, ILnkFileService links)
     {
         ArgumentException.ThrowIfNullOrEmpty(entryFullPath);
         if (!EntryPathGuard.IsManagedEntryFullPath(entryFullPath))
@@ -114,7 +141,10 @@ public sealed class EntryLauncher
 
         try
         {
-            using var process = _startProcess(new ProcessStartInfo("explorer.exe", $"/select,\"{entryFullPath}\"") { UseShellExecute = true });
+            var target = ResolveLocalTarget(entryFullPath, links);
+            if (target is null) return new(LaunchOutcome.LaunchFailed, "LOCAL_TARGET_UNAVAILABLE");
+            using var process = _startProcess(new ProcessStartInfo("explorer.exe",
+                Directory.Exists(target) ? $"\"{target}\"" : $"/select,\"{target}\"") { UseShellExecute = true });
             return new LaunchResult(LaunchOutcome.Launched);
         }
         catch (Exception ex) when (ex is Win32Exception or IOException)

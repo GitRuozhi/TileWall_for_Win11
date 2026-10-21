@@ -4,7 +4,7 @@ using TileWall.Core.Wall;
 
 namespace TileWall.Core.Storage;
 
-/// <summary>Schema-three document serialization and immutable storage boundary. Older schemas are not migrated.</summary>
+/// <summary>Current-format document serialization and immutable storage boundary.</summary>
 public static class WallJson
 {
     private static readonly JsonSerializerOptions Options = new()
@@ -22,11 +22,14 @@ public static class WallJson
             ?? throw new JsonException("Empty wall document.");
         if (document.SchemaVersion != WallDocument.CurrentSchemaVersion)
             throw new JsonException("Unsupported wall document schema.");
-        if (document.Lanes is null || document.Lanes.Any(l => l?.Groups is null ||
+        if (document.Lanes is null || document.InactiveMembers is null || document.Lanes.Any(l => l?.Groups is null ||
             l.Groups.Any(g => g?.Members is null || g.Members.Any(m => m is null ||
                 m.Images is null || m.ImageDisplay is null || m.Visual is null ||
                 m.Carousel is { } carousel && (carousel.CandidateIds is null || carousel.Queue is null) ||
-                m is PuzzleMember p && p.Partitions is null))))
+                m is PuzzleMember p && p.Partitions is null))) ||
+            document.InactiveMembers.Any(m => m is null || m.Images is null || m.ImageDisplay is null ||
+                m.Visual is null || m.Carousel is { } carousel && (carousel.CandidateIds is null || carousel.Queue is null) ||
+                m is PuzzleMember p && p.Partitions is null))
             throw new JsonException("Malformed wall document collection.");
         return Freeze(document);
     }
@@ -39,7 +42,8 @@ public static class WallJson
             {
                 Members = ReadOnly(group.Members.Select(FreezeMember))
             }))
-        }))
+        })),
+        InactiveMembers = ReadOnly(document.InactiveMembers.Select(FreezeMember))
     };
 
     private static WallMember FreezeMember(WallMember member)

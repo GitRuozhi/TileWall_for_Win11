@@ -77,8 +77,8 @@ public sealed class StartMenuPresetRulesTests
         Assert.Equal("letter:M", result[5].Key); // A one-item preset does not fall back into its folder.
         Assert.Equal("preset:adobe", result[6].Key);
         Assert.Equal(result[6].Key, result[7].Key);
-        Assert.True(result[6].Order < result[0].Order);
-        Assert.True(result[0].Order < result[2].Order);
+        Assert.True(result[2].Order < result[0].Order);
+        Assert.True(result[0].Order < result[6].Order);
     }
 
     [Fact]
@@ -98,7 +98,7 @@ public sealed class StartMenuPresetRulesTests
         Assert.Equal("letter:R", result[2].Key);
         Assert.Equal(100, result[0].Order);
         Assert.Equal(100, result[1].Order);
-        Assert.Equal(218, result[2].Order);
+        Assert.Equal(18, result[2].Order);
     }
 
     [Fact]

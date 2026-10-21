@@ -2,6 +2,7 @@
 using Microsoft.UI.Xaml.Media;
 using TileWall.ApplicationModel;
 using TileWall.Core.Wall;
+using TileWall.Core.Application;
 using Windows.Foundation;
 
 namespace TileWall;
@@ -15,6 +16,7 @@ public sealed partial class MainWindow
     private WallGeometry? _gestureGeometry;
     private Dictionary<string, WallMember> _gestureMembers = new(StringComparer.Ordinal);
     private Dictionary<string, StartGroup> _gestureGroups = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string?> _gestureLaunchKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<(WallAction Action, bool Prepend), WallLayoutResult> _dropCache = [];
     private WallLayoutResult? _drawnDrop;
     private readonly GesturePerformance _performance = new();
@@ -27,9 +29,18 @@ public sealed partial class MainWindow
         _gestureGroups = Document.Lanes.SelectMany(l => l.Groups).ToDictionary(g => g.Id, StringComparer.Ordinal);
         _gestureMembers = _gestureGroups.Values.SelectMany(g => g.Members).ToDictionary(m => m.Id, StringComparer.Ordinal);
         _dropCache.Clear(); _drawnDrop = null; _dragInputPending = false;
+        _gestureLaunchKeys.Clear();
         _performance.Begin("drag", Document, Scale, Surface.VisualCreationCount, Surface.GridCreationCount);
         RecordCompositionGateAtBegin();
         EnsureFrameSubscription();
+    }
+
+    private string? GestureLaunchIdentity(WallMember member)
+    {
+        if (_gestureLaunchKeys.TryGetValue(member.Id, out var key)) return key;
+        key = StartMenuImportPreparation.TryIdentity(member, _session.DataRoot, ImportIdentities)?.Key;
+        _gestureLaunchKeys[member.Id] = key;
+        return key;
     }
 
     private void EnsureFrameSubscription()

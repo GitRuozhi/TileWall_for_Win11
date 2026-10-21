@@ -2,29 +2,65 @@ using TileWall.Core.Wall;
 
 namespace TileWall.Core.Import;
 
-public sealed record StartMenuPrunedSnapshot(WallDocument Document, IReadOnlyList<WallMember> Removed);
+public sealed record StartMenuMergeMember(WallMember Member, string IdentityKey);
+public sealed record StartMenuMergeGroup(StartGroup Group, IReadOnlyList<StartMenuMergeMember> Members);
+public sealed record StartMenuMergeResult(IReadOnlyList<StartGroup> Groups, IReadOnlyDictionary<string, string> MemberIds);
 
+/// <summary>Incremental active-group merge. Import provenance never authorizes removing another member or group.</summary>
 public static class StartMenuReimport
 {
-    public static StartMenuPrunedSnapshot Prune(WallDocument snapshot)
+    public static StartMenuMergeResult Merge(WallDocument snapshot, IReadOnlyList<StartMenuMergeGroup> incoming,
+        Func<WallMember, string?> existingIdentity, bool preserveChanges = true)
     {
-        var removed = new List<WallMember>();
-        var lanes = snapshot.Lanes.Select(lane => lane with
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(incoming);
+        ArgumentNullException.ThrowIfNull(existingIdentity);
+        var existing = snapshot.Lanes.SelectMany(lane => lane.Groups).Where(group => !string.IsNullOrWhiteSpace(group.Title))
+            .ToDictionary(group => StartMenuSourceCache.GroupNameKey(group.Title), StringComparer.Ordinal);
+        var output = new List<StartGroup>();
+        var ids = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var bucket in incoming.GroupBy(item => string.IsNullOrWhiteSpace(item.Group.Title)
+                     ? "id:" + item.Group.Id : "name:" + StartMenuSourceCache.GroupNameKey(item.Group.Title), StringComparer.Ordinal))
         {
-            Groups = lane.Groups.Select(group =>
+            var first = bucket.First().Group;
+            var name = StartMenuSourceCache.GroupNameKey(first.Title);
+            var matched = name.Length != 0 && existing.TryGetValue(name, out var group) ? group : null;
+            var target = matched ?? first;
+            var members = matched?.Members.ToList() ?? [];
+            var byIdentity = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (var index = 0; index < members.Count; index++)
+                if (existingIdentity(members[index]) is { } identity && !byIdentity.TryAdd(identity, index))
+                    throw new InvalidOperationException("A destination group contains duplicate launch identities.");
+            foreach (var item in bucket.SelectMany(item => item.Members))
             {
-                if (group.UserClaimed || group.ImportSource?.Kind != ImportSourceKind.StartMenu) return group;
-                var retained = group.Members.Where(member =>
+                if (string.IsNullOrWhiteSpace(item.IdentityKey)) throw new ArgumentException("An imported member has no launch identity.");
+                var source = item.Member.ImportSource is { } origin ? origin with { OriginGroupId = target.Id } : null;
+                if (byIdentity.TryGetValue(item.IdentityKey, out var index))
                 {
-                    var replace = !member.UserClaimed && member.ImportSource is { Kind: ImportSourceKind.StartMenu } origin &&
-                        origin.OriginGroupId == group.Id && origin.BatchId == group.ImportSource.BatchId;
-                    if (replace) removed.Add(member);
-                    return !replace;
-                }).ToArray();
-                // Remaining manual members become an independent, protected group with the same identity and cells.
-                return group with { Members = retained, UserClaimed = retained.Length != 0 };
-            }).Where(group => group.Members.Count != 0 || group.ImportSource is null || group.UserClaimed).ToArray(),
-        }).Where(lane => lane.Groups.Count != 0 || lane.ImportBatchId is null).ToArray();
-        return new(snapshot with { Lanes = lanes, Columns = lanes.Length }, removed);
+                    var old = members[index];
+                    members[index] = preserveChanges ? old with
+                    {
+                        TargetInput = item.Member.TargetInput, ImportSource = source,
+                    } : item.Member with { Id = old.Id, Entry = old.Entry, ImportSource = source };
+                    ids.Add(item.Member.Id, old.Id);
+                }
+                else
+                {
+                    byIdentity.Add(item.IdentityKey, members.Count);
+                    members.Add(item.Member with { ImportSource = source });
+                    ids.Add(item.Member.Id, item.Member.Id);
+                }
+            }
+            var groupSource = first.ImportSource is { } incomingSource
+                ? incomingSource with { OriginGroupId = target.Id }
+                : null;
+            output.Add(target with
+            {
+                Members = members.ToArray(),
+                ImportSource = groupSource,
+                UserClaimed = false,
+            });
+        }
+        return new(output.AsReadOnly(), ids);
     }
 }

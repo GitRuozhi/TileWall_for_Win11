@@ -8,7 +8,13 @@ using TileWall.Core.Wall;
 namespace TileWall.Graphics;
 
 public sealed record PuzzleCandidateResult(IReadOnlyList<string> Paths,
-    WallImageStatus Status, string? Diagnostic = null);
+    WallImageStatus Status, string? Diagnostic = null)
+{
+    public string? SourceVersion { get; init; }
+    public IReadOnlySet<string> ChangedPaths { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    public bool IsComplete { get; init; } = true;
+    public string? DiagnosticDetail { get; init; }
+}
 
 public sealed record PuzzleFrameResult(PuzzleFrame? Frame,
     WallImageStatus Status, string? Diagnostic = null);
@@ -30,6 +36,7 @@ public sealed partial class WallImageService
             return new([], WallImageStatus.Cancelled);
         if (source.Kind == MemberImageSourceKind.Automatic)
             return new([], WallImageStatus.None);
+        if (source.Kind == MemberImageSourceKind.Folder) return await RefreshGalleryAsync(source, ct);
 
         try
         {
@@ -56,7 +63,14 @@ public sealed partial class WallImageService
         switch (source.Kind)
         {
             case MemberImageSourceKind.Single:
-                paths = source.Path is { } single ? [single] : [];
+                var single = source.Media is not null ? ManagedMediaPath(source.Media) : source.Path;
+                if (source.Media is not null)
+                {
+                    if (single is null) return new([], WallImageStatus.Invalid, "InvalidManagedMediaReference");
+                    _disk!.Guard(single);
+                    return File.Exists(single) ? new([source.Path ?? single], WallImageStatus.Loaded) : new([], WallImageStatus.Missing);
+                }
+                paths = single is not null ? [single] : [];
                 break;
             case MemberImageSourceKind.Folder:
                 var folder = NormalizeImageFilePath(source.Path);
@@ -104,26 +118,36 @@ public sealed partial class WallImageService
         var needsBlur = member.Visual.BackgroundMode == MemberBackgroundMode.Blur;
         var budget = new PuzzleDecodeBudget(purpose, widthPixels, heightPixels,
             !thumbnail && member.ImageDisplay.Mode == ImageDisplayMode.Original, edge, thumbnail ? edge : 512, needsBlur);
-        if (previewImagePath is not null)
-            return await LoadImageFileFrameAsync(previewImagePath, budget, ct);
         if (member.Images.Kind == MemberImageSourceKind.Single)
-            return await LoadImageFileFrameAsync(member.Images.Path, budget, ct);
+            return await LoadImageFileFrameAsync(member.Images.Media is { } media ? ManagedMediaPath(media) : previewImagePath ?? member.Images.Path,
+                budget, ct, member.Images.Path, member.Images.Media?.Sha256, member.Images.Media);
         if (member.Images.Kind == MemberImageSourceKind.Folder)
         {
-            var candidates = await EnumerateMemberCandidatesAsync(member.Images, ct);
-            var selected = candidates.Paths.FirstOrDefault(path =>
-                StringComparer.OrdinalIgnoreCase.Equals(path, member.Carousel?.CurrentImageId)) ?? candidates.Paths.FirstOrDefault();
-            return await LoadImageFileFrameAsync(selected, budget, ct);
+            var selected = previewImagePath;
+            if (selected is null)
+            {
+                var candidates = await EnumerateMemberCandidatesAsync(member.Images, ct);
+                selected = candidates.Paths.FirstOrDefault(path =>
+                    StringComparer.OrdinalIgnoreCase.Equals(path, member.Carousel?.CurrentImageId)) ?? candidates.Paths.FirstOrDefault();
+            }
+            var cached = GalleryReadPath(member.Images, selected);
+            if (cached.Path is not null && !File.Exists(cached.Path))
+                await EnsureGalleryOriginalAsync(member.Images, selected, ct);
+            return await LoadImageFileFrameAsync(cached.Path, budget, ct, selected, cached.Hash);
         }
+        if (previewImagePath is not null) return await LoadImageFileFrameAsync(previewImagePath, budget, ct);
         if (widthPixels is < 1 or > 4096 || heightPixels is < 1 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(widthPixels));
         ObjectDisposedException.ThrowIf(_disposed, this);
         try
         {
-            await _slots.WaitAsync(ct);
+            var icon = await TryLoadMemberIconAsync(member, entryOrTarget, widthPixels, ct);
+            if (icon is { Frame: not null }) return icon;
+            await _automaticSlots.WaitAsync(ct);
             Prepared prepared;
-            try { prepared = await Task.Run(() => PrepareAutoAsync(entryOrTarget, widthPixels, heightPixels, ct), ct); }
-            finally { _slots.Release(); }
+            try { prepared = await Task.Run(() => PrepareAutoAsync(entryOrTarget, widthPixels, heightPixels, ct,
+                skipNative: icon?.Diagnostic == "NoNativeIcon"), ct); }
+            finally { _automaticSlots.Release(); }
             ct.ThrowIfCancellationRequested();
             if (prepared.Pixels is null) return new(null, prepared.Status, prepared.Diagnostic);
             var sharp = new DecodedImageFrame(entryOrTarget ?? $"automatic:{member.Id}", 0, DateTime.MinValue,
@@ -144,13 +168,15 @@ public sealed partial class WallImageService
     }
 
     private async Task<PuzzleFrameResult> LoadImageFileFrameAsync(
-        string? path, PuzzleDecodeBudget budget, CancellationToken ct = default)
+        string? path, PuzzleDecodeBudget budget, CancellationToken ct = default, string? identityPath = null, string? contentHash = null,
+        ManagedMediaReference? media = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (ct.IsCancellationRequested)
             return new(null, WallImageStatus.Cancelled);
         if (string.IsNullOrWhiteSpace(path))
-            return new(null, WallImageStatus.None);
+            return media is null ? new(null, WallImageStatus.None)
+                : new(null, WallImageStatus.Invalid, "InvalidManagedMediaReference");
 
         try
         {
@@ -158,7 +184,8 @@ public sealed partial class WallImageService
             PuzzlePrepared prepared;
             try
             {
-                prepared = await Task.Run(() => PreparePuzzleAsync(path, budget, ct), ct);
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cacheLifetime.Token);
+                prepared = await TrackCacheWork(Task.Run(() => PreparePuzzleAsync(path, budget, linked.Token, identityPath, contentHash, media), linked.Token));
             }
             finally { _slots.Release(); }
             if (ct.IsCancellationRequested)
@@ -188,17 +215,36 @@ public sealed partial class WallImageService
         }
     }
 
-    private async Task<PuzzlePrepared> PreparePuzzleAsync(string path, PuzzleDecodeBudget budget, CancellationToken ct)
+    private async Task<PuzzlePrepared> PreparePuzzleAsync(string path, PuzzleDecodeBudget budget, CancellationToken ct,
+        string? identityPath = null, string? contentHash = null, ManagedMediaReference? media = null)
     {
         var canonicalPath = NormalizeImageFilePath(path);
         if (canonicalPath is null)
             return new(WallImageStatus.Invalid, null, "InvalidPath");
+        var verified = media is null ? default : OpenVerifiedMedia(canonicalPath, media);
+        using var mediaRead = verified.Lease;
+        if (verified.Diagnostic is { } diagnostic)
+            return new(WallImageStatus.Invalid, null, diagnostic);
         var key = PuzzleFingerprint(canonicalPath, budget);
         if (key is not null && TryGetPuzzleCached(key, out var cached))
-            return cached;
+            return identityPath is not null && cached.Pair is { } cachedPair
+                ? cached with { Pair = WithIdentity(cachedPair, identityPath) } : cached;
+
+        using var lease = _disk is { } disk && canonicalPath.StartsWith(disk.Root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            ? disk.Lease(canonicalPath) : null;
+        var actualHash = contentHash ?? FileContentHash(canonicalPath);
+        if (contentHash is not null && canonicalPath.Contains(Path.DirectorySeparatorChar + "Galleries" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) && FileContentHash(canonicalPath) != contentHash)
+        {
+            if (_disk is not null && canonicalPath.Contains(Path.DirectorySeparatorChar + "Galleries" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                _disk.Delete(canonicalPath);
+            return new(WallImageStatus.Invalid, null, "ImageCacheHashMismatch");
+        }
+        var derived = ReadDerived(actualHash, budget, identityPath ?? canonicalPath);
+        if (budget.Purpose == MemberImagePurpose.Thumbnail && derived?.Sharp is { } thumbnail && (!budget.NeedsBlur || derived.BlurSource is not null))
+        { var hit = new PuzzlePrepared(WallImageStatus.Loaded, derived); if (key is not null) CachePuzzle(key, hit); return hit; }
 
         var decoded = await _decoder.DecodePuzzlePairAsync(canonicalPath, budget.Width, budget.Height, ct,
-            budget.PreserveSourceResolution, budget.SharpMaxEdge, budget.BlurMaxEdge, budget.NeedsBlur);
+            budget.PreserveSourceResolution, budget.SharpMaxEdge, budget.BlurMaxEdge, budget.NeedsBlur && derived?.BlurSource is null);
         if (decoded.Pair is null)
             return new(decoded.Status switch
             {
@@ -210,16 +256,20 @@ public sealed partial class WallImageService
         PuzzleDecodedPair pair = decoded.Pair;
         if (budget.NeedsBlur)
         {
-            if (decoded.Pair.BlurSource is null)
+            if (decoded.Pair.BlurSource is null && derived?.BlurSource is null)
                 return new(WallImageStatus.Invalid, null, "MissingBlurPlane");
-            pair = new PuzzleDecodedPair(decoded.Pair.Sharp, LowResolutionBlur.Apply(decoded.Pair.BlurSource));
+            pair = new PuzzleDecodedPair(decoded.Pair.Sharp, derived?.BlurSource ?? LowResolutionBlur.Apply(decoded.Pair.BlurSource!));
         }
+        if (identityPath is not null) pair = WithIdentity(pair, identityPath);
+        if (derived is null) await SaveDerivedAsync(actualHash, budget, pair, ct).ConfigureAwait(false);
         var result = new PuzzlePrepared(WallImageStatus.Loaded, pair);
-        var verifiedKey = PuzzleCacheKey(decoded.Pair.Sharp.SourcePath, decoded.Pair.Sharp.SourceBytes,
-            decoded.Pair.Sharp.LastWriteUtc, budget);
+        var verifiedKey = PuzzleCacheKey(canonicalPath, decoded.Pair.Sharp.SourceBytes, decoded.Pair.Sharp.LastWriteUtc, budget);
         CachePuzzle(verifiedKey, result);
         return result;
     }
+
+    private static PuzzleDecodedPair WithIdentity(PuzzleDecodedPair pair, string identity) =>
+        new(pair.Sharp with { SourcePath = identity }, pair.BlurSource is { } blur ? blur with { SourcePath = identity } : null);
 
     private static string PuzzleCacheKey(string canonicalPath, long sourceBytes, DateTime lastWriteUtc,
         PuzzleDecodeBudget budget) =>
