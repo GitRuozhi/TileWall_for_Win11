@@ -8,7 +8,7 @@
 
 如果你还惦记 Windows 10 的磁贴，这里有那份熟悉感，也有留给你自己布置的空间。系统开始菜单和 Win 键照常使用。
 
-![TileWall：常用程序、文件夹和图片组成的磁贴墙](docs/images/hero-zh.png)
+![Windows桌面上的TileWall：真实应用图标与独立的自定义图片示例组](Showcase/images/desktop-zh.png)
 
 ## 现在可以用到什么？
 
@@ -16,11 +16,11 @@
 - **图片，也能成为主角。** 给磁贴换一张图，或选一个图片文件夹轮换显示。喜欢完整的画面，就把它做成拼图，让一张图跨过几块磁贴。整幅拼图共用一个启动目标。
 - **留一点自己的风格。** 亮色、暗色、方角、圆角，搭配喜欢的背景；也能放上时间和日期。不想从头布置，可以先从开始菜单导入。
 
-![同一面 TileWall，按自己的喜好换图片和外观](docs/images/personalize-zh.png)
+![TileWall亮色模式](Showcase/images/light-zh.png)
 
 ## 获取 TileWall
 
-**当前源码版本为 0.2.9，正在准备候选发行。实际可下载的版本请以 Releases 页面为准。**
+**TileWall 0.3.1 提供 x64 便携版下载，完整解压 ZIP 后运行 `TileWall.exe`。**
 
 [查看发行情况](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [查看源码](https://github.com/GitRuozhi/TileWall_for_Win11)
 
@@ -34,7 +34,7 @@
 2. **加几个每天都用的。** 在墙面空白处右键，选择 **导入**，来源选 **从开始菜单**。列表默认全不选，勾选想要的几项，再点 **确认导入整批**。已有缓存的入口和图标先显示，来源列表在后台继续刷新。
 3. **摆成自己的样子。** 点击磁贴打开目标；拖动调整位置，双击分组标题改名。想换名称、图片或大小，就右键磁贴，选择 **编辑**，改好后点 **保存**。
 
-![展开需要使用的菜单分组](docs/images/quick-start-zh.gif)
+![从开始菜单勾选Word、Excel和PowerPoint，导入后生成Office组](Showcase/images/office-import-zh.gif)
 
 几个顺手的操作：
 

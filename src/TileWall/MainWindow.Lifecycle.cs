@@ -41,6 +41,7 @@ public sealed partial class MainWindow
 
     internal void InitializeSession() => OpenWall();
     internal void ShowStatus(string message) => Status(message);
+    internal void ShowTransientStatus(string message) => TransientStatus(message);
 
     internal void ShowWall()
     {
@@ -54,6 +55,7 @@ public sealed partial class MainWindow
 
     internal void HideWall()
     {
+        ClearTransientStatus();
         _focusCheckRetry?.Stop();
         CancelTransientState();
         AppWindow.Hide();

@@ -41,6 +41,8 @@ public sealed partial class MainWindow : Window
     private bool _resizing;
     private readonly IClock _clock = SystemClock.Instance;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _clockTimer;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _statusTimer;
+    private long _statusExpiresAt;
     private string? _suppressClickMember;
     private Point _gestureScrollOffset;
     private uint _tracedMovePointerId;
@@ -58,6 +60,9 @@ public sealed partial class MainWindow : Window
         _images = new WallImageService(_session.LinkFiles);
         InitializeComponent();
         CreateWindowsSidebar();
+        _statusTimer = DispatcherQueue.CreateTimer();
+        _statusTimer.IsRepeating = false;
+        _statusTimer.Tick += OnStatusTimerTick;
         _clockTimer = DispatcherQueue.CreateTimer();
         _clockTimer.Interval = TimeSpan.FromSeconds(1);
         _clockTimer.IsRepeating = true;
@@ -161,6 +166,8 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _windowClosing = true;
+            _statusTimer.Stop();
+            _statusTimer.Tick -= OnStatusTimerTick;
             StopPersistenceAfterClose();
             DisposeNativeSizingPrototype();
             DisposeInteractionScheduling();
@@ -254,7 +261,8 @@ public sealed partial class MainWindow : Window
         Surface.Visibility = Visibility.Visible;
         Surface.IsHitTestVisible = !PersistenceInteractionBlocked;
         _viewBlocked = false;
-        StatusPanel.Visibility = Visibility.Collapsed;
+        ClearStatus();
+        if (_environmentOverflow) Status(ProductStrings.Get("Wall.EnvironmentScroll"));
         RetryViewButton.Visibility = Visibility.Collapsed;
         if (!_carouselCommit) PlaceWall();
         RestoreCommittedScrollAnchor(document, scrollAnchor);
@@ -286,7 +294,7 @@ public sealed partial class MainWindow : Window
         Surface.IsHitTestVisible = false;
         Surface.Visibility = Visibility.Collapsed;
         RetryViewButton.Visibility = retry ? Visibility.Visible : Visibility.Collapsed;
-        Status(message);
+        DisplayStatus(message, transient: false);
         AppWindow.MoveAndResize(new RectInt32(_workArea.Left, _workArea.Top, 560, 120));
     }
 
@@ -305,16 +313,64 @@ public sealed partial class MainWindow : Window
         Surface.ResetProjection();
         if (_session.RefreshViewFromCurrent())
         {
-            StatusPanel.Visibility = Visibility.Collapsed;
             RetryViewButton.Visibility = Visibility.Collapsed;
         }
-        else Status(ProductStrings.Get("Wall.RebuildFailed"));
+        else DisplayStatus(ProductStrings.Get("Wall.RebuildFailed"), transient: false);
     }
 
     private void Status(string message)
     {
+        if (_viewBlocked) return;
+        DisplayStatus(message, transient: false);
+    }
+
+    private void TransientStatus(string message)
+    {
+        if (_viewBlocked) return;
+        DisplayStatus(message, transient: true);
+    }
+
+    private void DisplayStatus(string message, bool transient)
+    {
+        if (_windowClosing || ShutdownStarted) return;
+        _statusTimer.Stop();
+        _statusExpiresAt = transient ? Environment.TickCount64 + 4000 : 0;
         StatusText.Text = message;
         StatusPanel.Visibility = Visibility.Visible;
+        if (transient)
+        {
+            _statusTimer.Interval = TimeSpan.FromSeconds(4);
+            _statusTimer.Start();
+        }
+    }
+
+    private void OnStatusTimerTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
+    {
+        if (_windowClosing || ShutdownStarted || _statusExpiresAt == 0) return;
+        var remaining = _statusExpiresAt - Environment.TickCount64;
+        // A tick queued before a replacement must not dismiss the newer message.
+        if (remaining > 0)
+        {
+            _statusTimer.Interval = TimeSpan.FromMilliseconds(remaining);
+            _statusTimer.Start();
+            return;
+        }
+        ClearTransientStatus();
+    }
+
+    private void ClearStatus()
+    {
+        _statusTimer.Stop();
+        _statusExpiresAt = 0;
+        StatusText.Text = string.Empty;
+        StatusPanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void ClearTransientStatus()
+    {
+        if (_statusExpiresAt == 0) return;
+        ClearStatus();
+        if (_environmentOverflow) Status(ProductStrings.Get("Wall.EnvironmentScroll"));
     }
 
     private void PlaceWall()
@@ -359,7 +415,7 @@ public sealed partial class MainWindow : Window
         }
         if (result.ViewFailed)
             BlockView(string.Format(ProductStrings.Get("Wall.CommitViewFailed"), string.Join("；", result.Diagnostics)), retry: true);
-        if (result.NeedsCleanup) Status(ProductStrings.Get("Wall.CleanupPending"));
+        if (result.NeedsCleanup) TransientStatus(ProductStrings.Get("Wall.CleanupPending"));
         return null;
     }
 

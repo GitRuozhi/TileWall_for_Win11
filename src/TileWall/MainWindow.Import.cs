@@ -140,7 +140,7 @@ public sealed partial class MainWindow
         string? error;
         try { error = CommitProposal(result.Proposal, changes); }
         finally { _pendingImportIconCopies = null; }
-        if (error is null) Status(string.Format(ProductStrings.Get("Import.Added"), accepted.Length));
+            if (error is null) TransientStatus(string.Format(ProductStrings.Get("Import.Added"), accepted.Length));
         return error;
     }
 

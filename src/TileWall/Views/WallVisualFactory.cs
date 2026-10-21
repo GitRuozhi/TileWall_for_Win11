@@ -195,17 +195,19 @@ internal static class WallMemberVisualFactory
 
 internal static class WallGroupVisualFactory
 {
-    internal static TextBlock Label(string? title, double width, double height) => new()
+    internal static TextBlock Label(string? title, double width) => new()
     {
-        Text = title ?? string.Empty, Width = Math.Max(0, width - 5), Height = height, FontSize = 14,
+        Text = title ?? string.Empty, Width = Math.Max(0, width - 5), FontSize = 14,
         VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap,
         TextTrimming = TextTrimming.CharacterEllipsis,
     };
 
     internal static DataTemplate HeaderTemplate(WallMetrics metrics, string? tag = null) => (DataTemplate)XamlReader.Load($$"""
         <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
-            <TextBlock Text="{Binding Title}" Tag="{{tag ?? string.Empty}}" Width="{{metrics.LaneWidth - 5}}" Height="{{metrics.TitleInteractionHeight}}" Margin="5,{{metrics.TitleHeight - metrics.TitleInteractionHeight}},0,{{metrics.TitleToMembersGap}}"
-                FontSize="14" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+            <Grid Height="{{metrics.TitleInteractionHeight}}" Margin="0,{{metrics.TitleHeight - metrics.TitleInteractionHeight}},0,{{metrics.TitleToMembersGap}}">
+                <TextBlock Text="{Binding Title}" Tag="{{tag ?? string.Empty}}" Width="{{metrics.LaneWidth - 5}}" Margin="5,0,0,0"
+                    FontSize="14" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+            </Grid>
         </DataTemplate>
         """);
 

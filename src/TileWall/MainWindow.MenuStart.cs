@@ -48,12 +48,12 @@ public sealed partial class MainWindow
         if (_menuExpansion.Retain(document.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id))) SaveMenuExpansion();
         if (!document.Settings.MenuStart || !_menuImagesActive) { _menuStart.Content = null; return; }
         var panel = new StackPanel { Spacing = 0 };
+        var updateExpansions = new List<Action>();
         foreach (var group in document.Lanes.SelectMany(lane => lane.Groups))
         {
-            var entries = group.Members.Where(member => member.Entry is not null).ToArray();
+            var entries = MemberLayoutOrder.Order(group.Members).Where(member => member.Entry is not null).ToArray();
             if (entries.Length == 0) continue;
             var groupTitle = string.IsNullOrWhiteSpace(group.Title) ? string.Empty : group.Title;
-            var expanded = _menuExpansion.Contains(group.Id);
             var header = new Grid { Height = 32 };
             header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
             header.ColumnDefinitions.Add(new() { Width = new GridLength(32) });
@@ -64,7 +64,7 @@ public sealed partial class MainWindow
             };
             AutomationProperties.SetAutomationId(title, "menu-group-title-" + group.Id);
             header.Children.Add(title);
-            var chevron = new FontIcon { Glyph = expanded ? "\uE70E" : "\uE70D", FontSize = 12 };
+            var chevron = new FontIcon { FontSize = 12 };
             Grid.SetColumn(chevron, 1); header.Children.Add(chevron);
             var toggle = new Button
             {
@@ -73,46 +73,61 @@ public sealed partial class MainWindow
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             };
-            var action = ProductStrings.Get(expanded ? "MenuStart.Collapse" : "MenuStart.Expand");
-            AutomationProperties.SetName(toggle, action + " " + (groupTitle.Length == 0 ? ProductStrings.Get("MenuStart.Unnamed") : groupTitle));
             AutomationProperties.SetAutomationId(toggle, "menu-group-toggle-" + group.Id);
-            ToolTipService.SetToolTip(toggle, action);
             toggle.Click += (_, _) =>
             {
                 if (_windowClosing || ShutdownStarted) return;
                 _menuExpansion.Toggle(group.Id);
                 SaveMenuExpansion();
                 var offset = _menuStart.VerticalOffset;
-                RenderMenuStart(Document);
+                // Keep the pressed/focused header in the live tree. Replacing the
+                // whole menu here can relocate focus into the adjacent rail.
+                foreach (var update in updateExpansions) update();
                 _menuStart.UpdateLayout();
                 _menuStart.ChangeView(null, Math.Min(offset, _menuStart.ScrollableHeight), null, true);
             };
             panel.Children.Add(toggle);
-            if (!expanded) continue;
-            foreach (var member in entries)
+            var entryPanel = new StackPanel { Spacing = 0 };
+            panel.Children.Add(entryPanel);
+            bool? displayedExpanded = null;
+            void UpdateExpansion()
             {
-                var content = new Grid();
-                content.ColumnDefinitions.Add(new() { Width = new GridLength(44) });
-                content.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-                var icon = new Image { Width = 24, Height = 24, Stretch = Stretch.Uniform };
-                content.Children.Add(icon);
-                _menuIconWork.RemoveWhere(work => work.IsCompleted);
-                _menuIconWork.Add(LoadMenuIconAsync(member, icon, token));
-                var label = new TextBlock { Text = member.Visual.Title ?? MemberPresentationRules.ResolveTitle(member),
-                    VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
-                    Margin = new Thickness(0, 0, 12, 0) };
-                Grid.SetColumn(label, 1); content.Children.Add(label);
-                var row = new Button { Content = content, Height = 36, Padding = new Thickness(0),
-                    BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(0),
-                    HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                    Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), ContextFlyout = Surface.CreateMemberContextMenu(member) };
-                var id = member.Id;
-                row.Click += (_, _) => LaunchMember(id);
-                AutomationProperties.SetAutomationId(row, "menu-member-" + id);
-                AutomationProperties.SetName(row, label.Text);
-                ToolTipService.SetToolTip(row, label.Text);
-                panel.Children.Add(row);
+                var expanded = _menuExpansion.Contains(group.Id);
+                if (displayedExpanded == expanded) return;
+                displayedExpanded = expanded;
+                chevron.Glyph = expanded ? "\uE70E" : "\uE70D";
+                var action = ProductStrings.Get(expanded ? "MenuStart.Collapse" : "MenuStart.Expand");
+                AutomationProperties.SetName(toggle, action + " " + (groupTitle.Length == 0 ? ProductStrings.Get("MenuStart.Unnamed") : groupTitle));
+                ToolTipService.SetToolTip(toggle, action);
+                entryPanel.Children.Clear();
+                if (!expanded) return;
+                foreach (var member in entries)
+                {
+                    var content = new Grid();
+                    content.ColumnDefinitions.Add(new() { Width = new GridLength(44) });
+                    content.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+                    var icon = new Image { Width = 24, Height = 24, Stretch = Stretch.Uniform };
+                    content.Children.Add(icon);
+                    _menuIconWork.RemoveWhere(work => work.IsCompleted);
+                    _menuIconWork.Add(LoadMenuIconAsync(member, icon, token));
+                    var label = new TextBlock { Text = member.Visual.Title ?? MemberPresentationRules.ResolveTitle(member),
+                        VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
+                        Margin = new Thickness(0, 0, 12, 0) };
+                    Grid.SetColumn(label, 1); content.Children.Add(label);
+                    var row = new Button { Content = content, Height = 36, Padding = new Thickness(0),
+                        BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(0),
+                        HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                        Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), ContextFlyout = Surface.CreateMemberContextMenu(member) };
+                    var id = member.Id;
+                    row.Click += (_, _) => LaunchMember(id);
+                    AutomationProperties.SetAutomationId(row, "menu-member-" + id);
+                    AutomationProperties.SetName(row, label.Text);
+                    ToolTipService.SetToolTip(row, label.Text);
+                    entryPanel.Children.Add(row);
+                }
             }
+            updateExpansions.Add(UpdateExpansion);
+            UpdateExpansion();
         }
         _menuStart.Content = panel;
         PositionMenuStart(_scrollRegion);

@@ -82,15 +82,27 @@ internal sealed class WindowsSidebar : Grid
         Grid.SetRow(brand, 0); _rail.Children.Add(brand);
         Grid.SetRow(_scroll, 1); _rail.Children.Add(_scroll);
         Children.Add(_rail);
-        PointerEntered += (_, _) => { _pointerInside = true; SetExpanded(true); };
+        PointerEntered += (_, args) =>
+        {
+            // Routed pointer transitions can outlive the layout that caused them.
+            // Only the currently arranged rail, on either anchor, owns its hover.
+            if (!ContainsPointer(args)) return;
+            _pointerInside = true;
+            SetExpanded(true);
+        };
         PointerExited += (_, args) =>
         {
-            var point = args.GetCurrentPoint(this).Position;
-            if (point.X >= 0 && point.Y >= 0 && point.X < ActualWidth && point.Y < ActualHeight) return;
+            if (ContainsPointer(args)) return;
             _pointerInside = false;
             if (!_menuOpen) SetExpanded(false);
         };
-        GotFocus += (_, _) => SetExpanded(true);
+        GotFocus += (_, _) =>
+        {
+            // Pointer hover opens the rail above. Automatic/programmatic focus
+            // relocation from another control must not open it over that control.
+            if (XamlRoot is { } root && FocusManager.GetFocusedElement(root) is UIElement focused &&
+                focused.FocusState == FocusState.Keyboard) SetExpanded(true);
+        };
         LostFocus += (_, _) => DispatcherQueue.TryEnqueue(() =>
         {
             if (_pointerInside || _menuOpen || XamlRoot is null) return;
@@ -318,10 +330,19 @@ internal sealed class WindowsSidebar : Grid
     private void TrackPointerPosition(object sender, PointerRoutedEventArgs args)
     {
         if (!_expanded || _pointerTrackingRoot is null || ActualWidth <= 0 || ActualHeight <= 0) return;
-        var point = args.GetCurrentPoint(this).Position;
-        var inside = point.X >= 0 && point.Y >= 0 && point.X < ActualWidth && point.Y < ActualHeight;
+        var inside = ContainsPointer(args);
         _pointerInside = inside;
         if (!inside && !_menuOpen) SetExpanded(false);
+    }
+
+    private bool ContainsPointer(PointerRoutedEventArgs args)
+    {
+        var point = args.GetCurrentPoint(this).Position;
+        // Width changes before the next arrange updates ActualWidth. Do not let a
+        // just-collapsed rail keep claiming its old expanded rectangle meanwhile.
+        var width = Math.Min(Width, ActualWidth);
+        var left = _anchor is AnchorCorner.TopRight or AnchorCorner.BottomRight ? ActualWidth - width : 0;
+        return point.X >= left && point.Y >= 0 && point.X < left + width && point.Y < ActualHeight;
     }
 
     private void RefreshBrush()

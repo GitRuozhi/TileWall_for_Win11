@@ -37,7 +37,7 @@ public sealed class WallBatchPlannerTests
     private static WallLane Lane(params StartGroup[] groups) => new() { Groups = groups };
 
     [Fact]
-    public void ExistingHoleIsFilledWithoutMovingNeighbors()
+    public void ExistingHoleIsSkippedAndBatchAppendsWithoutMovingNeighbors()
     {
         var before = Document(Lane(Group("target", Tile("left", 0), Tile("right", 2))));
         var incoming = Tile("new", 7, "Same display name");
@@ -49,7 +49,7 @@ public sealed class WallBatchPlannerTests
         Assert.Equal(new GridRect(0, 0, 1, 1), members.Single(m => m.Id == "left").LocalBounds);
         Assert.Equal(new GridRect(2, 0, 1, 1), members.Single(m => m.Id == "right").LocalBounds);
         var placed = Assert.IsType<TileMember>(members.Single(m => m.Id == "new"));
-        Assert.Equal(new GridRect(1, 0, 1, 1), placed.LocalBounds);
+        Assert.Equal(new GridRect(3, 0, 1, 1), placed.LocalBounds);
         Assert.Equal(incoming.Entry, placed.Entry);
         Assert.Equal(incoming.Visual, placed.Visual);
         Assert.Equal(new GridRect(7, 0, 1, 1), incoming.LocalBounds);
@@ -226,7 +226,7 @@ public sealed class WallBatchPlannerTests
         Assert.Equal(before.Generation + 1, result.Proposal.Document.Generation);
         var members = Assert.Single(result.Proposal.Document.Lanes[0].Groups).Members;
         Assert.Equal(new GridRect(0, 3, 2, 2), members.Single(member => member.Id == existing.Id).LocalBounds);
-        Assert.Equal(new GridRect(0, 0, 2, 2), members.Single(member => member.Id == incoming.Id).LocalBounds);
+        Assert.Equal(new GridRect(2, 3, 2, 2), members.Single(member => member.Id == incoming.Id).LocalBounds);
         Assert.Equal(serialized, WallJson.Serialize(before));
     }
 

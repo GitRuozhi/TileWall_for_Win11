@@ -16,7 +16,6 @@ using TileWall.Core.Wall;
 using TileWall.Graphics;
 using TileWall.Resources;
 using TileWall.Shell.Interop;
-using Windows.Storage.Pickers;
 
 namespace TileWall.Views;
 
@@ -646,7 +645,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             // operation to _pending before that loop can receive an exit request.
             await Task.Yield();
             if (_closed || _previewClosing) return;
-            var path = TargetItemPicker.Pick(WinRT.Interop.WindowNative.GetWindowHandle(_owner), T("Editor.SelectCurrentFolder"));
+            var path = TargetItemPicker.Pick(WinRT.Interop.WindowNative.GetWindowHandle(_owner), T("Editor.SelectCurrentFolder"), GetTargetPickerInitialFolder());
             if (!_closed && !_previewClosing && path is not null) { _target.Text = path; if (ConfirmTarget()) await _pending; }
         }
         catch (Exception ex) { if (!_closed && !_previewClosing) _error.Text = string.Format(T("Entry.PickerFailed"), ex.Message); }
@@ -668,8 +667,20 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         try
         {
             string? path;
-            if (kind == MemberImageSourceKind.Folder) { var picker = new FolderPicker(); InitializePicker(picker); picker.FileTypeFilter.Add("*"); path = (await picker.PickSingleFolderAsync())?.Path; }
-            else { var picker = new FileOpenPicker(); InitializePicker(picker); picker.FileTypeFilter.Add("*"); path = (await picker.PickSingleFileAsync())?.Path; }
+            var owner = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(WinRT.Interop.WindowNative.GetWindowHandle(_owner));
+            if (kind == MemberImageSourceKind.Folder)
+            {
+                var picker = new Microsoft.Windows.Storage.Pickers.FolderPicker(owner);
+                TargetItemPicker.SetSuggestedFolder(picker, _sourcePath.Text);
+                path = (await picker.PickSingleFolderAsync())?.Path;
+            }
+            else
+            {
+                var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(owner);
+                TargetItemPicker.SetSuggestedFolder(picker, _sourcePath.Text);
+                picker.FileTypeFilter.Add("*");
+                path = (await picker.PickSingleFileAsync())?.Path;
+            }
             if (!_closed && !_previewClosing && path is not null)
             {
                 // Browsing and typing share the same readable-image gate and the
@@ -971,7 +982,36 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         ShowError(message); _operationText.Text = message; _operationToast.Visibility = Visibility.Visible;
         _operationTimer.Stop(); _operationTimer.Start();
     }
-    private void InitializePicker(object picker) => WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(_owner));
+    private string? GetTargetPickerInitialFolder()
+    {
+        var input = (_targetDirty ? _target.Text : _draft.TargetInput ?? _target.Text).Trim();
+        var fallback = TargetItemPicker.GetInitialFolderForPath(input);
+        try
+        {
+            var linkPath = Environment.ExpandEnvironmentVariables(input);
+            if (!Path.IsPathFullyQualified(linkPath) || !File.Exists(linkPath) ||
+                !Path.GetExtension(linkPath).Equals(".lnk", StringComparison.OrdinalIgnoreCase)) return fallback;
+
+            var link = _links.Read(linkPath);
+            var target = link.TargetPath;
+            if (string.IsNullOrWhiteSpace(target)) return fallback;
+            target = Environment.ExpandEnvironmentVariables(target);
+            if (!Path.IsPathFullyQualified(target))
+            {
+                var workingDirectory = Environment.ExpandEnvironmentVariables(link.WorkingDirectory);
+                var baseFolder = Path.IsPathFullyQualified(workingDirectory) && Directory.Exists(workingDirectory)
+                    ? workingDirectory
+                    : Path.GetDirectoryName(linkPath);
+                if (string.IsNullOrWhiteSpace(baseFolder)) return fallback;
+                target = Path.GetFullPath(target, baseFolder);
+            }
+            return TargetItemPicker.GetInitialFolderForPath(target) ?? fallback;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException or ArgumentException or NotSupportedException)
+        {
+            return fallback;
+        }
+    }
     private static string ColorText(Windows.UI.Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
     private static string T(string key) => ProductStrings.Get(key);
     private static void Id(DependencyObject item, string id) => AutomationProperties.SetAutomationId(item, "member-editor-" + id);

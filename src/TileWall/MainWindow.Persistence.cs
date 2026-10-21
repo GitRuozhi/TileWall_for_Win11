@@ -178,6 +178,7 @@ public sealed partial class MainWindow
     private async Task ShutdownPersistenceCoreAsync()
     {
         _shutdownStarted = true;
+        _statusTimer.Stop();
         _clockTimer.Stop();
         _focusCheckRetry?.Stop();
         _viewportTransition = null;

@@ -29,7 +29,8 @@ public sealed record PeIconGroup(uint ResourceId, string? ResourceName, uint Lan
 public sealed record PeIconCatalog(string ExePath, long FileBytes, DateTime LastWriteUtc, IReadOnlyList<PeIconGroup> Groups)
 {
     /// <summary>IconLocation's index applies only when its path resolves to this same direct-target EXE.</summary>
-    public PeIconGroup? SelectGroup(string? iconLocationPath = null, int? iconLocationIndex = null)
+    public PeIconGroup? SelectGroup(string? iconLocationPath = null, int? iconLocationIndex = null,
+        bool fallbackToDefault = true)
     {
         var distinctResources = Groups
             .DistinctBy(group => new GroupIdentity(group.ResourceName is not null,
@@ -46,6 +47,7 @@ public sealed record PeIconCatalog(string ExePath, long FileBytes, DateTime Last
                 if (byId is not null)
                     return SelectLanguageVariant(byId);
             }
+            if (!fallbackToDefault) return null;
         }
 
         // Stable default; never combine frames from different resource groups.
@@ -99,7 +101,7 @@ public sealed class PeIconResourceReader
     private const int MaxTotalFrameBytes = 32 * 1024 * 1024;
     private static ReadOnlySpan<byte> PngSignature => [137, 80, 78, 71, 13, 10, 26, 10];
 
-    public PeIconReadResult Read(string? exePath)
+    public PeIconReadResult Read(string? exePath, bool allowResourceModule = false)
     {
         if (string.IsNullOrWhiteSpace(exePath))
             return new(PeIconReadStatus.MissingFile, null);
@@ -109,7 +111,7 @@ public sealed class PeIconResourceReader
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         { return new(PeIconReadStatus.MissingFile, null, ex.GetType().Name); }
 
-        if (!string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase))
+        if (!allowResourceModule && !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase))
             return new(PeIconReadStatus.NotExe, null);
 
         try
@@ -171,7 +173,7 @@ public sealed class PeIconResourceReader
         }
     }
 
-    private static PeIconFrameFormat DetectFormat(ReadOnlySpan<byte> bytes, int width, int height)
+    internal static PeIconFrameFormat DetectFormat(ReadOnlySpan<byte> bytes, int width, int height)
     {
         if (bytes.StartsWith(PngSignature) && bytes.Length >= 33)
         {

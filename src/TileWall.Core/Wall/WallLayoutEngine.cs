@@ -5,12 +5,14 @@ using TileWall.Core.Components;
 namespace TileWall.Core.Wall;
 
 public abstract record WallAction(long ExpectedGeneration);
+/// <summary>Joins an existing group after its last member in layout order, using the supplied size.</summary>
 public sealed record AddMemberAction(long ExpectedGeneration, WallMember Member, string? TargetGroupId,
     int LaneIndex = 0, int GroupInsertIndex = 0, string? NewGroupId = null) : WallAction(ExpectedGeneration);
 public sealed record ReplaceMemberAction(long ExpectedGeneration, string MemberId,
     WallMember Replacement) : WallAction(ExpectedGeneration);
 public sealed record AddBatchItem(WallMember Member, string? TargetGroupId,
     int LaneIndex = 0, int GroupInsertIndex = 0, string? NewGroupId = null);
+/// <summary>Appends each item to its destination group, accepting or rejecting the complete batch.</summary>
 public sealed record AddBatchAction(long ExpectedGeneration,
     IReadOnlyList<AddBatchItem> Items) : WallAction(ExpectedGeneration);
 /// <summary>GroupInsertIndex is interpreted after removal of a now-empty source group.</summary>
@@ -68,6 +70,7 @@ public static class WallLayoutEngine
                     Lanes = [.. occupied, new WallLane { Groups = [] }],
                 };
         }
+        candidate = OrderMembers(candidate);
         errors = ValidateGeometry(candidate, metrics);
         return errors.Count == 0 ? new(new(candidate, MeasureValidated(candidate, metrics)), WallRejection.None)
             : Reject(WallRejection.InvalidDocument, string.Join("; ", errors));
@@ -104,7 +107,7 @@ public static class WallLayoutEngine
         {
             case AddMemberAction add:
                 rejection = PlaceMember(lanes, add.Member, add.TargetGroupId, add.LaneIndex,
-                    add.GroupInsertIndex, add.NewGroupId, current.Rows, metrics);
+                    add.GroupInsertIndex, add.NewGroupId, current.Rows, metrics, append: true);
                 break;
             case ReplaceMemberAction replace:
                 rejection = ReplaceMember(lanes, replace, current.Rows, metrics);
@@ -179,6 +182,7 @@ public static class WallLayoutEngine
             proposed = normalized.Proposal.Document;
         }
 
+        proposed = OrderMembers(proposed);
         errors = ValidateGeometry(proposed, metrics);
         if (errors.Count > 0)
         {
@@ -378,7 +382,7 @@ public static class WallLayoutEngine
                 var membersY = y + metrics.TitleHeight + metrics.TitleToMembersGap;
                 var occupiedRows = group.Members.Max(m => m.LocalBounds.Bottom);
                 var height = metrics.TitleHeight + metrics.TitleToMembersGap + metrics.HeightOf(occupiedRows);
-                var members = group.Members.Select(m => new MemberPlacement(m.Id,
+                var members = MemberLayoutOrder.Order(group.Members).Select(m => new MemberPlacement(m.Id,
                     metrics.MemberRect(m.LocalBounds, x, membersY))).ToArray();
                 positions.Add(new GroupPlacement(group.Id, laneIndex, title,
                     new DipRect(x, y, metrics.LaneWidth, height), members));
@@ -392,6 +396,28 @@ public static class WallLayoutEngine
     private static double RequiredHeight(WallDocument document, WallMetrics metrics)
     {
         return document.Lanes.Max(lane => RequiredLaneHeight(lane.Groups, metrics));
+    }
+
+    private static WallDocument OrderMembers(WallDocument document)
+    {
+        WallLane[]? lanes = null;
+        for (var laneIndex = 0; laneIndex < document.Lanes.Count; laneIndex++)
+        {
+            var lane = document.Lanes[laneIndex];
+            StartGroup[]? groups = null;
+            for (var groupIndex = 0; groupIndex < lane.Groups.Count; groupIndex++)
+            {
+                var group = lane.Groups[groupIndex];
+                var ordered = MemberLayoutOrder.Order(group.Members).ToArray();
+                if (ordered.SequenceEqual(group.Members)) continue;
+                groups ??= lane.Groups.ToArray();
+                groups[groupIndex] = group with { Members = ordered };
+            }
+            if (groups is null) continue;
+            lanes ??= document.Lanes.ToArray();
+            lanes[laneIndex] = lane with { Groups = groups };
+        }
+        return lanes is null ? document : document with { Lanes = lanes };
     }
 
     private static int RowsForHeight(double requiredHeight, WallMetrics metrics)
@@ -441,13 +467,6 @@ public static class WallLayoutEngine
             null, currentRows, metrics);
         if (rejection != WallRejection.None) return rejection;
 
-        // A property edit does not change the member's relative ordering in its group.
-        var placed = lanes[laneIndex][groupIndex];
-        var byId = placed.Members.ToDictionary(member => member.Id, StringComparer.OrdinalIgnoreCase);
-        lanes[laneIndex][groupIndex] = placed with
-        {
-            Members = source.Members.Select(member => byId[member.Id]).ToArray(),
-        };
         return WallRejection.None;
     }
 
@@ -459,7 +478,7 @@ public static class WallLayoutEngine
         {
             if (item is null) return WallRejection.InvalidAction;
             var rejection = PlaceMember(lanes, item.Member, item.TargetGroupId, item.LaneIndex,
-                item.GroupInsertIndex, item.NewGroupId, currentRows, metrics);
+                item.GroupInsertIndex, item.NewGroupId, currentRows, metrics, append: true);
             if (rejection != WallRejection.None) return rejection;
         }
         return WallRejection.None;
@@ -489,7 +508,7 @@ public static class WallLayoutEngine
     }
 
     private static WallRejection PlaceMember(List<List<StartGroup>> lanes, WallMember member, string? targetGroupId,
-        int laneIndex, int insertIndex, string? newGroupId, int currentRows, WallMetrics metrics)
+        int laneIndex, int insertIndex, string? newGroupId, int currentRows, WallMetrics metrics, bool append = false)
     {
         if (member is null || !IsLocalRect(member.LocalBounds)) return WallRejection.InvalidAction;
         if (FindMember(lanes, member.Id) is not null || FindGroup(lanes, member.Id) is not null)
@@ -511,6 +530,14 @@ public static class WallLayoutEngine
         var group = lanes[targetLane][targetIndex];
         var currentBudget = MaxMemberRowsForGroup(lanes[targetLane], targetIndex, currentRows, metrics);
         var expandedBudget = MaxMemberRowsForGroup(lanes[targetLane], targetIndex, MaxRows, metrics);
+        if (append)
+        {
+            var bounds = MemberLayoutOrder.FindAppendBounds(group.Members.Select(existing => existing.LocalBounds).ToArray(),
+                member.LocalBounds.Width, member.LocalBounds.Height, expandedBudget);
+            if (bounds is null) return WallRejection.NoSpace;
+            lanes[targetLane][targetIndex] = group with { Members = [.. group.Members, WithBounds(member, bounds.Value)] };
+            return WallRejection.None;
+        }
         var placed = TryPlaceMembers(group.Members, member, currentBudget)
             ?? TryPlaceMembers(group.Members, member, expandedBudget);
         if (placed is null) return WallRejection.NoSpace;
@@ -559,7 +586,7 @@ public static class WallLayoutEngine
         // If fixed neighbors leave no placement, allow a deterministic collision chain in this same budget.
         occupied = [incoming];
         var result = new List<WallMember>(existing.Count + 1) { incoming };
-        foreach (var member in existing)
+        foreach (var member in MemberLayoutOrder.Order(existing))
         {
             var final = member;
             if (occupied.Any(m => m.LocalBounds.Intersects(final.LocalBounds)))

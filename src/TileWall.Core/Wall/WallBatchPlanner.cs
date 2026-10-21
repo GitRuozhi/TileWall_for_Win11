@@ -156,33 +156,14 @@ public static class WallBatchPlanner
         // are compressed. Its uncompressed bounds must stay structurally valid.
         var searchRows = allowCompression
             ? Math.Max(maxRows, Math.Min(MaxRows, group.Bottom + incoming.LocalBounds.Height)) : maxRows;
-        var occupied = new bool[searchRows, CellsPerLane];
-        foreach (var member in group.Members)
-        for (var row = member.Row; row < Math.Min(member.Bottom, searchRows); row++)
-        for (var col = member.Column; col < member.Right; col++)
-            occupied[row, col] = true;
-
-        for (var row = 0; row + incoming.LocalBounds.Height <= searchRows; row++)
-        for (var col = 0; col + incoming.LocalBounds.Width <= CellsPerLane; col++)
-        {
-            var bounds = new GridRect(col, row, incoming.LocalBounds.Width, incoming.LocalBounds.Height);
-            var overlaps = false;
-            for (var occupiedRow = row; occupiedRow < bounds.Bottom && !overlaps; occupiedRow++)
-            for (var occupiedColumn = col; occupiedColumn < bounds.Right; occupiedColumn++)
-                if (occupied[occupiedRow, occupiedColumn])
-                {
-                    overlaps = true;
-                    break;
-                }
-            if (overlaps) continue;
-            var trial = Copy(lanes);
-            trial[laneIndex].Groups[groupIndex].Members.Add(bounds);
-            var fit = Fit(trial, columns, currentRows, workWidthDip, workHeightDip, metrics, settings, allowCompression);
-            if (fit == WallRejection.None)
-                return new AddBatchItem(incoming with { LocalBounds = bounds }, groupId);
-            return null;
-        }
-        return null;
+        var bounds = MemberLayoutOrder.FindAppendBounds(group.Members, incoming.LocalBounds.Width,
+            incoming.LocalBounds.Height, searchRows);
+        if (bounds is null) return null;
+        var trial = Copy(lanes);
+        trial[laneIndex].Groups[groupIndex].Members.Add(bounds.Value);
+        var fit = Fit(trial, columns, currentRows, workWidthDip, workHeightDip, metrics, settings, allowCompression);
+        return fit == WallRejection.None
+            ? new AddBatchItem(incoming with { LocalBounds = bounds.Value }, groupId) : null;
     }
 
     private static WallRejection Fit(List<SimLane> lanes, int columns, int currentRows,

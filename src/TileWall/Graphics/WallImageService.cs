@@ -158,7 +158,7 @@ public sealed partial class WallImageService : IDisposable
     private async Task<Prepared> PreparePeIconAsync(string exe, string? iconPath, int? iconIndex,
         string entry, int width, int height, CancellationToken ct)
     {
-        var dependency = Fingerprint(exe, "native-icon-v1:" + System.Globalization.CultureInfo.CurrentUICulture.Name + ":" + NormalizePath(iconPath) + ":" + iconIndex);
+        var dependency = NativeIconDependency(exe, iconPath, iconIndex);
         var key = dependency is null ? null : dependency + $":{width}x{height}";
         if (key is not null && TryGetCached(key, out var cached))
             return cached;

@@ -457,14 +457,9 @@ public sealed class WallSurface : Canvas
         var group = _document.Lanes.SelectMany(l => l.Groups).FirstOrDefault(g => g.Id == groupId);
         if (placed is null || group is null) return null;
         var accent = new SolidColorBrush(SystemAccentColor());
-        var heading = new TextBlock
-        {
-            Text = group.Title ?? ProductStrings.Get("Wall.UntitledGroup"),
-            Foreground = new SolidColorBrush(Colors.White),
-            FontSize = 14, TextTrimming = TextTrimming.CharacterEllipsis,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(5, 0, 0, 0),
-        };
+        var heading = WallGroupVisualFactory.Label(group.Title ?? ProductStrings.Get("Wall.UntitledGroup"), placed.Bounds.Width - 4);
+        heading.Foreground = new SolidColorBrush(Colors.White);
+        heading.Margin = new Thickness(5, 0, 0, 0);
         return _groupDragVisual = new Border
         {
             Width = placed.Bounds.Width, Height = _metrics.TitleInteractionHeight,
@@ -686,7 +681,7 @@ public sealed class WallSurface : Canvas
         var controlBounds = TitleControlBounds(bounds, _metrics.TitleInteractionHeight);
         var grid = new Grid { CornerRadius = WallCorners };
         var titleContent = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
-        titleContent.Children.Add(WallGroupVisualFactory.Label(group.Title, bounds.Width, _metrics.TitleInteractionHeight));
+        titleContent.Children.Add(WallGroupVisualFactory.Label(group.Title, bounds.Width));
         AutomationProperties.SetAutomationId(grid, $"group-title-{group.Id}");
         var title = new Button
         {

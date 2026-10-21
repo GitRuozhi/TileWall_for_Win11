@@ -349,8 +349,9 @@ public sealed class StartMenuImportPlannerTests
         Assert.Same(customFirst, ordered[7]);
         Assert.Same(customSecond, ordered[8]);
         Assert.Same(claimedLetterB, ordered[9]);
-        Assert.Equal(new GridRect(5, 3, 1, 1), ordered[3].Members[0].LocalBounds);
-        Assert.Equal(new GridRect(1, 0, 2, 1), ordered[3].Members[1].LocalBounds);
+        Assert.Equal(["d-upper", "d-lower"], ordered[3].Members.Select(member => member.Id));
+        Assert.Equal(new GridRect(1, 0, 2, 1), ordered[3].Members[0].LocalBounds);
+        Assert.Equal(new GridRect(5, 3, 1, 1), ordered[3].Members[1].LocalBounds);
         Assert.Null(proposed.Lanes[0].ImportBatchId);
         Assert.Equal(5, proposed.Generation);
         Assert.Equal(10, ordered.Length);

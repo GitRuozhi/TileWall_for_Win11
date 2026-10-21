@@ -14,12 +14,12 @@
         <Canvas x:Name="DragOverlay" IsHitTestVisible="False" />
         <Grid x:Name="WindowsSidebarHost" HorizontalAlignment="Left" VerticalAlignment="Stretch" />
         <views:ResizeThumb x:Name="ResizeHorizontalEdge" Height="8" Margin="14,0,14,0"
-               HorizontalAlignment="Stretch" VerticalAlignment="Top" Tag="Vertical"
+               HorizontalAlignment="Stretch" VerticalAlignment="Top" Tag="Top"
                AutomationProperties.AutomationId="wall-resize-horizontal-edge"
                PointerEntered="OnResizePointerEntered" PointerExited="OnResizePointerExited" PointerCaptureLost="OnResizePointerCaptureLost"
                DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />
         <views:ResizeThumb x:Name="ResizeVerticalEdge" Width="8" Margin="0,14,0,14"
-               HorizontalAlignment="Right" VerticalAlignment="Stretch" Tag="Horizontal"
+               HorizontalAlignment="Right" VerticalAlignment="Stretch" Tag="Right"
                AutomationProperties.AutomationId="wall-resize-vertical-edge"
                PointerEntered="OnResizePointerEntered" PointerExited="OnResizePointerExited" PointerCaptureLost="OnResizePointerCaptureLost"
                DragStarted="OnResizeStarted" DragDelta="OnResizeDelta" DragCompleted="OnResizeCompleted" />

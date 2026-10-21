@@ -8,7 +8,7 @@ Your everyday apps, work folders, and favorite websites are easier to find when 
 
 If you miss Windows 10 tiles, this should feel familiar. Your usual Start menu and Windows key keep working as they do now.
 
-![TileWall with everyday apps, folders, and a picture puzzle](docs/images/hero-en.png)
+![TileWall on the Windows desktop, using real app icons and a separate custom image group](Showcase/images/desktop-en.png)
 
 ## What can you put on your wall?
 
@@ -16,11 +16,11 @@ If you miss Windows 10 tiles, this should feel familiar. Your usual Start menu a
 - **Pictures you like looking at.** Use a single image or cycle through a folder of pictures. A puzzle lets one image stretch across several tile sections. The whole puzzle shares one launch target.
 - **A bit of your own style.** Choose light or dark mode, square or rounded corners, and a background you like. Add a clock and date, or import shortcuts from the Start menu to get going.
 
-![The same TileWall layout with two different looks](docs/images/personalize-en.png)
+![TileWall in light mode](Showcase/images/light-en.png)
 
 ## Get TileWall
 
-**The current source version is 0.2.9, being prepared as a release candidate. Check Releases for packages actually available.**
+**TileWall 0.3.1 is available as a portable x64 download. Extract the complete ZIP and run `TileWall.exe`.**
 
 [Check releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [Browse the source](https://github.com/GitRuozhi/TileWall_for_Win11)
 
@@ -34,7 +34,7 @@ Once you have a runnable build:
 2. **Add the things you reach for most.** Right-click an empty part of the wall and choose **Import**, then **From Start menu**. Nothing is selected at first; select a few entries and choose **Confirm batch import**. Previously cached shortcuts and icons are available while the source list refreshes in the background.
 3. **Make yourself at home.** Click a tile to open its target. Drag tiles into place, double-click a group title to rename it, or right-click a tile and choose **Edit** to change its name, picture, and size. Choose **Save** when you are done.
 
-![Expanding the menu groups you need in TileWall](docs/images/quick-start-en.gif)
+![Importing Word, Excel, and PowerPoint from the Start menu into an Office group](Showcase/images/office-import-en.gif)
 
 A few useful controls:
 

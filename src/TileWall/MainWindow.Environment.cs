@@ -34,7 +34,11 @@ public sealed partial class MainWindow
             {
                 var error = await CommitProposalAsync(proposal);
                 if (_windowClosing || ShutdownStarted || _viewBlocked) return;
-                if (error is not null) { SetEnvironmentOverflow(true); Status(error); }
+                if (error is not null)
+                {
+                    SetEnvironmentOverflow(true);
+                    TransientStatus(error);
+                }
             }
         });
     }
@@ -46,7 +50,7 @@ public sealed partial class MainWindow
         ApplyViewport(animateMode: false);
         if (value) Status(ProductStrings.Get("Wall.EnvironmentScroll"));
         else if (StatusText.Text == ProductStrings.Get("Wall.EnvironmentScroll"))
-            StatusPanel.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+            ClearStatus();
     }
 
     // Existing oversized content stays editable so the user can remove/shrink it. A

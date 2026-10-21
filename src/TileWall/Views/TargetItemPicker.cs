@@ -5,8 +5,9 @@ namespace TileWall.Views;
 /// <summary>One native file dialog with an explicit action returning its current directory.</summary>
 internal static class TargetItemPicker
 {
+    private static readonly Guid ShellItemId = new("43826D1E-E718-42EE-BC55-A1E261C37BFE");
     private const uint FolderButton = 0x5001;
-    internal static string? Pick(IntPtr owner, string folderAction)
+    internal static string? Pick(IntPtr owner, string folderAction, string? initialFolder)
     {
         var dialog = (IFileDialog)new FileOpenDialog();
         uint cookie = 0;
@@ -16,6 +17,7 @@ internal static class TargetItemPicker
             dialog.GetOptions(out var options);
             // FORCEFILESYSTEM | FILEMUSTEXIST | PATHMUSTEXIST | NODEREFERENCELINKS.
             dialog.SetOptions(options | 0x40 | 0x1000 | 0x800 | 0x100000);
+            SetFolder(dialog, initialFolder);
             ((IFileDialogCustomize)dialog).AddPushButton(FolderButton, folderAction);
             dialog.Advise(sink, out cookie);
             var hr = dialog.Show(owner);
@@ -32,6 +34,63 @@ internal static class TargetItemPicker
             Marshal.ReleaseComObject(dialog);
         }
     }
+
+    internal static string? GetInitialFolderForPath(string? sourcePath)
+    {
+        if (string.IsNullOrWhiteSpace(sourcePath)) return null;
+        try
+        {
+            var path = Environment.ExpandEnvironmentVariables(sourcePath.Trim());
+            if (!Path.IsPathFullyQualified(path)) return null;
+            var folder = Directory.Exists(path) ? path : Path.GetDirectoryName(path);
+            return !string.IsNullOrWhiteSpace(folder) && Directory.Exists(folder) ? Path.GetFullPath(folder) : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    internal static void SetSuggestedFolder(Microsoft.Windows.Storage.Pickers.FileOpenPicker picker, string? sourcePath)
+    {
+        var folder = GetInitialFolderForPath(sourcePath);
+        if (folder is null) return;
+        picker.SuggestedFolder = folder;
+        picker.SuggestedStartFolder = folder;
+    }
+
+    internal static void SetSuggestedFolder(Microsoft.Windows.Storage.Pickers.FolderPicker picker, string? sourcePath)
+    {
+        var folder = GetInitialFolderForPath(sourcePath);
+        if (folder is null) return;
+        picker.SuggestedFolder = folder;
+        picker.SuggestedStartFolder = folder;
+    }
+
+    private static void SetFolder(IFileDialog dialog, string? folderPath)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath)) return;
+        IShellItem? folder = null;
+        try
+        {
+            var shellItemId = ShellItemId;
+            if (SHCreateItemFromParsingName(folderPath, IntPtr.Zero, ref shellItemId, out folder) < 0 || folder is null) return;
+            dialog.SetFolder(folder);
+        }
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+        finally
+        {
+            if (folder is not null) Marshal.ReleaseComObject(folder);
+        }
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int SHCreateItemFromParsingName(
+        [MarshalAs(UnmanagedType.LPWStr)] string path,
+        IntPtr bindContext,
+        ref Guid interfaceId,
+        [MarshalAs(UnmanagedType.Interface)] out IShellItem item);
+
     private static string PathOf(IShellItem item)
     {
         item.GetDisplayName(0x80058000, out var name);

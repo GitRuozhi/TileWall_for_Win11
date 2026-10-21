@@ -289,6 +289,9 @@
     <x:String x:Key="Settings.Updates">更新</x:String>
     <x:String x:Key="Settings.Feedback">反馈</x:String>
     <x:String x:Key="Settings.Chat">轻松交流</x:String>
+    <x:String x:Key="Settings.JoinQQGroup">加入 QQ 群</x:String>
+    <x:String x:Key="Settings.OpenLinkFailed">无法打开链接：{0}</x:String>
+    <x:String x:Key="Settings.CommunityOpenFailed">无法打开 QQ 群链接。群号：732019606。{0}</x:String>
     <x:String x:Key="Settings.BackgroundFailed">无法读取这张图片，请重新选择。</x:String>
     <x:String x:Key="Wall.GroupTitleHint">单击拖动、双击修改名称</x:String>
     <x:String x:Key="Settings.ExplorerMenu">右键菜单</x:String>

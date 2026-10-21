@@ -288,6 +288,9 @@
   <x:String x:Key="Settings.Updates">Updates</x:String>
   <x:String x:Key="Settings.Feedback">Feedback</x:String>
   <x:String x:Key="Settings.Chat">Community chat</x:String>
+  <x:String x:Key="Settings.JoinQQGroup">Join QQ group</x:String>
+  <x:String x:Key="Settings.OpenLinkFailed">Could not open the link: {0}</x:String>
+  <x:String x:Key="Settings.CommunityOpenFailed">Could not open the QQ group link. Group: 732019606. {0}</x:String>
   <x:String x:Key="Settings.BackgroundFailed">Cannot read this image. Please choose another.</x:String>
   <x:String x:Key="Wall.GroupTitleHint">Click and drag to move; double-click to rename.</x:String>
   <x:String x:Key="Settings.ExplorerMenu">Context menu</x:String>

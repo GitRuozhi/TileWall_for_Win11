@@ -332,7 +332,7 @@ public sealed class WallLayoutEngineTests
     }
 
     [Fact]
-    public void CollisionUsesHorizontalSpaceInCurrentWallBeforeGrowingDownward()
+    public void AppendUsesHorizontalSpaceInCurrentWallBeforeGrowingDownward()
     {
         var initial = Document(Group("g", Tile("old", new GridRect(0, 0, 1, 1)))) with { Rows = 2 };
         var result = WallLayoutEngine.TryApply(initial,
@@ -340,12 +340,12 @@ public sealed class WallLayoutEngineTests
         Assert.True(result.Success, result.Detail);
         Assert.Equal(2, result.Proposal!.Document.Rows);
         var members = result.Proposal.Document.Lanes[0].Groups[0].Members;
-        Assert.Equal(new GridRect(1, 0, 1, 1), members.Single(m => m.Id == "old").LocalBounds);
-        Assert.Equal(new GridRect(0, 0, 1, 1), members.Single(m => m.Id == "new").LocalBounds);
+        Assert.Equal(new GridRect(0, 0, 1, 1), members.Single(m => m.Id == "old").LocalBounds);
+        Assert.Equal(new GridRect(1, 0, 1, 1), members.Single(m => m.Id == "new").LocalBounds);
     }
 
     [Fact]
-    public void CurrentHeightBudgetSubtractsOtherGroupsAndTheirGap()
+    public void AppendPreservesOtherGroupsAndExistingHeight()
     {
         var initial = Document(Group("first", Tile("first-tile", new GridRect(0, 0, 1, 1))),
             Group("target", Tile("old", new GridRect(0, 0, 1, 1)))) with { Rows = 4 };
@@ -355,16 +355,17 @@ public sealed class WallLayoutEngineTests
         Assert.Equal(4, result.Proposal!.Document.Rows);
         var groups = result.Proposal.Document.Lanes[0].Groups;
         Assert.Equal(new GridRect(0, 0, 1, 1), groups[0].Members[0].LocalBounds);
-        Assert.Equal(new GridRect(1, 0, 1, 1), groups[1].Members.Single(m => m.Id == "old").LocalBounds);
+        Assert.Equal(new GridRect(0, 0, 1, 1), groups[1].Members.Single(m => m.Id == "old").LocalBounds);
+        Assert.Equal(new GridRect(1, 0, 1, 1), groups[1].Members.Single(m => m.Id == "new").LocalBounds);
     }
 
     [Fact]
     public void CollisionPreservesUnrelatedMemberInsteadOfCreatingAvoidableChain()
     {
         var initial = Document(Group("g", Tile("hit", new GridRect(0, 0, 1, 1)),
-            Tile("unrelated", new GridRect(0, 1, 1, 1))));
+            Tile("unrelated", new GridRect(0, 1, 1, 1)), Tile("moving", new GridRect(3, 1, 1, 1))));
         var result = WallLayoutEngine.TryApply(initial,
-            new AddMemberAction(0, Tile("new", new GridRect(0, 0, 1, 1)), "g"), 500, 500);
+            new MoveMemberAction(0, "moving", new GridRect(0, 0, 1, 1), "g"), 500, 500);
         Assert.True(result.Success, result.Detail);
         var members = result.Proposal!.Document.Lanes[0].Groups[0].Members;
         Assert.Equal(new GridRect(1, 0, 1, 1), members.Single(m => m.Id == "hit").LocalBounds);
@@ -384,7 +385,7 @@ public sealed class WallLayoutEngineTests
         Assert.Empty(WallLayoutEngine.Validate(dragged.Proposal.Document));
 
         var displaced = WallLayoutEngine.TryApply(initial,
-            new AddMemberAction(0, Tile("new", new GridRect(0, 0, 1, 1)), "g"), 500, 500);
+            new MoveMemberAction(0, "tile", new GridRect(0, 0, 1, 1), "g"), 500, 500);
         Assert.True(displaced.Success, displaced.Detail);
         Assert.IsType<ClockMember>(displaced.Proposal!.Document.Lanes[0].Groups[0].Members.Single(m => m.Id == "clock"));
         Assert.Empty(WallLayoutEngine.Validate(displaced.Proposal.Document));
@@ -522,7 +523,7 @@ public sealed class WallLayoutEngineTests
     }
 
     [Fact]
-    public void ReplaceMemberUsesCollisionRulesButKeepsIdentityKindAndOrder()
+    public void ReplaceMemberUsesCollisionRulesAndKeepsIdentityKindAndSpatialOrder()
     {
         var initial = Document(Group("g", Tile("edited", new GridRect(0, 0, 1, 1)),
             Tile("blocker", new GridRect(1, 0, 1, 1)),

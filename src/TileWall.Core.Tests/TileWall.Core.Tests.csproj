@@ -12,6 +12,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\TileWall.Core\TileWall.Core.csproj" />
+    <Compile Include="..\TileWall\Application\FullscreenResizeGesture.cs" Link="Application\FullscreenResizeGesture.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />

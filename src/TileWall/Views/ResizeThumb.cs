@@ -6,7 +6,7 @@ using Windows.Foundation;
 
 namespace TileWall.Views;
 
-/// <summary>Exposes the protected WinUI cursor for the three permitted resize zones.</summary>
+/// <summary>Exposes the protected WinUI cursor for the permitted resize zones.</summary>
 public sealed partial class ResizeThumb : Grid
 {
     private Point _pressedAt;

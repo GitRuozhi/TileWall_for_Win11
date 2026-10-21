@@ -258,9 +258,11 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         else { _addFailed++; _lastAddFailure = result.Message; }
         _addTruncated |= message.Truncated;
         AppLog.Info("ExternalAdd", result.Message);
-        _window.ShowStatus(string.Format(ProductStrings.Get("Import.QueueResult"), _addSucceeded, _addFailed, _addCount)
+        var resultMessage = string.Format(ProductStrings.Get("Import.QueueResult"), _addSucceeded, _addFailed, _addCount)
             + (_lastAddFailure is null ? string.Empty : " " + _lastAddFailure)
-            + (_addTruncated ? " " + ProductStrings.Get("Import.Truncated") : string.Empty));
+            + (_addTruncated ? " " + ProductStrings.Get("Import.Truncated") : string.Empty);
+        if (_addFailed == 0 && !_addTruncated) _window.ShowTransientStatus(resultMessage);
+        else _window.ShowStatus(resultMessage);
         _inAddSequence = _pendingAdds.Count != 0;
         QueueAddDrain();
     }

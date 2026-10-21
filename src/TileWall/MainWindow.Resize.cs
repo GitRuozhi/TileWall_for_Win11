@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Input;
+using TileWall.ApplicationModel;
 using TileWall.Core.Wall;
 using TileWall.Resources;
 using TileWall.Shell.Interop;
@@ -19,6 +20,7 @@ public sealed partial class MainWindow
     private Point _resizeStart;
     private AnchorCorner _resizeAnchor;
     private AnchorCorner _resizePointerAnchor;
+    private ResizeZone _resizeZone;
     private bool _resizeModeLocked;
     private bool _resizeModeTarget;
     private Point _resizeScrollOffset;
@@ -61,15 +63,25 @@ public sealed partial class MainWindow
         ResizeGrip.VerticalAlignment = ResizeHorizontalEdge.VerticalAlignment = bottom ? VerticalAlignment.Top : VerticalAlignment.Bottom;
         ResizeHorizontalHighlight.VerticalAlignment = ResizeHorizontalEdge.VerticalAlignment;
         ResizeVerticalHighlight.HorizontalAlignment = ResizeVerticalEdge.HorizontalAlignment;
+        ResizeHorizontalEdge.Tag = bottom ? nameof(ResizeZone.Top) : nameof(ResizeZone.Bottom);
+        ResizeVerticalEdge.Tag = right ? nameof(ResizeZone.Left) : nameof(ResizeZone.Right);
         ResizeHorizontalEdge.SetCursor(InputSystemCursorShape.SizeNorthSouth);
         ResizeVerticalEdge.SetCursor(InputSystemCursorShape.SizeWestEast);
         ResizeGrip.SetCursor(right == bottom ? InputSystemCursorShape.SizeNorthwestSoutheast : InputSystemCursorShape.SizeNortheastSouthwest);
         var visibility = PersistenceInteractionBlocked || _modal || _viewBlocked ? Visibility.Collapsed : Visibility.Visible;
         var fullScreen = Settings.FullScreen;
-        ResizeGrip.Visibility = ResizeVerticalEdge.Visibility = ResizeHorizontalEdge.Visibility = fullScreen ? Visibility.Collapsed : visibility;
+        ResizeGrip.Visibility = fullScreen ? Visibility.Collapsed : visibility;
+        ResizeVerticalEdge.Visibility = ResizeHorizontalEdge.Visibility = visibility;
+        ResizeHorizontalEdge.Height = fullScreen ? FullscreenResizeGesture.EdgeThicknessDip : 8;
+        ResizeVerticalEdge.Width = fullScreen ? FullscreenResizeGesture.EdgeThicknessDip : 8;
+        var cornerSize = fullScreen ? FullscreenResizeGesture.CornerSizeDip : 14;
+        ResizeHorizontalEdge.Margin = new Thickness(cornerSize, 0, cornerSize, 0);
+        ResizeVerticalEdge.Margin = new Thickness(0, cornerSize, 0, cornerSize);
         foreach (var corner in new[] { ResizeTopLeft, ResizeTopRight, ResizeBottomLeft, ResizeBottomRight })
         {
-            corner.Visibility = fullScreen ? visibility : Visibility.Collapsed;
+            corner.Width = corner.Height = cornerSize;
+            corner.Visibility = fullScreen && FullscreenResizeGesture.IsEnabled(Enum.Parse<ResizeZone>((string)corner.Tag), Settings.AnchorCorner)
+                ? visibility : Visibility.Collapsed;
             corner.SetCursor(ReferenceEquals(corner, ResizeTopLeft) || ReferenceEquals(corner, ResizeBottomRight)
                 ? InputSystemCursorShape.SizeNorthwestSoutheast : InputSystemCursorShape.SizeNortheastSouthwest);
         }
@@ -79,15 +91,19 @@ public sealed partial class MainWindow
 
     private void ShowResizeHighlight(ResizeThumb? zone)
     {
-        if (zone is not null && Settings.FullScreen)
-        {
-            ResizeHorizontalHighlight.VerticalAlignment = zone.VerticalAlignment;
-            ResizeVerticalHighlight.HorizontalAlignment = zone.HorizontalAlignment;
-        }
         var accent = new SolidColorBrush(_appearanceSettings.GetColorValue(Windows.UI.ViewManagement.UIColorType.Accent));
         ResizeHorizontalHighlight.Background = ResizeVerticalHighlight.Background = accent;
-        ResizeHorizontalHighlight.Visibility = zone is not null && !ReferenceEquals(zone, ResizeVerticalEdge) ? Visibility.Visible : Visibility.Collapsed;
-        ResizeVerticalHighlight.Visibility = zone is not null && !ReferenceEquals(zone, ResizeHorizontalEdge) ? Visibility.Visible : Visibility.Collapsed;
+        var horizontal = zone is not null && !ReferenceEquals(zone, ResizeVerticalEdge);
+        var vertical = zone is not null && !ReferenceEquals(zone, ResizeHorizontalEdge);
+        if (zone is not null && Settings.FullScreen)
+        {
+            // An adjacent corner can exit on either axis, but only the two actual
+            // edge zones opposite the anchor are drawn as draggable whole edges.
+            horizontal &= zone.VerticalAlignment == ResizeHorizontalEdge.VerticalAlignment;
+            vertical &= zone.HorizontalAlignment == ResizeVerticalEdge.HorizontalAlignment;
+        }
+        ResizeHorizontalHighlight.Visibility = horizontal ? Visibility.Visible : Visibility.Collapsed;
+        ResizeVerticalHighlight.Visibility = vertical ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void OnResizePointerEntered(object sender, PointerRoutedEventArgs e)
@@ -100,7 +116,7 @@ public sealed partial class MainWindow
 
     private void OnResizeStarted(object sender, ResizeDragStartedEventArgs e)
     {
-        if (PersistenceInteractionBlocked || _nativeSizingActive || _modal || _viewBlocked || !_hasDocument || sender is not ResizeThumb thumb) return;
+        if (PersistenceInteractionBlocked || _nativeSizingActive || _modal || _viewBlocked || !_hasDocument || sender is not ResizeThumb thumb || thumb.Visibility != Visibility.Visible) return;
         if (!TryGetResizeScreenPoint(e.RootPoint, e.RasterizationScale, out var pressedAt))
         { thumb.CancelDrag(); return; }
         BeginResizeSession(thumb, pressedAt);
@@ -117,11 +133,8 @@ public sealed partial class MainWindow
         ShowResizeHighlight(thumb);
         _resizeSnapshot = Document;
         _resizeAnchor = Settings.AnchorCorner;
-        _resizePointerAnchor = !Settings.FullScreen ? Settings.AnchorCorner : thumb.Tag?.ToString() switch
-        {
-            "TopLeft" => AnchorCorner.BottomRight, "TopRight" => AnchorCorner.BottomLeft,
-            "BottomLeft" => AnchorCorner.TopRight, _ => AnchorCorner.TopLeft,
-        };
+        if (Settings.FullScreen) _resizeZone = Enum.Parse<ResizeZone>((string)thumb.Tag);
+        _resizePointerAnchor = Settings.FullScreen ? FullscreenResizeGesture.PointerAnchor(_resizeZone) : Settings.AnchorCorner;
         _resizeModeLocked = false;
         _resizeModeTarget = Settings.FullScreen;
         _resizeScrollOffset = new(WallScroll.HorizontalOffset, WallScroll.VerticalOffset);
@@ -182,7 +195,8 @@ public sealed partial class MainWindow
         {
             _resizeModeLocked = true; _resizeModeTarget = true;
         }
-        else if (!_resizeModeLocked && source.Settings.FullScreen && dx < -7 * _resizeScale && dy < -7 * _resizeScale)
+        else if (!_resizeModeLocked && source.Settings.FullScreen && FullscreenResizeGesture.ShouldExit(_resizeZone,
+                     cursor.X - _resizeStart.X, cursor.Y - _resizeStart.Y, _resizeScale))
         {
             _resizeModeLocked = true; _resizeModeTarget = false;
         }
@@ -208,7 +222,7 @@ public sealed partial class MainWindow
         }
         if (source.Settings.FullScreen)
         {
-            // Dragging any fullscreen corner changes mode only. The selected anchor
+            // Dragging an enabled fullscreen edge/corner changes mode only. The selected anchor
             // and last committed manual window width belong to the settings, not the corner.
             var restored = _resizeWindowedResult ??= ProposeMode(source, source.Settings with { FullScreen = false });
             _resizeProposal = restored.Proposal; _resizeFailure = restored.Proposal is null ? restored : null;
