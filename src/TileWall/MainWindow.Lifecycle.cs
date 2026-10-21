@@ -30,7 +30,6 @@ public sealed partial class MainWindow
     private Window DialogOwner => _dialogHost ?? throw new InvalidOperationException("No modal host is active.");
 
     internal FrameworkElement WallContent => WallRoot;
-    internal double RasterScale => Scale;
     internal bool ModalActive => _modal;
     internal IWallDialogSession? ActiveDialog { get; private set; }
     internal WallSettings Settings => _hasDocument ? Document.Settings : new();
@@ -231,6 +230,7 @@ public sealed partial class MainWindow
             }
             UpdateResizeZones();
             UpdatePuzzleGate();
+            QueueEnvironmentAdaptation();
             DialogClosed?.Invoke();
             closed?.TrySetResult();
         }
@@ -277,6 +277,7 @@ public sealed partial class MainWindow
         else _needsVisualRefresh = true;
         ApplyViewport();
         UpdatePuzzleGate();
+        QueueEnvironmentAdaptation();
     }
 
     private void RefreshNativeFrame()

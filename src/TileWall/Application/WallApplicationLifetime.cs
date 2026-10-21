@@ -51,7 +51,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         _login = new LoginStartupController(scope);
         _window = new MainWindow(scope);
         _show = new WallShowMachine(WallShowState.Hidden, this);
-        _animation = new ShowHideAnimator(_window.WallContent, () => _window.RasterScale);
+        _animation = new ShowHideAnimator(_window.WallContent);
         _animation.ShowCompleted += _show.ShowAnimationCompleted;
         _animation.HideCompleted += _show.HideAnimationCompleted;
         _exit = new ExitCoordinator(this);

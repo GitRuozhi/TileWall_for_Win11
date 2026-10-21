@@ -22,6 +22,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         public MemberSwitchCapture? Capture;
         public MemberCarouselRuntime Runtime = new(false, 0, [], null);
         public IReadOnlyList<string>? Candidates;
+        public bool RefreshCandidatesOnResume;
         public string? SourceVersion;
         public PuzzleCandidateResult? PendingGallery;
         public CancellationTokenSource? Cancellation;
@@ -29,6 +30,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         public long FlipStarted;
         public bool Flipping;
         public bool NeedsInitial = true;
+        public bool RestoreEvictedFrame;
         public bool FrameLoadUnavailable;
         public bool Persisting;
         public int PendingPages;
@@ -41,6 +43,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     }
 
     private readonly Dictionary<string, State> _states = new(StringComparer.Ordinal);
+    private HashSet<string> _visibleMembers = new(StringComparer.Ordinal);
     private readonly WallImageService _images;
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _timer;
@@ -65,7 +68,12 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     private bool _animationClockRunning;
     private readonly WallMetrics _metrics = new();
     private MemberImageSource? _editorGallery;
-    private readonly Dictionary<string, MemberImageSource> _galleryRequests = new(StringComparer.OrdinalIgnoreCase);
+    private sealed class GalleryRequest(MemberImageSource source, CancellationTokenSource cancellation)
+    {
+        public MemberImageSource Source { get; } = source;
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+    }
+    private readonly Dictionary<string, GalleryRequest> _galleryRequests = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string?> _galleryDiagnostics = new(StringComparer.OrdinalIgnoreCase);
 
     public event Action<string, PuzzleFrame?, double>? FrameChanged;
@@ -101,14 +109,30 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         }
     }
 
-    public PuzzleFrame? FrameFor(string id) => _states.TryGetValue(id, out var state)
+    public PuzzleFrame? FrameFor(string id) => IsResident(id) && _states.TryGetValue(id, out var state)
         ? VisibleFrame(state) : null;
     public double ProgressFor(string id) => _states.TryGetValue(id, out var state) ? state.Progress : 1;
-    public MemberTransition? TransitionFor(string id) => _states.TryGetValue(id, out var state)
+    public MemberTransition? TransitionFor(string id) => IsResident(id) && _states.TryGetValue(id, out var state)
         ? state.Flipping
             ? new(state.PreviousFrame, state.NextFrame, state.Effect, state.Progress, state.PartitionOrdinals)
             : new(null, state.Frame, MemberTransitionEffect.None, 1)
         : null;
+
+    /// <summary>The caller supplies the viewport plus its preload margin. Until supplied, no wall frames load.</summary>
+    public void SetVisibleMembers(IReadOnlySet<string> ids)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        if (_disposed || _stopping || _visibleMembers.SetEquals(ids)) return;
+        var previous = _visibleMembers;
+        _visibleMembers = new HashSet<string>(ids, StringComparer.Ordinal);
+        foreach (var state in _states.Values)
+            if (previous.Contains(state.Member.Id) && !IsResident(state.Member.Id)) ReleaseFrames(state);
+        CancelUnusedGalleryRequests();
+        UpdateAnimationClock();
+        QueueCheck(false);
+    }
+
+    private bool IsResident(string id) => _gate != MemberCarouselGate.Hidden && _visibleMembers.Contains(id);
 
     private bool ReadAnimationsEnabled()
     {
@@ -139,7 +163,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     {
         if (_disposed || _stopping) return;
         foreach (var state in _states.Values)
-            if (state.Member is PuzzleMember && CouldAdvance(state)) state.PendingPages++;
+            if (IsResident(state.Member.Id) && state.Member is PuzzleMember && CouldAdvance(state)) state.PendingPages++;
         QueueCheck(false);
     }
 
@@ -149,6 +173,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     {
         if (_disposed || _stopping) return;
         _editorGallery = source?.Kind == MemberImageSourceKind.Folder ? source : null;
+        CancelUnusedGalleryRequests();
         QueueCheck(false);
     }
 
@@ -209,6 +234,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             }
         }
         UpdateAnimationClock();
+        CancelUnusedGalleryRequests();
         QueueCheck(false);
     }
 
@@ -217,20 +243,23 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         if (_disposed || _stopping || _gate == gate) return;
         var previousGate = _gate;
         _gate = gate;
-        if (gate == MemberCarouselGate.Ready && previousGate == MemberCarouselGate.Hidden)
-            foreach (var state in _states.Values.Where(state => state.Member.Images.Kind == MemberImageSourceKind.Folder))
-            { state.Candidates = null; state.SourceVersion = null; }
         Trace($"Gate={gate}");
         _timer.Stop();
         if (gate != MemberCarouselGate.Ready)
         {
             foreach (var state in _states.Values.ToArray())
             {
-                Cancel(state);
-                if (state.Flipping) FinishFlip(state);
+                if (gate == MemberCarouselGate.Hidden) ReleaseFrames(state);
+                else
+                {
+                    Cancel(state);
+                    if (state.Flipping) FinishFlip(state);
+                }
             }
             Trace("HideCancelOrSuspend");
         }
+        CancelUnusedGalleryRequests();
+        UpdateAnimationClock();
         QueueCheck(gate == MemberCarouselGate.Ready && previousGate == MemberCarouselGate.Hidden);
     }
 
@@ -244,7 +273,8 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     private void UpdateAnimationClock()
     {
-        var needed = !_disposed && !_stopping && _gate == MemberCarouselGate.Ready && _states.Values.Any(s => s.Flipping);
+        var needed = !_disposed && !_stopping && _gate == MemberCarouselGate.Ready &&
+            _states.Values.Any(s => IsResident(s.Member.Id) && s.Flipping);
         if (needed == _animationClockRunning) return;
         _animationClockRunning = needed;
         if (needed) _animationTimer.Start();
@@ -256,7 +286,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         if (_disposed || _stopping || _gate != MemberCarouselGate.Ready) return;
         foreach (var state in _states.Values.ToArray())
         {
-            if (!state.Flipping) continue;
+            if (!IsResident(state.Member.Id) || !state.Flipping) continue;
             state.Progress = Math.Clamp(Stopwatch.GetElapsedTime(state.FlipStarted).TotalMilliseconds /
                 PartitionTransitionTiming.DurationMilliseconds(state.PartitionOrdinals?.Count ?? 1), 0, 1);
             if (state.Progress >= 1) FinishFlip(state);
@@ -292,6 +322,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         ApplyAnimationPreference();
         foreach (var state in _states.Values.ToArray())
         {
+            if (!IsResident(state.Member.Id)) continue;
             if (state.PendingGallery is { } snapshot && state.Cancellation is null && !state.Flipping)
             { state.PendingGallery = null; ApplyGallerySnapshot(state, snapshot); }
             if (state.Flipping)
@@ -312,7 +343,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 state.NeedsInitial = true;
             if (state.NeedsInitial)
             {
-                if (!state.Runtime.Passive || explicitCheck) TrackWork(LoadInitialAsync(state));
+                if (!state.Runtime.Passive || state.RestoreEvictedFrame || explicitCheck) TrackWork(LoadInitialAsync(state));
                 continue;
             }
             if (state.Member.Images.Kind != MemberImageSourceKind.Folder) continue;
@@ -337,7 +368,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     private TimeSpan? CheckGallerySources()
     {
-        IEnumerable<MemberImageSource> wallSources = _gate == MemberCarouselGate.Hidden ? [] : _states.Values.Select(state => state.Member.Images)
+        IEnumerable<MemberImageSource> wallSources = _states.Values.Where(state => IsResident(state.Member.Id)).Select(state => state.Member.Images)
             .Where(source => source.Kind == MemberImageSourceKind.Folder);
         IEnumerable<MemberImageSource> editorSources = _editorGallery is { } editor ? [editor] : [];
         var sources = wallSources.Concat(editorSources)
@@ -349,28 +380,50 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             if (_galleryRequests.ContainsKey(key)) continue;
             var remaining = _images.GalleryCheckDue(source) - DateTimeOffset.UtcNow;
             if (remaining <= TimeSpan.Zero)
-            { _galleryRequests.Add(key, source); TrackWork(RefreshGallerySourceAsync(source, key)); }
+            {
+                var request = new GalleryRequest(source, CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token));
+                _galleryRequests.Add(key, request);
+                TrackWork(RefreshGallerySourceAsync(request, key));
+            }
             else wake = Earlier(wake, remaining);
         }
         return wake;
     }
 
-    private async Task RefreshGallerySourceAsync(MemberImageSource source, string key)
+    private bool HasResidentSource(MemberImageSource source) => _states.Values.Any(state =>
+        IsResident(state.Member.Id) && SameSource(state.Member.Images, source));
+
+    private void CancelUnusedGalleryRequests()
     {
+        foreach (var request in _galleryRequests.Values.ToArray())
+            if (!HasResidentSource(request.Source) &&
+                !(_editorGallery is { } editor && SameSource(editor, request.Source))) request.Cancellation.Cancel();
+    }
+
+    private async Task RefreshGallerySourceAsync(GalleryRequest request, string key)
+    {
+        var source = request.Source;
         try
         {
-            var snapshot = await _images.RefreshGalleryAsync(source, _lifetime.Token);
-            if (_disposed || _stopping || snapshot.Status == WallImageStatus.Cancelled) return;
-            var wallVisible = _gate != MemberCarouselGate.Hidden;
+            var snapshot = await _images.RefreshGalleryAsync(source, request.Cancellation.Token);
+            if (_disposed || _stopping || request.Cancellation.IsCancellationRequested || snapshot.Status == WallImageStatus.Cancelled) return;
+            var wallVisible = HasResidentSource(source);
             if (_editorGallery is { } editor && SameSource(editor, source)) GalleryCandidatesChanged?.Invoke(source, snapshot);
             if (wallVisible)
-                foreach (var state in _states.Values.Where(state => SameSource(state.Member.Images, source))) state.PendingGallery = snapshot;
+                foreach (var state in _states.Values.Where(state => IsResident(state.Member.Id) && SameSource(state.Member.Images, source)))
+                    state.PendingGallery = snapshot;
             if (WallImageService.DescribeCandidateDiagnostic(snapshot) is { Length: > 0 } diagnostic && wallVisible && _galleryDiagnostics.GetValueOrDefault(key) != diagnostic)
                 _error(diagnostic);
             _galleryDiagnostics[key] = WallImageService.DescribeCandidateDiagnostic(snapshot);
         }
-        catch (Exception ex) { if (!_disposed && !_stopping && _gate != MemberCarouselGate.Hidden) _error(ex.Message); }
-        finally { _galleryRequests.Remove(key); QueueCheck(false); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (!_disposed && !_stopping && HasResidentSource(source)) _error(ex.Message); }
+        finally
+        {
+            if (_galleryRequests.TryGetValue(key, out var current) && ReferenceEquals(current, request)) _galleryRequests.Remove(key);
+            request.Cancellation.Dispose();
+            QueueCheck(false);
+        }
     }
 
     private void ApplyGallerySnapshot(State state, PuzzleCandidateResult snapshot)
@@ -383,6 +436,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             state.Candidates?.SequenceEqual(snapshot.Paths, StringComparer.OrdinalIgnoreCase) == true && !retryFrame) return;
         if (!snapshot.IsComplete && snapshot.Paths.Count == 0) return;
         state.SourceVersion = snapshot.SourceVersion; state.Candidates = snapshot.Paths;
+        state.RefreshCandidatesOnResume = false;
         if (snapshot.IsComplete && snapshot.Paths.Count == 0)
         {
             state.Frame = state.NextFrame = state.PreviousFrame = null;
@@ -404,6 +458,8 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     private async Task LoadInitialAsync(State state)
     {
         var (generation, token) = BeginRequest(state);
+        var resumePassive = state.RestoreEvictedFrame && state.Runtime.Passive;
+        var resumedRuntime = state.Runtime;
         try
         {
             if (state.Member.Images.Kind != MemberImageSourceKind.Folder)
@@ -416,6 +472,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 if (staticFrame.Frame is { } loaded) state.Frame = loaded;
                 else if (staticFrame.Status == WallImageStatus.None) state.Frame = null;
                 state.NeedsInitial = false;
+                state.RestoreEvictedFrame = false;
                 state.Progress = 1;
                 state.Runtime = new(false, 0, [], null);
                 Publish(state);
@@ -424,20 +481,26 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             // Sync clears Candidates when the folder source changes. Reuse the
             // ordered snapshot for display/next-page requests instead of re-probing
             // every file in the folder each time.
-            var candidateSnapshot = state.Candidates is null ? await _images.EnumerateMemberCandidatesAsync(state.Member.Images, token) : null;
-            var candidates = state.Candidates ?? candidateSnapshot!.Paths;
+            var candidateSnapshot = state.Candidates is null || state.RefreshCandidatesOnResume
+                ? await _images.EnumerateMemberCandidatesAsync(state.Member.Images, token) : null;
+            var candidates = candidateSnapshot?.Paths ?? state.Candidates!;
             if (!Current(state, generation)) return;
             state.Candidates = candidates;
+            state.RefreshCandidatesOnResume = false;
             if (candidateSnapshot is not null) state.SourceVersion = candidateSnapshot.SourceVersion;
             if (candidates.Count == 0)
             {
                 if (candidateSnapshot?.IsComplete != false) { state.Frame = null; Publish(state); }
-                state.NeedsInitial = false; state.Runtime = new(true, 0, [], null); return;
+                state.NeedsInitial = false; state.RestoreEvictedFrame = false;
+                state.Runtime = new(true, 0, [], null); return;
             }
             var current = state.Member.Carousel?.CurrentImageId;
             var restoring = candidates.FirstOrDefault(path => StringComparer.OrdinalIgnoreCase.Equals(path, current));
             var tentative = state.Member.Carousel;
-            for (var attempt = 0; attempt < Math.Min(3, candidates.Count); attempt++)
+            // Rehydrating an evicted passive member may restore its committed image,
+            // but does not retry a rejected formal switch or consume a different queue entry.
+            var attempts = resumePassive ? (restoring is null ? 0 : 1) : Math.Min(3, candidates.Count);
+            for (var attempt = 0; attempt < attempts; attempt++)
             {
                 var restore = attempt == 0 && restoring is not null;
                 if (!restore) tentative = ImageCarouselSequence.Next(candidates, tentative,
@@ -449,8 +512,9 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 if (result.Frame is not { } frame) continue;
                 state.FrameLoadUnavailable = false;
                 state.NeedsInitial = false;
+                state.RestoreEvictedFrame = false;
                 state.Progress = 1;
-                state.Runtime = new(false, 0, [], null);
+                state.Runtime = resumePassive ? resumedRuntime : new(false, 0, [], null);
                 if (!restore && tentative is not null)
                     state.Runtime = state.Runtime with { PendingImageId = candidate, PendingState = tentative };
                 if (state.Frame is { } previous &&
@@ -479,6 +543,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 return;
             }
             state.FrameLoadUnavailable = true;
+            state.RestoreEvictedFrame = false;
             state.Runtime = state.Runtime with { Passive = true };
             Trace($"InitialUnavailable member={state.Member.Id} generation={generation}");
         }
@@ -495,11 +560,14 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         {
             // A folder is sampled at a due read, never polled while hidden or watched in the background.
             // Sync discards the candidate snapshot on source changes; until then, reuse it.
-            if (state.Candidates is null && (state.Member.Images.Kind == MemberImageSourceKind.Folder || manual))
+            if ((state.Candidates is null || state.RefreshCandidatesOnResume) &&
+                (state.Member.Images.Kind == MemberImageSourceKind.Folder || manual))
             {
                 var candidates = await _images.EnumerateMemberCandidatesAsync(state.Member.Images, token);
                 if (!Current(state, generation)) return;
                 state.Candidates = candidates.Paths;
+                state.SourceVersion = candidates.SourceVersion;
+                state.RefreshCandidatesOnResume = false;
                 state.Runtime = MemberCarouselRules.AbandonPending(state.Runtime);
                 decision = manual ? NextPageDecision(state)
                     : MemberCarouselRules.Evaluate(state.Candidates, state.Member.Carousel,
@@ -634,6 +702,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         return (generation, state.Cancellation.Token);
     }
     private bool Current(State state, long generation) => !_disposed && !_stopping && _gate == MemberCarouselGate.Ready &&
+        IsResident(state.Member.Id) &&
         state.Generation == generation && _states.TryGetValue(state.Member.Id, out var existing) &&
         ReferenceEquals(existing, state) && state.Cancellation?.IsCancellationRequested == false;
     private void EndRequest(State state, long generation)
@@ -654,6 +723,22 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         state.Cancellation?.Dispose();
         state.Cancellation = null;
         state.Runtime = MemberCarouselRules.AbandonPending(state.Runtime);
+    }
+
+    private void ReleaseFrames(State state)
+    {
+        state.RestoreEvictedFrame |= state.Frame is not null || state.NextFrame is not null || state.PreviousFrame is not null;
+        Cancel(state);
+        state.Frame = state.NextFrame = state.PreviousFrame = null;
+        state.Capture = null;
+        state.Flipping = false;
+        state.Progress = 1;
+        state.Effect = MemberTransitionEffect.None;
+        state.PartitionOrdinals = null;
+        state.PendingPages = 0;
+        state.NeedsInitial = true;
+        state.RefreshCandidatesOnResume = state.Member.Images.Kind == MemberImageSourceKind.Folder;
+        Publish(state); // Existing views drop both transition layers and their ImageSource references.
     }
     private void Fail(State state, Exception error)
     {
@@ -703,7 +788,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         _animationTimer.Stop();
         _animationClockRunning = false;
         _lifetime.Cancel();
-        foreach (var state in _states.Values) Cancel(state);
+        foreach (var state in _states.Values) ReleaseFrames(state);
     }
 
     public void Dispose()

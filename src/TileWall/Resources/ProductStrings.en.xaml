@@ -424,4 +424,8 @@
     <x:String x:Key="Import.SourceUnavailable">The source is temporarily unavailable.</x:String>
     <x:String x:Key="Gallery.SourceUnavailable">The gallery source is unavailable. Showing the latest cache. {0}</x:String>
     <x:String x:Key="Gallery.SourceUnavailableNoCache">The gallery source is unavailable and no cached images are available. {0}</x:String>
+    <x:String x:Key="MenuStart.Expand">Expand group</x:String>
+    <x:String x:Key="MenuStart.Collapse">Collapse group</x:String>
+    <x:String x:Key="MenuStart.Unnamed">Unnamed group</x:String>
+    <x:String x:Key="Wall.EnvironmentScroll">The screen cannot fit all content. Your layout is preserved; scroll in either direction to reach it.</x:String>
 </ResourceDictionary>

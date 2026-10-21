@@ -12,7 +12,7 @@ namespace TileWall;
 public sealed partial class MainWindow
 {
     private WorkAreaRect _screenArea;
-    private WallViewportBudget CurrentViewportBudget => ViewportBudget(Settings);
+    private WallViewportBudget CurrentViewportBudget => RecoverableViewportBudget(Settings);
     private WallViewportBudget ViewportBudget(bool fullScreen) => ViewportBudget(Settings with
         { FullScreen = fullScreen });
     private WallViewportBudget ViewportBudget(WallSettings settings) => WallViewportPolicy.Create(
@@ -83,7 +83,8 @@ public sealed partial class MainWindow
 
     // The Surface and all hit/drop calculations use content coordinates. Only window overlays
     // consume viewport coordinates, so scrolling never changes stored member or pointer offsets.
-    private Point ContentToViewport(Point point) => new(point.X - WallScroll.HorizontalOffset + WallScroll.Margin.Left, point.Y + WallScroll.Margin.Top);
+    private Point ContentToViewport(Point point) => new(point.X - WallScroll.HorizontalOffset + WallScroll.Margin.Left,
+        point.Y - WallScroll.VerticalOffset + WallScroll.Margin.Top);
 
     private Rect ScrollRegionFor(bool fullScreen, double width, double height, AnchorCorner? anchor = null,
         WallSettings? presentationSettings = null)
@@ -110,15 +111,16 @@ public sealed partial class MainWindow
         WallSettings? presentationSettings = null)
     {
         if (presentationSettings is not null) _presentedViewportSettings = presentationSettings;
-        var scrolling = PresentedViewportSettings.ExpandColumns;
-        if (_scrollMode != scrolling)
+        var scrolling = PresentedViewportSettings.ExpandColumns || _environmentOverflow;
+        if (_scrollMode != scrolling || _verticalScrollMode != _environmentOverflow)
         {
             _scrollMode = scrolling;
+            _verticalScrollMode = _environmentOverflow;
             WallScroll.HorizontalScrollMode = scrolling ? ScrollMode.Enabled : ScrollMode.Disabled;
             WallScroll.HorizontalScrollBarVisibility = scrolling ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
-            WallScroll.VerticalScrollMode = ScrollMode.Disabled;
-            WallScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
-            if (!scrolling && WallScroll.HorizontalOffset != 0) WallScroll.ChangeView(0, 0, null, disableAnimation: true);
+            WallScroll.VerticalScrollMode = _environmentOverflow ? ScrollMode.Enabled : ScrollMode.Disabled;
+            WallScroll.VerticalScrollBarVisibility = _environmentOverflow ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+            if (!scrolling || !_environmentOverflow) WallScroll.ChangeView(scrolling ? null : 0, _environmentOverflow ? null : 0, null, disableAnimation: true);
         }
         if (_scrollRegion != region)
         {
@@ -131,9 +133,11 @@ public sealed partial class MainWindow
         // The document owns its complete row budget. A larger clip must not create phantom rows.
         if (updateSurface) Surface.SetViewportMinimum(fullScreen || scrolling ? region.Width : 0, 0);
         UpdateWindowsSidebar();
+        UpdateVisibleWallFrames();
     }
 
     private bool? _scrollMode;
+    private bool _verticalScrollMode;
     private Rect _scrollRegion;
     private WallSettings? _presentedViewportSettings;
     private WallSettings PresentedViewportSettings => _presentedViewportSettings ?? Settings;

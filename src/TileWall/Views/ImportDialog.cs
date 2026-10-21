@@ -46,8 +46,12 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly Canvas _groupOverlay = new() { IsHitTestVisible = false };
     private GridViewHeaderItem? _hoveredHeader;
     private readonly GridView _grid = new() { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = false };
+    private ScrollViewer? _gridScrollViewer;
+    private EventHandler<ScrollViewerViewChangedEventArgs>? _gridViewChanged;
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Dictionary<string, string> _selected = new(StringComparer.Ordinal);
+    private readonly Dictionary<ImportIconCacheKey, LinkedListNode<CachedImportIcon>> _iconFrames = [];
+    private readonly LinkedList<CachedImportIcon> _iconFrameLru = [];
     private string? _projectionNotice;
     private readonly Dictionary<string, ImportBatchItem> _items = new(StringComparer.Ordinal);
     private IReadOnlyList<StartMenuImportCandidate> _candidates = [];
@@ -55,7 +59,8 @@ internal sealed class ImportDialog : IWallDialogSession
     private Task _pending = Task.CompletedTask;
     private readonly HashSet<Task> _pendingOperations = [];
     private CancellationTokenSource? _pageRequest;
-    private bool _saved, _closed, _allowDiscard, _discarded, _scanReceived, _updating, _initialSelectionApplied;
+    private Task? _refreshObserver;
+    private bool _saved, _closed, _allowDiscard, _discarded, _scanReceived, _updating;
     private bool _synchronizingSelection, _refreshingStrings, _shown;
     private int _sourceEpoch, _tileSize = 1, _skipped, _scanned, _readErrors;
 
@@ -76,6 +81,11 @@ internal sealed class ImportDialog : IWallDialogSession
         RefreshItemTemplate();
         _grid.Width = _metrics.LaneWidth + _metrics.Gap + 16;
         _grid.Padding = new Thickness(0);
+        ScrollViewer.SetVerticalScrollBarVisibility(_grid, ScrollBarVisibility.Auto);
+        ScrollViewer.SetVerticalScrollMode(_grid, ScrollMode.Enabled);
+        ScrollViewer.SetHorizontalScrollBarVisibility(_grid, ScrollBarVisibility.Disabled);
+        ScrollViewer.SetHorizontalScrollMode(_grid, ScrollMode.Disabled);
+        _grid.Loaded += OnCandidateGridLoaded;
         _grid.ItemContainerStyle = (Style)XamlReader.Load("""
             <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="GridViewItem">
                 <Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" />
@@ -90,7 +100,7 @@ internal sealed class ImportDialog : IWallDialogSession
             _grid.Resources[key] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         _grid.ItemsPanel = (ItemsPanelTemplate)XamlReader.Load("""
             <ItemsPanelTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
-                <ItemsWrapGrid Orientation="Horizontal" />
+                <ItemsWrapGrid Orientation="Horizontal" CacheLength="0.5" />
             </ItemsPanelTemplate>
             """);
         // The stock GridViewHeaderItem adds 8 DIP top padding, an 8+1 DIP
@@ -129,6 +139,9 @@ internal sealed class ImportDialog : IWallDialogSession
         var budget = OwnedDialogWindow.ContentBudget(owner);
         var width = Math.Min(900, budget.Width);
         var height = Math.Min(620, budget.Height);
+        // GridView is inside an outer ScrollViewer for source switching. Give it
+        // a finite viewport before the first measure so ItemsWrapGrid can virtualize.
+        _grid.Height = height;
         var rightWidth = Math.Min(420, width * 0.48);
         _grid.Width = Math.Min(_grid.Width, width - rightWidth - 24);
 
@@ -158,11 +171,13 @@ internal sealed class ImportDialog : IWallDialogSession
         var left = new Grid { RowSpacing = 8 };
         left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         // ItemsWrapGrid flattens grouped headers/items rather than creating GroupItem
-        // ancestors. Put the shared outline beside that content so it scrolls with it.
+        // ancestors. Keep the shared outline beside the viewport and clear it on scrolling.
         var candidateSurface = new Grid { HorizontalAlignment = HorizontalAlignment.Left };
         candidateSurface.Children.Add(_grid); candidateSurface.Children.Add(_groupOverlay);
-        _candidateScroll = new ScrollViewer { Content = candidateSurface, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        _candidateScroll = new ScrollViewer { Content = candidateSurface,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollMode = ScrollMode.Disabled,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Disabled };
+        _candidateScroll.SizeChanged += OnCandidateScrollSizeChanged;
         left.Children.Add(_candidateScroll); left.Children.Add(_development);
 
         var page = new Grid { Width = width, Height = height, ColumnSpacing = 24, RowSpacing = 8 };
@@ -253,8 +268,8 @@ internal sealed class ImportDialog : IWallDialogSession
             await _catalog.ReadCachedAsync().WaitAsync(token);
             if (!IsCurrentRequest(epoch, token)) return;
             ApplySnapshot();
-            await _catalog.RequestRefreshAsync().WaitAsync(token);
-            if (IsCurrentRequest(epoch, token)) ApplySnapshot();
+            _refreshObserver = ObserveRefreshAsync(_catalog.RequestRefreshAsync(), epoch, token);
+            TrackOperation(_refreshObserver);
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -263,6 +278,21 @@ internal sealed class ImportDialog : IWallDialogSession
             {
                 _status.Text = string.Format(ProductStrings.Get("Import.ScanFailed"), ex.Message);
             }
+        }
+    }
+
+    private async Task ObserveRefreshAsync(Task refresh, int epoch, CancellationToken token)
+    {
+        try
+        {
+            await refresh.WaitAsync(token);
+            if (IsCurrentRequest(epoch, token)) ApplySnapshot();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            if (IsCurrentRequest(epoch, token))
+                _status.Text = string.Format(ProductStrings.Get("Import.ScanFailed"), ex.Message);
         }
     }
 
@@ -315,21 +345,22 @@ internal sealed class ImportDialog : IWallDialogSession
         SelectionChanged();
     }
 
-    private void RefreshProjection()
+    private void RefreshProjection(bool force = false)
     {
         var previous = _visibleCandidates;
-        _visibleCandidates = StartMenuImportProjection.Project(_candidates, _autoTrim.IsOn, _recognizeGroups.IsOn);
-        var migration = StartMenuCandidateProjection.Migrate(_selected, previous, _visibleCandidates, _candidates);
+        var projection = StartMenuImportProjection.Project(_candidates, _autoTrim.IsOn, _recognizeGroups.IsOn);
+        var migration = StartMenuCandidateProjection.Migrate(_selected, previous, projection, _candidates);
         _selected.Clear();
         foreach (var pair in migration.Selected) _selected.Add(pair.Key, pair.Value);
-        if (!_initialSelectionApplied && _visibleCandidates.Any(candidate => candidate.CanAdd))
-        {
-            _initialSelectionApplied = true;
-            foreach (var candidate in _visibleCandidates.Where(candidate => candidate.CanAdd && candidate.Exclusion == StartMenuExclusion.None))
-                SetSelection(candidate, true, refresh: false);
-        }
+        _visibleCandidates = projection;
         _projectionNotice = migration.RemovedCount > 0
             ? string.Format(ProductStrings.Get("Import.SelectionRemoved"), migration.RemovedCount) : null;
+        if (!force && _grid.ItemsSource is not null && SameRows(previous, projection))
+        {
+            UpdateRowTooltips(projection);
+            SelectionChanged();
+            return;
+        }
         foreach (var row in _rows.ToArray()) ReleaseRow(row);
         _grid.ItemsSource = null;
         var source = new CollectionViewSource { IsSourceGrouped = true,
@@ -337,6 +368,83 @@ internal sealed class ImportDialog : IWallDialogSession
                 .Select(group => new CandidateGroup(group.First().Bucket.Title, group)).ToArray() };
         if (_source.SelectedIndex == 0) _grid.ItemsSource = source.View;
         SelectionChanged();
+    }
+
+    private static bool SameRows(IReadOnlyList<StartMenuImportCandidate> left,
+        IReadOnlyList<StartMenuImportCandidate> right)
+    {
+        if (left.Count != right.Count) return false;
+        for (var index = 0; index < left.Count; index++)
+        {
+            var a = left[index]; var b = right[index];
+            var ac = a.Candidate; var bc = b.Candidate;
+            if (a.SelectionKey != b.SelectionKey || a.Identity?.Key != b.Identity?.Key ||
+                a.Identity?.Target != b.Identity?.Target || a.Identity?.Arguments != b.Identity?.Arguments ||
+                a.Identity?.WorkingDirectory != b.Identity?.WorkingDirectory || a.Identity?.IsUrl != b.Identity?.IsUrl ||
+                a.Bucket.Key != b.Bucket.Key || a.Bucket.Title != b.Bucket.Title || a.Bucket.Order != b.Bucket.Order ||
+                ac.FullPath != bc.FullPath || ac.DisplayName != bc.DisplayName || ac.RelativePath != bc.RelativePath ||
+                ac.RootPath != bc.RootPath || ac.Source != bc.Source || ac.Kind != bc.Kind ||
+                ac.IsImportable != bc.IsImportable || !ac.NotImportableReasons.SequenceEqual(bc.NotImportableReasons, StringComparer.Ordinal) ||
+                a.CanAdd != b.CanAdd || a.Exclusion != b.Exclusion || a.ErrorCode != b.ErrorCode ||
+                a.Company != b.Company || a.SourceSha256 != b.SourceSha256 || a.IconDirectory != b.IconDirectory || a.IconKey != b.IconKey ||
+                !SameSelectionSources(a.SelectionSources, b.SelectionSources)) return false;
+        }
+        return true;
+    }
+
+    private static bool SameSelectionSources(IEnumerable<StartMenuSelectionSource> left,
+        IEnumerable<StartMenuSelectionSource> right) => left.OrderBy(source => source.SourceKey, StringComparer.Ordinal)
+        .ThenBy(source => source.IdentityKey, StringComparer.Ordinal)
+        .SequenceEqual(right.OrderBy(source => source.SourceKey, StringComparer.Ordinal)
+            .ThenBy(source => source.IdentityKey, StringComparer.Ordinal));
+
+    private void UpdateRowTooltips(IReadOnlyList<StartMenuImportCandidate> projection)
+    {
+        var current = projection.ToDictionary(candidate => candidate.SelectionKey, StringComparer.Ordinal);
+        foreach (var row in _rows)
+        {
+            if (!current.TryGetValue(row.Candidate.SelectionKey, out var candidate)) continue;
+            var tooltip = CandidateTooltip(candidate);
+            ActionIcon.SetTip(row.Toggle, tooltip);
+            AutomationProperties.SetHelpText(row.Toggle, tooltip);
+            AutomationProperties.SetHelpText(row.Container, tooltip);
+        }
+    }
+
+    private string CandidateTooltip(StartMenuImportCandidate item)
+    {
+        var candidate = item.Candidate;
+        var sourceText = ProductStrings.Get(candidate.Source == SourceKind.User ? "Import.UserSource" : "Import.CommonSource");
+        var reason = item.ErrorCode is { } error ? ErrorText(error) : (item.Exclusion == StartMenuExclusion.None ? string.Empty
+            : ProductStrings.Get("Import.Exclusion." + item.Exclusion));
+        var tooltip = $"{sourceText} · {candidate.FullPath}";
+        if (!string.IsNullOrWhiteSpace(candidate.DisplayName)) tooltip = candidate.DisplayName + "\n" + tooltip;
+        if (item.Stale) tooltip += "\n" + Text("Import.Stale", "来源待核验");
+        if (reason.Length != 0) tooltip += "\n" + reason;
+        if (!candidate.IsImportable) tooltip += "\n" + string.Join("; ", candidate.NotImportableReasons);
+        return tooltip;
+    }
+
+    private PuzzleFrame? GetCachedImportIcon(ImportIconCacheKey key)
+    {
+        if (!_iconFrames.TryGetValue(key, out var node)) return null;
+        _iconFrameLru.Remove(node); _iconFrameLru.AddFirst(node);
+        return node.Value.Frame;
+    }
+
+    private void CacheImportIcon(ImportIconCacheKey key, PuzzleFrame frame)
+    {
+        if (_iconFrames.TryGetValue(key, out var existing))
+        {
+            existing.Value = new(key, frame);
+            _iconFrameLru.Remove(existing); _iconFrameLru.AddFirst(existing);
+            return;
+        }
+        var node = _iconFrameLru.AddFirst(new CachedImportIcon(key, frame)); _iconFrames.Add(key, node);
+        while (_iconFrames.Count > 32)
+        {
+            var last = _iconFrameLru.Last!; _iconFrames.Remove(last.Value.Key); _iconFrameLru.RemoveLast();
+        }
     }
 
     private void RefreshItemTemplate()
@@ -349,7 +457,7 @@ internal sealed class ImportDialog : IWallDialogSession
     {
         _tileSize = size;
         _small.IsChecked = size == 1; _medium.IsChecked = size == 2;
-        RefreshItemTemplate(); RefreshProjection();
+        RefreshItemTemplate(); RefreshProjection(force: true);
     }
 
     private sealed class CandidateGroup(string title, IEnumerable<StartMenuImportCandidate> items) : List<StartMenuImportCandidate>(items)
@@ -358,7 +466,10 @@ internal sealed class ImportDialog : IWallDialogSession
     }
 
     private sealed record CandidateRow(CancellationTokenSource Request, StartMenuImportCandidate Candidate, PuzzleCanvasView View,
-        ToggleButton Toggle, bool CanAdd, RoutedEventHandler Changed, Action ResetInteraction, Border Outline, Border Check);
+        ToggleButton Toggle, DependencyObject Container, bool CanAdd, RoutedEventHandler Changed, Action ResetInteraction, Border Outline, Border Check);
+
+    private readonly record struct ImportIconCacheKey(string SourceKey, string IconKey, int Pixels);
+    private sealed record CachedImportIcon(ImportIconCacheKey Key, PuzzleFrame Frame);
 
     private void ReleaseRow(CandidateRow row)
     {
@@ -375,6 +486,46 @@ internal sealed class ImportDialog : IWallDialogSession
     {
         _hoveredHeader = null;
         _groupOverlay.Children.Clear();
+    }
+
+    private void OnCandidateScrollSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_closed || !double.IsFinite(e.NewSize.Height) || e.NewSize.Height <= 0 ||
+            Math.Abs(_grid.Height - e.NewSize.Height) < 1) return;
+        _grid.Height = e.NewSize.Height;
+    }
+
+    private void OnCandidateGridLoaded(object sender, RoutedEventArgs e)
+    {
+        if (_closed || _gridScrollViewer is not null) return;
+        _grid.ApplyTemplate();
+        _grid.UpdateLayout();
+        _gridScrollViewer = FindGridScrollViewer(_grid);
+        if (_gridScrollViewer is null) return;
+        _gridViewChanged = (_, _) => ClearGroupOutline();
+        _gridScrollViewer.ViewChanged += _gridViewChanged;
+    }
+
+    private static ScrollViewer? FindGridScrollViewer(DependencyObject parent)
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is ScrollViewer scrollViewer) return scrollViewer;
+            if (FindGridScrollViewer(child) is { } nested) return nested;
+        }
+        return null;
+    }
+
+    private void DetachGridScrollViewer()
+    {
+        if (_gridScrollViewer is { } viewer && _gridViewChanged is { } handler)
+            viewer.ViewChanged -= handler;
+        _gridScrollViewer = null;
+        _gridViewChanged = null;
+        _candidateScroll.SizeChanged -= OnCandidateScrollSizeChanged;
+        _grid.Loaded -= OnCandidateGridLoaded;
+        ClearGroupOutline();
     }
 
     private void OnCandidatePointerMoved(object sender, PointerRoutedEventArgs e)
@@ -433,14 +584,7 @@ internal sealed class ImportDialog : IWallDialogSession
         var size = _metrics.WidthOf(_tileSize);
         var card = new Grid { Width = size, Height = size,
             HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
-        var sourceText = ProductStrings.Get(candidate.Source == SourceKind.User ? "Import.UserSource" : "Import.CommonSource");
-        var reason = item.ErrorCode is { } error ? ErrorText(error) : (item.Exclusion == StartMenuExclusion.None ? string.Empty
-            : ProductStrings.Get("Import.Exclusion." + item.Exclusion));
-        var tooltip = $"{sourceText} · {candidate.FullPath}";
-        if (!string.IsNullOrWhiteSpace(candidate.DisplayName)) tooltip = candidate.DisplayName + "\n" + tooltip;
-        if (item.Stale) tooltip += "\n" + Text("Import.Stale", "来源待核验");
-        if (reason.Length != 0) tooltip += "\n" + reason;
-        if (!candidate.IsImportable) tooltip += "\n" + string.Join("; ", candidate.NotImportableReasons);
+        var tooltip = CandidateTooltip(item);
         var view = WallMemberVisualFactory.Create(tile, null, _metrics, _dialog.XamlRoot?.RasterizationScale ?? 1,
             _style, interactive: false, externalInteraction: true);
         view.IsHitTestVisible = false;
@@ -470,20 +614,27 @@ internal sealed class ImportDialog : IWallDialogSession
             if (!_synchronizingSelection && item.CanAdd) SetSelection(item, toggle.IsChecked == true);
         };
         toggle.Checked += changed; toggle.Unchecked += changed;
-        var row = new CandidateRow(request, item, view, toggle, item.CanAdd, changed, reset, visual.Outline, visual.Check);
+        var row = new CandidateRow(request, item, view, toggle, e.ItemContainer, item.CanAdd, changed, reset, visual.Outline, visual.Check);
         _rows.Add(row);
         e.ItemContainer.Tag = row;
         host.Children.Add(toggle); UpdateSelectionFeedback();
-        TrackOperation(LoadIconAsync());
+        var pixels = (int)Math.Ceiling(size * (_dialog.XamlRoot?.RasterizationScale ?? 1));
+        var iconCacheKey = item.IconKey is { } iconKey
+            ? new ImportIconCacheKey(candidate.SourceKey, iconKey, pixels) : (ImportIconCacheKey?)null;
+        if (iconCacheKey is { } cacheKey && GetCachedImportIcon(cacheKey) is { } cachedFrame)
+            view.UpdateFrame(cachedFrame);
+        else TrackOperation(LoadIconAsync(pixels, iconCacheKey));
 
-        async Task LoadIconAsync()
+        async Task LoadIconAsync(int pixels, ImportIconCacheKey? iconCacheKey)
         {
             try
             {
-                var pixels = (int)Math.Ceiling(size * (_dialog.XamlRoot?.RasterizationScale ?? 1));
                 var frame = _loadIcon is null ? null : await _loadIcon(item, pixels, request.Token);
+                var fromCachedPackage = frame?.Frame is not null;
                 if (frame?.Frame is null && !request.IsCancellationRequested)
                     frame = await _images.LoadMemberFrameAsync(tile, candidate.FullPath, pixels, pixels, ct: request.Token);
+                if (fromCachedPackage && frame?.Frame is { } loaded && iconCacheKey is { } key)
+                    CacheImportIcon(key, loaded);
                 if (!request.IsCancellationRequested) view.UpdateFrame(frame?.Frame);
             }
             catch (OperationCanceledException) { }
@@ -561,17 +712,24 @@ internal sealed class ImportDialog : IWallDialogSession
         if (_closed) return;
         _closed = true; _lifetime.Cancel(); _pageRequest?.Cancel();
         _catalog.Changed -= _catalogChanged;
+        DetachGridScrollViewer();
         foreach (var row in _rows.ToArray()) ReleaseRow(row);
         foreach (var request in _rowRequests.ToArray()) ReleaseRowRequest(request);
+        _iconFrames.Clear(); _iconFrameLru.Clear();
     }
 
     public bool HasUnsavedDraft => !_saved && _selected.Count != 0;
     public async Task WaitForPendingAsync()
     {
         // The page stops waiting. The primary lifetime drains the shared producer only after exit is confirmed.
-        if (!_closed && !_pending.IsCompleted) _pageRequest?.Cancel();
+        if (!_closed) _pageRequest?.Cancel();
         try { await _pending; }
         catch (OperationCanceledException) { }
+        if (_refreshObserver is { } observer)
+        {
+            try { await observer; }
+            catch (OperationCanceledException) { }
+        }
     }
     public Task<ExitDecision> ConfirmExitAsync() => _exit.ConfirmAsync();
     public void RequestDismiss() => _dialog.Hide();

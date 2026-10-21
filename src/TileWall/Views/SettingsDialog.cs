@@ -86,10 +86,6 @@ internal sealed class SettingsDialog : IWallDialogSession
         Grid.SetColumn(_transparency, 2); transparencyRow.Children.Add(_transparency); AddRow("Settings.Transparency", transparencyRow);
         AddRow("Settings.ShowGrid", _showGrid);
         AddSeparator();
-        AddRow("Settings.FullScreen", _fullScreen);
-        AddRow("Settings.ExpandColumns", _expandColumns);
-        AddRow("Settings.MenuStart", _menuStart);
-        AddRow("Settings.Anchor", _anchor);
         var hotKeyRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         hotKeyRow.Children.Add(_resetHotKey); hotKeyRow.Children.Add(_hotKey);
         AddRow("Settings.HotKey", hotKeyRow);
@@ -103,6 +99,10 @@ internal sealed class SettingsDialog : IWallDialogSession
         AddRow("Settings.RunAtLogin", _runAtLogin);
         AddRow("Settings.Topmost", _topmost);
         AddRow("Settings.StayVisible", _stayVisible);
+        AddRow("Settings.Anchor", _anchor);
+        AddRow("Settings.MenuStart", _menuStart);
+        AddRow("Settings.FullScreen", _fullScreen);
+        AddRow("Settings.ExpandColumns", _expandColumns);
         AddRow("Settings.Reset", _reset);
         AddRow("Settings.ExplorerMenu", _registerContextMenu);
         AddSeparator();

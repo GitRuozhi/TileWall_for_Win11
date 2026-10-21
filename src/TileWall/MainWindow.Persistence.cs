@@ -70,7 +70,7 @@ public sealed partial class MainWindow
         Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
         if (PersistenceInteractionBlocked) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
         if (_viewBlocked) return Reject(ProductStrings.Get("Wall.ViewBlocked"));
-        var fit = WallViewportPolicy.Validate(proposal, ViewportBudget(proposal.Document.Settings), _metrics);
+        var fit = WallViewportPolicy.Validate(proposal, RecoverableViewportBudget(proposal.Document.Settings), _metrics);
         if (fit.Proposal is null) return Reject(ViewportFailure(fit));
         _persistencePending = true;
         _pendingCarouselCommit = carousel;
@@ -127,7 +127,7 @@ public sealed partial class MainWindow
                     _puzzles.SetPersistenceBusy(_persistenceAdmissionClosed);
                     UpdateResizeZones();
                     if (_environmentAfterPersistence)
-                    { _environmentAfterPersistence = false; QueueEnvironmentRefresh(); }
+                    { _environmentAfterPersistence = false; QueueEnvironmentRefresh(); QueueEnvironmentAdaptation(); }
                     if (_appearanceAfterPersistence)
                     { _appearanceAfterPersistence = false; QueueAppearanceRefresh(); }
                     ImportReadinessChanged?.Invoke();
@@ -188,6 +188,7 @@ public sealed partial class MainWindow
         await DrainPersistenceAsync();
         TraceInput("Shutdown drain-presentations");
         await _puzzles.ShutdownAsync();
+        await ShutdownMenuStartAsync();
         TraceInput("Shutdown stop-start-menu");
         await StopStartMenuRefreshAsync();
         TraceInput("Shutdown drain-appearance");

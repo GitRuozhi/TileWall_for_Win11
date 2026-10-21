@@ -113,8 +113,9 @@ public sealed partial class WallStore
         }
     }
 
-    private void InstallMedia(WallJournal journal)
+    private void InstallMedia(WallJournal journal, WallCommitTimings? timings = null)
     {
+        using var mediaInstallTiming = timings?.Measure("store.media.install");
         foreach (var operation in journal.Media.Where(media => media.NewlyInstalled))
         {
             var target = _paths.Media(operation.Asset);
@@ -126,11 +127,14 @@ public sealed partial class WallStore
         VerifyJournalMedia(journal);
     }
 
-    private void VerifyJournalMedia(WallJournal journal)
+    private void VerifyJournalMedia(WallJournal journal, HashSet<ManagedMediaReference>? verifiedInAudit = null)
     {
         foreach (var operation in journal.Media)
+        {
+            if (verifiedInAudit is not null && !verifiedInAudit.Add(operation.Asset)) continue;
             if (!Verify(_paths.Media(operation.Asset), operation.Asset.Sha256, operation.Asset.Length))
                 throw new IOException($"Journal media is missing or changed: {operation.Asset.Sha256}");
+        }
     }
 
     private static void VerifyMediaCoverage(WallJournal journal, WallDocument snapshot)

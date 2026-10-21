@@ -23,11 +23,52 @@ public sealed partial class WallImageService
         int ColorCount, int Planes, string NativeSha256, string File, string FileSha256);
     private sealed record DiskIconManifest(int Format, string Key, uint GroupId, string? GroupName, uint LanguageId,
         bool Empty, IReadOnlyList<DiskIconFrame> Frames);
+    private sealed record CachedIconSelection(DiskIconFrame? Descriptor, string? Path, WallImageStatus Status,
+        string? Diagnostic = null);
 
     public Task<string?> PrewarmPeIconsAsync(string sourcePath, string? targetPath, string? iconPath,
         int? iconIndex, string sourceSha256, string iconsDirectory, CancellationToken ct = default)
-        => StartImageRequest(token => PrewarmPeIconsCoreAsync(sourcePath, targetPath, iconPath,
+        => StartImageRequest(token => PrewarmImportIconAsync(sourcePath, targetPath, iconPath,
             iconIndex, sourceSha256, iconsDirectory, token), ct, (string?)null);
+
+    private async Task<string?> PrewarmImportIconAsync(string sourcePath, string? targetPath, string? iconPath,
+        int? iconIndex, string sourceSha256, string iconsDirectory, CancellationToken ct)
+    {
+        try
+        {
+            var key = await PrewarmPeIconsCoreAsync(sourcePath, targetPath, iconPath, iconIndex,
+                sourceSha256, iconsDirectory, ct).ConfigureAwait(false);
+            if (key is null) return null;
+            var prepared = await Task.Run(async () =>
+            {
+                ct.ThrowIfCancellationRequested();
+                var selection = SelectCachedIcon(iconsDirectory, key, 96);
+                if (selection.Descriptor is not { } descriptor || selection.Path is not { } path)
+                    return selection.Diagnostic == "NoNativeIcon";
+                await _slots.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    // PreparePuzzle creates CPU pixels and the existing Derived/LRU entries only.
+                    // The display request creates its XAML Bitmap later on its caller's UI thread.
+                    var result = await PreparePuzzleAsync(path, CachedIconBudget(96, false, MemberImagePurpose.Thumbnail), ct,
+                        "automatic:cached-icon:" + key, descriptor.FileSha256).ConfigureAwait(false);
+                    return result.Pair is { } pair && CachedIconDimensionsMatch(iconsDirectory, key, descriptor,
+                        pair.Sharp.SourceWidth, pair.Sharp.SourceHeight);
+                }
+                finally { _slots.Release(); }
+            }, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            // A completed disposable thumbnail cannot authorize a stale source or dependency.
+            var exe = NormalizePath(targetPath);
+            var dependency = exe is null ? null : Fingerprint(exe,
+                "native-icon-v1:" + CultureInfo.CurrentUICulture.Name + ":" + NormalizePath(iconPath) + ":" + iconIndex);
+            return prepared && dependency is not null && ManagedImageCache.Key(sourceSha256 + "|" + dependency) == key &&
+                IconSourceStillCurrent(sourcePath, sourceSha256, iconsDirectory) ? key : null;
+        }
+        catch (OperationCanceledException) { return null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or COMException)
+        { return null; }
+    }
 
     private async Task<string?> PrewarmPeIconsCoreAsync(string sourcePath, string? targetPath, string? iconPath,
         int? iconIndex, string sourceSha256, string iconsDirectory, CancellationToken ct)
@@ -46,7 +87,8 @@ public sealed partial class WallImageService
                 var dependency = Fingerprint(exe, "native-icon-v1:" + language + ":" + NormalizePath(iconPath) + ":" + iconIndex);
                 if (dependency is null) return null;
                 var key = ManagedImageCache.Key(sourceSha256 + "|" + dependency);
-                if (ReadIconManifest(iconsDirectory, key, verifyFrames: true) is not null) return key;
+                if (ReadIconManifest(iconsDirectory, key, verifyFrames: true) is not null)
+                    return IconSourceStillCurrent(sourcePath, sourceSha256, iconsDirectory) ? key : null;
                 // Native extraction has its own bounded budget. A slow/cold EXE
                 // must not occupy the slots used to read already verified frames.
                 var package = await NativePackageAsync(exe, iconPath, iconIndex, dependency).WaitAsync(token).ConfigureAwait(false);
@@ -180,30 +222,58 @@ public sealed partial class WallImageService
     }
 
     public Task<PuzzleFrameResult> LoadCachedIconFrameAsync(string iconsDirectory, string iconKey, int edge, CancellationToken ct = default)
-        => StartImageRequest(token => LoadCachedIconFrameCoreAsync(iconsDirectory, iconKey, edge, false, token), ct,
+        => StartImageRequest(token => LoadCachedIconFrameCoreAsync(iconsDirectory, iconKey, edge, false, token, MemberImagePurpose.Thumbnail), ct,
             new PuzzleFrameResult(null, WallImageStatus.Cancelled));
 
-    private async Task<PuzzleFrameResult> LoadCachedIconFrameCoreAsync(string iconsDirectory, string iconKey, int edge, bool needsBlur, CancellationToken ct)
+    private static PuzzleDecodeBudget CachedIconBudget(int edge, bool needsBlur, MemberImagePurpose purpose)
     {
-        DiskIconManifest? manifest;
-        try { manifest = await Task.Run(() => ReadIconManifest(iconsDirectory, iconKey, verifyFrames: false), ct); }
-        catch (OperationCanceledException) { return new(null, WallImageStatus.Cancelled); }
-        if (manifest is null) return new(null, WallImageStatus.Fallback, "IconCacheMissing");
-        if (manifest.Empty || manifest.Frames.Count == 0) return new(null, WallImageStatus.Fallback, "NoNativeIcon");
+        var thumbnail = purpose == MemberImagePurpose.Thumbnail;
+        // Import's 48 DIP cards share one prewarmed 96px plane through 200% scaling.
+        // Both selection and the cache key use this same width/height, not just a maximum edge.
+        var size = Math.Clamp(edge, thumbnail ? 96 : 1, thumbnail ? 256 : 4096);
+        return new(purpose, size, size, !thumbnail, thumbnail ? size : 4096, thumbnail ? size : 512, needsBlur);
+    }
+
+    private CachedIconSelection SelectCachedIcon(string iconsDirectory, string iconKey, int edge)
+    {
+        var manifest = ReadIconManifest(iconsDirectory, iconKey, verifyFrames: false);
+        if (manifest is null) return new(null, null, WallImageStatus.Fallback, "IconCacheMissing");
+        if (manifest.Empty || manifest.Frames.Count == 0) return new(null, null, WallImageStatus.Fallback, "NoNativeIcon");
         var group = new PeIconGroup(manifest.GroupId, manifest.GroupName, manifest.LanguageId,
             manifest.Frames.Select(frame => new PeIconFrame(frame.ResourceId, frame.LanguageId, frame.Width, frame.Height, frame.BitsPerPixel,
                 frame.ColorCount, frame.Planes, PeIconFrameFormat.Unknown, ReadOnlyMemory<byte>.Empty, frame.NativeSha256)).ToArray());
         var chosen = PeIconResourceReader.SelectFrame(group, Math.Max(1, edge));
         var descriptor = manifest.Frames.First(frame => frame.ResourceId == chosen!.ResourceId && frame.Width == chosen.Width && frame.Height == chosen.Height && frame.BitsPerPixel == chosen.BitsPerPixel);
         var path = Path.Combine(iconsDirectory, iconKey, descriptor.File);
+        if (FileContentHash(path) != descriptor.FileSha256)
+        {
+            _disk!.Delete(Path.Combine(iconsDirectory, iconKey, "manifest.json"));
+            return new(null, null, WallImageStatus.Invalid, "IconCacheHashMismatch");
+        }
+        return new(descriptor, path, WallImageStatus.Loaded);
+    }
+
+    private bool CachedIconDimensionsMatch(string directory, string key, DiskIconFrame descriptor, double width, double height)
+    {
+        if (width == descriptor.Width && height == descriptor.Height) return true;
+        _disk!.Delete(Path.Combine(directory, key, "manifest.json"));
+        return false;
+    }
+
+    private async Task<PuzzleFrameResult> LoadCachedIconFrameCoreAsync(string iconsDirectory, string iconKey, int edge, bool needsBlur,
+        CancellationToken ct, MemberImagePurpose purpose = MemberImagePurpose.Content)
+    {
         try
         {
-            if (await Task.Run(() => FileContentHash(path), ct) != descriptor.FileSha256)
-            { _disk!.Delete(Path.Combine(iconsDirectory, iconKey, "manifest.json")); return new(null, WallImageStatus.Invalid, "IconCacheHashMismatch"); }
-            var result = await LoadImageFileFrameAsync(path, new(MemberImagePurpose.Content, Math.Clamp(edge, 1, 4096), Math.Clamp(edge, 1, 4096), true, 4096, 512, needsBlur), ct,
+            var budget = CachedIconBudget(edge, needsBlur, purpose);
+            var selection = await Task.Run(() => SelectCachedIcon(iconsDirectory, iconKey, budget.Width), ct);
+            if (selection.Descriptor is not { } descriptor || selection.Path is not { } path)
+                return new(null, selection.Status, selection.Diagnostic);
+            var result = await LoadImageFileFrameAsync(path, budget, ct,
                 "automatic:cached-icon:" + iconKey, descriptor.FileSha256);
-            if (result.Frame is { } frame && (frame.SourcePixels.Width != descriptor.Width || frame.SourcePixels.Height != descriptor.Height))
-            { _disk!.Delete(Path.Combine(iconsDirectory, iconKey, "manifest.json")); return new(null, WallImageStatus.Invalid, "IconCacheDimensionsMismatch"); }
+            if (result.Frame is { } frame && !CachedIconDimensionsMatch(iconsDirectory, iconKey, descriptor,
+                    frame.SourcePixels.Width, frame.SourcePixels.Height))
+                return new(null, WallImageStatus.Invalid, "IconCacheDimensionsMismatch");
             return result;
         }
         catch (OperationCanceledException) { return new(null, WallImageStatus.Cancelled); }

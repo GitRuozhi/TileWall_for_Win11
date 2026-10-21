@@ -186,6 +186,20 @@ public sealed class StartMenuCandidateProjectionTests
     }
 
     [Fact]
+    public void EmptyInitialSelectionStaysEmptyAsSourcesArriveAndRefresh()
+    {
+        var first = Item("First", "Tools", identity: "first");
+        var added = Item("Added", "Tools", identity: "added");
+        var initial = StartMenuCandidateProjection.Project([first], false, false);
+        var discovered = StartMenuCandidateProjection.Migrate(new Dictionary<string, string>(), [], initial, [first]);
+        Assert.Empty(discovered.Selected);
+
+        var refreshed = StartMenuCandidateProjection.Project([first, added], false, false);
+        var update = StartMenuCandidateProjection.Migrate(discovered.Selected, initial, refreshed, [first, added]);
+        Assert.Empty(update.Selected);
+    }
+
+    [Fact]
     public void NewUserRepresentativeCanInheritSelectedCommonOnlyWithinSameGroupAndIdentity()
     {
         var common = Item("App", "Tools", SourceKind.Common);

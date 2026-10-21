@@ -1,44 +1,80 @@
 # TileWall
 
-TileWall 是面向 Windows 10 22H2 和 Windows 11 的独立磁贴启动墙，以 Windows 10 开始菜单为视觉与交互参考。系统开始菜单与 Win 键照常工作。
+[English → README.md](README.md) · [简体中文 → README.zh-CN.md](README.zh-CN.md)
 
-当前源码版本 **0.2.8**（包版本 **0.2.8.0**）。拖拽性能与流畅度专项仍暂停，Windows 11 系统、多 DPI 和正式签名安装尚未完成实测。
+**A place for the things you open every day.**
 
-## 功能
+Your everyday apps, work folders, and favorite websites are easier to find when they have a place of their own. TileWall is a standalone tile launcher for Windows. Arrange things the way you like, add your own pictures, and bring up the wall with a keyboard shortcut.
 
-- 用磁贴和分组组织程序、文件、文件夹、快捷方式及网址；保留快捷方式的参数和工作目录。
-- 普通磁贴、共享图片的拼图、时间与日期组件；支持图片、图集、随机轮换和拼图分区错峰切图，图集可见时约60秒检查来源变化。
-- 分组标题在网格预留48 DIP一行，文字和实际交互位于底部30 DIP；支持拖动分组、双击改名、成员拖放和撤销。
-- 主题可跟随系统或选择亮色、暗色。墙面与共享磁贴区域支持 Windows 10 方角、Windows 11 圆角；页面外壳使用固定样式，动作图标使用 Segoe MDL2 Assets，拼图预设使用对应分区示意图。
-- Acrylic、Mica 或本地图片背景；默认背景透明度 10%，背景网格默认关闭，开启时按明暗主题显示 5% 不透明的格子。Windows 10 的 Mica 当前使用纯色回退。
-- 四角锚点独立于全屏；全屏边栏与菜单列贴侧边并占满屏高，磁贴上下和远侧留5%。窗口宽高最多为主屏90%，两种模式均可开启拓展并横向滚动。支持托盘、Win+~ 默认快捷键、登录后启动、常驻显示和置顶设置。
-- 从开始菜单导入，支持自动过滤、识别分组、按组名增量合并及组内目标去重，默认保留已有改动；可注册 Windows 10 的 .lnk 右键“添加到 TileWall”。
-- 中英文界面；三卡片编辑页提供 1:1 预览、目标自动识别、外观属性与尺寸调整。普通磁贴最多 4×4，拼图整体最多 8×12，每个分区最多 4×4。
+If you miss Windows 10 tiles, this should feel familiar. Your usual Start menu and Windows key keep working as they do now.
 
-## 构建
+![TileWall with everyday apps, folders, and a picture puzzle](docs/images/hero-en.png)
 
-需要 Windows、.NET SDK 10 和相应的 Windows SDK / Visual Studio C++ 构建工具。Windows App SDK 2.5.1 由 NuGet 还原。项目入口：[TileWall.csproj](src/TileWall/TileWall.csproj)。
+## What can you put on your wall?
+
+- **The things you use most.** Add apps, files, folders, shortcuts, and websites. Group them by work, games, or whatever makes sense to you, then drag them into place.
+- **Pictures you like looking at.** Use a single image or cycle through a folder of pictures. A puzzle lets one image stretch across several tile sections. The whole puzzle shares one launch target.
+- **A bit of your own style.** Choose light or dark mode, square or rounded corners, and a background you like. Add a clock and date, or import shortcuts from the Start menu to get going.
+
+![The same TileWall layout with two different looks](docs/images/personalize-en.png)
+
+## Get TileWall
+
+**The current source version is 0.2.9, being prepared as a release candidate. Check Releases for packages actually available.**
+
+[Check releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [Browse the source](https://github.com/GitRuozhi/TileWall_for_Win11)
+
+TileWall is being developed for Windows 10 22H2 and Windows 11. Windows 11, multiple DPI settings, and a formally signed installation still need full testing. If you would like to build it yourself, the command is at the end of this page.
+
+## Start with a few favorites
+
+Once you have a runnable build:
+
+1. **Open the wall.** Run `TileWall.exe` from the complete publish folder. The default shortcut is <kbd>Win</kbd> + <kbd>~</kbd>, or you can double-click the TileWall icon in the system tray. Use the key that shares the backtick and tilde; no Shift is needed. You can change the shortcut in Settings.
+2. **Add the things you reach for most.** Right-click an empty part of the wall and choose **Import**, then **From Start menu**. Nothing is selected at first; select a few entries and choose **Confirm batch import**. Previously cached shortcuts and icons are available while the source list refreshes in the background.
+3. **Make yourself at home.** Click a tile to open its target. Drag tiles into place, double-click a group title to rename it, or right-click a tile and choose **Edit** to change its name, picture, and size. Choose **Save** when you are done.
+
+![Expanding the menu groups you need in TileWall](docs/images/quick-start-en.gif)
+
+A few useful controls:
+
+| What you want to do | How |
+| --- | --- |
+| Hide the wall | Press <kbd>Esc</kbd> on the main wall; finish any text editing or dragging first |
+| Add something manually | Right-click an empty area to create a tile or puzzle; the clock is under **Add component → Time and date** |
+| Move a whole group | Drag its title |
+| Keep groups open in the menu | Expand up to five at once; opening a sixth closes the one opened earliest. Expanded groups are remembered by ID across restarts |
+| Undo a recent change | Press <kbd>Ctrl</kbd> + <kbd>Z</kbd> on the main wall while an undo point is available |
+
+Settings also includes the theme, background, activation shortcut, and start at login. Get a few useful tiles in place first. The rest can wait until you feel like tinkering.
+
+## A few things to know
+
+- Creating a tile adds it to the wall before opening the editor. Canceling that edit leaves the default tile in place.
+- Importing again can rearrange positions. Keeping existing changes preserves things such as pictures, sizes, and titles, rather than the original layout.
+- Unpinning leaves the original file alone. Undo it promptly if it was a mistake; there is no list for restoring unpinned items after a restart yet.
+- Saved single images and custom wall backgrounds keep their own copy of the original. Picture collections stay linked to the folder you selected.
+- Portable builds store data in `%LOCALAPPDATA%\TileWall`. To back up your setup, exit TileWall and copy the whole folder. Packaged builds use a separate data folder; the two do not share data. Automatic migration from older data formats is not available during development.
+
+## Tell me what gets in the way
+
+[Open an issue](https://github.com/GitRuozhi/TileWall_for_Win11/issues) with what you were trying to do, what happened, and your Windows version, display scaling, and TileWall version. A screenshot or short recording helps if you have one.
+
+Ideas are welcome too. What would you like to put on your wall, and which part feels awkward to use?
+
+## License
+
+The plan is to make TileWall free to use, including for internal office use. Formal license terms have not been published; all rights are reserved until then. Public source code does not mean the project has an open-source license, and permission for commercial distribution or derivative products still needs to be clarified. See the [third-party notices](src/TileWall/THIRD-PARTY-NOTICES.txt).
+
+<details>
+<summary>Build it yourself</summary>
+
+You need Windows, .NET SDK 10, and the appropriate Windows SDK / Visual Studio C++ build tools. From the repository root:
 
 ```powershell
 dotnet publish src/TileWall/TileWall.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:WindowsPackageType=None -o artifacts/Release/TileWall
 ```
 
-从发布目录运行 `TileWall.exe`；不要直接运行缺少发布资源的裸编译目录。私有开发仓库另提供 `tools/build.ps1`、`tools/clean.ps1` 及完整开发与验收文档。
+Run `TileWall.exe` from `artifacts/Release/TileWall` and keep the complete folder together. Copying only the EXE, or running from a build folder without the published resources, is not sufficient. This creates a portable build; it is not a claim that the build has passed release testing.
 
-Core 测试：
-
-```powershell
-dotnet test src/TileWall.Core.Tests
-```
-
-## 数据与发行
-
-便携运行数据位于 `%LOCALAPPDATA%\TileWall`；打包运行使用应用自己的 LocalFolder，两者不互读。完整手动备份请先退出软件再复制对应数据根。外部程序、原始快捷方式和图片不会被作为应用数据删除。
-
-当前数据格式为Schema4，只支持当前格式，不自动重置或迁移旧数据。“取消固定”保留非激活记录和托管入口，可用当前撤销点撤回。单图和自定义墙背景随保存托管原图，保存后外部原图移动或删除不影响显示；图集继续跟随真实文件夹。
-
-源码仓库：[GitRuozhi/TileWall_for_Win11](https://github.com/GitRuozhi/TileWall_for_Win11)。发行文件以 [Releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases) 实际内容为准，源码版本更新不代表已完成正式发行验收。
-
-## 许可
-
-许可方向是源码公开、免费使用（包括企业内部办公），限制未经授权的商业化分发及商业衍生。这不是 OSI 意义上的开源许可；正式授权文本尚未发布，发布前保留所有权利。第三方组件说明见 [THIRD-PARTY-NOTICES](src/TileWall/THIRD-PARTY-NOTICES.txt)。
+</details>

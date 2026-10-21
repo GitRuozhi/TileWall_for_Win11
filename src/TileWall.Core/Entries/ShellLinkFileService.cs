@@ -14,8 +14,10 @@ namespace TileWall.Core.Entries;
 public sealed class ShellLinkFileService : ILnkFileService
 {
     private const uint SlgpRawpath = 0x4;
+    private const int MaxPathChars = 260; // Windows SDK MAX_PATH, including the terminating null.
     private const int PathBufferChars = 1024;
-    private const int ArgumentsBufferChars = 2048;
+    private static readonly PropertyKey LinkArguments = new(new Guid("436F2667-14E2-4FEB-B30A-146C53B5B674"), 100);
+    private static readonly PropertyKey LinkTargetParsingPath = new(new Guid("B9B4B3FC-2B51-4A42-B5D8-324146AFCF25"), 2);
     private const uint StgmRead = 0;
 
     public void Create(string path, string target, string arguments, string workingDirectory)
@@ -29,23 +31,23 @@ public sealed class ShellLinkFileService : ILnkFileService
 
     public LinkFields Read(string path)
     {
+        // Keep COM and persisted path fields on the same read-only file snapshot.
+        using var source = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         var link = Load(path);
+        var storedPaths = ShellLinkStringData.ReadPaths(source);
 
-        var target = new StringBuilder(PathBufferChars);
-        link.GetPath(target, target.Capacity, IntPtr.Zero, SlgpRawpath);
-
-        var arguments = new StringBuilder(ArgumentsBufferChars);
-        link.GetArguments(arguments, arguments.Capacity);
-
-        var workingDirectory = new StringBuilder(PathBufferChars);
-        link.GetWorkingDirectory(workingDirectory, workingDirectory.Capacity);
-
-        var iconPath = new StringBuilder(PathBufferChars);
-        link.GetIconLocation(iconPath, iconPath.Capacity, out var iconIndex);
+        var targetText = ReadPathText(buffer => link.GetPath(buffer, buffer.Capacity, IntPtr.Zero, SlgpRawpath),
+            observed => ConfirmTarget(link, observed));
+        var arguments = ReadStringProperty(link, in LinkArguments) ?? string.Empty;
+        var workingDirectory = storedPaths?.WorkingDirectory ?? ReadPathText(buffer => link.GetWorkingDirectory(buffer, buffer.Capacity),
+            _ => throw new InvalidDataException("The ANSI shortcut working directory cannot be read with confirmed completeness."));
+        var iconIndex = 0;
+        var iconText = ReadPathText(buffer => link.GetIconLocation(buffer, buffer.Capacity, out iconIndex),
+            _ => storedPaths?.IconPath ?? throw new InvalidDataException("The ANSI shortcut icon location cannot be read with confirmed completeness."));
+        if (storedPaths is not null) iconText = storedPaths.Value.IconPath;
 
         link.GetShowCmd(out var showCmd);
         link.GetIDList(out var pidl);
-        var targetText = target.ToString();
         // 特殊 Shell 入口的判定（探针 D 实证）：GetPath(SLGP_RAWPATH) 为空且 IDList 存在。
         // 普通路径链接同样可能带 IDList（Shell 依路径自动解析），不能单独作为判据。
         var hasIdList = targetText.Length == 0 && pidl != IntPtr.Zero;
@@ -67,11 +69,10 @@ public sealed class ShellLinkFileService : ILnkFileService
             }
         }
 
-        var iconText = iconPath.ToString();
         return new LinkFields(
             targetText.Length > 0 ? targetText : null,
-            arguments.ToString(),
-            workingDirectory.ToString(),
+            arguments,
+            workingDirectory,
             iconText.Length > 0 ? iconText : null,
             iconIndex,
             showCmd,
@@ -89,7 +90,75 @@ public sealed class ShellLinkFileService : ILnkFileService
     public static string NormalizePath(string path)
     {
         var builder = new StringBuilder(PathBufferChars);
-        return GetLongPathName(path, builder, builder.Capacity) > 0 ? builder.ToString() : path;
+        while (true)
+        {
+            var length = GetLongPathName(path, builder, builder.Capacity);
+            if (length == 0) return path;
+            if (length < builder.Capacity) return builder.ToString();
+            // On insufficient capacity the result includes the terminating null, not copied text.
+            if (length >= int.MaxValue) return path;
+            builder = new StringBuilder(Math.Max((int)length, builder.Capacity + 1));
+        }
+    }
+
+    private static string? ReadStringProperty(IShellLinkW link, in PropertyKey key)
+    {
+        // GetArguments silently truncates. The Shell property store allocates the complete value.
+        var value = new PropVariant();
+        try
+        {
+            var result = ((IPropertyStore)link).GetValue(in key, out value);
+            Marshal.ThrowExceptionForHR(result);
+            // INPLACE_S_TRUNCATED can report canonicalization (including trimming); identity needs the exact value.
+            if (result != 0) throw new InvalidDataException("The shortcut property was canonicalized instead of returned exactly.");
+            return value.Type switch
+            {
+                0 => null, // VT_EMPTY: no property.
+                31 when value.Pointer != IntPtr.Zero => Marshal.PtrToStringUni(value.Pointer)!, // VT_LPWSTR
+                _ => throw new InvalidDataException("The shortcut property is not a complete Unicode string.")
+            };
+        }
+        finally
+        {
+            Marshal.ThrowExceptionForHR(PropVariantClear(ref value));
+        }
+    }
+
+    private static string ConfirmTarget(IShellLinkW link, string observed)
+    {
+        if (string.Equals(ReadStringProperty(link, in LinkTargetParsingPath), observed, StringComparison.Ordinal)) return observed;
+        link.GetIDList(out var pidl);
+        try
+        {
+            if (pidl != IntPtr.Zero && SHGetNameFromIDList(pidl, 0x80058000, out var name) >= 0 && name != IntPtr.Zero)
+            {
+                try
+                {
+                    if (string.Equals(Marshal.PtrToStringUni(name), observed, StringComparison.Ordinal)) return observed;
+                }
+                finally { Marshal.FreeCoTaskMem(name); }
+            }
+        }
+        finally { if (pidl != IntPtr.Zero) Marshal.FreeCoTaskMem(pidl); }
+        throw new InvalidDataException("The shortcut target cannot be read with confirmed completeness.");
+    }
+
+    private static string ReadPathText(Action<StringBuilder> read, Func<string, string> confirmBoundary)
+    {
+        var buffer = new StringBuilder(PathBufferChars);
+        while (true)
+        {
+            read(buffer);
+            // Shell may internally cap path fields at MAX_PATH even with a larger caller buffer.
+            // At that boundary neither S_OK nor the returned length proves completeness.
+            if (buffer.Length >= MaxPathChars - 1 && buffer.Length <= MaxPathChars)
+                return confirmBoundary(buffer.ToString());
+            if (buffer.Length < buffer.Capacity - 1) return buffer.ToString();
+            // No required-length result is exposed by IShellLink; a full buffer is inconclusive.
+            if (buffer.Capacity > int.MaxValue / 2)
+                throw new InvalidDataException("The shortcut path could not be read completely.");
+            buffer = new StringBuilder(buffer.Capacity * 2);
+        }
     }
 
     private static IShellLinkW Load(string path)
@@ -100,6 +169,36 @@ public sealed class ShellLinkFileService : ILnkFileService
     }
 
     private static void Save(IShellLinkW link, string path) => ((IPersistFile)link).Save(path, fRemember: true);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly struct PropertyKey(Guid formatId, uint propertyId)
+    {
+        public readonly Guid FormatId = formatId;
+        public readonly uint PropertyId = propertyId;
+    }
+
+    // PROPVARIANT's union starts at byte 8 and has two pointer-sized slots (24 bytes on x64, 16 on x86).
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PropVariant
+    {
+        public ushort Type;
+        public ushort Reserved1;
+        public ushort Reserved2;
+        public ushort Reserved3;
+        public IntPtr Pointer;
+        public IntPtr UnionRemainder;
+    }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+    private interface IPropertyStore
+    {
+        void GetCount(out uint count);
+        void GetAt(uint index, out PropertyKey key);
+        [PreserveSig]
+        int GetValue(in PropertyKey key, out PropVariant value);
+        void SetValue(in PropertyKey key, in PropVariant value);
+        void Commit();
+    }
 
     [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
     private sealed class ShellLink
@@ -143,6 +242,9 @@ public sealed class ShellLinkFileService : ILnkFileService
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern uint GetLongPathName(string lpszShortPath, [Out] StringBuilder lpszLongPath, int cchBuffer);
+
+    [DllImport("ole32.dll")]
+    private static extern int PropVariantClear(ref PropVariant value);
 
     [DllImport("shell32.dll")]
     private static extern int SHGetNameFromIDList(IntPtr pidl, uint nameKind, out IntPtr name);

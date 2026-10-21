@@ -268,7 +268,7 @@ public sealed partial class WallStore
             }
             using (timings?.Measure("store.openPreflight"))
             {
-                var blocked = PreflightForCommit(current, expectedHash);
+                var blocked = PreflightForCommit(current, expectedHash, timings);
                 if (blocked is not null) return blocked;
             }
             return CommitCore(current, plan.Request.Proposed, plan.Request.EntryChanges,
@@ -356,7 +356,8 @@ public sealed partial class WallStore
     /// Commit preflight after CurrentMatchesDisk. It does not parse the current config again.
     /// Sweep may still change disk; the hash is checked again before any entry is installed.
     /// </summary>
-    private WallCommitResult? PreflightForCommit(WallDocument current, string expectedHash)
+    private WallCommitResult? PreflightForCommit(WallDocument current, string expectedHash,
+        WallCommitTimings? timings)
     {
         _paths.Guard(_paths.Root);
         _paths.Guard(_paths.Config);
@@ -373,7 +374,7 @@ public sealed partial class WallStore
         if (recover is not null)
             return CommitResult(WallCommitStatus.RecoveryBlocked, null, null,
                 $"Store is {recover.Status}: {string.Join("; ", recover.Diagnostics)}");
-        AuditRecoveryMaterials();
+        AuditRecoveryMaterials(timings);
         if (Hash(_files.ReadAllBytes(_paths.Config)) != expectedHash)
             return CommitResult(WallCommitStatus.Rejected, null, null, "Config changed during commit preflight.");
         CheckActiveEntries(current, verifyMediaContents: false, observeIdentities: false);
@@ -391,7 +392,11 @@ public sealed partial class WallStore
         var stageDir = _paths.Under("Staging", commitId);
         var materialDir = _paths.Under("Recovery", "Entries", commitId);
         List<WallJournalMedia> media;
-        try { media = PlanMedia(commitId, current, proposed, mediaAssets ?? []); }
+        try
+        {
+            using (timings?.Measure("store.media.plan"))
+                media = PlanMedia(commitId, current, proposed, mediaAssets ?? []);
+        }
         catch (CurrentMediaInvalidException ex)
         { return CommitResult(WallCommitStatus.RecoveryBlocked, null, null, ex.Message); }
         catch (Exception ex) when (IsStorageError(ex))
@@ -451,7 +456,8 @@ public sealed partial class WallStore
                     ops[i] = op with { NewHash = Hash(bytes), NewLength = bytes.LongLength };
                     ObserveIdentity(next[op.MemberId].Entry!.Kind, staged, bytes, ops[i].NewHash!);
                 }
-                StageMedia(journal, mediaAssets ?? []);
+                using (timings?.Measure("store.media.stage"))
+                    StageMedia(journal, mediaAssets ?? []);
                 ValidateGroupIdentities(proposed, journal);
             }, () =>
             {
@@ -464,7 +470,7 @@ public sealed partial class WallStore
                     _files.Copy(_paths.Entry(old[op.MemberId].Entry!), backup, false);
                     if (!Verify(backup, op.OldHash, op.OldLength)) throw new IOException("Entry backup verification failed.");
                 }
-            });
+            }, timings);
         if (installed.Error is not null)
             return FinishFailedInstall(installed, commitId, stageDir, materialDir, journal, timings,
                 () => CommitResult(WallCommitStatus.CommittedNeedsCleanup, WallJson.Freeze(proposed), null, installed.Error.Message));
@@ -485,7 +491,8 @@ public sealed partial class WallStore
     /// previous document to publish. The config Move is the commit point.
     /// </summary>
     private InstallTransactionResult ExecuteInstallTransaction(WallJournal journal, byte[] newConfig,
-        byte[] previousBytes, byte[]? corruptDiagnostic, Action stageEntries, Action backupEntries)
+        byte[] previousBytes, byte[]? corruptDiagnostic, Action stageEntries, Action backupEntries,
+        WallCommitTimings? timings = null)
     {
         var intentPublished = false;
         try
@@ -511,7 +518,7 @@ public sealed partial class WallStore
             _files.WriteAllBytes(markerTemp, []);
             _files.Move(markerTemp, _paths.Under("Staging", journal.CommitId, IntentName), false);
             intentPublished = true;
-            InstallMedia(journal);
+            InstallMedia(journal, timings);
             Install(journal);
             if (journal.OldHash is not null && Hash(_files.ReadAllBytes(_paths.Config)) != journal.OldHash)
                 throw new IOException("Config changed during entry installation.");
@@ -803,9 +810,11 @@ public sealed partial class WallStore
         }
     }
 
-    private void AuditRecoveryMaterials()
+    private void AuditRecoveryMaterials(WallCommitTimings? timings = null)
     {
         _paths.GuardTree(_paths.RecoveryEntries);
+        // This set belongs only to this audit pass; commits, opens, and recovery stages re-read media.
+        var auditedMedia = new HashSet<ManagedMediaReference>();
         foreach (var directory in _files.ListDirectories(_paths.RecoveryEntries))
         {
             var id = Path.GetFileName(directory);
@@ -813,7 +822,8 @@ public sealed partial class WallStore
             var journalPath = _paths.Under("Recovery", "Entries", id, "journal.json");
             if (!_files.Exists(journalPath)) throw new InvalidDataException($"Recovery material lacks journal: {id}");
             var journal = ReadJournal(journalPath, id);
-            VerifyJournalMedia(journal);
+            using (timings?.Measure("store.media.audit"))
+                VerifyJournalMedia(journal, auditedMedia);
             var newSnapshot = _paths.Under("Recovery", "Entries", id, "new.snapshot.json");
             var newSnapshotBytes = _files.Exists(newSnapshot) ? _files.ReadAllBytes(newSnapshot) : null;
             if (newSnapshotBytes is null || Hash(newSnapshotBytes) != journal.NewHash)

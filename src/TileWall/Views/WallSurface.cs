@@ -504,7 +504,15 @@ public sealed class WallSurface : Canvas
     public void UpdatePuzzleFrame(string id, PuzzleFrame? frame, double progress)
     {
         if (!_puzzles.TryGetValue(id, out var view)) return;
-        if (ResolvePuzzleTransition?.Invoke(id) is { } transition)
+        var transition = ResolvePuzzleTransition?.Invoke(id);
+        if (frame is null && transition is null)
+        {
+            // Eviction clears both transition layers even if the cached visible frame was already null.
+            view.UpdateFrame(null);
+            _puzzleFrames[id] = null;
+            return;
+        }
+        if (transition is not null)
         {
             view.UpdateTransition(transition);
             _puzzleFrames[id] = frame;

@@ -25,8 +25,6 @@ public sealed class ShowHideAnimator
 
     private readonly UIElement _target;
 
-    private readonly Func<double> _rasterizationScale;
-
     private Storyboard? _active;
 
     /// <summary>A6 动画自然完成（宿主须转调 WallShowMachine.ShowAnimationCompleted，§6.1 完成回调）。</summary>
@@ -35,12 +33,10 @@ public sealed class ShowHideAnimator
     /// <summary>A7 动画自然完成（宿主须转调 WallShowMachine.HideAnimationCompleted——此处才允许 SnapHide 撤销物理可见，W2）。</summary>
     public event Action? HideCompleted;
 
-    public ShowHideAnimator(UIElement target, Func<double> rasterizationScale)
+    public ShowHideAnimator(UIElement target)
     {
         ArgumentNullException.ThrowIfNull(target);
-        ArgumentNullException.ThrowIfNull(rasterizationScale);
         _target = target;
-        _rasterizationScale = rasterizationScale;
         if (_target.RenderTransform is not TranslateTransform)
         {
             _target.RenderTransform = new TranslateTransform(); // Offset.Y 动画载体
@@ -51,7 +47,6 @@ public sealed class ShowHideAnimator
     public void BeginShow()
     {
         StopActive();
-        var scale = SafeScale();
         var storyboard = new Storyboard();
 
         var opacity = new DoubleAnimation
@@ -67,7 +62,7 @@ public sealed class ShowHideAnimator
 
         var slide = new DoubleAnimation
         {
-            From = ShowSlideDistanceDip * scale,
+            From = ShowSlideDistanceDip,
             To = 0,
             Duration = new Duration(TimeSpan.FromMilliseconds(ShowDurationMs)),
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
@@ -140,9 +135,4 @@ public sealed class ShowHideAnimator
         _active = null;
     }
 
-    private double SafeScale()
-    {
-        var scale = _rasterizationScale();
-        return scale > 0 && double.IsFinite(scale) ? scale : 1.0;
-    }
 }

@@ -42,7 +42,7 @@ public sealed partial class MainWindow : Window
     private readonly IClock _clock = SystemClock.Instance;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _clockTimer;
     private string? _suppressClickMember;
-    private double _gestureScrollOffset;
+    private Point _gestureScrollOffset;
     private uint _tracedMovePointerId;
     private GesturePhase _tracedMovePhase;
     private readonly WallBackdrop _wallBackdrop;
@@ -71,6 +71,7 @@ public sealed partial class MainWindow : Window
             PersistPuzzleCarousel, Status, _traceInput);
         _puzzles.ResolveEntryPath = _session.ManagedEntryPath;
         _puzzles.FrameChanged += Surface.UpdatePuzzleFrame;
+        WallScroll.ViewChanged += (_, _) => UpdateVisibleWallFrames();
         InitializeMenuStart();
         _session.SetViewRefresh(RenderCommitted);
         InitializePersistence();
@@ -217,6 +218,7 @@ public sealed partial class MainWindow : Window
         _hasDocument = true;
         if (!_session.RefreshViewFromCurrent())
             BlockView(ProductStrings.Get("Wall.ViewFailed"), retry: true);
+        else QueueEnvironmentAdaptation();
     }
 
     private (int Columns, int Rows) ChooseInitialGrid(double workWidth, double workHeight)
@@ -258,6 +260,7 @@ public sealed partial class MainWindow : Window
         RestoreCommittedScrollAnchor(document, scrollAnchor);
         UpdatePuzzleGate();
         Surface.RefreshClocks(_clock.UtcNow);
+        QueueEnvironmentAdaptation();
     }
 
     private void BlockView(string message, bool retry = false)
@@ -324,7 +327,7 @@ public sealed partial class MainWindow : Window
     {
         if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (_viewBlocked) return ProductStrings.Get("Wall.ViewBlocked");
-        var fit = WallViewportPolicy.Validate(proposal, ViewportBudget(proposal.Document.Settings), _metrics);
+        var fit = WallViewportPolicy.Validate(proposal, RecoverableViewportBudget(proposal.Document.Settings), _metrics);
         if (fit.Proposal is null) return ViewportFailure(fit);
         try
         {
@@ -407,6 +410,8 @@ public sealed partial class MainWindow : Window
             Surface.Render(Document);
             _needsVisualRefresh = false;
         }
+        UpdateVisibleWallFrames();
+        SetMenuImagesActive(!hidden && !_viewBlocked);
         _puzzles.SetGate(hidden || _viewBlocked ? MemberCarouselGate.Hidden
             : _modal ? MemberCarouselGate.Modal
             : _resizing || _gesture.Phase != GesturePhase.Idle ? MemberCarouselGate.Gesture : MemberCarouselGate.Ready);
@@ -689,7 +694,7 @@ public sealed partial class MainWindow : Window
             var offset = new Point(point.X - bounds.X, point.Y - bounds.Y);
             var ghost = Surface.CreateDragVisual(hit.MemberId, hit.GroupHandle ? hit.GroupId : null);
             var origin = AppWindow.Position;
-            _gestureScrollOffset = WallScroll.HorizontalOffset;
+            _gestureScrollOffset = new(WallScroll.HorizontalOffset, WallScroll.VerticalOffset);
             var began = _gesture.Begin(e.Pointer.PointerId, point, offset, new Point(origin.X, origin.Y), ghost,
                 hit.MemberId, hit.GroupHandle ? hit.GroupId : null);
             TraceInput($"Begin result={began} phase={_gesture.Phase}");
@@ -901,7 +906,7 @@ public sealed partial class MainWindow : Window
         try { Surface.ReleasePointerCaptures(); }
         catch (Exception) { /* End already made capture loss idempotent. */ }
         DragOverlay.Children.Clear();
-        if (restoreScroll) WallScroll.ChangeView(_gestureScrollOffset, 0, null, disableAnimation: true);
+        if (restoreScroll) RestoreScrollPosition(_gestureScrollOffset);
         try
         {
             if (wasDragging && restoreView && !_viewBlocked)
@@ -911,6 +916,7 @@ public sealed partial class MainWindow : Window
                 PlaceWall();
             }
             Surface.ShowDragCue(null, false);
+            ResumeEnvironmentAdaptation();
         }
         catch (Exception ex)
         {

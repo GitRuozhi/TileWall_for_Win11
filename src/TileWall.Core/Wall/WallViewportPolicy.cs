@@ -33,6 +33,20 @@ public static class WallViewportPolicy
     /// <summary>Display mode changes preserve the explicitly requested expansion and anchor.</summary>
     public static WallSettings ForModeTransition(WallSettings previous, WallSettings requested) => requested;
 
+    /// <summary>Environment changes compact a copy; a failed fit leaves the committed wall untouched.</summary>
+    public static WallLayoutResult AdaptToEnvironment(WallDocument source, WallViewportBudget budget,
+        WallMetrics? metrics = null)
+    {
+        metrics ??= new();
+        var current = Validate(source, budget, metrics);
+        if (current.Success) return current;
+        var columns = Math.Min(source.Columns, budget.MaxColumns);
+        var rows = Math.Min(source.Rows, budget.MaxRows);
+        var fitted = TryResize(source, columns, rows, source.Settings, budget, metrics);
+        return !fitted.Success && (columns < budget.MaxColumns || rows < budget.MaxRows)
+            ? TryResize(source, budget.MaxColumns, budget.MaxRows, source.Settings, budget, metrics) : fitted;
+    }
+
     /// <summary>Display-only filler lanes append at the real tail, never create persisted holes.</summary>
     public static int MapCreationLane(WallDocument document, int requestedLane)
     {

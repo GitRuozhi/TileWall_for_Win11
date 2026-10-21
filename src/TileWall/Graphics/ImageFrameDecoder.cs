@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using TileWall.Core.Imaging;
 using Windows.Graphics.Imaging;
 
 namespace TileWall.Graphics;
@@ -24,8 +25,7 @@ public sealed class ImageFrameDecoder
 {
     private const long MaxSourceBytes = 32L * 1024 * 1024;
     private const long MaxSourcePixels = 80_000_000;
-    private const long MaxDecodedPixels = 16_000_000;
-    private const int MaxDecodedEdge = 4096;
+    private const int MaxDecodedEdge = ImageDecodeSizing.MaxDecodedEdge;
     /// <summary>Discover format support through WIC itself, including installed codecs and extensionless files.</summary>
     public async Task<bool> ProbeAsync(string path, CancellationToken ct = default)
     {
@@ -132,24 +132,13 @@ public sealed class ImageFrameDecoder
         int requiredWidthPx, int requiredHeightPx, CancellationToken ct, int maxEdge = MaxDecodedEdge)
     {
         ct.ThrowIfCancellationRequested();
-        var maxPixels = Math.Min(MaxDecodedPixels, (long)maxEdge * maxEdge);
-        var scale = Math.Min(1.0,
-            Math.Max((double)requiredWidthPx / orientedWidth, (double)requiredHeightPx / orientedHeight));
-        scale = Math.Min(scale, (double)maxEdge / Math.Max(rawWidth, rawHeight));
-        scale = Math.Min(scale, Math.Sqrt((double)maxPixels / ((long)rawWidth * rawHeight)));
-        var scaledRawWidth = Math.Max(1, (int)Math.Round(rawWidth * scale));
-        var scaledRawHeight = Math.Max(1, (int)Math.Round(rawHeight * scale));
-        var swapsAxes = rawWidth != rawHeight && orientedWidth == rawHeight && orientedHeight == rawWidth;
-        var resultWidth = swapsAxes ? scaledRawHeight : scaledRawWidth;
-        var resultHeight = swapsAxes ? scaledRawWidth : scaledRawHeight;
-        if ((long)resultWidth * resultHeight > maxPixels ||
-            Math.Max(resultWidth, resultHeight) > maxEdge)
-            return null;
-        var transform = scale < 1.0
+        var dimensions = ImageDecodeSizing.Calculate(rawWidth, rawHeight, orientedWidth, orientedHeight,
+            requiredWidthPx, requiredHeightPx, maxEdge);
+        var transform = dimensions.ScaledRawWidth != rawWidth || dimensions.ScaledRawHeight != rawHeight
             ? new BitmapTransform
             {
-                ScaledWidth = (uint)scaledRawWidth,
-                ScaledHeight = (uint)scaledRawHeight,
+                ScaledWidth = (uint)dimensions.ScaledRawWidth,
+                ScaledHeight = (uint)dimensions.ScaledRawHeight,
                 InterpolationMode = BitmapInterpolationMode.Fant,
             }
             : new BitmapTransform();
@@ -158,9 +147,9 @@ public sealed class ImageFrameDecoder
             ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         var pixels = pixelData.DetachPixelData();
-        return pixels.LongLength == (long)resultWidth * resultHeight * 4
+        return pixels.LongLength == (long)dimensions.Width * dimensions.Height * 4
             ? new(path, fileBytes, lastWriteUtc, orientedWidth, orientedHeight,
-                resultWidth, resultHeight, pixels)
+                dimensions.Width, dimensions.Height, pixels)
             : null;
     }
 

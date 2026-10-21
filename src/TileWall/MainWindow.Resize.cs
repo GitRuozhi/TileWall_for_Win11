@@ -21,7 +21,7 @@ public sealed partial class MainWindow
     private AnchorCorner _resizePointerAnchor;
     private bool _resizeModeLocked;
     private bool _resizeModeTarget;
-    private double _resizeScrollOffset;
+    private Point _resizeScrollOffset;
     private WallLayoutResult? _resizeFailure;
     private RectInt32 _resizeStartRect;
     private WallDocument? _resizeSnapshot;
@@ -124,7 +124,7 @@ public sealed partial class MainWindow
         };
         _resizeModeLocked = false;
         _resizeModeTarget = Settings.FullScreen;
-        _resizeScrollOffset = WallScroll.HorizontalOffset;
+        _resizeScrollOffset = new(WallScroll.HorizontalOffset, WallScroll.VerticalOffset);
         _resizeFailure = null;
         _resizeScale = Scale;
         _resizeStart = pressedAt;
@@ -348,7 +348,7 @@ public sealed partial class MainWindow
                 if (error is not null && !_viewBlocked && !_windowClosing)
                 {
                     WallScroll.UpdateLayout();
-                    WallScroll.ChangeView(originalOffset, 0, null, disableAnimation: true);
+                    RestoreScrollPosition(originalOffset);
                 }
             });
         }
@@ -385,9 +385,10 @@ public sealed partial class MainWindow
             Surface.RefreshClocks(_clock.UtcNow);
             ApplyViewport(animateMode: false);
             WallScroll.UpdateLayout();
-            WallScroll.ChangeView(_resizeScrollOffset, 0, null, disableAnimation: true);
+            RestoreScrollPosition(_resizeScrollOffset);
         }
         UpdatePuzzleGate();
+        ResumeEnvironmentAdaptation();
     }
 
     private bool TryGetResizeScreenPoint(Point rootPoint, double scale, out Point screenPoint)
