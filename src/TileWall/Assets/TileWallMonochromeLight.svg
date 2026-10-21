@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Derived directly from 3.dxf model-space HATCH geometry.
+       Source bounds: x=768..1024, y=1280..1536 (exactly 256x256). -->
+  <g fill="#FFFFFF">
+    <!-- top-left solid rounded square -->
+    <rect x="32" y="32" width="84" height="84" rx="24" ry="24"/>
+
+    <!-- bottom-right solid rounded square -->
+    <rect x="140" y="140" width="84" height="84" rx="24" ry="24"/>
+
+    <!-- top-right rounded ring -->
+    <path fill-rule="evenodd" d="
+      M164 0 H232 A24 24 0 0 1 256 24 V92 A24 24 0 0 1 232 116 H164 A24 24 0 0 1 140 92 V24 A24 24 0 0 1 164 0 Z
+      M164 16 H232 A8 8 0 0 1 240 24 V92 A8 8 0 0 1 232 100 H164 A8 8 0 0 1 156 92 V24 A8 8 0 0 1 164 16 Z
+    "/>
+
+    <!-- bottom-left rounded ring -->
+    <path fill-rule="evenodd" d="
+      M24 140 H92 A24 24 0 0 1 116 164 V232 A24 24 0 0 1 92 256 H24 A24 24 0 0 1 0 232 V164 A24 24 0 0 1 24 140 Z
+      M24 156 H92 A8 8 0 0 1 100 164 V232 A8 8 0 0 1 92 240 H24 A8 8 0 0 1 16 232 V164 A8 8 0 0 1 24 156 Z
+    "/>
+  </g>
+</svg>
