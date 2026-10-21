@@ -11,6 +11,16 @@ native-winui-control/
 .scratch/
 nul
 docs/
+!docs/
+docs/*
+!docs/images/
+docs/images/*
+!docs/images/hero-en.png
+!docs/images/hero-zh.png
+!docs/images/personalize-en.png
+!docs/images/personalize-zh.png
+!docs/images/quick-start-en.gif
+!docs/images/quick-start-zh.gif
 AGENTS.md
 Reference/
 Origin/
