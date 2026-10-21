@@ -40,6 +40,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly TextBlock _version = new(), _status = new() { TextWrapping = TextWrapping.Wrap };
     private SettingsDialogState _state;
     private Task _pending = Task.CompletedTask;
+    private CancellationTokenSource? _backgroundProbe;
     private bool _refreshing, _busy, _closeRequested, _forceClose, _showFailureBeforeClose;
 
     public SettingsDialog(Window owner, Func<SettingsDialogState> readState,
@@ -172,20 +173,44 @@ internal sealed class SettingsDialog : IWallDialogSession
         _dialog.Closing += (_, e) =>
         {
             _hotKey.CancelRecording();
-            if (_forceClose) return;
+            _backgroundProbe?.Cancel();
+            // Explicitly settle NumberBox's inner text before moving focus, so
+            // its apply enters _pending before deciding whether this page closes.
+            OwnedDialogWindow.ReleaseTextFocus(_dialog);
+            if (_forceClose && !_busy) return;
             if (_showFailureBeforeClose) { _showFailureBeforeClose = false; e.Cancel = true; return; }
             if (_busy) { e.Cancel = true; _closeRequested = true; }
         };
     }
 
-    public async Task ShowAsync() { try { await OwnedDialogWindow.ShowAsync(_dialog); await _pending; } finally { _hotKey.CancelRecording(); } }
+    public async Task ShowAsync()
+    {
+        try { await OwnedDialogWindow.ShowAsync(_dialog); }
+        finally
+        {
+            _backgroundProbe?.Cancel();
+            try { await _pending; }
+            finally { _hotKey.CancelRecording(); }
+        }
+    }
     public bool HasUnsavedDraft => false;
-    public Task WaitForPendingAsync() { _hotKey.CancelRecording(); return _pending; }
+    public Task WaitForPendingAsync()
+    {
+        _hotKey.CancelRecording();
+        _backgroundProbe?.Cancel();
+        OwnedDialogWindow.ReleaseTextFocus(_dialog);
+        return _pending;
+    }
     public Task<ExitDecision> ConfirmExitAsync() => Task.FromResult(ExitDecision.DiscardAndExit);
     public string? TrySaveNow() => _busy ? ProductStrings.Get("Settings.Saving") : null;
     public void DiscardDraft() { }
     public void RequestDismiss() => _dialog.Hide();
-    public void Close() { if (_busy) _closeRequested = true; else { _forceClose = true; _dialog.Hide(); } }
+    public void Close()
+    {
+        _backgroundProbe?.Cancel();
+        if (_busy) _closeRequested = true;
+        else { _forceClose = true; _dialog.Hide(); }
+    }
 
     public void RefreshStrings()
     {
@@ -271,10 +296,13 @@ internal sealed class SettingsDialog : IWallDialogSession
         if (_refreshing || _busy) return;
         var candidate = change(_state.Settings);
         if (!pickImage && candidate == _state.Settings) return;
-        _pending = ApplyChoiceAsync(box, candidate, pickImage);
+        // Publish cancellation ownership before the queued popup unwind. Exit
+        // may start waiting before the picker/decoder has actually begun.
+        var probe = pickImage ? _backgroundProbe = new CancellationTokenSource() : null;
+        _pending = ApplyChoiceAsync(box, candidate, probe);
     }
 
-    private async Task ApplyChoiceAsync(ComboBox box, WallSettings candidate, bool pickImage)
+    private async Task ApplyChoiceAsync(ComboBox box, WallSettings candidate, CancellationTokenSource? probe)
     {
         _busy = true;
         try
@@ -293,7 +321,7 @@ internal sealed class SettingsDialog : IWallDialogSession
             if (!box.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => dispatched.TrySetResult()))
                 throw new InvalidOperationException(ProductStrings.Get("Wall.SettingsBlocked"));
             await dispatched.Task;
-            if (pickImage) await PickBackgroundAsync();
+            if (probe is not null) await PickBackgroundAsync(probe.Token);
             else await ApplyAsync(candidate);
         }
         catch (Exception ex)
@@ -301,25 +329,39 @@ internal sealed class SettingsDialog : IWallDialogSession
             _state = _readState() with { Error = string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message) };
             _busy = false; _formHost.IsEnabled = true; RestoreState(); FinishPending();
         }
+        finally
+        {
+            if (ReferenceEquals(_backgroundProbe, probe)) _backgroundProbe = null;
+            probe?.Dispose();
+        }
     }
 
-    private async Task PickBackgroundAsync()
+    private async Task PickBackgroundAsync(CancellationToken token)
     {
         _busy = true; _formHost.IsEnabled = false;
         string? path = null;
         try
         {
+            token.ThrowIfCancellationRequested();
             var picker = new FileOpenPicker();
             WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(_owner));
             foreach (var extension in new[] { ".png", ".jpg", ".jpeg", ".bmp" }) picker.FileTypeFilter.Add(extension);
             var file = await picker.PickSingleFileAsync();
+            // The system picker itself keeps its native lifetime. A close/exit
+            // request only cancels this uncommitted candidate probe.
+            token.ThrowIfCancellationRequested();
             if (file is not null)
             {
-                var decoded = await new ImageFrameDecoder().DecodeAsync(file.Path, 512, 512);
-                if (decoded.Status != ImageDecodeStatus.Success) throw new InvalidDataException();
-                path = file.Path;
+                var decoded = await new ImageFrameDecoder().DecodeAsync(file.Path, 512, 512, token);
+                token.ThrowIfCancellationRequested();
+                if (decoded.Status != ImageDecodeStatus.Cancelled)
+                {
+                    if (decoded.Status != ImageDecodeStatus.Success) throw new InvalidDataException();
+                    path = file.Path;
+                }
             }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch { _state = _readState() with { Error = ProductStrings.Get("Settings.BackgroundFailed") }; }
         finally { _busy = false; _formHost.IsEnabled = true; RestoreState(); }
         if (path is not null) await ApplyAsync(_state.Settings with { BackgroundMode = WallBackgroundMode.Custom, BackgroundImagePath = path, BackgroundMedia = null });

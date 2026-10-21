@@ -162,11 +162,30 @@ internal sealed class OwnedDialogWindow : Window
         // WinUI's text service can remain active after its page is detached and
         // later query input services during framework shutdown (#11653). Move
         // focus while the text control still belongs to its live XamlRoot.
-        var previous = FocusManager.GetFocusedElement(dialog.XamlRoot)?.GetType().Name ?? "none";
+        if (dialog.XamlRoot is not { } root) return;
+        var focused = FocusManager.GetFocusedElement(root);
+        var previous = focused?.GetType().Name ?? "none";
+        if (focused is TextBox input)
+        {
+            for (var parent = VisualTreeHelper.GetParent(input); parent is not null; parent = VisualTreeHelper.GetParent(parent))
+            {
+                if (parent is not NumberBox number) continue;
+                // NumberBox's inner InputBox keeps keyboard edits locally. Its
+                // public Text setter runs the control's own parser/validation and
+                // synchronously publishes ValueChanged; moving focus alone need
+                // not finish that work before the caller's close/save decision.
+                var raw = input.Text;
+                var oldValue = number.Value;
+                number.Text = raw;
+                if (Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1")
+                    AppLog.Warn("OwnedDialogInput", $"NumberCommit input={raw} old={oldValue} value={number.Value} text={number.Text}");
+                break;
+            }
+        }
         dialog.IsTabStop = true;
         var moved = dialog.Focus(FocusState.Programmatic);
         if (Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1")
-            AppLog.Warn("OwnedDialogInput", $"CloseFocus previous={previous} moved={moved} current={FocusManager.GetFocusedElement(dialog.XamlRoot)?.GetType().Name ?? "none"}");
+            AppLog.Warn("OwnedDialogInput", $"CloseFocus previous={previous} moved={moved} current={FocusManager.GetFocusedElement(root)?.GetType().Name ?? "none"}");
     }
 
     internal static Size ContentBudget(Window owner)
@@ -201,6 +220,7 @@ internal sealed class OwnedDialogWindow : Window
         }
         finally
         {
+            ReleaseTextFocus(dialog);
             dialog.Opened -= OnDialogOpened;
             dialog.Closing -= OnDialogClosing;
             _dialog = null; _title = null; _contentPresenter = null; _card = null; _root.Children.Clear();

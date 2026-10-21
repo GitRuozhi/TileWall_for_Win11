@@ -152,8 +152,16 @@ internal sealed partial class HotKeyRecorder : TextBox
         catch
         {
             // Never allow managed exceptions to cross the native callback boundary.
+            var generation = _recordingGeneration;
             RemoveHook();
-            try { DispatcherQueue.TryEnqueue(() => FailRecording(ProductStrings.Get("Settings.HotKeyRecordingFailed"))); }
+            try
+            {
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (IsRecording && generation == _recordingGeneration)
+                        FailRecording(ProductStrings.Get("Settings.HotKeyRecordingFailed"));
+                });
+            }
             catch { }
             return CallNextHookEx(IntPtr.Zero, code, message, data);
         }

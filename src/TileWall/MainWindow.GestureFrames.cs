@@ -45,7 +45,7 @@ public sealed partial class MainWindow
 
     private void EnsureFrameSubscription()
     {
-        if (_frameSubscribed || _windowClosing) return;
+        if (_frameSubscribed || _windowClosing || ShutdownStarted) return;
         _frameSubscribed = true;
         BeginInteractionTimer();
         if (TryStartDisplayPulses()) return;
@@ -71,7 +71,7 @@ public sealed partial class MainWindow
 
     private void OnInteractionFrame(object? sender, object e)
     {
-        if (_processingFrame) return;
+        if (_processingFrame || _windowClosing || ShutdownStarted) return;
         var started = Stopwatch.GetTimestamp();
         var displayPulse = _displayPulseActive;
         var didWork = _viewportTransition is not null;

@@ -63,6 +63,7 @@ public sealed partial class MainWindow : Window
         _clockTimer.IsRepeating = true;
         _clockTimer.Tick += (_, _) =>
         {
+            if (_windowClosing || ShutdownStarted) return;
             if (_traceInput) AppLog.Info("ClockTimer", $"Tick visible={AppWindow.IsVisible} utc={_clock.UtcNow:O}");
             Surface.RefreshClocks(_clock.UtcNow);
         };
@@ -117,6 +118,7 @@ public sealed partial class MainWindow : Window
         Surface.ContextMenuVisibilityChanged += OnContextMenuVisibilityChanged;
         AppWindow.Changed += (_, args) =>
         {
+            if (_windowClosing || ShutdownStarted) return;
             var started = _performance.NativeStageStart();
             if (args.DidPositionChange || args.DidSizeChange) InvalidateSnapshotIfGeometryChanged();
             try { if (args.DidVisibilityChange || args.DidPresenterChange || args.DidSizeChange) UpdatePuzzleGate(); }
@@ -145,6 +147,7 @@ public sealed partial class MainWindow : Window
         };
         Activated += (_, e) =>
         {
+            if (_windowClosing || ShutdownStarted) return;
             SetBackdropActive(e.WindowActivationState != WindowActivationState.Deactivated);
             TraceInput($"Activated state={e.WindowActivationState} phase={_gesture.Phase}");
             if (e.WindowActivationState == WindowActivationState.Deactivated)
@@ -557,11 +560,13 @@ public sealed partial class MainWindow : Window
         if (error is not null) Status(error);
     }
 
-    private void RenameGroup(string id, string? title)
+    private string? RenameGroup(string id, string? title)
     {
-        if (PersistenceInteractionBlocked || _modal || _viewBlocked) return;
+        if (PersistenceInteractionBlocked) return ProductStrings.Get("Wall.SettingsSaving");
+        if (_modal || _viewBlocked) return ProductStrings.Get("Wall.ViewBlocked");
         var error = Apply(new RenameGroupAction(Document.Generation, id, title));
         if (error is not null) Status(error);
+        return error;
     }
 
     private WallMember? FindMember(string id) => Document.Lanes.SelectMany(l => l.Groups)

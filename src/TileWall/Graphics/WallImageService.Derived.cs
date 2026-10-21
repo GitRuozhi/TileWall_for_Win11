@@ -47,6 +47,7 @@ public sealed partial class WallImageService
         if (_disk is not { } disk || budget.Purpose != MemberImagePurpose.Thumbnail && !budget.NeedsBlur) return;
         try
         {
+            ct.ThrowIfCancellationRequested();
             using var stream = new MemoryStream();
             using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
             {
@@ -56,6 +57,7 @@ public sealed partial class WallImageService
             }
             if (stream.Length > MaximumDerivedBytes) return;
             await PublishBytesAsync(DerivedPath(hash, budget), stream.ToArray(), ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
             disk.Evict(disk.Under("Cache", "Images", "Derived"), DerivedLimit, ".pixels");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)

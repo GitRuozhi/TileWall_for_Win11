@@ -32,7 +32,11 @@ public sealed partial class WallImageService
             folder is not null && _gallerySources.TryGetValue(folder, out var state) ? state.Due : DateTimeOffset.MinValue;
     }
 
-    public async Task<PuzzleCandidateResult> RefreshGalleryAsync(MemberImageSource source, CancellationToken ct = default)
+    public Task<PuzzleCandidateResult> RefreshGalleryAsync(MemberImageSource source, CancellationToken ct = default) =>
+        StartImageRequest(token => RefreshGalleryRequestAsync(source, token), ct,
+            new PuzzleCandidateResult([], WallImageStatus.Cancelled));
+
+    private async Task<PuzzleCandidateResult> RefreshGalleryRequestAsync(MemberImageSource source, CancellationToken ct)
     {
         var folder = NormalizeImageFilePath(source.Path);
         if (source.Kind != MemberImageSourceKind.Folder || folder is null) return new([], WallImageStatus.Invalid, "InvalidGallerySource");
@@ -110,9 +114,13 @@ public sealed partial class WallImageService
                 await PublishBytesAsync(Path.Combine(GalleryDirectory(state.Source), "index.json"), JsonSerializer.SerializeToUtf8Bytes(index, CacheJson), ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
             var changed = ChangedGalleryPaths(state.Source, previous, index);
-            state.Index = index;
             var result = GalleryResult(state, index, WallImageStatus.Loaded, null, true, changed);
-            lock (_workGate) state.Snapshot = result;
+            lock (_workGate)
+            {
+                ct.ThrowIfCancellationRequested();
+                state.Index = index;
+                state.Snapshot = result;
+            }
             if (_disk is { } storage)
                 try { storage.Evict(storage.Under("Cache", "Images", "Galleries"), GalleryLimit, ".original"); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { AppLog.Warn("ImageCache", ex.Message); }
@@ -126,7 +134,11 @@ public sealed partial class WallImageService
                 : GalleryResult(state, fallback, WallImageStatus.Fallback, "Gallery.SourceUnavailable", false, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
             result = result with { DiagnosticDetail = ex.Message,
                 Diagnostic = result.Paths.Count == 0 ? "Gallery.SourceUnavailableNoCache" : "Gallery.SourceUnavailable" };
-            lock (_workGate) state.Snapshot = result;
+            lock (_workGate)
+            {
+                if (_cacheStopping) return new([], WallImageStatus.Cancelled);
+                state.Snapshot = result;
+            }
             return result;
         }
         finally
@@ -149,19 +161,19 @@ public sealed partial class WallImageService
         if (entry?.Hash is not { } hash) return;
         try
         {
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cacheLifetime.Token);
-            await TrackCacheWork(Task.Run(async () =>
+            await Task.Run(async () =>
             {
+                ct.ThrowIfCancellationRequested();
                 var info = new FileInfo(identity);
                 if (!info.Exists || info.Length != entry.Length || info.LastWriteTimeUtc.Ticks != entry.ModifiedTicks)
                 { lock (_workGate) state!.Due = DateTimeOffset.MinValue; return; }
-                await _slots.WaitAsync(linked.Token).ConfigureAwait(false);
+                await _slots.WaitAsync(ct).ConfigureAwait(false);
                 VerifiedOriginal original;
-                try { original = await VerifyOriginalAsync(identity, linked.Token).ConfigureAwait(false); }
+                try { original = await VerifyOriginalAsync(identity, ct).ConfigureAwait(false); }
                 finally { _slots.Release(); }
                 if (original.Asset.Reference.Sha256 != hash) { lock (_workGate) state!.Due = DateTimeOffset.MinValue; return; }
-                await PublishBytesAsync(GalleryOriginal(folder, hash), original.Bytes, linked.Token).ConfigureAwait(false);
-            }, linked.Token));
+                await PublishBytesAsync(GalleryOriginal(folder, hash), original.Bytes, ct).ConfigureAwait(false);
+            }, ct);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or ArgumentException)
         { /* A missing disposable package keeps the existing frame or placeholder. */ }

@@ -43,6 +43,7 @@ internal sealed class ManagedImageCache(string root)
     }
     internal async Task<string> StageAsync(ReadOnlyMemory<byte> bytes, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var directory = Under("Cache", "Images", "Temp"); CreateDirectory(directory);
         var path = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tmp"); Guard(path);
         try { await File.WriteAllBytesAsync(path, bytes.ToArray(), ct).ConfigureAwait(false); }

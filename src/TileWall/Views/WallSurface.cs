@@ -29,6 +29,8 @@ public sealed class WallSurface : Canvas
     private readonly Dictionary<string, PuzzleCanvasView> _puzzles = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PuzzleFrame?> _puzzleFrames = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TextBox> _titleEditors = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Func<bool, string?>> _titleEditFinishers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Action> _titleEditReleases = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Border> _groupOutlines = new(StringComparer.Ordinal);
     private readonly Dictionary<string, FrameworkElement> _titleViews = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> _groupTitles = new(StringComparer.Ordinal);
@@ -75,7 +77,7 @@ public sealed class WallSurface : Canvas
     public event Action<string>? MemberRemoveRequested;
     public event Action<string>? MemberAdminRequested;
     public event Action<string>? MemberLocationRequested;
-    public event Action<string, string?>? GroupRenameRequested;
+    public event Func<string, string?, string?>? GroupRenameRequested;
     public event Action<string?, int>? NewTileRequested;
     public event Action<string?, int>? NewPuzzleRequested;
     public event Action? PuzzleNextPageRequested;
@@ -218,9 +220,13 @@ public sealed class WallSurface : Canvas
 
     private void RemoveGroupView(string id)
     {
+        // Rendering an accepted document may replace a title independently of a
+        // rename. Release its text service while attached, without committing an
+        // older editor draft back into the new document through LostFocus.
+        if (_titleEditReleases.Remove(id, out var release)) release();
         if (_titleViews.Remove(id, out var title)) Children.Remove(title);
         if (_groupOutlines.Remove(id, out var outline)) Children.Remove(outline);
-        _titleEditors.Remove(id); _groupTitles.Remove(id);
+        _titleEditors.Remove(id); _titleEditFinishers.Remove(id); _groupTitles.Remove(id);
     }
 
     public void ResetProjection()
@@ -416,6 +422,20 @@ public sealed class WallSurface : Canvas
         editor.SelectAll();
     }
 
+    public string? FinishActiveTitleEdit(bool save)
+    {
+        string? activeGroupId = null;
+        foreach (var (groupId, editor) in _titleEditors)
+        {
+            if (editor.Visibility != Visibility.Visible) continue;
+            activeGroupId = groupId;
+            break;
+        }
+        return activeGroupId is not null && _titleEditFinishers.TryGetValue(activeGroupId, out var finish)
+            ? finish(save)
+            : null;
+    }
+
     public void ClearTransientInteraction()
     {
         ClearGroupFeedback();
@@ -449,7 +469,7 @@ public sealed class WallSurface : Canvas
         };
         return _groupDragVisual = new Border
         {
-            Width = placed.Bounds.Width, Height = 36,
+            Width = placed.Bounds.Width, Height = _metrics.TitleInteractionHeight,
             CornerRadius = WallCorners, Background = accent,
             BorderThickness = new Thickness(2), BorderBrush = accent,
             Child = heading, IsHitTestVisible = false,
@@ -738,13 +758,46 @@ public sealed class WallSurface : Canvas
             Tag = $"title:{group.Id}",
         };
         var original = editor.Text;
-        void Finish(bool save)
+        var finishing = false;
+        string? Finish(bool save)
         {
-            if (editor.Visibility != Visibility.Visible) return;
-            editor.Visibility = Visibility.Collapsed;
-            if (save && editor.Text != original) GroupRenameRequested?.Invoke(group.Id, editor.Text);
-            else editor.Text = original;
-            TitleEditFinished?.Invoke();
+            if (finishing || editor.Visibility != Visibility.Visible) return null;
+            finishing = true;
+            try
+            {
+                // Move text focus while the editor still belongs to its live XamlRoot.
+                // A successful synchronous rename can remove this entire title view.
+                var hadTextFocus = editor.FocusState != FocusState.Unfocused;
+                if (hadTextFocus) title.Focus(FocusState.Programmatic);
+                if (!save || editor.Text == original)
+                {
+                    editor.Text = original;
+                    editor.Visibility = Visibility.Collapsed;
+                    TitleEditFinished?.Invoke();
+                    return null;
+                }
+
+                // Keep the editor in place until the synchronous commit returns. A
+                // successful commit may rebuild this title view; while that happens,
+                // the guard prevents its detach-induced LostFocus from committing twice.
+                var error = GroupRenameRequested?.Invoke(group.Id, editor.Text);
+                if (error is null)
+                {
+                    // A no-op rename may keep the existing title view. Only touch the
+                    // editor if it is still the live one; a successful changed rename
+                    // has already replaced it during the synchronous view refresh.
+                    if (_titleEditors.TryGetValue(group.Id, out var current) && ReferenceEquals(current, editor))
+                    {
+                        editor.Text = original;
+                        editor.Visibility = Visibility.Collapsed;
+                    }
+                    TitleEditFinished?.Invoke();
+                }
+                else if (hadTextFocus && editor.XamlRoot is not null)
+                    editor.Focus(FocusState.Programmatic);
+                return error;
+            }
+            finally { finishing = false; }
         }
         editor.KeyDown += (_, e) =>
         {
@@ -753,6 +806,12 @@ public sealed class WallSurface : Canvas
         };
         editor.LostFocus += (_, _) => Finish(true);
         _titleEditors[group.Id] = editor;
+        _titleEditFinishers[group.Id] = Finish;
+        _titleEditReleases[group.Id] = () =>
+        {
+            finishing = true;
+            if (editor.FocusState != FocusState.Unfocused) title.Focus(FocusState.Programmatic);
+        };
         grid.Children.Add(editor);
         return grid;
     }

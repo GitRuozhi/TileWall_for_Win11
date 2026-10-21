@@ -31,6 +31,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
     private bool _exitPending;
     private bool _tearingDown;
     private bool _started;
+    private Task? _startup;
     private bool _showWhenStarted;
     private bool _drainQueued;
     private bool _inAddSequence;
@@ -78,7 +79,9 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         _hotKey.RegistrationChanged += UpdateTray;
     }
 
-    public async Task StartAsync(StartupIntent intent)
+    public Task StartAsync(StartupIntent intent) => _startup ??= StartCoreAsync(intent);
+
+    private async Task StartCoreAsync(StartupIntent intent)
     {
         try
         {
@@ -92,6 +95,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
             var login = await _login.ReadAsync();
             _loginEnabled = login.Enabled;
             _started = true;
+            if (_exitPending || _tearingDown) return;
             QueueAddDrain();
             if (intent.Add is { } add) ReceiveAdd(add);
             if (!intent.Background || _showWhenStarted || intent.Add is not null) Request(WallShowTrigger.Show);
@@ -101,14 +105,16 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         }
         catch (Exception ex)
         {
-            AppLog.Error("Startup", ex.Message);
-            _exit.RunTeardown();
+            AppLog.Error("Startup", ex.ToString());
+            // Startup may already own image/cache/storage work. Use the same
+            // queued, asynchronous drain as every other exit route.
+            RequestExit();
         }
     }
 
     private void Request(WallShowTrigger trigger)
     {
-        if (_tearingDown) return;
+        if (_tearingDown || _exitPending) return;
         if (!_started) { if (trigger != WallShowTrigger.Hide) _showWhenStarted = true; return; }
         if (_window.ModalActive)
         {
@@ -120,7 +126,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
 
     private void OpenSettings()
     {
-        if (!_started || _tearingDown || _window.PersistenceBusy) return;
+        if (!_started || _tearingDown || _exitPending || _window.PersistenceBusy) return;
         if (_window.ModalActive) { _window.FocusTopSession(); return; }
         Request(WallShowTrigger.Show);
         _ = _window.OpenSettingsAsync(CurrentSettingsState, ApplySettingsAsync, SetHotKeyRecording);
@@ -205,10 +211,12 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
 
     private bool ReceiveAdd(ExplorerAddMessage message)
     {
-        if (_tearingDown || _pendingAdds.Count >= 64 || _queuedPaths + message.Paths.Count > 4096)
+        if (_tearingDown || _exitPending) return false;
+        if (_pendingAdds.Count >= 64 || _queuedPaths + message.Paths.Count > 4096)
         {
             _window.DispatcherQueue.TryEnqueue(() =>
             {
+                if (_tearingDown || _exitPending) return;
                 _window.ShowStatus(ProductStrings.Get("Wall.QueueFull"));
                 AppLog.Warn("ExternalAdd", "Add queue rejected an oversized/full batch.");
             });
@@ -276,10 +284,24 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         try
         {
+            // In packaged runs the login-state read can yield during startup.
+            // Its continuation must finish before any owned resource is stopped.
+            if (_startup is { } startup) await startup;
+            var titleError = _window.FinishActiveTitleEditForExit();
+            if (titleError is not null)
+            {
+                _window.TraceExit("title-edit-rejected");
+                _window.ShowStatus(titleError);
+                return;
+            }
+            // Blur can commit a NumberBox's pending text or start a final settings
+            // apply. Settle that while writes are still admitted, then freeze.
+            var session = _window.ActiveDialog;
+            if (session is not null) await session.WaitForPendingAsync();
             _window.TraceExit("admission-close");
             _window.SuspendPersistenceAdmission();
             await _window.DrainPersistenceAsync();
-            var session = _window.ActiveDialog;
+            session = _window.ActiveDialog;
             _window.TraceExit($"dialog-wait type={session?.GetType().Name ?? "none"}");
             if (session is not null) await session.WaitForPendingAsync();
             session = _window.ActiveDialog;

@@ -36,7 +36,7 @@ public sealed class ImageFrameDecoder
             if (!info.Exists || info.Length is < 1 or > MaxSourceBytes) return false;
             using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var stream = file.AsRandomAccessStream();
-            var decoder = await BitmapDecoder.CreateAsync(stream);
+            var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
             if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 ||
                 (long)decoder.PixelWidth * decoder.PixelHeight > MaxSourcePixels) return false;
@@ -84,7 +84,7 @@ public sealed class ImageFrameDecoder
             using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             cancellationToken.ThrowIfCancellationRequested();
             using var stream = file.AsRandomAccessStream();
-            var decoder = await BitmapDecoder.CreateAsync(stream);
+            var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             var rawWidth = checked((int)decoder.PixelWidth);
             var rawHeight = checked((int)decoder.PixelHeight);
@@ -155,7 +155,7 @@ public sealed class ImageFrameDecoder
             : new BitmapTransform();
         var pixelData = await decoder.GetPixelDataAsync(
             BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, transform,
-            ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb);
+            ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         var pixels = pixelData.DetachPixelData();
         return pixels.LongLength == (long)resultWidth * resultHeight * 4
@@ -193,7 +193,7 @@ public sealed class ImageFrameDecoder
             using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             cancellationToken.ThrowIfCancellationRequested();
             using var stream = file.AsRandomAccessStream();
-            var decoder = await BitmapDecoder.CreateAsync(stream);
+            var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
             var rawWidth = checked((int)decoder.PixelWidth);

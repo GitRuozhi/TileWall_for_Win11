@@ -53,6 +53,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private IReadOnlyList<StartMenuImportCandidate> _candidates = [];
     private IReadOnlyList<StartMenuImportCandidate> _visibleCandidates = [];
     private Task _pending = Task.CompletedTask;
+    private readonly HashSet<Task> _pendingOperations = [];
     private CancellationTokenSource? _pageRequest;
     private bool _saved, _closed, _allowDiscard, _discarded, _scanReceived, _updating, _initialSelectionApplied;
     private bool _synchronizingSelection, _refreshingStrings, _shown;
@@ -222,7 +223,13 @@ internal sealed class ImportDialog : IWallDialogSession
         _catalog.Changed += _catalogChanged;
         StartPageRequest();
         try { await OwnedDialogWindow.ShowAsync(_dialog); }
-        finally { StopRequests(); _pageRequest?.Dispose(); _lifetime.Dispose(); }
+        finally
+        {
+            StopRequests();
+            try { await Task.WhenAll(_pendingOperations); }
+            catch (OperationCanceledException) { }
+            finally { _pageRequest?.Dispose(); _lifetime.Dispose(); }
+        }
     }
 
     private void StartPageRequest(int? epoch = null)
@@ -230,6 +237,13 @@ internal sealed class ImportDialog : IWallDialogSession
         _pageRequest?.Cancel(); _pageRequest?.Dispose();
         _pageRequest = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _pending = LoadPageAsync(epoch ?? _sourceEpoch, _pageRequest.Token);
+        TrackOperation(_pending);
+    }
+
+    private void TrackOperation(Task operation)
+    {
+        _pendingOperations.RemoveWhere(task => task.IsCompletedSuccessfully || task.IsCanceled);
+        _pendingOperations.Add(operation);
     }
 
     private async Task LoadPageAsync(int epoch, CancellationToken token)
@@ -467,7 +481,7 @@ internal sealed class ImportDialog : IWallDialogSession
         _rows.Add(row);
         e.ItemContainer.Tag = row;
         host.Children.Add(toggle); UpdateSelectionFeedback();
-        _ = LoadIconAsync();
+        TrackOperation(LoadIconAsync());
 
         async Task LoadIconAsync()
         {

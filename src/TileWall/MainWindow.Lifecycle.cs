@@ -124,6 +124,9 @@ public sealed partial class MainWindow
         _windowsSidebar?.Collapse();
     }
 
+    internal string? FinishActiveTitleEditForExit() =>
+        ActiveDialog is null ? Surface.FinishActiveTitleEdit(save: true) : null;
+
     internal void RefreshProductStrings()
     {
         ActionIcon.Set(RetryViewButton, ProductStrings.Get("Wall.Retry"), ActionIcon.Refresh);
@@ -194,6 +197,8 @@ public sealed partial class MainWindow
 
     private async Task<bool> BeginModalAsync()
     {
+        var titleError = Surface.FinishActiveTitleEdit(save: true);
+        if (titleError is not null) { Status(titleError); return false; }
         _modalClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _modal = true;
         UpdateNativeSizingRegion(); // Remove the opt-in native edge before any asynchronous dialog setup.
@@ -211,6 +216,7 @@ public sealed partial class MainWindow
 
     private void EndModal()
     {
+        if (!_modal) return;
         var closed = _modalClosed;
         try
         {
@@ -236,11 +242,11 @@ public sealed partial class MainWindow
 
     internal void QueueEnvironmentRefresh()
     {
-        if (_environmentQueued) return;
-        _environmentQueued = true;
-        DispatcherQueue.TryEnqueue(() =>
+        if (_environmentQueued || _windowClosing || ShutdownStarted) return;
+        _environmentQueued = DispatcherQueue.TryEnqueue(() =>
         {
             _environmentQueued = false;
+            if (_windowClosing || ShutdownStarted) return;
             RefreshEnvironment(force: false);
         });
     }

@@ -23,6 +23,7 @@ internal sealed class WindowsSidebar : Grid
     private readonly List<Row> _rows = [];
     private readonly StackPanel _items = new();
     private readonly Grid _itemsHost = new();
+    private readonly Grid _rail = new();
     private readonly ScrollViewer _scroll;
     private readonly Action<string> _status;
     private readonly Action<bool> _menuVisibility;
@@ -75,12 +76,12 @@ internal sealed class WindowsSidebar : Grid
         Add("Documents", "\uE7C3", WindowsShortcut.Documents);
         Add("User", "\uE77B", null);
         Add("TileWall", string.Empty, null);
-        var rail = new Grid();
-        rail.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        rail.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        rail.Children.Add(_rows.Single(row => row.Key == "TileWall").Button);
-        Grid.SetRow(_scroll, 1); rail.Children.Add(_scroll);
-        Children.Add(rail);
+        _rail.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _rail.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var brand = _rows.Single(row => row.Key == "TileWall").Button;
+        Grid.SetRow(brand, 0); _rail.Children.Add(brand);
+        Grid.SetRow(_scroll, 1); _rail.Children.Add(_scroll);
+        Children.Add(_rail);
         PointerEntered += (_, _) => { _pointerInside = true; SetExpanded(true); };
         PointerExited += (_, args) =>
         {
@@ -178,6 +179,11 @@ internal sealed class WindowsSidebar : Grid
             _anchor = anchor;
             var right = anchor is AnchorCorner.TopRight or AnchorCorner.BottomRight;
             var bottom = anchor is AnchorCorner.BottomLeft or AnchorCorner.BottomRight;
+            var brand = _rows.Single(row => row.Key == "TileWall").Button;
+            _rail.RowDefinitions[0].Height = bottom ? GridLength.Auto : new GridLength(1, GridUnitType.Star);
+            _rail.RowDefinitions[1].Height = bottom ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
+            Grid.SetRow(brand, bottom ? 0 : 1);
+            Grid.SetRow(_scroll, bottom ? 1 : 0);
             _items.VerticalAlignment = bottom ? VerticalAlignment.Bottom : VerticalAlignment.Top;
             _items.Children.Clear();
             var entries = _rows.Where(row => row.Key != "TileWall");

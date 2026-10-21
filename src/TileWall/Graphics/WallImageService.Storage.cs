@@ -28,10 +28,22 @@ public sealed partial class WallImageService
         _publishCache = publishShortCacheAction; _formalMember = formalMemberLookup;
     }
 
-    public async Task<PreparedMediaAsset> PrepareMediaAsync(string path, CancellationToken ct = default)
+    public Task<PreparedMediaAsset> PrepareMediaAsync(string path, CancellationToken ct = default)
     {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cacheLifetime.Token);
-        return await TrackCacheWork(Task.Run(async () => (await VerifyOriginalAsync(path, linked.Token).ConfigureAwait(false)).Asset, linked.Token));
+        lock (_workGate)
+        {
+            if (_cacheStopping || _disposed || ct.IsCancellationRequested)
+                return Task.FromCanceled<PreparedMediaAsset>(new CancellationToken(true));
+            var request = CancellationTokenSource.CreateLinkedTokenSource(ct, _cacheLifetime.Token);
+            return TrackCacheWork(PrepareMediaCoreAsync(path, request));
+        }
+    }
+
+    private static async Task<PreparedMediaAsset> PrepareMediaCoreAsync(string path, CancellationTokenSource request)
+    {
+        using (request)
+            return await Task.Run(async () => (await VerifyOriginalAsync(path, request.Token).ConfigureAwait(false)).Asset,
+                request.Token).ConfigureAwait(false);
     }
 
     private sealed record VerifiedOriginal(PreparedMediaAsset Asset, byte[] Bytes);
@@ -46,12 +58,12 @@ public sealed partial class WallImageService
         if (!before.Exists || before.Length != length || before.LastWriteTimeUtc != modified || bytes.LongLength != length)
             throw new IOException("Image changed while being prepared.");
         using var stream = new InMemoryRandomAccessStream();
-        using (var writer = new DataWriter(stream)) { writer.WriteBytes(bytes); await writer.StoreAsync(); writer.DetachStream(); }
-        stream.Seek(0); var decoder = await BitmapDecoder.CreateAsync(stream); ct.ThrowIfCancellationRequested();
+        using (var writer = new DataWriter(stream)) { writer.WriteBytes(bytes); await writer.StoreAsync().AsTask(ct).ConfigureAwait(false); writer.DetachStream(); }
+        stream.Seek(0); var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(ct).ConfigureAwait(false); ct.ThrowIfCancellationRequested();
         if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 || (long)decoder.PixelWidth * decoder.PixelHeight > 80_000_000)
             throw new InvalidDataException("Image dimensions exceed the source budget.");
         var sample = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied,
-            new BitmapTransform { ScaledWidth = 1, ScaledHeight = 1 }, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb);
+            new BitmapTransform { ScaledWidth = 1, ScaledHeight = 1 }, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(ct).ConfigureAwait(false);
         if (sample.DetachPixelData().Length != 4) throw new InvalidDataException("Image cannot be decoded.");
         ct.ThrowIfCancellationRequested();
         var extension = decoder.DecoderInformation.FileExtensions.FirstOrDefault()
@@ -66,8 +78,8 @@ public sealed partial class WallImageService
     }
     public Task<WallImageResult> LoadBackgroundAsync(ManagedMediaReference? media, string? sourcePath,
         int widthPixels, int heightPixels, CancellationToken ct = default) =>
-        LoadAsync(() => PrepareFileAsync(media is null ? sourcePath : ManagedMediaPath(media),
-            "background", widthPixels, heightPixels, ct, media), widthPixels, heightPixels, ct);
+        LoadAsync(token => PrepareFileAsync(media is null ? sourcePath : ManagedMediaPath(media),
+            "background", widthPixels, heightPixels, token, media), widthPixels, heightPixels, ct);
 
     private (FileStream? Lease, string? Diagnostic) OpenVerifiedMedia(string path, ManagedMediaReference media)
     {
@@ -98,6 +110,29 @@ public sealed partial class WallImageService
     {
         TrackCacheWork((Task)task);
         return task;
+    }
+
+    // Public display requests own their complete caller-thread continuation. Shared
+    // producers register separately and use only the service lifetime, so cancelling
+    // one caller never abandons a producer another caller is still awaiting.
+    private Task<T> StartImageRequest<T>(Func<CancellationToken, Task<T>> start, CancellationToken ct, T cancelled)
+    {
+        lock (_workGate)
+        {
+            if (_cacheStopping || _disposed || ct.IsCancellationRequested) return Task.FromResult(cancelled);
+            var request = CancellationTokenSource.CreateLinkedTokenSource(ct, _cacheLifetime.Token);
+            return TrackCacheWork(CompleteImageRequestAsync(start, request, cancelled));
+        }
+    }
+
+    private static async Task<T> CompleteImageRequestAsync<T>(Func<CancellationToken, Task<T>> start,
+        CancellationTokenSource request, T cancelled)
+    {
+        using (request)
+        {
+            try { return await start(request.Token); }
+            catch (OperationCanceledException) { return cancelled; }
+        }
     }
     private Task TrackCacheWork(Task task)
     {
@@ -155,6 +190,7 @@ public sealed partial class WallImageService
         if (key != Fingerprint(path, "verified-image-content")) throw new IOException("Image changed while its content was verified.");
         lock (_workGate)
         {
+            if (_cacheStopping) return hash;
             if (_verifiedContentHashes.Count >= 2048) _verifiedContentHashes.Clear();
             if (key is not null) _verifiedContentHashes[key] = hash;
         }

@@ -20,6 +20,9 @@ public sealed partial class MainWindow
     private long _pendingCompositionStarted;
     private bool _pendingCompositionCancelRequested;
     private long _compositionCommitEpoch;
+    private readonly CancellationTokenSource _interactionLifetime = new();
+    private Task? _interactionCommitWork;
+    private bool _interactionStopping;
 
     private bool TryStartDisplayPulses()
     {
@@ -44,14 +47,14 @@ public sealed partial class MainWindow
 
     private void OnDisplayPulse(long timestamp)
     {
-        if (_windowClosing || !_frameSubscribed || !_displayPulseActive) return;
+        if (_windowClosing || _interactionStopping || !_frameSubscribed || !_displayPulseActive) return;
         _performance.DisplayPulse(timestamp);
         OnInteractionFrame(null, EventArgs.Empty);
     }
 
     private void FallBackToRendering(string reason)
     {
-        if (_windowClosing || _displayPulseFailed) return;
+        if (_windowClosing || _interactionStopping || _displayPulseFailed) return;
         _displayPulseFailed = true;
         _displayPulseFailure = reason;
         _displayPulseSource?.Stop();
@@ -94,9 +97,15 @@ public sealed partial class MainWindow
         { transform.X = x; transform.Y = y; }
     }
 
-    private async void RequestInteractionCommit()
+    private void RequestInteractionCommit()
     {
-        if (_windowClosing || !_displayPulseActive || !_frameSubscribed || _pendingCompositionCommit is not null) return;
+        if (_windowClosing || _interactionStopping || !_displayPulseActive || !_frameSubscribed || _interactionCommitWork is not null) return;
+        var work = RequestInteractionCommitAsync();
+        _interactionCommitWork = work.IsCompleted ? null : work;
+    }
+
+    private async Task RequestInteractionCommitAsync()
+    {
         var epoch = _compositionCommitEpoch;
         var started = Stopwatch.GetTimestamp();
         IAsyncAction? request = null;
@@ -108,12 +117,12 @@ public sealed partial class MainWindow
             _pendingCompositionStarted = started;
             _pendingCompositionCancelRequested = false;
             _performance.CompositionCommitRequest();
-            await request;
+            await request.AsTask(_interactionLifetime.Token);
             if (epoch == _compositionCommitEpoch) _performance.CompositionCommitCompleted(started);
         }
         catch (Exception ex)
         {
-            if (!_windowClosing && epoch == _compositionCommitEpoch)
+            if (!_windowClosing && !_interactionStopping && epoch == _compositionCommitEpoch)
                 FallBackToRendering($"Composition commit request failed: {ex.GetType().Name}: {ex.Message}");
         }
         finally
@@ -124,6 +133,7 @@ public sealed partial class MainWindow
                 _pendingCompositionStarted = 0;
                 _pendingCompositionCancelRequested = false;
             }
+            _interactionCommitWork = null;
             // No continuation-driven commits: the next display pulse adopts the latest
             // values. A delayed completion cannot enqueue a chain of stale submissions.
         }
@@ -168,9 +178,17 @@ public sealed partial class MainWindow
 
     private void DisposeInteractionScheduling()
     {
+        _interactionStopping = true;
+        _interactionLifetime.Cancel();
         EndInteractionTimer();
         _displayPulseSource?.Dispose();
         CancelInteractionCommit();
         _ghostCompositionVisual = null;
+    }
+
+    private async Task ShutdownInteractionSchedulingAsync()
+    {
+        DisposeInteractionScheduling();
+        if (_interactionCommitWork is { } pending) await pending;
     }
 }

@@ -24,20 +24,24 @@ public sealed partial class WallImageService
     private sealed record DiskIconManifest(int Format, string Key, uint GroupId, string? GroupName, uint LanguageId,
         bool Empty, IReadOnlyList<DiskIconFrame> Frames);
 
-    public async Task<string?> PrewarmPeIconsAsync(string sourcePath, string? targetPath, string? iconPath,
+    public Task<string?> PrewarmPeIconsAsync(string sourcePath, string? targetPath, string? iconPath,
         int? iconIndex, string sourceSha256, string iconsDirectory, CancellationToken ct = default)
+        => StartImageRequest(token => PrewarmPeIconsCoreAsync(sourcePath, targetPath, iconPath,
+            iconIndex, sourceSha256, iconsDirectory, token), ct, (string?)null);
+
+    private async Task<string?> PrewarmPeIconsCoreAsync(string sourcePath, string? targetPath, string? iconPath,
+        int? iconIndex, string sourceSha256, string iconsDirectory, CancellationToken ct)
     {
-        if (_disk is not { } disk || _cacheStopping || _disposed) return null;
+        if (_disk is not { } disk) return null;
         if (sourceSha256.Length != 64 || !sourceSha256.All(Uri.IsHexDigit)) return null;
         var exe = NormalizePath(targetPath);
         if (exe is null || !Path.GetExtension(exe).Equals(".exe", StringComparison.OrdinalIgnoreCase)) return null;
         try
         {
             disk.Guard(iconsDirectory);
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cacheLifetime.Token);
-            return await TrackCacheWork(Task.Run(async () =>
+            return await Task.Run(async () =>
             {
-                var token = linked.Token; token.ThrowIfCancellationRequested();
+                var token = ct; token.ThrowIfCancellationRequested();
                 var language = CultureInfo.CurrentUICulture.Name;
                 var dependency = Fingerprint(exe, "native-icon-v1:" + language + ":" + NormalizePath(iconPath) + ":" + iconIndex);
                 if (dependency is null) return null;
@@ -76,7 +80,7 @@ public sealed partial class WallImageService
                     return accepted ? key : null;
                 }
                 finally { foreach (var file in files) disk.Delete(file.Staged); }
-            }, linked.Token));
+            }, ct);
         }
         catch (OperationCanceledException) { return null; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or COMException)
@@ -86,7 +90,13 @@ public sealed partial class WallImageService
     /// <summary>After commit, adopt a verified source package without parsing its EXE again.</summary>
     public Task<bool> CopyCachedIconsToMemberAsync(string memberId, string managedEntryPath, string sourceSha256,
         string? targetPath, string? iconPath, int? iconIndex, string sourceIconsDirectory, string iconKey,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        StartImageRequest(token => CopyCachedIconsRequestAsync(memberId, managedEntryPath, sourceSha256,
+            targetPath, iconPath, iconIndex, sourceIconsDirectory, iconKey, token), ct, false);
+
+    private Task<bool> CopyCachedIconsRequestAsync(string memberId, string managedEntryPath, string sourceSha256,
+        string? targetPath, string? iconPath, int? iconIndex, string sourceIconsDirectory, string iconKey,
+        CancellationToken ct)
     {
         Task<AdoptedIconPackage?> copy;
         lock (_workGate)
@@ -95,15 +105,15 @@ public sealed partial class WallImageService
             // Register synchronously before the first await. The view refresh
             // queued by the successful commit then observes this exact transfer.
             copy = TrackCacheWork(Task.Run(() => CopyCachedIconsCoreAsync(memberId, managedEntryPath, sourceSha256,
-                targetPath, iconPath, iconIndex, sourceIconsDirectory, iconKey, ct), _cacheLifetime.Token));
+                targetPath, iconPath, iconIndex, sourceIconsDirectory, iconKey, _cacheLifetime.Token), _cacheLifetime.Token));
             _memberIconCopies[memberId] = copy;
         }
-        return CopyAcceptedAsync(copy);
+        return CopyAcceptedAsync(copy, ct);
     }
 
-    private static async Task<bool> CopyAcceptedAsync(Task<AdoptedIconPackage?> copy)
+    private static async Task<bool> CopyAcceptedAsync(Task<AdoptedIconPackage?> copy, CancellationToken ct)
     {
-        try { return await copy.ConfigureAwait(false) is not null; }
+        try { return await copy.WaitAsync(ct).ConfigureAwait(false) is not null; }
         catch (OperationCanceledException) { return false; }
     }
 
@@ -112,8 +122,7 @@ public sealed partial class WallImageService
     {
         if (_disk is not { } disk || expectedSha.Length != 64 || !expectedSha.All(Uri.IsHexDigit)) return null;
         var staged = new List<(string Source, string Destination)>();
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cacheLifetime.Token);
-        var token = linked.Token;
+        var token = ct;
         try
         {
             token.ThrowIfCancellationRequested();
@@ -170,8 +179,9 @@ public sealed partial class WallImageService
         return FileContentHash(sourcePath) == expectedSha;
     }
 
-    public async Task<PuzzleFrameResult> LoadCachedIconFrameAsync(string iconsDirectory, string iconKey, int edge, CancellationToken ct = default)
-        => await LoadCachedIconFrameCoreAsync(iconsDirectory, iconKey, edge, false, ct);
+    public Task<PuzzleFrameResult> LoadCachedIconFrameAsync(string iconsDirectory, string iconKey, int edge, CancellationToken ct = default)
+        => StartImageRequest(token => LoadCachedIconFrameCoreAsync(iconsDirectory, iconKey, edge, false, token), ct,
+            new PuzzleFrameResult(null, WallImageStatus.Cancelled));
 
     private async Task<PuzzleFrameResult> LoadCachedIconFrameCoreAsync(string iconsDirectory, string iconKey, int edge, bool needsBlur, CancellationToken ct)
     {
@@ -240,6 +250,7 @@ public sealed partial class WallImageService
             Task<ManagedIconDescriptor> descriptorTask;
             lock (_workGate)
             {
+                if (_cacheStopping || _disposed) return null;
                 if (!_iconDescriptors.TryGetValue(sha, out descriptorTask!))
                 {
                     descriptorTask = TrackCacheWork(Task.Run(() =>
@@ -253,7 +264,7 @@ public sealed partial class WallImageService
             }
             var descriptor = await descriptorTask.WaitAsync(ct);
             var directory = disk.Under("Objects", member.Id, "IconCache");
-            var key = await PrewarmPeIconsAsync(entryPath, descriptor.Target, descriptor.Icon, descriptor.Index, descriptor.Sha, directory, ct);
+            var key = await PrewarmPeIconsCoreAsync(entryPath, descriptor.Target, descriptor.Icon, descriptor.Index, descriptor.Sha, directory, ct);
             if (key is null) return null;
             return await LoadCachedIconFrameCoreAsync(directory, key, edge, member.Visual.BackgroundMode == MemberBackgroundMode.Blur, ct);
         }
@@ -264,6 +275,8 @@ public sealed partial class WallImageService
     {
         lock (_workGate)
         {
+            if (_cacheStopping || _disposed)
+                return Task.FromCanceled<NativeIconPackage>(new CancellationToken(true));
             if (_nativePackages.TryGetValue(dependency, out var task)) return task;
             task = Task.Run(async () =>
             {

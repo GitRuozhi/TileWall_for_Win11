@@ -55,6 +55,10 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     private bool _animationEventSubscribed;
     private MemberCarouselGate _gate = MemberCarouselGate.Hidden;
     private bool _disposed;
+    private bool _stopping;
+    private Task? _shutdown;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly HashSet<Task> _work = [];
     private bool _queued;
     private bool _queuedExplicit;
     private bool _persistenceBusy;
@@ -113,12 +117,15 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     }
 
     private void OnAnimationsEnabledChanged(UISettings sender, object args)
-        => _dispatcher.TryEnqueue(() =>
+    {
+        if (_disposed || _stopping) return;
+        _dispatcher.TryEnqueue(() =>
         {
-            if (_disposed) return;
+            if (_disposed || _stopping) return;
             ApplyAnimationPreference();
             QueueCheck(false);
         });
+    }
 
     private void ApplyAnimationPreference()
     {
@@ -130,7 +137,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     public void AdvanceAll()
     {
-        if (_disposed) return;
+        if (_disposed || _stopping) return;
         foreach (var state in _states.Values)
             if (state.Member is PuzzleMember && CouldAdvance(state)) state.PendingPages++;
         QueueCheck(false);
@@ -140,14 +147,14 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     public void SetEditorGallerySource(MemberImageSource? source)
     {
-        if (_disposed) return;
+        if (_disposed || _stopping) return;
         _editorGallery = source?.Kind == MemberImageSourceKind.Folder ? source : null;
         QueueCheck(false);
     }
 
     public void Sync(WallDocument document)
     {
-        if (_disposed) return;
+        if (_disposed || _stopping) return;
         var members = document.Lanes.SelectMany(l => l.Groups).SelectMany(g => g.Members)
             .Where(m => m is TileMember or PuzzleMember).ToDictionary(p => p.Id, StringComparer.Ordinal);
         foreach (var id in _states.Keys.Except(members.Keys).ToArray())
@@ -207,7 +214,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     public void SetGate(MemberCarouselGate gate)
     {
-        if (_disposed || _gate == gate) return;
+        if (_disposed || _stopping || _gate == gate) return;
         var previousGate = _gate;
         _gate = gate;
         if (gate == MemberCarouselGate.Ready && previousGate == MemberCarouselGate.Hidden)
@@ -229,7 +236,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     public void SetPersistenceBusy(bool busy)
     {
-        if (_disposed || _persistenceBusy == busy) return;
+        if (_disposed || _stopping || _persistenceBusy == busy) return;
         _persistenceBusy = busy;
         QueueCheck(false);
         // Unlike a visibility/gesture gate, this does not cancel a captured save.
@@ -237,7 +244,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     private void UpdateAnimationClock()
     {
-        var needed = !_disposed && _gate == MemberCarouselGate.Ready && _states.Values.Any(s => s.Flipping);
+        var needed = !_disposed && !_stopping && _gate == MemberCarouselGate.Ready && _states.Values.Any(s => s.Flipping);
         if (needed == _animationClockRunning) return;
         _animationClockRunning = needed;
         if (needed) _animationTimer.Start();
@@ -246,7 +253,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     private void OnAnimationTick(DispatcherQueueTimer sender, object args)
     {
-        if (_disposed || _gate != MemberCarouselGate.Ready) return;
+        if (_disposed || _stopping || _gate != MemberCarouselGate.Ready) return;
         foreach (var state in _states.Values.ToArray())
         {
             if (!state.Flipping) continue;
@@ -260,10 +267,10 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     private void QueueCheck(bool explicitCheck)
     {
+        if (_disposed || _stopping) return;
         _queuedExplicit |= explicitCheck;
-        if (_queued || _disposed) return;
-        _queued = true;
-        _dispatcher.TryEnqueue(() =>
+        if (_queued) return;
+        _queued = _dispatcher.TryEnqueue(() =>
         {
             _queued = false;
             Check(false);
@@ -273,7 +280,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     private void Check(bool explicitCheck)
     {
         _queuedExplicit |= explicitCheck;
-        if (_disposed) return;
+        if (_disposed || _stopping) return;
         _timer.Stop();
         // Directory deadlines belong to visible sources, independently of the
         // carousel's modal/gesture/save gate and of empty/passive shuffle queues.
@@ -298,21 +305,21 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             {
                 state.PendingPages--;
                 state.Runtime = new(false, 0, [], null);
-                _ = LoadNextAsync(state, NextPageDecision(state), manual: true);
+                TrackWork(LoadNextAsync(state, NextPageDecision(state), manual: true));
                 continue;
             }
             if (explicitCheck && state.Member.Images.Kind == MemberImageSourceKind.Folder)
                 state.NeedsInitial = true;
             if (state.NeedsInitial)
             {
-                if (!state.Runtime.Passive || explicitCheck) _ = LoadInitialAsync(state);
+                if (!state.Runtime.Passive || explicitCheck) TrackWork(LoadInitialAsync(state));
                 continue;
             }
             if (state.Member.Images.Kind != MemberImageSourceKind.Folder) continue;
             var decision = MemberCarouselRules.Evaluate(state.Candidates ?? [], state.Member.Carousel,
                 state.Runtime, DateTimeOffset.UtcNow, _gate, explicitCheck, RandomIndex(), state.Member.RotationInterval);
             state.Runtime = decision.Runtime;
-            if (decision.Kind == MemberCarouselDecisionKind.Prepare) _ = LoadNextAsync(state, decision);
+            if (decision.Kind == MemberCarouselDecisionKind.Prepare) TrackWork(LoadNextAsync(state, decision));
             else if (decision.Remaining is { } remaining) wake = Earlier(wake, remaining);
         }
         ScheduleWake(wake);
@@ -320,7 +327,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     private void ScheduleWake(TimeSpan? wake)
     {
-        if (wake is { } delay && !_disposed)
+        if (wake is { } delay && !_disposed && !_stopping)
         {
             _timer.Interval = delay < TimeSpan.FromMilliseconds(1) ? TimeSpan.FromMilliseconds(1) : delay;
             _timer.Start();
@@ -342,7 +349,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             if (_galleryRequests.ContainsKey(key)) continue;
             var remaining = _images.GalleryCheckDue(source) - DateTimeOffset.UtcNow;
             if (remaining <= TimeSpan.Zero)
-            { _galleryRequests.Add(key, source); _ = RefreshGallerySourceAsync(source, key); }
+            { _galleryRequests.Add(key, source); TrackWork(RefreshGallerySourceAsync(source, key)); }
             else wake = Earlier(wake, remaining);
         }
         return wake;
@@ -352,8 +359,8 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     {
         try
         {
-            var snapshot = await _images.RefreshGalleryAsync(source);
-            if (_disposed || snapshot.Status == WallImageStatus.Cancelled) return;
+            var snapshot = await _images.RefreshGalleryAsync(source, _lifetime.Token);
+            if (_disposed || _stopping || snapshot.Status == WallImageStatus.Cancelled) return;
             var wallVisible = _gate != MemberCarouselGate.Hidden;
             if (_editorGallery is { } editor && SameSource(editor, source)) GalleryCandidatesChanged?.Invoke(source, snapshot);
             if (wallVisible)
@@ -362,7 +369,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 _error(diagnostic);
             _galleryDiagnostics[key] = WallImageService.DescribeCandidateDiagnostic(snapshot);
         }
-        catch (Exception ex) { if (!_disposed && _gate != MemberCarouselGate.Hidden) _error(ex.Message); }
+        catch (Exception ex) { if (!_disposed && !_stopping && _gate != MemberCarouselGate.Hidden) _error(ex.Message); }
         finally { _galleryRequests.Remove(key); QueueCheck(false); }
     }
 
@@ -621,12 +628,12 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     private (long Generation, CancellationToken Token) BeginRequest(State state)
     {
-        state.Cancellation = new CancellationTokenSource();
+        state.Cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         var generation = ++state.Generation;
         Trace($"Request member={state.Member.Id} generation={generation}");
         return (generation, state.Cancellation.Token);
     }
-    private bool Current(State state, long generation) => !_disposed && _gate == MemberCarouselGate.Ready &&
+    private bool Current(State state, long generation) => !_disposed && !_stopping && _gate == MemberCarouselGate.Ready &&
         state.Generation == generation && _states.TryGetValue(state.Member.Id, out var existing) &&
         ReferenceEquals(existing, state) && state.Cancellation?.IsCancellationRequested == false;
     private void EndRequest(State state, long generation)
@@ -667,16 +674,45 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         AppLog.Warn("Phase3Puzzle", message);
         AppLog.Flush();
     }
+
+    private void TrackWork(Task task)
+    {
+        // Includes each request's generation checks, publishing and persisted flip,
+        // not only the service task it awaited. All access is on the UI thread.
+        _work.RemoveWhere(completed => completed.IsCompletedSuccessfully || completed.IsCanceled);
+        _work.Add(task);
+    }
+
+    public Task ShutdownAsync() => _shutdown ??= ShutdownCoreAsync();
+
+    private async Task ShutdownCoreAsync()
+    {
+        StopRequests();
+        try { await Task.WhenAll(_work); }
+        catch (Exception ex) { AppLog.Warn("PuzzleShutdown", ex.Message); }
+        finally { _work.Clear(); _lifetime.Dispose(); }
+    }
+
+    private void StopRequests()
+    {
+        if (_stopping) return;
+        _stopping = true;
+        _gate = MemberCarouselGate.Hidden;
+        _editorGallery = null;
+        _timer.Stop();
+        _animationTimer.Stop();
+        _animationClockRunning = false;
+        _lifetime.Cancel();
+        foreach (var state in _states.Values) Cancel(state);
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
-        SetGate(MemberCarouselGate.Hidden);
+        StopRequests();
         _disposed = true;
         if (_animationEventSubscribed && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
             _uiSettings.AnimationsEnabledChanged -= OnAnimationsEnabledChanged;
-        _timer.Stop();
-        _animationTimer.Stop();
-        foreach (var state in _states.Values) Cancel(state);
         _states.Clear();
     }
 }

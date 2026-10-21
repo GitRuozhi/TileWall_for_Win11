@@ -27,16 +27,20 @@ public enum MemberImagePurpose { Content, Thumbnail }
 
 public sealed partial class WallImageService
 {
-    public async Task<PuzzleCandidateResult> EnumerateMemberCandidatesAsync(
+    public Task<PuzzleCandidateResult> EnumerateMemberCandidatesAsync(
+        MemberImageSource source, CancellationToken ct = default) =>
+        StartImageRequest(token => EnumerateCandidatesCoreAsync(source, token), ct,
+            new PuzzleCandidateResult([], WallImageStatus.Cancelled));
+
+    private async Task<PuzzleCandidateResult> EnumerateCandidatesCoreAsync(
         MemberImageSource source, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(source);
-        ObjectDisposedException.ThrowIf(_disposed, this);
         if (ct.IsCancellationRequested)
             return new([], WallImageStatus.Cancelled);
         if (source.Kind == MemberImageSourceKind.Automatic)
             return new([], WallImageStatus.None);
-        if (source.Kind == MemberImageSourceKind.Folder) return await RefreshGalleryAsync(source, ct);
+        if (source.Kind == MemberImageSourceKind.Folder) return await RefreshGalleryRequestAsync(source, ct);
 
         try
         {
@@ -100,8 +104,14 @@ public sealed partial class WallImageService
             : new(result, WallImageStatus.Loaded);
     }
 
-    public async Task<PuzzleFrameResult> LoadMemberFrameAsync(WallMember member, string? entryOrTarget,
+    public Task<PuzzleFrameResult> LoadMemberFrameAsync(WallMember member, string? entryOrTarget,
         int widthPixels, int heightPixels, string? previewImagePath = null, CancellationToken ct = default,
+        MemberImagePurpose purpose = MemberImagePurpose.Content) =>
+        StartImageRequest(token => LoadMemberFrameCoreAsync(member, entryOrTarget, widthPixels, heightPixels,
+            previewImagePath, token, purpose), ct, new PuzzleFrameResult(null, WallImageStatus.Cancelled));
+
+    private async Task<PuzzleFrameResult> LoadMemberFrameCoreAsync(WallMember member, string? entryOrTarget,
+        int widthPixels, int heightPixels, string? previewImagePath, CancellationToken ct,
         MemberImagePurpose purpose = MemberImagePurpose.Content)
     {
         ArgumentNullException.ThrowIfNull(member);
@@ -126,7 +136,7 @@ public sealed partial class WallImageService
             var selected = previewImagePath;
             if (selected is null)
             {
-                var candidates = await EnumerateMemberCandidatesAsync(member.Images, ct);
+                var candidates = await EnumerateCandidatesCoreAsync(member.Images, ct);
                 selected = candidates.Paths.FirstOrDefault(path =>
                     StringComparer.OrdinalIgnoreCase.Equals(path, member.Carousel?.CurrentImageId)) ?? candidates.Paths.FirstOrDefault();
             }
@@ -138,7 +148,6 @@ public sealed partial class WallImageService
         if (previewImagePath is not null) return await LoadImageFileFrameAsync(previewImagePath, budget, ct);
         if (widthPixels is < 1 or > 4096 || heightPixels is < 1 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(widthPixels));
-        ObjectDisposedException.ThrowIf(_disposed, this);
         try
         {
             var icon = await TryLoadMemberIconAsync(member, entryOrTarget, widthPixels, ct);
@@ -171,7 +180,6 @@ public sealed partial class WallImageService
         string? path, PuzzleDecodeBudget budget, CancellationToken ct = default, string? identityPath = null, string? contentHash = null,
         ManagedMediaReference? media = null)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
         if (ct.IsCancellationRequested)
             return new(null, WallImageStatus.Cancelled);
         if (string.IsNullOrWhiteSpace(path))
@@ -184,8 +192,7 @@ public sealed partial class WallImageService
             PuzzlePrepared prepared;
             try
             {
-                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cacheLifetime.Token);
-                prepared = await TrackCacheWork(Task.Run(() => PreparePuzzleAsync(path, budget, linked.Token, identityPath, contentHash, media), linked.Token));
+                prepared = await Task.Run(() => PreparePuzzleAsync(path, budget, ct, identityPath, contentHash, media), ct);
             }
             finally { _slots.Release(); }
             if (ct.IsCancellationRequested)
@@ -218,6 +225,7 @@ public sealed partial class WallImageService
     private async Task<PuzzlePrepared> PreparePuzzleAsync(string path, PuzzleDecodeBudget budget, CancellationToken ct,
         string? identityPath = null, string? contentHash = null, ManagedMediaReference? media = null)
     {
+        ct.ThrowIfCancellationRequested();
         var canonicalPath = NormalizeImageFilePath(path);
         if (canonicalPath is null)
             return new(WallImageStatus.Invalid, null, "InvalidPath");
@@ -253,6 +261,7 @@ public sealed partial class WallImageService
                 _ => WallImageStatus.Invalid,
             }, null, decoded.ErrorType ?? decoded.Status.ToString());
 
+        ct.ThrowIfCancellationRequested();
         PuzzleDecodedPair pair = decoded.Pair;
         if (budget.NeedsBlur)
         {
@@ -314,7 +323,7 @@ public sealed partial class WallImageService
         if (bytes > CacheLimitBytes / 2) return;
         lock (_cacheLock)
         {
-            if (_disposed || _cache.ContainsKey(key)) return;
+            if (_disposed || _cacheLifetime.IsCancellationRequested || _cache.ContainsKey(key)) return;
             var node = _lru.AddFirst(new CacheItem(key, prepared, bytes));
             _cache.Add(key, node);
             _cacheBytes += bytes;

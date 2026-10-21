@@ -11,6 +11,9 @@ public sealed partial class MainWindow
 {
     private StaStorageExecutor? _storageExecutor;
     private Task<string?>? _pendingPersistence;
+    private Task? _shutdown;
+    private bool _shutdownStarted;
+    private bool ShutdownStarted => _shutdownStarted;
     private bool _persistencePending, _persistenceAdmissionClosed, _pendingCarouselCommit;
     private bool _environmentAfterPersistence;
     private readonly ExitDraftSavePermission _exitDraftSave = new();
@@ -170,12 +173,25 @@ public sealed partial class MainWindow
         while (_pendingPersistence is { } pending) await pending;
     }
 
-    internal async Task ShutdownPersistenceAsync()
+    internal Task ShutdownPersistenceAsync() => _shutdown ??= ShutdownPersistenceCoreAsync();
+
+    private async Task ShutdownPersistenceCoreAsync()
     {
+        _shutdownStarted = true;
+        _clockTimer.Stop();
+        _focusCheckRetry?.Stop();
+        _viewportTransition = null;
+        CancelTransientState();
+        StopFrameSubscriptionIfIdle();
+        await ShutdownInteractionSchedulingAsync();
         TraceInput("Shutdown drain-persistence");
         await DrainPersistenceAsync();
+        TraceInput("Shutdown drain-presentations");
+        await _puzzles.ShutdownAsync();
         TraceInput("Shutdown stop-start-menu");
         await StopStartMenuRefreshAsync();
+        TraceInput("Shutdown drain-appearance");
+        await ShutdownAppearanceAsync();
         TraceInput("Shutdown drain-images");
         await _images.ShutdownAsync();
         TraceInput("Shutdown stop-storage");

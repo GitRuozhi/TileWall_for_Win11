@@ -21,6 +21,8 @@ public sealed partial class MainWindow
     private CancellationTokenSource? _snapshotRequest;
     private (int X, int Y, int W, int H, double Scale, bool Dark)? _snapshotKey;
     private CancellationTokenSource? _backgroundRequest;
+    private readonly HashSet<Task> _appearanceWork = [];
+    private bool _appearanceStopping;
     private string? _backgroundPath;
     private bool _themeDark, _materialFallback = true, _materialReduced;
     private bool? _materialHighContrast;
@@ -51,7 +53,7 @@ public sealed partial class MainWindow
     /// <summary>Only committed Settings enter this method, including initial load and environment changes.</summary>
     internal void RefreshAppearance()
     {
-        if (_windowClosing) return;
+        if (_windowClosing || _appearanceStopping) return;
         var settings = Settings;
         var foreground = _appearanceSettings.GetColorValue(UIColorType.Foreground);
         _themeDark = settings.ThemeMode == WallThemeMode.Dark || settings.ThemeMode == WallThemeMode.System &&
@@ -83,7 +85,7 @@ public sealed partial class MainWindow
             if (path is not null)
             {
                 _backgroundRequest = new CancellationTokenSource();
-                _ = LoadCustomBackgroundAsync(path, settings, _backgroundRequest.Token);
+                TrackAppearanceWork(LoadCustomBackgroundAsync(path, settings, _backgroundRequest.Token));
             }
         }
         UpdateBackgroundLayer();
@@ -106,7 +108,7 @@ public sealed partial class MainWindow
 
     private void UpdateBackgroundLayer()
     {
-        if (_windowClosing) return;
+        if (_windowClosing || _appearanceStopping) return;
         var highContrast = _accessibilitySettings.HighContrast;
         var reduced = _materialReduced || highContrast || !_appearanceSettings.AdvancedEffectsEnabled;
         var settings = Settings;
@@ -169,7 +171,7 @@ public sealed partial class MainWindow
 
     private void CaptureBackdropBeforeShow()
     {
-        if (AppWindow.IsVisible || _modal || _windowClosing || Settings.BackgroundMode != WallBackgroundMode.Acrylic ||
+        if (_appearanceStopping || _windowClosing || AppWindow.IsVisible || _modal || Settings.BackgroundMode != WallBackgroundMode.Acrylic ||
             _accessibilitySettings.HighContrast || !_appearanceSettings.AdvancedEffectsEnabled) return;
         _snapshotRequest?.Cancel(); _snapshotRequest?.Dispose();
         _snapshotRequest = new();
@@ -178,7 +180,7 @@ public sealed partial class MainWindow
         var key = CurrentSnapshotKey;
         _snapshotKey = key;
         var captured = DesktopBackdropSnapshot.Capture(new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H));
-        if (captured is not null) _ = PrepareSnapshotAsync(captured, key, _snapshotRequest.Token);
+        if (captured is not null) TrackAppearanceWork(PrepareSnapshotAsync(captured, key, _snapshotRequest.Token));
     }
 
     private async Task PrepareSnapshotAsync(DecodedImageFrame capture,
@@ -203,13 +205,31 @@ public sealed partial class MainWindow
     private void OnAdvancedEffectsChanged(UISettings sender, object args) => QueueAppearanceRefresh();
     private void OnHighContrastChanged(AccessibilitySettings sender, object args) => QueueAppearanceRefresh();
 
+    private void TrackAppearanceWork(Task task)
+    {
+        // All admission and completion acceptance happen on this window's UI thread.
+        // Retain superseded requests too: cancellation does not finish their continuations.
+        _appearanceWork.RemoveWhere(completed => completed.IsCompletedSuccessfully || completed.IsCanceled);
+        _appearanceWork.Add(task);
+    }
+
+    private async Task ShutdownAppearanceAsync()
+    {
+        _appearanceStopping = true;
+        _backgroundRequest?.Cancel();
+        _snapshotRequest?.Cancel();
+        try { await Task.WhenAll(_appearanceWork); }
+        catch (Exception ex) { AppLog.Warn("WallBackdrop", $"Appearance shutdown: {ex.Message}"); }
+        finally { _appearanceWork.Clear(); }
+    }
+
     private void QueueAppearanceRefresh()
     {
-        if (_windowClosing || _appearanceQueued) return;
+        if (_windowClosing || _appearanceStopping || _appearanceQueued) return;
         _appearanceQueued = DispatcherQueue.TryEnqueue(() =>
         {
             _appearanceQueued = false;
-            if (_windowClosing) return;
+            if (_windowClosing || _appearanceStopping) return;
             if (_persistencePending)
             {
                 _appearanceAfterPersistence = true;
@@ -227,6 +247,7 @@ public sealed partial class MainWindow
 
     private void DisposeAppearance()
     {
+        _appearanceStopping = true;
         _appearanceSettings.ColorValuesChanged -= OnSystemColorsChanged;
         _appearanceSettings.AdvancedEffectsEnabledChanged -= OnAdvancedEffectsChanged;
         if (_highContrastSubscribed)

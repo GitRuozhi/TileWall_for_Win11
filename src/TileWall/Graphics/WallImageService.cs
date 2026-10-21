@@ -40,16 +40,20 @@ public sealed partial class WallImageService : IDisposable
 
     public Task<WallImageResult> LoadBackgroundAsync(
         string? imagePath, int widthPixels, int heightPixels, CancellationToken ct = default) =>
-        LoadAsync(() => PrepareFileAsync(imagePath, "background", widthPixels, heightPixels, ct),
+        LoadAsync(token => PrepareFileAsync(imagePath, "background", widthPixels, heightPixels, token),
             widthPixels, heightPixels, ct);
 
-    private async Task<WallImageResult> LoadAsync(
-        Func<Task<Prepared>> prepare, int widthPixels, int heightPixels, CancellationToken ct)
+    private Task<WallImageResult> LoadAsync(
+        Func<CancellationToken, Task<Prepared>> prepare, int widthPixels, int heightPixels, CancellationToken ct) =>
+        StartImageRequest(token => LoadCoreAsync(prepare, widthPixels, heightPixels, token), ct,
+            new WallImageResult(null, WallImageStatus.Cancelled));
+
+    private async Task<WallImageResult> LoadCoreAsync(
+        Func<CancellationToken, Task<Prepared>> prepare, int widthPixels, int heightPixels,
+        CancellationToken ct)
     {
         if (widthPixels <= 0 || heightPixels <= 0 || widthPixels > 4096 || heightPixels > 4096)
             throw new ArgumentOutOfRangeException(nameof(widthPixels), "Physical dimensions must be 1..4096.");
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(WallImageService));
         if (ct.IsCancellationRequested)
             return new(null, WallImageStatus.Cancelled);
 
@@ -59,7 +63,7 @@ public sealed partial class WallImageService : IDisposable
             Prepared prepared;
             try
             {
-                prepared = await Task.Run(prepare, ct);
+                prepared = await Task.Run(() => prepare(ct), ct);
             }
             finally
             {
@@ -141,6 +145,7 @@ public sealed partial class WallImageService : IDisposable
         // executing their targets. An absent/unusable icon leaves a generic UI placeholder.
         var shellPath = File.Exists(entry) || Directory.Exists(entry) ? entry :
             iconPath is not null && File.Exists(iconPath) ? iconPath : target;
+        ct.ThrowIfCancellationRequested();
         if (shellPath is not null && (File.Exists(shellPath) || Directory.Exists(shellPath)))
         {
             var shell = ShellIconPixels.Read(shellPath);
@@ -171,6 +176,7 @@ public sealed partial class WallImageService : IDisposable
     private async Task<Prepared> PrepareFileAsync(string? path, string semantic, int width, int height,
         CancellationToken ct, ManagedMediaReference? media = null)
     {
+        ct.ThrowIfCancellationRequested();
         var canonicalPath = NormalizeImageFilePath(path);
         if (canonicalPath is null)
             return media is null ? new(WallImageStatus.Missing, null, 0, 0, "MissingFile")
@@ -274,7 +280,7 @@ public sealed partial class WallImageService : IDisposable
         if (frame.Pixels is null || frame.Pixels.LongLength > CacheLimitBytes / 2) return;
         lock (_cacheLock)
         {
-            if (_disposed || _cache.ContainsKey(key)) return;
+            if (_disposed || _cacheLifetime.IsCancellationRequested || _cache.ContainsKey(key)) return;
             var item = new CacheItem(key, frame, frame.Pixels.LongLength);
             var node = _lru.AddFirst(item);
             _cache.Add(key, node);
@@ -290,7 +296,8 @@ public sealed partial class WallImageService : IDisposable
 
     public void Dispose()
     {
-        _cacheStopping = true; _cacheLifetime.Cancel();
+        lock (_workGate) _cacheStopping = true;
+        _cacheLifetime.Cancel();
         lock (_cacheLock)
         {
             _disposed = true;

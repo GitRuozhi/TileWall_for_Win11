@@ -82,7 +82,14 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private XamlRoot? _previewRoot;
     private double _previewRasterScale = 1;
     private bool _previewClosing;
-    private Task _pending = Task.CompletedTask;
+    private readonly HashSet<Task> _pendingOperations = [];
+    private Task _latestPending = Task.CompletedTask;
+    private Task _pickerPending = Task.CompletedTask;
+    private Task _pending
+    {
+        get => _latestPending;
+        set { _latestPending = value; TrackOperation(value); }
+    }
     private bool _refreshing, _saved, _closed, _opened, _allowDiscard, _discardConfirmed, _pickerBusy;
     private bool _titleDirty, _targetDirty, _sourceDirty, _ratioDirty;
     private string? _galleryVersion;
@@ -311,7 +318,11 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         {
             if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.SaveAndExit); return; }
             var deferral = e.GetDeferral();
-            try { await WaitForPendingAsync(); e.Cancel = _closed || _previewClosing || TrySaveNow() is not null; }
+            try
+            {
+                await WaitForPendingAsync();
+                e.Cancel = _closed || _previewClosing || TrySaveNow() is not null;
+            }
             catch (Exception ex)
             {
                 e.Cancel = true;
@@ -323,6 +334,9 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _dialog.CloseButtonClick += (_, e) => { if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); } };
         _dialog.Closing += (_, e) =>
         {
+            // Settle NumberBox explicitly and stepper/ratio on blur before testing
+            // the draft or marking the preview closed. These edits belong here.
+            OwnedDialogWindow.ReleaseTextFocus(_dialog);
             _previewClosing = true;
             try
             {
@@ -365,11 +379,27 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             if (_previewRoot is not null) _previewRoot.Changed -= OnPreviewRootChanged;
             _previewRoot = null;
             CancelRequest(); CancelThumbnailRequests(); _operationTimer.Stop(); GallerySourceChanged?.Invoke();
+            // Replaced previews, source confirmations and thumbnail batches still
+            // own UI continuations. Keep this page alive until all have returned.
+            try { await Task.WhenAll(_pendingOperations.Append(_pickerPending)); }
+            catch (OperationCanceledException) { }
         }
+    }
+    private void TrackOperation(Task operation)
+    {
+        _pendingOperations.RemoveWhere(task => task.IsCompletedSuccessfully || task.IsCanceled);
+        _pendingOperations.Add(operation);
     }
     public bool HasUnsavedDraft => _sourceDirty || _titleDirty || _targetDirty || _ratioDirty || _width.HasPendingInput || _height.HasPendingInput || MemberPresentationRules.HasUserPropertyChanges(_original, _draft);
     public async Task WaitForPendingAsync()
     {
+        if (_closed || _previewClosing) return;
+        // App exit can enter here without a button taking focus first. Settle the
+        // inner NumberBox text and blur-based edits before checking/saving drafts.
+        OwnedDialogWindow.ReleaseTextFocus(_dialog);
+        // Image quality/gallery callbacks may replace _pending while a native
+        // picker pumps messages. Its separate completion still owns that work.
+        await _pickerPending;
         await DrainPendingAsync();
         if (_closed || _previewClosing) return;
         if (_targetDirty)
@@ -608,13 +638,19 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     {
         if (_closed || _previewClosing || _pickerBusy) return;
         _pickerBusy = true;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pickerPending = completion.Task;
         try
         {
+            // IFileDialog.Show runs a nested native message loop. Publish this
+            // operation to _pending before that loop can receive an exit request.
+            await Task.Yield();
+            if (_closed || _previewClosing) return;
             var path = TargetItemPicker.Pick(WinRT.Interop.WindowNative.GetWindowHandle(_owner), T("Editor.SelectCurrentFolder"));
             if (!_closed && !_previewClosing && path is not null) { _target.Text = path; if (ConfirmTarget()) await _pending; }
         }
         catch (Exception ex) { if (!_closed && !_previewClosing) _error.Text = string.Format(T("Entry.PickerFailed"), ex.Message); }
-        finally { _pickerBusy = false; }
+        finally { _pickerBusy = false; completion.TrySetResult(); }
     }
 
     private async Task PickSourceAsync(MemberImageSourceKind kind)
@@ -627,6 +663,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             _previewPath = null; Changed(); RefreshFields(); GallerySourceChanged?.Invoke(); await ReloadCandidatesAsync(); return;
         }
         _pickerBusy = true;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pickerPending = completion.Task;
         try
         {
             string? path;
@@ -642,7 +680,12 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             }
         }
         catch (Exception ex) { if (!_closed && !_previewClosing) ShowError(string.Format(T("Puzzle.PickerFailed"), ex.Message)); }
-        finally { _pickerBusy = false; if (!_closed && !_previewClosing) RefreshFields(); }
+        finally
+        {
+            _pickerBusy = false;
+            completion.TrySetResult();
+            if (!_closed && !_previewClosing) RefreshFields();
+        }
     }
 
     private async Task ReloadCandidatesAsync(PuzzleCandidateResult? cached = null)
@@ -761,7 +804,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         var token = batch.Token;
         _thumbnailEdge = edge;
         _thumbnailNeedsBlur = needsBlur;
-        _ = LoadThumbnailsAsync(_candidates.ToArray(), _draft, edge, batch, token);
+        TrackOperation(LoadThumbnailsAsync(_candidates.ToArray(), _draft, edge, batch, token));
     }
     private async Task LoadThumbnailsAsync(IReadOnlyList<Thumbnail> candidates, WallMember member, int edge,
         CancellationTokenSource batch, CancellationToken token)
@@ -1067,10 +1110,13 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         var kind = _draft.Images.Kind; if (kind == MemberImageSourceKind.Automatic) { _sourceDirty = false; return true; }
         CancelThumbnailRequests();
         var path = _sourcePath.Text.Trim(); var revision = _sourceRevision;
+        var request = BeginRequest();
         _sourceStatus.Text = T("Puzzle.ReadingSource");
         TraceImage($"ConfirmSourceBegin requestedRevision={revision} path={path}");
-        var result = await _images.EnumerateMemberCandidatesAsync(new MemberImageSource { Kind = kind, Path = path });
-        var current = !_closed && !_previewClosing && revision == _sourceRevision && kind == _draft.Images.Kind;
+        PuzzleCandidateResult result;
+        try { result = await _images.EnumerateMemberCandidatesAsync(new MemberImageSource { Kind = kind, Path = path }, request.Token); }
+        catch (OperationCanceledException) { return false; }
+        var current = Active(request.Generation) && revision == _sourceRevision && kind == _draft.Images.Kind;
         TraceImage($"ConfirmSourceResult requestedRevision={revision} status={result.Status} complete={result.IsComplete} count={result.Paths.Count} current={current}");
         if (!current) return false;
         var emptyGallery = kind == MemberImageSourceKind.Folder && result.IsComplete && result.Status == WallImageStatus.Loaded;
@@ -1088,20 +1134,25 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     {
         if (_closed || _previewClosing) return;
         var source = new MemberImageSource(); var sourceRevision = _sourceRevision;
+        var request = BeginRequest();
         PuzzleCandidateResult? candidates = null;
-        if (Directory.Exists(target))
+        try
         {
-            var folder = new MemberImageSource { Kind = MemberImageSourceKind.Folder, Path = target };
-            candidates = await _images.EnumerateMemberCandidatesAsync(folder);
-            if (candidates.Paths.Count > 0) source = folder;
+            if (Directory.Exists(target))
+            {
+                var folder = new MemberImageSource { Kind = MemberImageSourceKind.Folder, Path = target };
+                candidates = await _images.EnumerateMemberCandidatesAsync(folder, request.Token);
+                if (candidates.Paths.Count > 0) source = folder;
+            }
+            else if (File.Exists(target) && !Path.GetExtension(target).Equals(".lnk", StringComparison.OrdinalIgnoreCase))
+            {
+                var file = new MemberImageSource { Kind = MemberImageSourceKind.Single, Path = target };
+                candidates = await _images.EnumerateMemberCandidatesAsync(file, request.Token);
+                if (candidates.Paths.Count > 0) source = file;
+            }
         }
-        else if (File.Exists(target) && !Path.GetExtension(target).Equals(".lnk", StringComparison.OrdinalIgnoreCase))
-        {
-            var file = new MemberImageSource { Kind = MemberImageSourceKind.Single, Path = target };
-            candidates = await _images.EnumerateMemberCandidatesAsync(file);
-            if (candidates.Paths.Count > 0) source = file;
-        }
-        if (_closed || _previewClosing || sourceRevision != _sourceRevision || !string.Equals(target, _draft.TargetInput, StringComparison.Ordinal)) return;
+        catch (OperationCanceledException) { return; }
+        if (!Active(request.Generation) || sourceRevision != _sourceRevision || !string.Equals(target, _draft.TargetInput, StringComparison.Ordinal)) return;
         _sourceDirty = false; _previewPath = null; _frame = null;
         _draft = _draft with { Images = source, Carousel = null, Visual = _draft.Visual with { BackgroundMode = source.Kind == MemberImageSourceKind.Automatic ? MemberBackgroundMode.Default : MemberBackgroundMode.Blur, BackgroundTransparency = source.Kind == MemberImageSourceKind.Automatic ? 50 : _draft.Visual.BackgroundTransparency } };
         RefreshFields(); GallerySourceChanged?.Invoke(); await ReloadCandidatesAsync(source.Kind == MemberImageSourceKind.Automatic ? null : candidates);

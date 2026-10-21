@@ -35,11 +35,14 @@ public sealed partial class MainWindow
         {
             var entries = group.Members.Where(member => member.Entry is not null).ToArray();
             if (entries.Length == 0) continue;
-            if (!string.IsNullOrWhiteSpace(group.Title)) panel.Children.Add(new TextBlock
+            var groupTitle = string.IsNullOrWhiteSpace(group.Title) ? string.Empty : group.Title;
+            var title = new TextBlock
             {
-                Text = group.Title, Height = 32, Padding = new Thickness(12, 8, 8, 0),
+                Text = groupTitle, Height = 32, Padding = new Thickness(12, 8, 8, 0),
                 TextTrimming = TextTrimming.CharacterEllipsis,
-            });
+            };
+            AutomationProperties.SetAutomationId(title, "menu-group-title-" + group.Id);
+            panel.Children.Add(title);
             foreach (var member in entries)
             {
                 var content = new Grid();
