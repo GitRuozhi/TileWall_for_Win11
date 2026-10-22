@@ -175,8 +175,10 @@ public sealed partial class WallStoreTests
         Assert.Equal(bytes, files.ReadAllBytes(source));
     }
 
-    [Fact]
-    public void RenameAndTargetEditUndoRestoresExactBytes()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RenameAndTargetEditUndoRestoresExactBytes(bool renameFirst)
     {
         var (store, files, links, root) = Harness();
         var initial = Wall();
@@ -190,11 +192,15 @@ public sealed partial class WallStoreTests
         var oldPath = EntryPath(root, oldEntry);
         links.Register(oldPath, @"C:\first.exe", "--arg", @"C:\work");
         var oldBytes = files.ReadAllBytes(oldPath).ToArray();
+        EntryChange targetEdit = new EntryChange.ChangeTarget("a", @"C:\second.exe");
+        EntryChange rename = new EntryChange.Rename("a");
         var update = Plan(store, current, Wall(Tile("a", "Two")) with { Generation = 2 },
-            new EntryChange.ChangeTarget("a", @"C:\second.exe"), new EntryChange.Rename("a"));
+            renameFirst ? [rename, targetEdit] : [targetEdit, rename]);
         var changed = store.Commit(current, update, true);
         Assert.Equal(WallCommitStatus.Committed, changed.Status);
         var newEntry = changed.CommittedDocument!.Lanes[0].Groups[0].Members[0].Entry!;
+        Assert.Equal("Objects/a/Two.lnk", newEntry.RelativePath);
+        Assert.Equal(@"C:\second.exe", links.StateOf(EntryPath(root, newEntry)).TargetPath);
         Assert.Equal("--arg", links.StateOf(EntryPath(root, newEntry)).Arguments);
         Assert.Equal(@"C:\work", links.StateOf(EntryPath(root, newEntry)).WorkingDirectory);
         Assert.False(files.Exists(oldPath));
@@ -560,6 +566,28 @@ public sealed partial class WallStoreTests
         Assert.Null(plan.Request);
         Assert.Equal(baseline.Keys.Order(), files.SnapshotFiles().Keys.Order());
         Assert.Equal(baseline[path], files.ReadAllBytes(path));
+    }
+
+    [Theory]
+    [InlineData("a")]
+    [InlineData("A")]
+    [InlineData("group0")]
+    [InlineData("GROUP0")]
+    public void ActiveGroupsAndMembersCannotAliasInactiveMemberIdsBeforeWrite(string inactiveId)
+    {
+        var (store, files, _, _) = Harness();
+        var initial = Wall();
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
+        var candidate = Wall(Tile("a")) with { Generation = 1, InactiveMembers = [Tile(inactiveId)] };
+        var baseline = files.SnapshotFiles();
+
+        var plan = store.PlanEntries(initial, candidate, []);
+        Assert.Null(plan.Request);
+        Assert.Contains("DUPLICATE_ID", plan.Diagnostics);
+        var committed = store.Commit(initial, new WallCommitRequest(0, candidate, []), true);
+        Assert.Equal(WallCommitStatus.Rejected, committed.Status);
+        Assert.Contains("DUPLICATE_ID", committed.Diagnostics);
+        AssertSameFileBytes(baseline, files.SnapshotFiles());
     }
 
     [Fact]

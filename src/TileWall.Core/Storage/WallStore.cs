@@ -411,6 +411,8 @@ public sealed partial class WallStore
         }
         var old = Members(current);
         var next = Members(proposed);
+        var changesByMember = changes.GroupBy(change => change.MemberId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
         var ops = new List<WallJournalOp>();
         using (timings?.Measure("store.entryOperations"))
         foreach (var id in old.Keys.Union(next.Keys, StringComparer.Ordinal))
@@ -419,7 +421,7 @@ public sealed partial class WallStore
             next.TryGetValue(id, out var after);
             var oldRef = before?.Entry;
             var newRef = after?.Entry;
-            var changed = changes.Where(c => c.MemberId == id).ToArray();
+            var changed = changesByMember.GetValueOrDefault(id) ?? [];
             if (oldRef == newRef && (changed.Length == 0 || changed.All(c => c is EntryChange.Keep or EntryChange.Rename)) && overrideBytes is null) continue;
             if (oldRef is null && newRef is null) continue;
             if (overrideBytes is not null && oldRef == newRef && !overrideBytes.ContainsKey(id)) continue;
@@ -451,7 +453,7 @@ public sealed partial class WallStore
                     var staged = StageEntryPath(commitId, op.MemberId);
                     _paths.Guard(staged);
                     var bytes = ProduceEntry(op.MemberId, old.GetValueOrDefault(op.MemberId)?.Entry,
-                        next[op.MemberId].Entry!, changes.Where(c => c.MemberId == op.MemberId).ToArray(),
+                        next[op.MemberId].Entry!, changesByMember.GetValueOrDefault(op.MemberId) ?? [],
                         staged, overrideBytes);
                     ops[i] = op with { NewHash = Hash(bytes), NewLength = bytes.LongLength };
                     ObserveIdentity(next[op.MemberId].Entry!.Kind, staged, bytes, ops[i].NewHash!);
@@ -1233,14 +1235,11 @@ public sealed partial class WallStore
         // ValidateGeometry already includes the base checks. Keep their old short-circuit,
         // but still add storage path diagnostics when geometry alone fails.
         if (errors.Any(error => error != "WALL_GEOMETRY")) return errors;
-        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var lane in document.Lanes)
             foreach (var group in lane.Groups)
             {
-                if (!WallStoragePaths.ValidId(group.Id) || !ids.Add(group.Id)) errors.Add("GROUP_ID_PATH");
                 foreach (var member in group.Members)
                 {
-                    if (!WallStoragePaths.ValidId(member.Id) || !ids.Add(member.Id)) errors.Add("MEMBER_ID_PATH");
                     if (member.Entry is not null && !WallStoragePaths.ValidEntry(member.Entry)) errors.Add("ENTRY_PATH");
                     if (member.Entry is not null && member.Visual.TitleMode == MemberTitleMode.Manual &&
                         !string.IsNullOrEmpty(member.Visual.Title) &&
@@ -1249,7 +1248,6 @@ public sealed partial class WallStore
             }
         foreach (var member in document.InactiveMembers)
         {
-            if (!WallStoragePaths.ValidId(member.Id) || !ids.Add(member.Id)) errors.Add("MEMBER_ID_PATH");
             if (member.Entry is not null && !WallStoragePaths.ValidEntry(member.Entry)) errors.Add("ENTRY_PATH");
         }
         errors.AddRange(ValidateMediaReferences(document));

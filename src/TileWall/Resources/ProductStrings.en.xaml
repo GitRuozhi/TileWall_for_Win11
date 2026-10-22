@@ -295,7 +295,7 @@
   <x:String x:Key="Wall.GroupTitleHint">Click and drag to move; double-click to rename.</x:String>
   <x:String x:Key="Settings.ExplorerMenu">Context menu</x:String>
   <x:String x:Key="Settings.RegisterContextMenu">Add to context menu</x:String>
-  <x:String x:Key="Settings.ContextMenuRegistered">Added to the .lnk context menu.</x:String>
+  <x:String x:Key="Settings.ContextMenuRegistered">Added to the classic context menu for files and folders.</x:String>
   <x:String x:Key="Settings.ContextMenuRegistrationFailed">Registration failed: {0}</x:String>
   <x:String x:Key="Explorer.AddToTileWall">Add to TileWall</x:String>
   <x:String x:Key="Settings.HotKeyRecordingFailed">Could not record the hotkey. Try again.</x:String>

@@ -13,6 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\TileWall.Core\TileWall.Core.csproj" />
     <Compile Include="..\TileWall\Application\FullscreenResizeGesture.cs" Link="Application\FullscreenResizeGesture.cs" />
+    <Compile Include="..\TileWall\Shell\Interop\ExplorerContextMenuRegistration.cs" Link="Shell\ExplorerContextMenuRegistration.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />

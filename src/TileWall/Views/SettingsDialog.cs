@@ -170,7 +170,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         _registerContextMenu.Click += (_, _) =>
         {
             if (_refreshing || _busy) return;
-            var error = ShortcutContextMenuRegistration.Register(ProductStrings.Get("Explorer.AddToTileWall"));
+            var error = ExplorerContextMenuRegistration.Register(ProductStrings.Get("Explorer.AddToTileWall"));
             _status.Text = error is null ? ProductStrings.Get("Settings.ContextMenuRegistered")
                 : string.Format(ProductStrings.Get("Settings.ContextMenuRegistrationFailed"), error);
             _status.Visibility = Visibility.Visible;

@@ -24,7 +24,11 @@
 
 [查看发行情况](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [查看源码](https://github.com/GitRuozhi/TileWall_for_Win11)
 
-面向 Windows 10 22H2 和 Windows 11 开发；Windows 11、多 DPI 和正式签名安装仍待完整实测。愿意自行编译的话，文末有构建入口。
+0.3.2 本地候选包含便携 ZIP 和未签名的 x64 EXE 安装包，目前尚未发布到 Releases。MSIX 签名安装及 Win11 首层新右键菜单暂缓，待商店注册后再推进。
+
+EXE 默认安装到公共的 `%ProgramFiles%\TileWall`，并添加开始菜单入口。安装、更新和卸载需要管理员批准，日常从开始菜单正常启动即可。安装器不自动开启登录启动、不注册资源管理器右键菜单，也不创建桌面图标。便携 ZIP 和 EXE 均随附所需的 .NET 与 Windows App SDK 运行时。
+
+面向 Windows 10 22H2 和 Windows 11 开发；Windows 11、多 DPI、未预装运行时的干净环境及正式签名安装仍待完整实测。愿意自行编译的话，文末有构建入口。
 
 ## 先放几个常用的进去
 
@@ -46,7 +50,7 @@
 | 在菜单中展开分组 | 最多同时展开五组；展开第六组时，最早展开的那组会收起。重启后按分组 ID 恢复展开状态 |
 | 撤回刚才的操作 | 在主墙按 <kbd>Ctrl</kbd> + <kbd>Z</kbd>，使用当前有效的撤销点 |
 
-设置里还能调整主题、背景、呼出快捷键和登录后启动。先把常用的几个入口放顺手，其余的慢慢再折腾。
+设置里还能调整主题、背景、呼出快捷键和登录后启动。0.3.2 候选中的 **添加到右键菜单** 可为单个文件或文件夹启用资源管理器经典右键入口。先把常用的几个入口放顺手，其余的慢慢再折腾。
 
 ## 整理之前，知道这几件事就够了
 
@@ -54,7 +58,7 @@
 - 再次导入可能重新排列位置；“保留已有改动”保留的是图片、尺寸、标题等设置，不保证原来的排布。
 - “取消固定”不会删除外部原文件；误操作请及时撤销。目前还没有可在重启后找回取消固定项目的列表。
 - 单张图片和自定义墙背景会在保存时保留一份原图；图集仍跟随你选择的文件夹。
-- 便携运行的数据位于 `%LOCALAPPDATA%\TileWall`。想备份布置，先退出 TileWall，再复制整个目录；打包版使用单独的数据目录，二者不互读。开发阶段暂不提供旧格式的自动迁移。
+- 便携版和 EXE 安装版在同一 Windows 用户下共用 `%LOCALAPPDATA%\TileWall` 和一个运行实例，切换入口前先退出旧实例；卸载 EXE 保留这份数据。想备份布置，先退出 TileWall，再复制整个目录。MSIX 使用单独的数据目录。开发阶段暂不提供旧格式的自动迁移。
 
 ## 有问题，直接说
 
@@ -69,7 +73,7 @@
 <details>
 <summary>想自己编译？</summary>
 
-需要 Windows、.NET SDK 10，以及相应的 Windows SDK / Visual Studio C++ 构建工具。在仓库根目录运行：
+需要 Windows、.NET SDK 10，以及相应的 Windows SDK / Visual Studio C++ 构建工具。以下命令生成便携发布目录；安装器和发行打包脚本不包含在公开源码镜像中。在仓库根目录运行：
 
 ```powershell
 dotnet publish src/TileWall/TileWall.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:WindowsPackageType=None -o artifacts/Release/TileWall

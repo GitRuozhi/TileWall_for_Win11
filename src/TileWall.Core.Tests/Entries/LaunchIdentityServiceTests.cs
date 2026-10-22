@@ -1,4 +1,6 @@
+using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
+using TileWall.Core.Shell;
 using TileWall.Core.Tests.Fixtures;
 using Xunit;
 
@@ -33,6 +35,28 @@ public sealed class LaunchIdentityServiceTests
         Assert.Equal(service.ResolveInput("https://example.com/path?q=1#one")!.Key, service.ResolveInput(@"C:\Start\Site.url")!.Key);
         Assert.NotEqual(service.ResolveInput("https://example.com/path?q=2#one")!.Key, service.ResolveInput(@"C:\Start\Site.url")!.Key);
         Assert.NotEqual(service.ResolveInput("https://example.com/path?q=1#two")!.Key, service.ResolveInput(@"C:\Start\Site.url")!.Key);
+    }
+
+    [Theory]
+    [InlineData(".lnk")]
+    [InlineData(".url")]
+    public void ExistingDirectoriesWithShortcutExtensionsKeepPathIdentity(string extension)
+    {
+        var root = Directory.CreateTempSubdirectory("tilewall-directory-identity-");
+        try
+        {
+            var directory = Directory.CreateDirectory(Path.Combine(root.FullName, "Folder" + extension)).FullName;
+            var files = new LocalFileStore();
+            var links = new FakeLinkFileService(files) { Fault = LnkFaultPoint.BeforeRead };
+            var service = new LaunchIdentityService(files, links);
+
+            Assert.Equal(ExplorerAddKind.CreateLink, ExplorerAddPathClassifier.Classify(directory));
+            var identity = service.ResolveInput(directory);
+            Assert.Equal(LaunchIdentityService.ForPath(directory), identity);
+            Assert.Equal(LnkFaultPoint.BeforeRead, links.Fault);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(directory));
+        }
+        finally { root.Delete(recursive: true); }
     }
 
     [Fact]

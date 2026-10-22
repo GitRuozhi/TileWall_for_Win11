@@ -296,7 +296,7 @@
     <x:String x:Key="Wall.GroupTitleHint">单击拖动、双击修改名称</x:String>
     <x:String x:Key="Settings.ExplorerMenu">右键菜单</x:String>
     <x:String x:Key="Settings.RegisterContextMenu">添加到右键菜单</x:String>
-    <x:String x:Key="Settings.ContextMenuRegistered">已添加到 .lnk 右键菜单。</x:String>
+    <x:String x:Key="Settings.ContextMenuRegistered">已添加到文件和文件夹的经典右键菜单。</x:String>
     <x:String x:Key="Settings.ContextMenuRegistrationFailed">注册失败：{0}</x:String>
     <x:String x:Key="Explorer.AddToTileWall">添加到 TileWall</x:String>
     <x:String x:Key="Settings.HotKeyRecordingFailed">快捷键录制失败，请重试。</x:String>

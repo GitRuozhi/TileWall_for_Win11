@@ -6,27 +6,27 @@ MIT License. See Licenses\AsmResolverLicense.txt.
 Source: https://github.com/Washi1337/AsmResolver/blob/master/LICENSE.md
 Packages: AsmResolver, AsmResolver.PE, AsmResolver.PE.File, AsmResolver.PE.Win32Resources.
 
-Microsoft .NET Runtime 10.0.12
+Microsoft .NET Runtime 10.0.11
 MIT License and third-party notices: Licenses\DotNetRuntimeLicense.txt and Licenses\DotNetRuntimeThirdPartyNotices.txt.
-Source package: Microsoft.NETCore.App.Runtime.win-x64 10.0.12.
+Source package: Microsoft.NETCore.App.Runtime.win-x64 10.0.11.
 
-Microsoft Windows App SDK 2.5.1 and included package components
+Microsoft Windows App SDK components
 Microsoft software license terms: Licenses\WindowsAppSdkLicense.txt.
 Third-party notices: Licenses\WindowsAppSdkThirdPartyNotices.txt and Licenses\WindowsAppSdkWinUiThirdPartyNotices.txt.
-Packages: Microsoft.WindowsAppSDK 2.5.1; Microsoft.WindowsAppSDK.AI 2.5.5; Microsoft.WindowsAppSDK.Foundation 2.3.12; Microsoft.WindowsAppSDK.InteractiveExperiences 2.1.9; Microsoft.WindowsAppSDK.ML 2.1.94; Microsoft.WindowsAppSDK.Search 2.5.5; Microsoft.WindowsAppSDK.Widgets 2.0.5; Microsoft.WindowsAppSDK.WinUI 2.3.9.
+Packages: Microsoft.WindowsAppSDK.Base 2.0.4; Microsoft.WindowsAppSDK.Foundation 2.3.12; Microsoft.WindowsAppSDK.InteractiveExperiences 2.1.9; Microsoft.WindowsAppSDK.WinUI 2.3.9.
 
-Microsoft Windows SDK for .NET 10.0.26100.57
+Microsoft Windows SDK for .NET
 Microsoft license terms: Licenses\WindowsSdkNetLicense.rtf.
 Source package: Microsoft.Windows.SDK.NET.Ref 10.0.26100.57.
-
-Microsoft Windows ML Runtime 2.1.74
-Microsoft software license terms and third-party notices: Licenses\WindowsMlRuntimeLicense.txt and Licenses\WindowsMlRuntimeThirdPartyNotices.txt.
-Source package: Microsoft.Windows.AI.MachineLearning 2.1.74.
+The published Microsoft.Windows.SDK.NET.dll projection has file version 10.0.26100.55; the targeting-pack version above is a separate version.
 
 Microsoft Edge WebView2 1.0.3719.77
 License and third-party notices: Licenses\WebView2License.txt and Licenses\WebView2ThirdPartyNotices.txt.
 Source package: Microsoft.Web.WebView2 1.0.3719.77.
 
-System.Numerics.Tensors 9.0.0
-MIT License and third-party notices: Licenses\SystemNumericsTensorsLicense.txt and Licenses\SystemNumericsTensorsThirdPartyNotices.txt.
+Retained historical license material
+The following files are retained from earlier dependency sets. Their presence does not mean that Windows ML or System.Numerics.Tensors is a runtime dependency of the current build.
+Microsoft.WindowsAppSDK.ML 2.1.94: Licenses\WindowsAppSdkMlLicense.txt.
+Microsoft.Windows.AI.MachineLearning 2.1.74: Licenses\WindowsMlRuntimeLicense.txt and Licenses\WindowsMlRuntimeThirdPartyNotices.txt.
+System.Numerics.Tensors 9.0.0: Licenses\SystemNumericsTensorsLicense.txt and Licenses\SystemNumericsTensorsThirdPartyNotices.txt.
 

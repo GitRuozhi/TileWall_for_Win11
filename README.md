@@ -24,7 +24,11 @@ If you miss Windows 10 tiles, this should feel familiar. Your usual Start menu a
 
 [Check releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [Browse the source](https://github.com/GitRuozhi/TileWall_for_Win11)
 
-TileWall is being developed for Windows 10 22H2 and Windows 11. Windows 11, multiple DPI settings, and a formally signed installation still need full testing. If you would like to build it yourself, the command is at the end of this page.
+Local 0.3.2 candidates include a portable ZIP and an unsigned x64 EXE installer; neither has been published on Releases yet. MSIX signing and installation, and the Windows 11 first-level context menu, are deferred until Store registration.
+
+The EXE installs to `%ProgramFiles%\TileWall` for all users and adds a Start menu shortcut. Installation, updates, and removal require administrator approval; start TileWall normally from the Start menu afterward. The installer does not enable start at login, add an Explorer context menu, or create a desktop shortcut. The portable ZIP and EXE include the required .NET and Windows App SDK runtimes.
+
+TileWall is being developed for Windows 10 22H2 and Windows 11. Windows 11, multiple DPI settings, a machine without preinstalled runtimes, and a formally signed installation still need full testing. If you would like to build it yourself, the command is at the end of this page.
 
 ## Start with a few favorites
 
@@ -46,7 +50,7 @@ A few useful controls:
 | Keep groups open in the menu | Expand up to five at once; opening a sixth closes the one opened earliest. Expanded groups are remembered by ID across restarts |
 | Undo a recent change | Press <kbd>Ctrl</kbd> + <kbd>Z</kbd> on the main wall while an undo point is available |
 
-Settings also includes the theme, background, activation shortcut, and start at login. Get a few useful tiles in place first. The rest can wait until you feel like tinkering.
+Settings also includes the theme, background, activation shortcut, and start at login. In the 0.3.2 candidate, **Add to context menu** enables the classic Explorer menu for a single file or folder. Get a few useful tiles in place first. The rest can wait until you feel like tinkering.
 
 ## A few things to know
 
@@ -54,7 +58,7 @@ Settings also includes the theme, background, activation shortcut, and start at 
 - Importing again can rearrange positions. Keeping existing changes preserves things such as pictures, sizes, and titles, rather than the original layout.
 - Unpinning leaves the original file alone. Undo it promptly if it was a mistake; there is no list for restoring unpinned items after a restart yet.
 - Saved single images and custom wall backgrounds keep their own copy of the original. Picture collections stay linked to the folder you selected.
-- Portable builds store data in `%LOCALAPPDATA%\TileWall`. To back up your setup, exit TileWall and copy the whole folder. Packaged builds use a separate data folder; the two do not share data. Automatic migration from older data formats is not available during development.
+- Portable builds and the EXE installation share `%LOCALAPPDATA%\TileWall` and one running instance for each Windows user. Exit the current instance before switching between them. Uninstalling the EXE keeps this data. To back up your setup, exit TileWall and copy the whole folder. MSIX builds use a separate data folder. Automatic migration from older data formats is not available during development.
 
 ## Tell me what gets in the way
 
@@ -69,7 +73,7 @@ The plan is to make TileWall free to use, including for internal office use. For
 <details>
 <summary>Build it yourself</summary>
 
-You need Windows, .NET SDK 10, and the appropriate Windows SDK / Visual Studio C++ build tools. From the repository root:
+You need Windows, .NET SDK 10, and the appropriate Windows SDK / Visual Studio C++ build tools. This command publishes a portable folder; installer and release packaging scripts are not included in the public source mirror. From the repository root:
 
 ```powershell
 dotnet publish src/TileWall/TileWall.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:WindowsPackageType=None -o artifacts/Release/TileWall

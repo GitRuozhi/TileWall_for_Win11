@@ -177,14 +177,14 @@ internal sealed class WallSession
                 }
                 if (timings is not null) outcome = result.Status.ToString();
                 if (result.Status is not (WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup) ||
-                    result.CommittedDocument is null)
+                    result.CommittedDocument is not { } committedDocument)
                 {
                     if (result.Status == WallCommitStatus.RecoveryBlocked)
                         MarkStoreRecoveryBlocked();
                     return new(false, false, result.Diagnostics);
                 }
 
-                var accepted = AcceptCommitted(before, result, recordUndo, timings);
+                var accepted = AcceptCommitted(before, result, committedDocument, recordUndo, timings);
                 if (timings is not null && accepted.ViewFailed) outcome += ":view-failed";
                 return accepted;
             }
@@ -264,10 +264,9 @@ internal sealed class WallSession
             // dispatcher exception during shutdown.
             if (stored.Status is not (WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup))
             {
-                outcome = stored.Status.ToString();
                 return new(false, false, stored.Diagnostics);
             }
-            if (stored.CommittedDocument is null)
+            if (stored.CommittedDocument is not { } committedDocument)
             {
                 lock (_gate)
                 {
@@ -288,17 +287,14 @@ internal sealed class WallSession
                     // once. Only the live reservation can publish this disk snapshot.
                     if (!ReferenceEquals(_activeUiCommit, reservation) || accepted is not null) return;
                     acceptanceThread = Environment.CurrentManagedThreadId;
-                    accepted = AcceptCommitted(before, stored, recordUndo, timings);
+                    accepted = AcceptCommitted(before, stored, committedDocument, recordUndo, timings);
                 }
             }).ConfigureAwait(false);
             lock (_gate)
             {
                 if (ReferenceEquals(_activeUiCommit, reservation))
                 {
-                    if (stored.Status == WallCommitStatus.RecoveryBlocked)
-                        MarkStoreRecoveryBlocked();
-                    else if (accepted is null && (stored.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup))
-                        MarkRequiresReopen();
+                    if (accepted is null) MarkRequiresReopen();
                     _activeUiCommit = null;
                 }
             }
@@ -358,22 +354,15 @@ internal sealed class WallSession
     }
 
     private WallSessionResult AcceptCommitted(WallDocument before, WallCommitResult result,
-        bool recordUndo, WallCommitTimings? timings)
+        WallDocument committedDocument, bool recordUndo, WallCommitTimings? timings)
     {
-        if (result.Status == WallCommitStatus.RecoveryBlocked)
-        {
-            MarkStoreRecoveryBlocked();
-            return new(false, false, result.Diagnostics);
-        }
-        if (result.Status is not (WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup) ||
-            result.CommittedDocument is null) return new(false, false, result.Diagnostics);
         // Called only on the UI acceptance path; disk replacement is the commit point.
         // WallStore returns a frozen snapshot from every accepting path.
-        using (timings?.Measure("session.publish")) _current = result.CommittedDocument;
+        using (timings?.Measure("session.publish")) _current = committedDocument;
         if (recordUndo)
         {
             _undoPrevious = result.Undo is null ? null : before;
-            _undoCommitted = result.Undo is null ? null : result.CommittedDocument;
+            _undoCommitted = result.Undo is null ? null : committedDocument;
             _undoToken = result.Undo;
         }
         bool viewOkay;

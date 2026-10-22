@@ -18,12 +18,12 @@ public sealed class LaunchIdentityService(IFileStore files, ILnkFileService link
         if (UrlShortcut.ValidateUrl(input).Count == 0) return ForUrl(input);
         if (!Path.IsPathFullyQualified(input)) return null;
         var path = NormalizePath(input);
-        var extension = Path.GetExtension(path);
-        if (extension.Equals(".url", StringComparison.OrdinalIgnoreCase))
-            return ResolveObservedInput(EntryKind.Url, path, files.ReadAllBytes(path));
-        if (extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
-            return ResolveObservedInput(EntryKind.Lnk, path, files.ReadAllBytes(path));
-        return ForPath(path, string.Empty, string.Empty);
+        var kind = EntryNames.KindOfRelativePath(path);
+        // A folder keeps its own path identity even if its name ends in .lnk or .url.
+        // Ordinary paths need no additional IO; only possible shortcut files are inspected.
+        if (kind == EntryKind.None || files.GetPathInfo(path).IsDirectory)
+            return ForPath(path, string.Empty, string.Empty);
+        return ResolveObservedInput(kind, path, files.ReadAllBytes(path));
     }
 
     /// <summary>Resolve observed shortcut bytes, including a staged file whose extension is .tmp.</summary>

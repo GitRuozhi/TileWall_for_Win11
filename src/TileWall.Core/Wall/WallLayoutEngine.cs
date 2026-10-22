@@ -176,11 +176,7 @@ public static class WallLayoutEngine
         if (capacity != WallRejection.None) return Reject(capacity, capacityDetail);
 
         if (proposed.Settings.ExpandColumns)
-        {
-            var normalized = NormalizeExpanded(proposed, metrics);
-            if (normalized.Proposal is null) return normalized;
-            proposed = normalized.Proposal.Document;
-        }
+            return NormalizeExpanded(proposed, metrics);
 
         proposed = OrderMembers(proposed);
         errors = ValidateGeometry(proposed, metrics);
