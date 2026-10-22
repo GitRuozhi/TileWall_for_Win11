@@ -1,4 +1,5 @@
 using TileWall.Core.Storage;
+using TileWall.Core.Tests.Fixtures;
 using TileWall.Core.Wall;
 using Xunit;
 
@@ -55,5 +56,33 @@ public sealed partial class WallStoreTests
         Assert.Equal(2, reopened.Document.Columns);
         Assert.Single(reopened.Document.Lanes[0].Groups);
         Assert.Empty(reopened.Document.Lanes[1].Groups);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NarrowScreenExpansionIsPublishedOnlyAfterTheConfigurationCommit(bool fail)
+    {
+        var (store, files, links, root) = Harness();
+        var initial = Wall(Tile("one"));
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
+        var saved = files.ReadAllBytes(Path.Combine(root, "config.json"));
+        var candidate = WallViewportPolicy.AdaptToEnvironment(initial,
+            WallViewportPolicy.Create(500, 1080, false, expandColumns: false));
+        Assert.True(candidate.Success, candidate.Detail);
+        Assert.False(initial.Settings.ExpandColumns);
+        var request = Plan(store, initial, candidate.Proposal!.Document);
+        if (fail) files.InjectedFault = FaultPoint.BeforeMove;
+
+        var result = store.Commit(initial, request, true);
+        files.InjectedFault = FaultPoint.None;
+        Assert.Equal(fail ? WallCommitStatus.Rejected : WallCommitStatus.Committed, result.Status);
+        var reopened = new WallStore(files, links, root).Open();
+        Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
+        Assert.Equal(!fail, reopened.Document!.Settings.ExpandColumns);
+        Assert.Equal(fail ? 0 : 1, reopened.Document.Generation);
+        Assert.Equal("one", Assert.Single(reopened.Document.EnumerateAllMembers()).Id);
+        if (fail) Assert.Equal(saved, files.ReadAllBytes(Path.Combine(root, "config.json")));
+        else Assert.Empty(reopened.Document.Lanes[^1].Groups);
     }
 }

@@ -49,11 +49,15 @@ public sealed partial class MainWindow
         if (!document.Settings.MenuStart || !_menuImagesActive) { _menuStart.Content = null; return; }
         var panel = new StackPanel { Spacing = 0 };
         var updateExpansions = new List<Action>();
+        var unnamedIndex = 0;
         foreach (var group in document.Lanes.SelectMany(lane => lane.Groups))
         {
             var entries = MemberLayoutOrder.Order(group.Members).Where(member => member.Entry is not null).ToArray();
             if (entries.Length == 0) continue;
-            var groupTitle = string.IsNullOrWhiteSpace(group.Title) ? string.Empty : group.Title;
+            var groupTitle = string.IsNullOrWhiteSpace(group.Title)
+                ? string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    ProductStrings.Get("MenuStart.Unnamed"), ++unnamedIndex)
+                : group.Title;
             var header = new Grid { Height = 32 };
             header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
             header.ColumnDefinitions.Add(new() { Width = new GridLength(32) });
@@ -97,7 +101,7 @@ public sealed partial class MainWindow
                 displayedExpanded = expanded;
                 chevron.Glyph = expanded ? "\uE70E" : "\uE70D";
                 var action = ProductStrings.Get(expanded ? "MenuStart.Collapse" : "MenuStart.Expand");
-                AutomationProperties.SetName(toggle, action + " " + (groupTitle.Length == 0 ? ProductStrings.Get("MenuStart.Unnamed") : groupTitle));
+                AutomationProperties.SetName(toggle, action + " " + groupTitle);
                 ToolTipService.SetToolTip(toggle, action);
                 entryPanel.Children.Clear();
                 if (!expanded) return;

@@ -300,12 +300,20 @@ public sealed partial class MainWindow
         var fullScreen = document.Settings.FullScreen;
         var geometry = previewGeometry ?? Surface.Geometry ?? WallLayoutEngine.Measure(document, _metrics);
         var fixedWidth = WallViewportPolicy.FixedWidth(document.Settings.MenuStart);
+        var maximumTileWidth = MaximumTileWidthDip(document.Settings);
+        if (maximumTileWidth <= 0 || !document.Settings.ExpandColumns &&
+            WallViewportPolicy.CompleteColumns(maximumTileWidth, _metrics) == 0)
+        {
+            // The environment proposal must publish expansion before a narrow normal
+            // viewport is displayed. A rejected save leaves the previous view intact.
+            QueueEnvironmentAdaptation();
+            return;
+        }
         var contentWidth = geometry.WallWidth + fixedWidth;
         var visibleWidth = document.Settings.WindowedViewportWidthDip ??
-            (document.Settings.ExpandColumns ? (_screenArea.Right - _screenArea.Left) * .9 / Scale : contentWidth);
-        visibleWidth = Math.Max(visibleWidth, Math.Min((_screenArea.Right - _screenArea.Left) * .9 / Scale,
-            _metrics.WallWidth(1) + fixedWidth));
-        if (!document.Settings.ExpandColumns) visibleWidth = Math.Max(visibleWidth, contentWidth);
+            (document.Settings.ExpandColumns ? MaximumWindowedClientWidthDip : contentWidth);
+        visibleWidth = fixedWidth + WallViewportPolicy.ResolveVisibleWidth(document.Settings, geometry,
+            visibleWidth - fixedWidth, maximumTileWidth, _metrics);
         var width = fullScreen ? _screenArea.Right - _screenArea.Left :
             (int)Math.Ceiling(visibleWidth * Scale) + _frameWidth;
         var height = fullScreen ? _screenArea.Bottom - _screenArea.Top :

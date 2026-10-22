@@ -40,7 +40,9 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private readonly MemberEditorPreview _preview = new();
     private readonly TextBox _title = Input(), _target = Input(), _sourcePath = Input();
     private readonly TextBox _imageRatio = Input();
-    private readonly TextBlock _galleryCount = new() { Text = "0/0", FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center };
+    private readonly TextBlock _galleryCount = new() { Text = "0/0", FontSize = 12, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White), TextAlignment = TextAlignment.Left };
+    private readonly Border _galleryCountBadge = new() { Padding = new Thickness(4, 2, 4, 2), Background = new SolidColorBrush(Windows.UI.Color.FromArgb(153, 0, 0, 0)),
+        HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, IsHitTestVisible = false };
     private readonly TextBlock _error = new() { TextWrapping = TextWrapping.Wrap }, _sourceStatus = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _toolIntro = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12 },
         _toolHint = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12 },
@@ -63,9 +65,12 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private readonly Dictionary<string, TextBlock> _labels = [];
     private readonly ObservableCollection<Thumbnail> _candidates = [];
     private readonly StackPanel _thumbnailStrip = new() { Orientation = Orientation.Horizontal, Spacing = 4 };
-    private readonly ScrollViewer _thumbnails = new() { Height = 68, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+    private readonly ScrollViewer _thumbnails = new() { Height = 48, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
         HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
         VerticalScrollMode = ScrollMode.Disabled };
+    private readonly ScrollBar _galleryScrollBar = new() { Orientation = Orientation.Horizontal, IndicatorMode = ScrollingIndicatorMode.MouseIndicator,
+        Height = 16, MinHeight = 16, MaxHeight = 16,
+        Visibility = Visibility.Collapsed, IsEnabled = false };
     private Thumbnail? _selectedThumbnail;
     private readonly ImageRotationInterval[] _intervals = Enum.GetValues<ImageRotationInterval>();
     private readonly PartitionEditSession? _layout;
@@ -89,7 +94,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         get => _latestPending;
         set { _latestPending = value; TrackOperation(value); }
     }
-    private bool _refreshing, _saved, _closed, _opened, _allowDiscard, _discardConfirmed, _pickerBusy;
+    private bool _refreshing, _saved, _closed, _opened, _allowDiscard, _discardConfirmed, _pickerBusy, _syncingGalleryScrollBar;
     private bool _titleDirty, _targetDirty, _sourceDirty, _ratioDirty;
     private string? _galleryVersion;
     private MemberImageSource? _galleryVersionSource;
@@ -181,9 +186,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _draw.IsEnabled = _erase.IsEnabled = _layout is not null;
 
         if (_layout is null) { shapeActions.Children.Add(_undo); shapeActions.Children.Add(_redo); shapeActions.Children.Add(_draw); shapeActions.Children.Add(_erase); }
-        var toolContent = new StackPanel { Spacing = 4 }; toolContent.Children.Add(shapeActions);
-        toolContent.Children.Add(_toolIntro); toolContent.Children.Add(_toolHint);
-        AddRow(tools, "Editor.PuzzleTools", toolContent);
+        AddRow(tools, "Editor.PuzzleTools", shapeActions);
         var presets = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         foreach (var (key, width, height, glyph) in new[] { ("Editor.PresetSmall", 1, 1, ActionIcon.PresetSmall), ("Editor.PresetMedium", 2, 2, ActionIcon.PresetMedium), ("Editor.PresetWide", 4, 2, ActionIcon.PresetWide), ("Editor.PresetLarge", 4, 4, ActionIcon.PresetLarge) })
         { var button = Preset(key, glyph, () => SetSize(width, height)); _presets.Add((button, width, height, false)); presets.Children.Add(button); }
@@ -211,13 +214,30 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _imageRatio.TextAlignment = TextAlignment.Center;
         var ratioRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; ratioRow.Children.Add(_imageRatio);
         ratioRow.Children.Add(new TextBlock { Text = "%", VerticalAlignment = VerticalAlignment.Center });
-        var scaleContent = new StackPanel { Spacing = 4 }; scaleContent.Children.Add(ratioRow); scaleContent.Children.Add(_scaleHint);
-        AddRow(tools, "Editor.ImageRatio", scaleContent);
+        AddRow(tools, "Editor.ImageRatio", ratioRow);
         _thumbnails.Content = _thumbnailStrip;
-        _thumbnails.SizeChanged += (_, _) => { _thumbnailStrip.Padding = new Thickness(Math.Max(0, (_thumbnails.ActualWidth - 48) / 2), 0, Math.Max(0, (_thumbnails.ActualWidth - 48) / 2), 0); CenterThumbnail(false); };
-        var gallery = new StackPanel { Spacing = 4 }; gallery.Children.Add(_thumbnails); gallery.Children.Add(_galleryCount);
+        _galleryCountBadge.Child = _galleryCount;
+        _thumbnails.SizeChanged += (_, _) =>
+        {
+            _thumbnailStrip.Padding = new Thickness(Math.Max(0, (_thumbnails.ActualWidth - 48) / 2), 0, Math.Max(0, (_thumbnails.ActualWidth - 48) / 2), 0);
+            CenterThumbnail(false);
+        };
+        _thumbnailStrip.SizeChanged += (_, _) => SyncGalleryScrollBar();
+        _thumbnails.ViewChanged += (_, _) => SyncGalleryScrollBar();
+        _galleryScrollBar.ValueChanged += (_, e) =>
+        {
+            if (!_syncingGalleryScrollBar) _thumbnails.ChangeView(Math.Clamp(e.NewValue, 0, _thumbnails.ScrollableWidth), null, null, true);
+        };
+        // ScrollViewer's own bar overlays its content, so reserve a separate row below the thumbnails.
+        var thumbnailViewport = new Grid();
+        thumbnailViewport.Children.Add(_thumbnails); thumbnailViewport.Children.Add(_galleryCountBadge);
+        var gallery = new Grid();
+        gallery.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
+        gallery.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        gallery.Children.Add(thumbnailViewport); Grid.SetRow(_galleryScrollBar, 1); gallery.Children.Add(_galleryScrollBar);
         var cards = new StackPanel { Spacing = 12 }; cards.Children.Add(VisualStyles.Card(right)); cards.Children.Add(VisualStyles.Card(tools));
-        cards.Children.Add(VisualStyles.Card(gallery)); cards.Children.Add(_sourceStatus); cards.Children.Add(_error);
+        var galleryCard = VisualStyles.Card(gallery); galleryCard.Padding = new Thickness(12, 6, 12, 6);
+        cards.Children.Add(galleryCard); cards.Children.Add(_sourceStatus); cards.Children.Add(_error);
         var root = (owner.Content as FrameworkElement)?.XamlRoot;
         var budget = OwnedDialogWindow.ContentBudget(owner);
         var page = _page = new Grid { Width = Math.Min(900, budget.Width), MinWidth = Math.Min(680, budget.Width),
@@ -229,7 +249,14 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         // Keep the column's finite width when measuring the gallery. Only the
         // thumbnail list scrolls horizontally; preview overflow is clipped in place.
-        var leftScroll = new ScrollViewer { Content = _preview, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        var previewContent = new Grid { RowSpacing = 8 };
+        previewContent.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        previewContent.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        previewContent.Children.Add(_preview);
+        var explanations = new StackPanel { Spacing = 4 };
+        explanations.Children.Add(_toolIntro); explanations.Children.Add(_toolHint); explanations.Children.Add(_scaleHint);
+        Grid.SetRow(explanations, 1); previewContent.Children.Add(explanations);
+        var leftScroll = new ScrollViewer { Content = previewContent, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Disabled };
         var rightScroll = new ScrollViewer { Content = cards, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         page.Children.Add(leftScroll); Grid.SetColumn(rightScroll, 1); page.Children.Add(rightScroll);
@@ -438,6 +465,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             button.Content = PuzzlePresetIcon(width / 2, height / 2);
             ActionIcon.SetTip(button, T(key)); AutomationProperties.SetName(button, T(key));
         }
+        AutomationProperties.SetName(_galleryScrollBar, T("Editor.Gallery"));
+        ToolTipService.SetToolTip(_galleryScrollBar, T("Editor.Gallery"));
         foreach (var (button, key, _) in _imageActions) { ToolTipService.SetToolTip(button, T(key)); AutomationProperties.SetName(button, T(key)); }
         ActionIcon.SetIcon(_autoTitle, T("Editor.AutoTitle"), ActionIcon.Reset); ActionIcon.SetIcon(_targetBrowse, T("Entry.Browse"), ActionIcon.OpenFile);
         ActionIcon.SetIcon(_targetConfirm, T("Editor.ConfirmTarget"), ActionIcon.Confirm); ActionIcon.SetIcon(_titleConfirm, T("Editor.ConfirmTitle"), ActionIcon.Confirm);
@@ -470,6 +499,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _transparencyInput.Value = _transparency.Value = _draft.Visual.BackgroundTransparency;
         _interval.SelectedIndex = Array.IndexOf(_intervals, _draft.RotationInterval); _interval.IsEnabled = _draft.Images.Kind == MemberImageSourceKind.Folder;
         _thumbnails.IsEnabled = _draft.Images.Kind == MemberImageSourceKind.Folder;
+        SyncGalleryScrollBar();
         foreach (var (button, width, height, puzzle) in _presets)
         {
             button.IsEnabled = puzzle == (_layout is not null) && height <= _maxRows;
@@ -1032,9 +1062,11 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     }
     private static Grid PuzzlePresetIcon(int columns, int rows)
     {
+        const double cellSize = 5, gap = 1;
         var icon = new Grid
         {
-            Width = 18d * columns / Math.Max(columns, rows), Height = 18d * rows / Math.Max(columns, rows), ColumnSpacing = 1, RowSpacing = 1,
+            Width = cellSize * columns + gap * (columns - 1), Height = cellSize * rows + gap * (rows - 1),
+            ColumnSpacing = gap, RowSpacing = gap,
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false,
         };
@@ -1137,12 +1169,31 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _galleryCount.Text = $"{(_selectedThumbnail is null ? 0 : _candidates.IndexOf(_selectedThumbnail) + 1)}/{_candidates.Count}";
         if (center) CenterThumbnail(false);
     }
+    private void SyncGalleryScrollBar()
+    {
+        var scrollableWidth = Math.Max(0, _thumbnails.ScrollableWidth);
+        _syncingGalleryScrollBar = true;
+        try
+        {
+            _galleryScrollBar.Minimum = 0;
+            _galleryScrollBar.Maximum = scrollableWidth;
+            _galleryScrollBar.ViewportSize = Math.Max(0, _thumbnails.ViewportWidth);
+            _galleryScrollBar.SmallChange = 52;
+            _galleryScrollBar.LargeChange = Math.Max(52, _thumbnails.ViewportWidth - 48);
+            _galleryScrollBar.Value = Math.Clamp(_thumbnails.HorizontalOffset, 0, scrollableWidth);
+        }
+        finally { _syncingGalleryScrollBar = false; }
+        var canScroll = scrollableWidth > 0.5;
+        _galleryScrollBar.IsEnabled = canScroll && _thumbnails.IsEnabled;
+        _galleryScrollBar.Visibility = canScroll ? Visibility.Visible : Visibility.Collapsed;
+    }
     private void CenterThumbnail(bool animate)
     {
-        if (_selectedThumbnail is null) return;
+        if (_selectedThumbnail is null) { SyncGalleryScrollBar(); return; }
         var index = _candidates.IndexOf(_selectedThumbnail);
         _thumbnails.UpdateLayout();
         _thumbnails.ChangeView(Math.Max(0, index * 52), null, null, !animate);
+        SyncGalleryScrollBar();
     }
     private async Task<bool> ConfirmSourceAsync()
     {

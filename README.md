@@ -24,9 +24,9 @@ If you miss Windows 10 tiles, this should feel familiar. Your usual Start menu a
 
 [Check releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [Browse the source](https://github.com/GitRuozhi/TileWall_for_Win11)
 
-Local 0.3.2 candidates include a portable ZIP and an unsigned x64 EXE installer; neither has been published on Releases yet. MSIX signing and installation, and the Windows 11 first-level context menu, are deferred until Store registration.
+The current local development build is 0.3.3; no 0.3.3 installer or Release has been produced. Existing local 0.3.2 Preview candidates include a portable ZIP and an unsigned x64 EXE installer; neither has been published on Releases yet. MSIX signing and installation, and the Windows 11 first-level context menu, are deferred until Store registration.
 
-The EXE installs to `%ProgramFiles%\TileWall` for all users and adds a Start menu shortcut. Installation, updates, and removal require administrator approval; start TileWall normally from the Start menu afterward. The installer does not enable start at login, add an Explorer context menu, or create a desktop shortcut. The portable ZIP and EXE include the required .NET and Windows App SDK runtimes.
+The EXE installs to `%ProgramFiles%\TileWall` for all users and adds TileWall directly to the Start menu. Setup offers an optional desktop shortcut, unchecked on first installation. Installation, updates, and removal require administrator approval; start TileWall normally afterward. The installer does not enable start at login or add an Explorer context menu. The portable ZIP and EXE include the required .NET and Windows App SDK runtimes.
 
 TileWall is being developed for Windows 10 22H2 and Windows 11. Windows 11, multiple DPI settings, a machine without preinstalled runtimes, and a formally signed installation still need full testing. If you would like to build it yourself, the command is at the end of this page.
 

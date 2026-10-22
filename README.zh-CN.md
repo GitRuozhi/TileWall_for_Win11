@@ -24,9 +24,9 @@
 
 [查看发行情况](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [查看源码](https://github.com/GitRuozhi/TileWall_for_Win11)
 
-0.3.2 本地候选包含便携 ZIP 和未签名的 x64 EXE 安装包，目前尚未发布到 Releases。MSIX 签名安装及 Win11 首层新右键菜单暂缓，待商店注册后再推进。
+当前本机开发构建为 0.3.3，未制作该版本安装包或 Release。现有 0.3.2 Preview 本地候选包含便携 ZIP 和未签名的 x64 EXE 安装包，目前尚未发布到 Releases。MSIX 签名安装及 Win11 首层新右键菜单暂缓，待商店注册后再推进。
 
-EXE 默认安装到公共的 `%ProgramFiles%\TileWall`，并添加开始菜单入口。安装、更新和卸载需要管理员批准，日常从开始菜单正常启动即可。安装器不自动开启登录启动、不注册资源管理器右键菜单，也不创建桌面图标。便携 ZIP 和 EXE 均随附所需的 .NET 与 Windows App SDK 运行时。
+EXE 默认安装到公共的 `%ProgramFiles%\TileWall`，开始菜单直接显示 TileWall，不再套文件夹。安装时可选择“创建桌面快捷方式”，首次默认不勾选。安装、更新和卸载需要管理员批准，日常正常启动即可。安装器不自动开启登录启动或注册资源管理器右键菜单。便携 ZIP 和 EXE 均随附所需的 .NET 与 Windows App SDK 运行时。
 
 面向 Windows 10 22H2 和 Windows 11 开发；Windows 11、多 DPI、未预装运行时的干净环境及正式签名安装仍待完整实测。愿意自行编译的话，文末有构建入口。
 

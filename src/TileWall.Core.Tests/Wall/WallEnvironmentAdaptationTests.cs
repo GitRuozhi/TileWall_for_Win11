@@ -69,4 +69,50 @@ public sealed class WallEnvironmentAdaptationTests
         Assert.True(result.Success);
         Assert.Same(source, result.Proposal!.Document);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NarrowPositiveViewportProposesFormalExpansionWithoutMutatingTheSource(bool empty)
+    {
+        var source = WallDocument.Empty(1, 4) with
+        {
+            Lanes = [new() { Groups = empty ? [] : [Group("a")] }],
+            Settings = new() { WindowedViewportWidthDip = 1024, ManualWindowedViewportWidthDip = 990.25 },
+        };
+        var before = WallJson.Serialize(source);
+        var budget = WallViewportPolicy.Create(500, 1080, false, expandColumns: false);
+        Assert.Equal(0, budget.MaxColumns);
+
+        var result = WallViewportPolicy.AdaptToEnvironment(source, budget);
+        Assert.True(result.Success, result.Detail);
+        var candidate = result.Proposal!.Document;
+        Assert.True(candidate.Settings.ExpandColumns);
+        Assert.Equal(source.Settings with { ExpandColumns = true }, candidate.Settings);
+        Assert.Equal(source.Generation + 1, candidate.Generation);
+        Assert.Equal(empty ? 1 : 2, candidate.Columns);
+        Assert.Empty(candidate.Lanes[^1].Groups);
+        Assert.Equal(source.EnumerateAllMembers().Select(member => member.Id),
+            candidate.EnumerateAllMembers().Select(member => member.Id));
+        Assert.Equal(before, WallJson.Serialize(source));
+        Assert.True(WallViewportPolicy.Validate(candidate,
+            WallViewportPolicy.Create(500, 1080, false, expandColumns: true)).Success);
+        Assert.Equal(budget.MaxWidthDip, WallViewportPolicy.ResolveVisibleWidth(candidate.Settings,
+            result.Proposal.Geometry, budget.MaxWidthDip, budget.MaxWidthDip));
+    }
+
+    [Fact]
+    public void NarrowAndShorterScreenCanOpenExpansionAndRedistributeWholeGroupsTogether()
+    {
+        var source = WallDocument.Empty(1, 8) with { Lanes = [new() { Groups = [Group("a"), Group("b")] }] };
+        var budget = WallViewportPolicy.Create(500, 300, false, expandColumns: false);
+        var result = WallViewportPolicy.AdaptToEnvironment(source, budget);
+        Assert.True(result.Success, result.Detail);
+        var candidate = result.Proposal!.Document;
+        Assert.True(candidate.Settings.ExpandColumns);
+        Assert.Equal(3, candidate.Columns);
+        Assert.Equal(new[] { "a", "b" }, candidate.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id));
+        Assert.Empty(candidate.Lanes[^1].Groups);
+        Assert.Equal(budget.MaxRows, candidate.Rows);
+    }
 }

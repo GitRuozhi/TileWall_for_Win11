@@ -21,6 +21,8 @@ public sealed partial class MainWindow
     private CancellationTokenSource? _snapshotRequest;
     private (int X, int Y, int W, int H, double Scale, bool Dark)? _snapshotKey;
     private CancellationTokenSource? _backgroundRequest;
+    private CancellationTokenSource? _backgroundCommitRequest;
+    private Task<bool>? _backgroundCommitWork;
     private readonly HashSet<Task> _appearanceWork = [];
     private bool _appearanceStopping;
     private string? _backgroundPath;
@@ -30,6 +32,7 @@ public sealed partial class MainWindow
 
     private void InitializeAppearance()
     {
+        _wallBackdrop.WaitForFallbackCommit = EnsureBackgroundCommittedAsync;
         _backgroundLayer.Children.Add(_backgroundImage);
         _backgroundLayer.Children.Add(_snapshotImage);
         WallRoot.Children.Insert(0, _backgroundLayer);
@@ -54,6 +57,7 @@ public sealed partial class MainWindow
     internal void RefreshAppearance()
     {
         if (_windowClosing || _appearanceStopping) return;
+        CancelBackgroundCommit();
         var settings = Settings;
         var foreground = _appearanceSettings.GetColorValue(UIColorType.Foreground);
         _themeDark = settings.ThemeMode == WallThemeMode.Dark || settings.ThemeMode == WallThemeMode.System &&
@@ -93,6 +97,7 @@ public sealed partial class MainWindow
 
     private void OnMaterialFallbackChanged(bool fallback, bool reduced)
     {
+        if (!fallback) CancelBackgroundCommit();
         TraceInput($"Backdrop mode={Settings.BackgroundMode} active={_backdropActive} fallback={fallback} reduced={reduced} transparency={Settings.BackgroundTransparency}");
         var highContrast = _accessibilitySettings.HighContrast;
         var policyChanged = _materialReduced != reduced ||
@@ -106,6 +111,70 @@ public sealed partial class MainWindow
         if (policyChanged) QueueAppearanceRefresh();
     }
 
+    private Task<bool> EnsureBackgroundCommittedAsync()
+    {
+        if (_windowClosing || _appearanceStopping || !AppWindow.IsVisible) return Task.FromResult(true);
+        if (_backgroundCommitWork is not null) return _backgroundCommitWork;
+        _backgroundCommitRequest = new CancellationTokenSource();
+        _backgroundCommitWork = CommitBackgroundAsync(_backgroundCommitRequest.Token);
+        TrackAppearanceWork(_backgroundCommitWork);
+        return _backgroundCommitWork;
+    }
+
+    private async Task<bool> CommitBackgroundAsync(CancellationToken token)
+    {
+        var renderedFrame = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        EventHandler<object>? rendering = null;
+        EventHandler<RenderedEventArgs>? rendered = null;
+        var renderingAttached = false;
+        var renderedAttached = false;
+        void Unsubscribe()
+        {
+            if (renderingAttached) { CompositionTarget.Rendering -= rendering; renderingAttached = false; }
+            if (renderedAttached) { CompositionTarget.Rendered -= rendered; renderedAttached = false; }
+        }
+        rendered = (_, _) =>
+        {
+            Unsubscribe();
+            renderedFrame.TrySetResult();
+        };
+        rendering = (_, _) =>
+        {
+            // Rendering precedes the frame. Observe its Rendered event instead of
+            // removing native here, before XAML has submitted the replacement.
+            if (renderedAttached) return;
+            CompositionTarget.Rendered += rendered;
+            renderedAttached = true;
+        };
+        try
+        {
+            CompositionTarget.Rendering += rendering;
+            renderingAttached = true;
+            TraceInput("BackdropCommit XAML wait-render");
+            await renderedFrame.Task.WaitAsync(token);
+            token.ThrowIfCancellationRequested();
+            await CompositionTarget.GetCompositorForCurrentThread().RequestCommitAsync().AsTask(token);
+            token.ThrowIfCancellationRequested();
+            TraceInput("BackdropCommit XAML committed");
+            return true;
+        }
+        catch (OperationCanceledException) { return false; }
+        catch (Exception ex)
+        {
+            AppLog.Warn("BackdropCommit", $"XAML commit unavailable: {ex.GetType().Name}");
+            return false;
+        }
+        finally { Unsubscribe(); }
+    }
+
+    private void CancelBackgroundCommit()
+    {
+        _backgroundCommitRequest?.Cancel();
+        _backgroundCommitRequest?.Dispose();
+        _backgroundCommitRequest = null;
+        _backgroundCommitWork = null;
+    }
+
     private void UpdateBackgroundLayer()
     {
         if (_windowClosing || _appearanceStopping) return;
@@ -116,7 +185,6 @@ public sealed partial class MainWindow
             (!_backdropActive || _materialFallback);
         var visibility = snapshotReady || _materialFallback || settings.BackgroundMode == WallBackgroundMode.Custom || reduced
             ? Visibility.Visible : Visibility.Collapsed;
-        if (_backgroundLayer.Visibility != visibility) _backgroundLayer.Visibility = visibility;
         var opacity = reduced ? 1 : (100 - Math.Clamp(settings.BackgroundTransparency, 0, 100)) / 100d;
         if (_backgroundLayer.Opacity != opacity) _backgroundLayer.Opacity = opacity;
         var customImageReady = !reduced && settings.BackgroundMode == WallBackgroundMode.Custom &&
@@ -137,6 +205,13 @@ public sealed partial class MainWindow
         var imageVisibility = customImageReady ? Visibility.Visible : Visibility.Collapsed;
         if (_backgroundImage.Visibility != imageVisibility) _backgroundImage.Visibility = imageVisibility;
         _snapshotImage.Visibility = snapshotReady ? Visibility.Visible : Visibility.Collapsed;
+        // Publish visibility only after the replacement's image/solid and opacity
+        // are ready; WallBackdrop then detaches the outgoing native material.
+        if (_backgroundLayer.Visibility != visibility)
+        {
+            _backgroundLayer.Visibility = visibility;
+            TraceInput($"BackdropLayer visible={visibility} snapshot={snapshotReady} custom={customImageReady} opacity={opacity:F2}");
+        }
     }
 
     private async Task LoadCustomBackgroundAsync(string path, WallSettings settings, CancellationToken ct)
@@ -145,7 +220,7 @@ public sealed partial class MainWindow
         var result = await _images.LoadBackgroundAsync(settings.BackgroundMedia, settings.BackgroundImagePath, 2560, 1440, ct);
         if (ct.IsCancellationRequested || _windowClosing || !string.Equals(_backgroundPath, path, StringComparison.OrdinalIgnoreCase)) return;
         _backgroundImage.Source = result.Source;
-        UpdateBackgroundLayer();
+        RefreshAppearance();
         if (result.Source is null) AppLog.Warn("WallBackdrop", $"Custom background unavailable: {result.Status}");
     }
 
@@ -163,8 +238,12 @@ public sealed partial class MainWindow
 
     private void ReleaseBackdropSnapshot()
     {
+        CancelBackgroundCommit();
         _snapshotRequest?.Cancel(); _snapshotRequest?.Dispose(); _snapshotRequest = null;
         _snapshotKey = null;
+        // Invalidating a visible snapshot must install the solid replacement before
+        // removing its pixels. Hide/close use the same cancellation boundary.
+        UpdateBackgroundLayer();
         _snapshotImage.Source = null;
         _snapshotImage.Visibility = Visibility.Collapsed;
     }
@@ -216,6 +295,7 @@ public sealed partial class MainWindow
     private async Task ShutdownAppearanceAsync()
     {
         _appearanceStopping = true;
+        CancelBackgroundCommit();
         _backgroundRequest?.Cancel();
         _snapshotRequest?.Cancel();
         try { await Task.WhenAll(_appearanceWork); }
@@ -248,6 +328,7 @@ public sealed partial class MainWindow
     private void DisposeAppearance()
     {
         _appearanceStopping = true;
+        CancelBackgroundCommit();
         _appearanceSettings.ColorValuesChanged -= OnSystemColorsChanged;
         _appearanceSettings.AdvancedEffectsEnabledChanged -= OnAdvancedEffectsChanged;
         if (_highContrastSubscribed)

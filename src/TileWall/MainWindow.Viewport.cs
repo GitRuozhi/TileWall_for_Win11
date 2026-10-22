@@ -20,6 +20,13 @@ public sealed partial class MainWindow
         Math.Max(1, _screenArea.Bottom - _screenArea.Top - _frameHeight) / Scale, settings.FullScreen, _metrics,
         settings.ExpandColumns, settings.MenuStart);
 
+    private double MaximumWindowedClientWidthDip =>
+        Math.Max(0, (Math.Floor((_screenArea.Right - _screenArea.Left) * .9) - _frameWidth) / Scale);
+
+    private double MaximumTileWidthDip(WallSettings settings) => Math.Max(0,
+        (settings.FullScreen ? (_screenArea.Right - _screenArea.Left - _frameWidth) * .95 / Scale :
+            MaximumWindowedClientWidthDip) - WallViewportPolicy.FixedWidth(settings.MenuStart));
+
     private void ReadPrimaryScreen() => _screenArea = new WorkAreaRect
         { Left = 0, Top = 0, Right = GetSystemMetrics(0), Bottom = GetSystemMetrics(1) };
 
@@ -41,6 +48,9 @@ public sealed partial class MainWindow
         int? columns = null, int? rows = null, AnchorCorner? anchor = null)
     {
         requested = WallViewportPolicy.ForModeTransition(source.Settings, requested);
+        var maximumTileWidth = MaximumTileWidthDip(requested);
+        if (maximumTileWidth > 0 && WallViewportPolicy.CompleteColumns(maximumTileWidth, _metrics) == 0)
+            requested = requested with { ExpandColumns = true };
         var budget = ViewportBudget(requested);
         if (requested.FullScreen)
         {
@@ -57,7 +67,7 @@ public sealed partial class MainWindow
         var targetAnchor = anchor ?? requested.AnchorCorner;
         targetColumns = Math.Min(targetColumns, budget.MaxColumns);
         targetRows = Math.Min(targetRows, budget.MaxRows);
-        var maximumWidth = Math.Max(1, (_screenArea.Right - _screenArea.Left) * .9 / Scale - _frameWidth / Scale);
+        var maximumWidth = MaximumWindowedClientWidthDip;
         if (source.Settings.FullScreen)
             requested = requested with { WindowedViewportWidthDip = requested.ManualWindowedViewportWidthDip ?? maximumWidth };
         else if (requested.ExpandColumns && !source.Settings.ExpandColumns)
@@ -66,8 +76,7 @@ public sealed partial class MainWindow
         {
             var clientWidth = Math.Min(maximumWidth, requested.WindowedViewportWidthDip ?? maximumWidth);
             var tileWidth = Math.Max(1, clientWidth - WallViewportPolicy.FixedWidth(requested.MenuStart));
-            var visibleColumns = Math.Clamp((int)Math.Floor((tileWidth - 2 * _metrics.Margin + _metrics.ColumnGap) /
-                (_metrics.LaneWidth + _metrics.ColumnGap) + 1e-8), 0, budget.MaxColumns);
+            var visibleColumns = Math.Min(WallViewportPolicy.CompleteColumns(tileWidth, _metrics), budget.MaxColumns);
             budget = budget with { MaxWidthDip = tileWidth, MaxColumns = visibleColumns };
             targetColumns = Math.Min(targetColumns, visibleColumns);
         }
@@ -78,7 +87,16 @@ public sealed partial class MainWindow
             (source.Settings.FullScreen || source.Settings.ExpandColumns) && targetColumns < budget.MaxColumns)
             result = WallViewportPolicy.TryResize(source, budget.MaxColumns, targetRows,
                 windowSettings with { WindowedColumns = budget.MaxColumns }, budget, _metrics);
-        return result;
+        if (result.Proposal is not { } proposal) return result;
+        var fixedWidth = WallViewportPolicy.FixedWidth(requested.MenuStart);
+        var desiredWidth = requested.WindowedViewportWidthDip ??
+            (requested.ExpandColumns ? maximumWidth : proposal.Geometry.WallWidth + fixedWidth);
+        var settledWidth = fixedWidth + WallViewportPolicy.ResolveVisibleWidth(proposal.Document.Settings,
+            proposal.Geometry, desiredWidth - fixedWidth, maximumTileWidth, _metrics);
+        return result with { Proposal = proposal with { Document = proposal.Document with
+        {
+            Settings = proposal.Document.Settings with { WindowedViewportWidthDip = settledWidth },
+        } } };
     }
 
     // The Surface and all hit/drop calculations use content coordinates. Only window overlays
@@ -96,7 +114,9 @@ public sealed partial class MainWindow
         if (fullScreen)
         {
             (visibleWidth, visibleHeight) = WallViewportPolicy.FullScreenVisibleSize(width, height, _metrics, settings.MenuStart);
-            x = right ? width * .05 : sideWidth; y = height * .05;
+            if (Surface.Geometry is { } geometry)
+                visibleWidth = WallViewportPolicy.ResolveVisibleWidth(settings, geometry, visibleWidth, visibleWidth, _metrics);
+            x = right ? width - sideWidth - visibleWidth : sideWidth; y = height * .05;
         }
         else
         {

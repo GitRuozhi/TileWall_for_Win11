@@ -184,15 +184,20 @@ public sealed class WallViewportPolicyTests
     }
 
     [Fact]
-    public void ExpansionCannotBypassTheMinimumVisibleLaneWidth()
+    public void ExpansionCanScrollAFullLaneThroughANarrowPositiveViewport()
     {
         var budget = WallViewportPolicy.Create(750, 600, true, expandColumns: true, menuStart: true);
-        Assert.Equal(0, budget.MaxColumns);
+        Assert.Equal(64, budget.MaxColumns);
         var current = WallDocument.Empty(1, 4);
         var result = WallViewportPolicy.TryResize(current, 1, 4,
             new() { FullScreen = true, ExpandColumns = true, MenuStart = true }, budget);
-        Assert.False(result.Success);
-        Assert.Equal(WallRejection.WorkAreaTooSmall, result.Rejection);
+        Assert.True(result.Success, result.Detail);
+        Assert.True(result.Proposal!.Document.Settings.ExpandColumns);
+
+        var noVisibleSpace = WallViewportPolicy.Create(300, 600, true, expandColumns: true, menuStart: true);
+        Assert.Equal(0, noVisibleSpace.MaxColumns);
+        Assert.False(WallViewportPolicy.TryResize(current, 1, 4,
+            new() { FullScreen = true, ExpandColumns = true, MenuStart = true }, noVisibleSpace).Success);
     }
 
     [Fact]

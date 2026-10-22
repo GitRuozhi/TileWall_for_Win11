@@ -16,11 +16,12 @@ public static class WallViewportPolicy
         // mode limits the entire outer width to ninety percent of the primary screen.
         var width = Math.Max(0, screenWidthDip * (fullScreen ? .95 : .9) - FixedWidth(menuStart));
         var height = Math.Max(0, screenHeightDip * .9);
-        var columns = Math.Clamp((int)Math.Floor((width - 2 * metrics.Margin + metrics.ColumnGap) /
-            (metrics.LaneWidth + metrics.ColumnGap) + 1e-8), 0, 64);
+        var columns = CompleteColumns(width, metrics);
         var rows = Math.Clamp((int)Math.Floor((height - metrics.TopMargin - metrics.Margin + metrics.Gap) /
             metrics.Pitch + 1e-8), 0, 256);
-        var expanded = expandColumns && columns > 0;
+        // A narrow positive viewport can scroll a full logical lane after expansion
+        // has been accepted as a setting. Fixed rails consuming the entire width cannot.
+        var expanded = expandColumns && width > 0;
         return new(expanded ? metrics.WallWidth(64) : width, height,
             expanded ? 64 : columns, rows, fullScreen);
     }
@@ -30,6 +31,38 @@ public static class WallViewportPolicy
 
     public static double FixedWidth(bool menuStart) => SidebarWidthDip + (menuStart ? MenuWidthDip : 0);
 
+    public static int CompleteColumns(double widthDip, WallMetrics? metrics = null)
+    {
+        metrics ??= new();
+        return Math.Clamp((int)Math.Floor((widthDip - 2 * metrics.Margin + metrics.ColumnGap) /
+            (metrics.LaneWidth + metrics.ColumnGap) + 1e-8), 0, 64);
+    }
+
+    /// <summary>
+    /// Resolves the tile viewport, excluding fixed rails. Only occupied lanes permit
+    /// a partial lane; the formal empty tail remains part of the scrollable surface.
+    /// </summary>
+    public static double ResolveVisibleWidth(WallSettings settings, WallGeometry geometry,
+        double requestedWidthDip, double maximumWidthDip, WallMetrics? metrics = null)
+    {
+        metrics ??= new();
+        var maximum = Math.Max(0, maximumWidthDip);
+        var requested = Math.Clamp(requestedWidthDip, 0, maximum);
+        var occupiedColumns = geometry.Groups.Count == 0 ? 0 : geometry.Groups.Max(group => group.LaneIndex) + 1;
+        var occupiedWidth = occupiedColumns == 0 ? 0 : metrics.WallWidth(occupiedColumns);
+        if (settings.ExpandColumns && occupiedWidth > requested + 1e-8)
+            return requested;
+
+        var maximumColumns = CompleteColumns(maximum, metrics);
+        // An empty expanded wall on a narrow screen has no clipped content. Keep its
+        // positive creation area; adding the first member will create real overflow.
+        if (maximumColumns == 0) return maximum;
+        if (!settings.FullScreen && !settings.ExpandColumns)
+            return Math.Min(geometry.WallWidth, metrics.WallWidth(maximumColumns));
+        var columns = Math.Clamp(Math.Max(occupiedColumns, CompleteColumns(requested, metrics)), 1, maximumColumns);
+        return metrics.WallWidth(columns);
+    }
+
     /// <summary>Display mode changes preserve the explicitly requested expansion and anchor.</summary>
     public static WallSettings ForModeTransition(WallSettings previous, WallSettings requested) => requested;
 
@@ -38,13 +71,25 @@ public static class WallViewportPolicy
         WallMetrics? metrics = null)
     {
         metrics ??= new();
-        var current = Validate(source, budget, metrics);
-        if (current.Success) return current;
+        var settings = source.Settings;
+        if (!source.Settings.ExpandColumns && budget.MaxColumns == 0 &&
+            budget.MaxWidthDip > 0 && budget.MaxRows > 0)
+        {
+            // Opening expansion is a normal proposal, never a temporary projection or
+            // an in-place settings change. Publication and failure remain the caller's.
+            budget = budget with { MaxColumns = 64, MaxWidthDip = metrics.WallWidth(64) };
+            settings = source.Settings with { ExpandColumns = true };
+        }
+        else
+        {
+            var current = Validate(source, budget, metrics);
+            if (current.Success) return current;
+        }
         var columns = Math.Min(source.Columns, budget.MaxColumns);
         var rows = Math.Min(source.Rows, budget.MaxRows);
-        var fitted = TryResize(source, columns, rows, source.Settings, budget, metrics);
+        var fitted = TryResize(source, columns, rows, settings, budget, metrics);
         return !fitted.Success && (columns < budget.MaxColumns || rows < budget.MaxRows)
-            ? TryResize(source, budget.MaxColumns, budget.MaxRows, source.Settings, budget, metrics) : fitted;
+            ? TryResize(source, budget.MaxColumns, budget.MaxRows, settings, budget, metrics) : fitted;
     }
 
     /// <summary>Display-only filler lanes append at the real tail, never create persisted holes.</summary>

@@ -47,12 +47,63 @@ internal static class DesktopBackdropSnapshot
     {
         var blurred = LowResolutionBlur.Apply(captured, 20);
         var pixels = blurred.BgraPremultiplied.ToArray();
-        var tint = dark ? 32 : 243;
+        // Default DesktopAcrylicController values verified against the current runtime.
+        // They are a local reference recipe, not a guarantee across Windows versions.
+        var tint = dark ? 44d : 252d;
+        var luminosityOpacity = dark ? .96 : .85;
+        var tintOpacity = dark ? .15 : 0;
         for (var index = 0; index < pixels.Length; index += 4)
-            for (var channel = 0; channel < 3; channel++)
-                pixels[index + channel] = (byte)Math.Round(pixels[index + channel] * .55 + tint * .45);
+        {
+            double red = pixels[index + 2], green = pixels[index + 1], blue = pixels[index];
+            var luminosityRed = red;
+            var luminosityGreen = green;
+            var luminosityBlue = blue;
+            SetLuminosity(ref luminosityRed, ref luminosityGreen, ref luminosityBlue, tint);
+            red += (luminosityRed - red) * luminosityOpacity;
+            green += (luminosityGreen - green) * luminosityOpacity;
+            blue += (luminosityBlue - blue) * luminosityOpacity;
+
+            // Both verified tints are neutral. Color blending therefore moves each
+            // channel towards the adjusted luminance without changing that luminance.
+            var luminosity = Luminosity(red, green, blue);
+            red += (luminosity - red) * tintOpacity;
+            green += (luminosity - green) * tintOpacity;
+            blue += (luminosity - blue) * tintOpacity;
+            pixels[index + 2] = ToByte(red);
+            pixels[index + 1] = ToByte(green);
+            pixels[index] = ToByte(blue);
+        }
         return blurred with { BgraPremultiplied = pixels };
     }
+
+    // Nonseparable luminosity blending keeps the source's hue/saturation; clipping
+    // into gamut must preserve luminance rather than clamp each channel separately.
+    private static void SetLuminosity(ref double red, ref double green, ref double blue, double luminosity)
+    {
+        var delta = luminosity - Luminosity(red, green, blue);
+        red += delta;
+        green += delta;
+        blue += delta;
+        var minimum = Math.Min(red, Math.Min(green, blue));
+        var maximum = Math.Max(red, Math.Max(green, blue));
+        if (minimum < 0)
+        {
+            var scale = luminosity / (luminosity - minimum);
+            red = luminosity + (red - luminosity) * scale;
+            green = luminosity + (green - luminosity) * scale;
+            blue = luminosity + (blue - luminosity) * scale;
+        }
+        if (maximum > 255)
+        {
+            var scale = (255 - luminosity) / (maximum - luminosity);
+            red = luminosity + (red - luminosity) * scale;
+            green = luminosity + (green - luminosity) * scale;
+            blue = luminosity + (blue - luminosity) * scale;
+        }
+    }
+
+    private static double Luminosity(double red, double green, double blue) => .3 * red + .59 * green + .11 * blue;
+    private static byte ToByte(double value) => (byte)Math.Clamp(Math.Round(value), 0, 255);
 
     internal static WriteableBitmap ToBitmap(DecodedImageFrame frame)
     {

@@ -430,6 +430,6 @@
     <x:String x:Key="Gallery.SourceUnavailableNoCache">图集来源暂时不可用，没有可用缓存。{0}</x:String>
     <x:String x:Key="MenuStart.Expand">展开分组</x:String>
     <x:String x:Key="MenuStart.Collapse">收起分组</x:String>
-    <x:String x:Key="MenuStart.Unnamed">无名组</x:String>
+    <x:String x:Key="MenuStart.Unnamed">未命名组{0:00}</x:String>
     <x:String x:Key="Wall.EnvironmentScroll">当前屏幕容纳不下全部内容，已保留原布局，可向两个方向滚动。</x:String>
 </ResourceDictionary>

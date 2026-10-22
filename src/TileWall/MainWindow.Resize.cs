@@ -167,7 +167,7 @@ public sealed partial class MainWindow
         if (GetCursorPos(out var cursor)) QueueResizeSample(new Point(cursor.X, cursor.Y));
     }
 
-    private void UpdateResizeProposal(bool preview, Point? sample = null)
+    private void UpdateResizeProposal(bool preview, Point? sample = null, bool settleWidth = false)
     {
         if (sample is null && GetCursorPos(out var nativeCursor)) sample = new Point(nativeCursor.X, nativeCursor.Y);
         if (_resizeSnapshot is not { } source || sample is not { } cursor)
@@ -240,8 +240,8 @@ public sealed partial class MainWindow
         var height = Math.Clamp(rawHeight, Math.Min(maxHeight, Math.Ceiling(_metrics.WallHeight(1) * _resizeScale) + _frameHeight), maxHeight);
         var widthDip = (width - _frameWidth) / _resizeScale - fixedWidth;
         var heightDip = (height - _frameHeight) / _resizeScale;
-        var columns = _resizeWidth ? Math.Clamp((int)Math.Floor((widthDip - 2 * _metrics.Margin + _metrics.ColumnGap) /
-            (_metrics.LaneWidth + _metrics.ColumnGap) + 1e-8), 1, Math.Max(1, budget.MaxColumns)) : source.Columns;
+        var columns = _resizeWidth ? Math.Clamp(WallViewportPolicy.CompleteColumns(widthDip, _metrics),
+            1, Math.Max(1, budget.MaxColumns)) : source.Columns;
         var rows = _resizeHeight ? Math.Clamp((int)Math.Floor((heightDip - _metrics.TopMargin - _metrics.Margin + _metrics.Gap) /
             _metrics.Pitch + 1e-8), 1, Math.Max(1, budget.MaxRows)) : source.Rows;
         var narrowingExpansion = source.Settings.ExpandColumns && _resizeWidth && width < _resizeStartRect.Width;
@@ -277,6 +277,13 @@ public sealed partial class MainWindow
         if (_resizeProposal is not { } proposal) return;
         if (!proposal.Document.Settings.ExpandColumns)
             width = Math.Max(width, Math.Ceiling((proposal.Geometry.WallWidth + fixedWidth) * _resizeScale) + _frameWidth);
+        if (settleWidth)
+        {
+            var settled = WallViewportPolicy.ResolveVisibleWidth(proposal.Document.Settings, proposal.Geometry,
+                (width - _frameWidth) / _resizeScale - fixedWidth,
+                (maxWidth - _frameWidth) / _resizeScale - fixedWidth, _metrics);
+            width = Math.Min(maxWidth, Math.Ceiling((settled + fixedWidth) * _resizeScale) + _frameWidth);
+        }
         height = Math.Max(height, Math.Ceiling(proposal.Geometry.WallHeight * _resizeScale) + _frameHeight);
         // Within one complete-cell budget only the visible width changes. Keep the
         // cached layout geometry, but persist the final DIP width with this same proposal.
@@ -341,7 +348,7 @@ public sealed partial class MainWindow
             {
                 if (finalPoint is not { } releasedAt)
                 { CancelResize("ReleaseCoordinatesUnavailable"); return; }
-                UpdateResizeProposal(preview: false, releasedAt);
+                UpdateResizeProposal(preview: false, releasedAt, settleWidth: true);
             }
             var endPoint = finalPoint is { } point ? $"{point.X:F2},{point.Y:F2}" : "none";
             TraceInput($"ResizeCompleted canceled={canceled} pressScreen={_resizeStart.X:F2},{_resizeStart.Y:F2} endScreen={endPoint} startRect={_resizeStartRect.X},{_resizeStartRect.Y},{_resizeStartRect.Width},{_resizeStartRect.Height}");

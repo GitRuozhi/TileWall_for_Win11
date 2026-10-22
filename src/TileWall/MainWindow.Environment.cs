@@ -28,18 +28,33 @@ public sealed partial class MainWindow
             if (_modal || _resizing || _gesture.Phase != ApplicationModel.GesturePhase.Idle)
             { _environmentAfterInteraction = true; return; }
             _environmentAfterInteraction = false;
-            var result = WallViewportPolicy.AdaptToEnvironment(Document, ViewportBudget(Settings), _metrics);
-            SetEnvironmentOverflow(!result.Success);
-            if (result.Proposal is { } proposal && proposal.Document.Generation != Document.Generation)
+            var budget = ViewportBudget(Settings);
+            var result = WallViewportPolicy.AdaptToEnvironment(Document, budget, _metrics);
+            if (result.Proposal is not { } proposal)
             {
+                if (budget.MaxColumns == 0)
+                {
+                    // There is no accepted narrow projection: neither an unavailable
+                    // fixed-rail area nor a failed expansion can become a rescue mode.
+                    TransientStatus(ViewportFailure(result));
+                    return;
+                }
+                SetEnvironmentOverflow(true);
+                return;
+            }
+            if (proposal.Document.Generation != Document.Generation)
+            {
+                var opensExpansion = !Settings.ExpandColumns && proposal.Document.Settings.ExpandColumns;
                 var error = await CommitProposalAsync(proposal);
                 if (_windowClosing || ShutdownStarted || _viewBlocked) return;
                 if (error is not null)
                 {
-                    SetEnvironmentOverflow(true);
+                    if (!opensExpansion) SetEnvironmentOverflow(true);
                     TransientStatus(error);
+                    return;
                 }
             }
+            SetEnvironmentOverflow(false);
         });
     }
 

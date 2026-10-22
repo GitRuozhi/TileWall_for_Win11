@@ -242,9 +242,11 @@ public sealed class WallSurface : Canvas
     private void RefreshGridBackground()
     {
         if (_document is null) return;
-        var visibleColumns = (int)Math.Ceiling(Math.Max(0, _viewportMinimumWidth - 2 * _metrics.Margin) /
-            (_metrics.LaneWidth + _metrics.ColumnGap));
-        var columns = Math.Max(_document.Columns, visibleColumns);
+        var visibleColumns = WallViewportPolicy.CompleteColumns(_viewportMinimumWidth, _metrics);
+        // A narrow empty wall still accepts creation and retains its scrollable tail,
+        // but that empty tail must not paint a misleading partial grid lane.
+        var columns = _document.Settings.ExpandColumns && Geometry?.Groups.Count == 0
+            ? visibleColumns : Math.Max(_document.Columns, visibleColumns);
         // Rows is the same complete-cell budget used by placement. Row zero belongs to titles.
         var rows = _document.Rows;
         var titleRows = Geometry?.Groups.Select(group => (group.LaneIndex,
