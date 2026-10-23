@@ -54,7 +54,11 @@ internal sealed class OwnedDialogWindow : Window
         _root.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(OnPointerMoved), true);
         _root.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, e) => EndDrag(e, "release", consumeFinal: true)), true);
         _root.AddHandler(UIElement.PointerCanceledEvent, new PointerEventHandler((_, e) => EndDrag(e, "cancel")), true);
-        _root.PointerExited += (_, _) => { if (_resizePointer is null) _root.SetResizeCursor(0); };
+        _root.PointerExited += (_, e) =>
+        {
+            if (_resizable && _resizePointer is null)
+                _root.SetResizeCursor(ResizeEdgesAt(e.GetCurrentPoint(_root).Position));
+        };
         _root.PointerCaptureLost += (_, e) =>
         {
             // A child relinquishing capture while the root acquires it is expected.
@@ -322,9 +326,7 @@ internal sealed class OwnedDialogWindow : Window
         var point = e.GetCurrentPoint(_root);
         if (_resizable && point.Properties.IsLeftButtonPressed)
         {
-            const double edge = 7;
-            var edges = (point.Position.X < edge ? 1 : point.Position.X > _root.ActualWidth - edge ? 2 : 0) |
-                (point.Position.Y < edge ? 4 : point.Position.Y > _root.ActualHeight - edge ? 8 : 0);
+            var edges = ResizeEdgesAt(point.Position);
             if (edges != 0 && TryGetScreenPoint(point.Position, out var pressedAt))
             {
                 var origin = new RectInt32(AppWindow.Position.X, AppWindow.Position.Y, AppWindow.Size.Width, AppWindow.Size.Height);
@@ -335,6 +337,7 @@ internal sealed class OwnedDialogWindow : Window
                 }
                 _dragStart = pressedAt;
                 _resizePointer = e.Pointer.PointerId; _resizeEdges = edges;
+                _root.SetResizeCursor(edges);
                 _resizeOrigin = origin;
                 // Preserve the stock card's padding/border while giving star columns
                 // a finite content width. Auto width collapses the editor's preview.
@@ -371,11 +374,20 @@ internal sealed class OwnedDialogWindow : Window
             return;
         }
         if (_resizable)
-        {
-            var point = e.GetCurrentPoint(_root).Position;
-            var edges = (point.X < 7 ? 1 : point.X > _root.ActualWidth - 7 ? 2 : 0) | (point.Y < 7 ? 4 : point.Y > _root.ActualHeight - 7 ? 8 : 0);
-            _root.SetResizeCursor(edges);
-        }
+            _root.SetResizeCursor(ResizeEdgesAt(e.GetCurrentPoint(_root).Position));
+    }
+
+    private int ResizeEdgesAt(Point point)
+    {
+        // HWND geometry changes before XAML finishes its next layout. Never offer
+        // a resize cursor outside the current client area (over the disabled wall).
+        if (!Win32Api.GetClientRect(WinRT.Interop.WindowNative.GetWindowHandle(this), out var client)) return 0;
+        var width = (client.Right - client.Left) / Scale;
+        var height = (client.Bottom - client.Top) / Scale;
+        if (point.X < 0 || point.Y < 0 || point.X >= width || point.Y >= height) return 0;
+        const double edge = 7;
+        return (point.X < edge ? 1 : point.X >= width - edge ? 2 : 0) |
+            (point.Y < edge ? 4 : point.Y >= height - edge ? 8 : 0);
     }
 
     private void ApplyDragPoint(NativePoint cursor)
@@ -446,8 +458,11 @@ internal sealed class OwnedDialogWindow : Window
         {
             _resizePointer = null;
             _dragPointer = null;
-            TraceDrag(reason, e.Pointer.PointerId, kind, edges, finalPoint);
             if (releaseCapture) _root.ReleasePointerCapture(e.Pointer);
+            // PointerExited can occur during capture, with no second exit after
+            // release. End the cursor lifetime with the gesture, not the next move.
+            _root.SetResizeCursor(0);
+            TraceDrag(reason, e.Pointer.PointerId, kind, edges, finalPoint);
         }
         e.Handled = true;
     }
@@ -497,6 +512,7 @@ internal sealed class OwnedDialogWindow : Window
     {
         if (_releasing) return;
         _releasing = true;
+        _root.SetResizeCursor(0);
         DetachThemeWait();
         Win32Api.EnableWindow(WinRT.Interop.WindowNative.GetWindowHandle(_owner), true);
         Close();
@@ -522,6 +538,9 @@ internal sealed class OwnedDialogWindow : Window
                 _ => null,
             };
             previous?.Dispose();
+            // A disabled owner does not refresh the cursor when capture ends
+            // outside this HWND. Reset that stale resize cursor explicitly.
+            if (edges == 0) SetCursor(LoadCursorW(IntPtr.Zero, new IntPtr(32512)));
         }
 
         protected override Size MeasureOverride(Size availableSize)
@@ -546,6 +565,8 @@ internal sealed class OwnedDialogWindow : Window
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativePoint { public int X; public int Y; }
+    [DllImport("user32.dll", ExactSpelling = true)] private static extern IntPtr LoadCursorW(IntPtr instance, IntPtr name);
+    [DllImport("user32.dll", ExactSpelling = true)] private static extern IntPtr SetCursor(IntPtr cursor);
     [DllImport("user32.dll", ExactSpelling = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ClientToScreen(IntPtr hwnd, ref NativePoint point);

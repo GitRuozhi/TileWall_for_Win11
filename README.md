@@ -20,11 +20,13 @@ If you miss Windows 10 tiles, this should feel familiar. Your usual Start menu a
 
 ## Get TileWall
 
-**TileWall 0.3.1 is available as a portable x64 download. Extract the complete ZIP and run `TileWall.exe`.**
+**TileWall V0.33 Preview is available for Windows x64 as a portable ZIP or EXE installer.**
+
+[Portable ZIP](https://github.com/GitRuozhi/TileWall_for_Win11/releases/download/V0.33Preview/TileWall-V0.33Preview-win-x64-Portable.zip) · [EXE installer](https://github.com/GitRuozhi/TileWall_for_Win11/releases/download/V0.33Preview/TileWall-V0.33Preview-win-x64-Setup.exe)
 
 [Check releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [Browse the source](https://github.com/GitRuozhi/TileWall_for_Win11)
 
-The current local development build is 0.3.3; no 0.3.3 installer or Release has been produced. Existing local 0.3.2 Preview candidates include a portable ZIP and an unsigned x64 EXE installer; neither has been published on Releases yet. MSIX signing and installation, and the Windows 11 first-level context menu, are deferred until Store registration.
+The release name is V0.33Preview; its application version is 0.3.3. Extract the complete portable ZIP and run `TileWall.exe`, or run the EXE installer. This is a Preview release; the EXE is currently unsigned. MSIX signing and installation, and the Windows 11 first-level context menu, are deferred until Store registration.
 
 The EXE installs to `%ProgramFiles%\TileWall` for all users and adds TileWall directly to the Start menu. Setup offers an optional desktop shortcut, unchecked on first installation. Installation, updates, and removal require administrator approval; start TileWall normally afterward. The installer does not enable start at login or add an Explorer context menu. The portable ZIP and EXE include the required .NET and Windows App SDK runtimes.
 
@@ -50,7 +52,7 @@ A few useful controls:
 | Keep groups open in the menu | Expand up to five at once; opening a sixth closes the one opened earliest. Expanded groups are remembered by ID across restarts |
 | Undo a recent change | Press <kbd>Ctrl</kbd> + <kbd>Z</kbd> on the main wall while an undo point is available |
 
-Settings also includes the theme, background, activation shortcut, and start at login. In the 0.3.2 candidate, **Add to context menu** enables the classic Explorer menu for a single file or folder. Get a few useful tiles in place first. The rest can wait until you feel like tinkering.
+Settings also includes the theme, background, activation shortcut, and start at login. **Add to context menu** enables the classic Explorer menu for a single file or folder. Get a few useful tiles in place first. The rest can wait until you feel like tinkering.
 
 ## A few things to know
 

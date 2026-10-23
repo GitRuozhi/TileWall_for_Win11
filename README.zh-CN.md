@@ -20,11 +20,13 @@
 
 ## 获取 TileWall
 
-**TileWall 0.3.1 提供 x64 便携版下载，完整解压 ZIP 后运行 `TileWall.exe`。**
+**TileWall V0.33 Preview 提供 Windows x64 便携 ZIP 和 EXE 安装包。**
+
+[下载便携 ZIP](https://github.com/GitRuozhi/TileWall_for_Win11/releases/download/V0.33Preview/TileWall-V0.33Preview-win-x64-Portable.zip) · [下载 EXE 安装包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/download/V0.33Preview/TileWall-V0.33Preview-win-x64-Setup.exe)
 
 [查看发行情况](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [查看源码](https://github.com/GitRuozhi/TileWall_for_Win11)
 
-当前本机开发构建为 0.3.3，未制作该版本安装包或 Release。现有 0.3.2 Preview 本地候选包含便携 ZIP 和未签名的 x64 EXE 安装包，目前尚未发布到 Releases。MSIX 签名安装及 Win11 首层新右键菜单暂缓，待商店注册后再推进。
+公开发布名为 V0.33Preview，程序内部版本为 0.3.3。便携版完整解压后运行 `TileWall.exe`，安装版直接运行 EXE。这是 Preview 预览版，EXE 当前尚未签名。MSIX 签名安装及 Win11 首层新右键菜单暂缓，待商店注册后再推进。
 
 EXE 默认安装到公共的 `%ProgramFiles%\TileWall`，开始菜单直接显示 TileWall，不再套文件夹。安装时可选择“创建桌面快捷方式”，首次默认不勾选。安装、更新和卸载需要管理员批准，日常正常启动即可。安装器不自动开启登录启动或注册资源管理器右键菜单。便携 ZIP 和 EXE 均随附所需的 .NET 与 Windows App SDK 运行时。
 
@@ -50,7 +52,7 @@ EXE 默认安装到公共的 `%ProgramFiles%\TileWall`，开始菜单直接显�
 | 在菜单中展开分组 | 最多同时展开五组；展开第六组时，最早展开的那组会收起。重启后按分组 ID 恢复展开状态 |
 | 撤回刚才的操作 | 在主墙按 <kbd>Ctrl</kbd> + <kbd>Z</kbd>，使用当前有效的撤销点 |
 
-设置里还能调整主题、背景、呼出快捷键和登录后启动。0.3.2 候选中的 **添加到右键菜单** 可为单个文件或文件夹启用资源管理器经典右键入口。先把常用的几个入口放顺手，其余的慢慢再折腾。
+设置里还能调整主题、背景、呼出快捷键和登录后启动。**添加到右键菜单** 可为单个文件或文件夹启用资源管理器经典右键入口。先把常用的几个入口放顺手，其余的慢慢再折腾。
 
 ## 整理之前，知道这几件事就够了
 
