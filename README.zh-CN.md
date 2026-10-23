@@ -1,86 +1,141 @@
-# TileWall
+<p align="center">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall 图标">
+</p>
 
-[English → README.md](README.md) · [简体中文 → README.zh-CN.md](README.zh-CN.md)
+<h1 align="center">TileWall</h1>
 
-**把每天要用的东西，摆在顺手的位置。**
+<p align="center">
+  <img src="https://img.shields.io/badge/Preview-0.3.3-0078D4?style=flat-square" alt="版本 0.3.3 Preview">
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="面向 Windows 10 和 11">
+  <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
+</p>
 
-常用程序、工作文件夹、经常打开的网站，不妨给它们一个固定的位置。TileWall 是一款独立的 Windows 磁贴启动墙：按你的习惯分组，换上喜欢的图片，需要时用快捷键叫出来。
+<p align="center">
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> · <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md"><strong>简体中文</strong></a>
+</p>
 
-如果你还惦记 Windows 10 的磁贴，这里有那份熟悉感，也有留给你自己布置的空间。系统开始菜单和 Win 键照常使用。
+<p align="center">
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases"><strong>下载软件</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/discussions">反馈问题</a> ·
+  <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">轻松交流</a>
+</p>
 
-![Windows桌面上的TileWall：真实应用图标与独立的自定义图片示例组](Showcase/images/desktop-zh.png)
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="呼出、缩放与全屏">
+  </picture>
+</p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a>。</sub></p>
 
-## 现在可以用到什么？
+## **复活吧！我的磁贴！**
 
-- **常用入口，自己排。** 程序、文件、文件夹、快捷方式和网址都可以放上墙。按工作、游戏或自己的习惯分组，拖动调整位置。
-- **图片，也能成为主角。** 给磁贴换一张图，或选一个图片文件夹轮换显示。喜欢完整的画面，就把它做成拼图，让一张图跨过几块磁贴。整幅拼图共用一个启动目标。
-- **留一点自己的风格。** 亮色、暗色、方角、圆角，搭配喜欢的背景；也能放上时间和日期。不想从头布置，可以先从开始菜单导入。
+**TileWall** 是一款专为 Windows 11 打造的独立磁贴启动墙，重现 Windows 10 熟悉的磁贴体验，同时支持 Windows 10 和 11 。
 
-![TileWall亮色模式](Showcase/images/light-zh.png)
+熟悉的磁贴、分组、拖放和快捷键呼出，加上更自由的图片、图集与拼图玩法，**TileWall** 让你的那面墙拥有更多可能。
 
-## 获取 TileWall
+**TileWall** 使用 Windows 原生界面框架 WinUI 3 开发，重写了开始菜单和磁贴墙，默认按 **Win + ~** 呼出，独立运行，完全不依赖 Windows 系统任务栏。Windows 屎山我受够了。（划掉）
 
-**TileWall V0.33 Preview 提供 Windows x64 便携 ZIP 和 EXE 安装包。**
 
-[下载便携 ZIP](https://github.com/GitRuozhi/TileWall_for_Win11/releases/download/V0.33Preview/TileWall-V0.33Preview-win-x64-Portable.zip) · [下载 EXE 安装包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/download/V0.33Preview/TileWall-V0.33Preview-win-x64-Setup.exe)
 
-[查看发行情况](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [查看源码](https://github.com/GitRuozhi/TileWall_for_Win11)
+## 拼图、图片与图集
 
-公开发布名为 V0.33Preview，程序内部版本为 0.3.3。便携版完整解压后运行 `TileWall.exe`，安装版直接运行 EXE。这是 Preview 预览版，EXE 当前尚未签名。MSIX 签名安装及 Win11 首层新右键菜单暂缓，待商店注册后再推进。
+不再需要自行分割和对齐图片，在一个页面上搞定所有！
 
-EXE 默认安装到公共的 `%ProgramFiles%\TileWall`，开始菜单直接显示 TileWall，不再套文件夹。安装时可选择“创建桌面快捷方式”，首次默认不勾选。安装、更新和卸载需要管理员批准，日常正常启动即可。安装器不自动开启登录启动或注册资源管理器右键菜单。便携 ZIP 和 EXE 均随附所需的 .NET 与 Windows App SDK 运行时。
+点击绘制，在预览的虚线上左击右击就可以实现分割与合并，滚动鼠标滚轮就可以快速改变图片缩放。
 
-面向 Windows 10 22H2 和 Windows 11 开发；Windows 11、多 DPI、未预装运行时的干净环境及正式签名安装仍待完整实测。愿意自行编译的话，文末有构建入口。
+把图片设为目标， **TileWall** 会自动启用图片磁贴；
 
-## 先放几个常用的进去
+把含有可用图片的文件夹设为目标， **TileWall** 会自动启用图集切换，向文件夹中增加减少图片， **TileWall** 会自动更新图集。
 
-已有可运行的构建时，可以这样开始：
+普通快捷方式磁贴，也能自定义外观为图片或图集。
 
-1. **打开墙。** 在完整的发布目录中运行 `TileWall.exe`。默认用 <kbd>Win</kbd> + <kbd>~</kbd> 呼出，也可以双击系统托盘里的 TileWall 图标。这里的 `~` 指与反引号同键的按键，不用按 Shift；快捷键可以在设置中修改。
-2. **加几个每天都用的。** 在墙面空白处右键，选择 **导入**，来源选 **从开始菜单**。列表默认全不选，勾选想要的几项，再点 **确认导入整批**。已有缓存的入口和图标先显示，来源列表在后台继续刷新。
-3. **摆成自己的样子。** 点击磁贴打开目标；拖动调整位置，双击分组标题改名。想换名称、图片或大小，就右键磁贴，选择 **编辑**，改好后点 **保存**。
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="拼图分割、合并与缩放">
+  </picture>
+</p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a>。</sub></p>
 
-![从开始菜单勾选Word、Excel和PowerPoint，导入后生成Office组](Showcase/images/office-import-zh.gif)
 
-几个顺手的操作：
 
-| 想做什么 | 怎么操作 |
-| --- | --- |
-| 收起墙面 | 在主墙按 <kbd>Esc</kbd>；编辑文字或拖动时，先结束当前操作 |
-| 手动添加内容 | 墙面空白处右键，新建磁贴或拼图；时钟在 **添加组件 → 时间和日期** 中 |
-| 移动一整个分组 | 拖动分组标题 |
-| 在菜单中展开分组 | 最多同时展开五组；展开第六组时，最早展开的那组会收起。重启后按分组 ID 恢复展开状态 |
-| 撤回刚才的操作 | 在主墙按 <kbd>Ctrl</kbd> + <kbd>Z</kbd>，使用当前有效的撤销点 |
+## 复刻 Windows 10 开始菜单体验
 
-设置里还能调整主题、背景、呼出快捷键和登录后启动。**添加到右键菜单** 可为单个文件或文件夹启用资源管理器经典右键入口。先把常用的几个入口放顺手，其余的慢慢再折腾。
+按下 <kbd>Win</kbd> + <kbd>~</kbd>，磁贴墙就会出现。点开程序或把焦点切到别处，墙会自动收起，与原生开始菜单动作一致。
 
-## 整理之前，知道这几件事就够了
+想让它像常规软件一样留在桌面上，可以取消总在最前、开启常驻显示。
 
-- 新建磁贴会先放到墙上，再打开编辑页；此时取消编辑，默认磁贴仍会留下。
-- 再次导入可能重新排列位置；“保留已有改动”保留的是图片、尺寸、标题等设置，不保证原来的排布。
-- “取消固定”不会删除外部原文件；误操作请及时撤销。目前还没有可在重启后找回取消固定项目的列表。
-- 单张图片和自定义墙背景会在保存时保留一份原图；图集仍跟随你选择的文件夹。
-- 便携版和 EXE 安装版在同一 Windows 用户下共用 `%LOCALAPPDATA%\TileWall` 和一个运行实例，切换入口前先退出旧实例；卸载 EXE 保留这份数据。想备份布置，先退出 TileWall，再复制整个目录。MSIX 使用单独的数据目录。开发阶段暂不提供旧格式的自动迁移。
+拖动磁贴调整位置，拖动分组标题移动整组。纵享丝滑，与原生开始菜单动作一致。
 
-## 有问题，直接说
+拖拽磁贴墙边缘可以调整大小，拖拽到屏幕边缘还可以拖拽无缝切换全屏/窗口模式。
 
-[到 Issues 留言](https://github.com/GitRuozhi/TileWall_for_Win11/issues)。告诉我你原本想做什么、实际发生了什么，再附上 Windows 版本、缩放比例和 TileWall 版本；方便的话，带一张截图或一小段录屏。
+桌面四角都能作为锚点，比原生更自由。
 
-如果你只是有个想法，也欢迎聊聊：你想把什么放上墙，哪一步用起来不顺手？
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="磁贴与分组拖动">
+  </picture>
+</p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a>。</sub></p>
 
-## 许可
 
-项目计划免费提供使用，包括企业内部办公；正式许可文本尚未发布，发布前保留所有权利。源码公开不代表采用了开源许可证，商业分发及衍生授权仍需另行明确。[第三方组件说明](src/TileWall/THIRD-PARTY-NOTICES.txt)。
 
-<details>
-<summary>想自己编译？</summary>
+## 更强的功能
 
-需要 Windows、.NET SDK 10，以及相应的 Windows SDK / Visual Studio C++ 构建工具。以下命令生成便携发布目录；安装器和发行打包脚本不包含在公开源码镜像中。在仓库根目录运行：
+磁贴支持文件、文件夹、快捷方式、网页等多种启动方式，以及 Steam 等已在系统中注册的应用协议链接。
 
-```powershell
-dotnet publish src/TileWall/TileWall.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:WindowsPackageType=None -o artifacts/Release/TileWall
-```
+你可以把任意程序、目录、文件、网站放到同一面墙上，打造你专属的完整入口。
 
-完成后，从 `artifacts/Release/TileWall` 运行 `TileWall.exe`，保留同目录的完整文件。不要只复制一个 EXE，也不要直接运行缺少发布资源的编译目录。此命令是便携构建入口，不代表已完成正式发行验收。
+同时支持墙面右键新建和资源管理器的经典右键入口。
 
-</details>
+想快速布置？导入页面支持多种来源导入磁贴，自动筛选和分组，不再需要一个一个右键添加。（导入开始菜单已完成，更多来源正在开发中）
+
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="批量选择与导入结果">
+  </picture>
+</p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a>。</sub></p>
+
+如果你也怀念开始菜单，打开设置中的**菜单式开始**，列表与磁贴会并排显示，两边访问同一批入口。
+
+
+
+## 即将
+
+以下需求正在排期中，敬请期待：
+
+- 导入功能补充更多来源，已安装应用、桌面、自定义配置
+
+- 导出自定义配置
+
+- 批量编辑
+
+- 回收站/历史
+
+- 多显示屏支持
+
+- 系统功能关联旧图标库
+
+- 主流软件高清图标库
+
+- 模糊图标 AI 高清化
+
+- 更多原生小组件，当前只有 时间和日期
+
+- 数据库更新和性能优化
+
+- 更多语言
+
+
+
+## 交流和反馈
+
+点击 [轻松交流](https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT) ，加入 QQ 群，欢迎聊天吹水，更欢迎晒晒自己的磁贴墙。
+
+遇到任何问题，或者你有新的想法，都可以到 [Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions) 留下反馈，每一条我都会认真看的。  (●ˇ∀ˇ●)
+
+如果它刚好让你重新喜欢上了磁贴，欢迎留个 Star，也让我知道这些折腾有人喜欢，欧内该！

@@ -1,86 +1,122 @@
-# TileWall
+<p align="center">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall logo">
+</p>
 
-[English → README.md](README.md) · [简体中文 → README.zh-CN.md](README.zh-CN.md)
+<h1 align="center">TileWall</h1>
 
-**A place for the things you open every day.**
+<p align="center">
+  <img src="https://img.shields.io/badge/Preview-0.3.3-0078D4?style=flat-square" alt="Version 0.3.3 Preview">
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="For Windows 10 and 11">
+  <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
+</p>
 
-Your everyday apps, work folders, and favorite websites are easier to find when they have a place of their own. TileWall is a standalone tile launcher for Windows. Arrange things the way you like, add your own pictures, and bring up the wall with a keyboard shortcut.
+<p align="center">
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md"><strong>English</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md">简体中文</a>
+</p>
 
-If you miss Windows 10 tiles, this should feel familiar. Your usual Start menu and Windows key keep working as they do now.
+<p align="center">
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases"><strong>Download</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/discussions">Share feedback</a> ·
+  <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">Join the QQ group</a>
+</p>
 
-![TileWall on the Windows desktop, using real app icons and a separate custom image group](Showcase/images/desktop-en.png)
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="Showing, resizing, and switching between windowed and full-screen modes">
+  </picture>
+</p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a> separately.</sub></p>
 
-## What can you put on your wall?
+## Come back to life, my tiles!
 
-- **The things you use most.** Add apps, files, folders, shortcuts, and websites. Group them by work, games, or whatever makes sense to you, then drag them into place.
-- **Pictures you like looking at.** Use a single image or cycle through a folder of pictures. A puzzle lets one image stretch across several tile sections. The whole puzzle shares one launch target.
-- **A bit of your own style.** Choose light or dark mode, square or rounded corners, and a background you like. Add a clock and date, or import shortcuts from the Start menu to get going.
+**TileWall** is a standalone tile launcher made for Windows 11. It brings back the familiar Windows 10 tile experience while supporting both Windows 10 and 11.
 
-![TileWall in light mode](Showcase/images/light-en.png)
+Familiar tiles, groups, drag-and-drop, and a shortcut to bring up the wall, plus more freedom to play with pictures, albums, and puzzles: **TileWall** gives your wall more possibilities.
 
-## Get TileWall
+**TileWall** is built with WinUI 3, Windows' native UI framework. It reworks the Start menu and tile wall, appears with **Win + ~** by default, and runs on its own without relying on the Windows taskbar. I've had enough of Windows spaghetti. (Cross that out.)
 
-**TileWall V0.33 Preview is available for Windows x64 as a portable ZIP or EXE installer.**
+## Puzzles, pictures, and albums
 
-[Portable ZIP](https://github.com/GitRuozhi/TileWall_for_Win11/releases/download/V0.33Preview/TileWall-V0.33Preview-win-x64-Portable.zip) · [EXE installer](https://github.com/GitRuozhi/TileWall_for_Win11/releases/download/V0.33Preview/TileWall-V0.33Preview-win-x64-Setup.exe)
+No more splitting and aligning pictures by hand. Do it all on one page!
 
-[Check releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases) · [Browse the source](https://github.com/GitRuozhi/TileWall_for_Win11)
+Click Draw, then left- or right-click the dotted lines in the preview to split or merge sections. Scroll the mouse wheel to quickly change the image zoom.
 
-The release name is V0.33Preview; its application version is 0.3.3. Extract the complete portable ZIP and run `TileWall.exe`, or run the EXE installer. This is a Preview release; the EXE is currently unsigned. MSIX signing and installation, and the Windows 11 first-level context menu, are deferred until Store registration.
+Set a picture as the target, and **TileWall** automatically switches to picture tiles.
 
-The EXE installs to `%ProgramFiles%\TileWall` for all users and adds TileWall directly to the Start menu. Setup offers an optional desktop shortcut, unchecked on first installation. Installation, updates, and removal require administrator approval; start TileWall normally afterward. The installer does not enable start at login or add an Explorer context menu. The portable ZIP and EXE include the required .NET and Windows App SDK runtimes.
+Set a folder with supported pictures as the target, and **TileWall** automatically turns on album rotation. Add or remove pictures in the folder, and the album updates automatically.
 
-TileWall is being developed for Windows 10 22H2 and Windows 11. Windows 11, multiple DPI settings, a machine without preinstalled runtimes, and a formally signed installation still need full testing. If you would like to build it yourself, the command is at the end of this page.
+You can also customize the look of an ordinary shortcut tile with a picture or an album.
 
-## Start with a few favorites
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="Splitting, merging, and zooming a picture puzzle">
+  </picture>
+</p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a> separately.</sub></p>
 
-Once you have a runnable build:
+## Recreate the Windows 10 Start menu experience
 
-1. **Open the wall.** Run `TileWall.exe` from the complete publish folder. The default shortcut is <kbd>Win</kbd> + <kbd>~</kbd>, or you can double-click the TileWall icon in the system tray. Use the key that shares the backtick and tilde; no Shift is needed. You can change the shortcut in Settings.
-2. **Add the things you reach for most.** Right-click an empty part of the wall and choose **Import**, then **From Start menu**. Nothing is selected at first; select a few entries and choose **Confirm batch import**. Previously cached shortcuts and icons are available while the source list refreshes in the background.
-3. **Make yourself at home.** Click a tile to open its target. Drag tiles into place, double-click a group title to rename it, or right-click a tile and choose **Edit** to change its name, picture, and size. Choose **Save** when you are done.
+Press <kbd>Win</kbd> + <kbd>~</kbd>, and the tile wall appears. Open a program or move focus elsewhere, and the wall automatically folds away, just like the native Start menu.
 
-![Importing Word, Excel, and PowerPoint from the Start menu into an Office group](Showcase/images/office-import-en.gif)
+To keep it on your desktop like a regular app, turn off Always on top and turn on persistent display.
 
-A few useful controls:
+Drag tiles to rearrange them, or drag a group title to move the whole group. It feels smooth and follows the same behavior as the native Start menu.
 
-| What you want to do | How |
-| --- | --- |
-| Hide the wall | Press <kbd>Esc</kbd> on the main wall; finish any text editing or dragging first |
-| Add something manually | Right-click an empty area to create a tile or puzzle; the clock is under **Add component → Time and date** |
-| Move a whole group | Drag its title |
-| Keep groups open in the menu | Expand up to five at once; opening a sixth closes the one opened earliest. Expanded groups are remembered by ID across restarts |
-| Undo a recent change | Press <kbd>Ctrl</kbd> + <kbd>Z</kbd> on the main wall while an undo point is available |
+Drag the edge of the tile wall to resize it. Drag it to the edge of the screen to switch seamlessly between full-screen and windowed modes.
 
-Settings also includes the theme, background, activation shortcut, and start at login. **Add to context menu** enables the classic Explorer menu for a single file or folder. Get a few useful tiles in place first. The rest can wait until you feel like tinkering.
+Any of the four desktop corners can be an anchor, giving you more freedom than the native Start menu.
 
-## A few things to know
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="Moving tiles and groups">
+  </picture>
+</p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a> separately.</sub></p>
 
-- Creating a tile adds it to the wall before opening the editor. Canceling that edit leaves the default tile in place.
-- Importing again can rearrange positions. Keeping existing changes preserves things such as pictures, sizes, and titles, rather than the original layout.
-- Unpinning leaves the original file alone. Undo it promptly if it was a mistake; there is no list for restoring unpinned items after a restart yet.
-- Saved single images and custom wall backgrounds keep their own copy of the original. Picture collections stay linked to the folder you selected.
-- Portable builds and the EXE installation share `%LOCALAPPDATA%\TileWall` and one running instance for each Windows user. Exit the current instance before switching between them. Uninstalling the EXE keeps this data. To back up your setup, exit TileWall and copy the whole folder. MSIX builds use a separate data folder. Automatic migration from older data formats is not available during development.
+## More features
 
-## Tell me what gets in the way
+Tiles can open files, folders, shortcuts, and websites, as well as app protocol links registered with Windows, such as Steam links.
 
-[Open an issue](https://github.com/GitRuozhi/TileWall_for_Win11/issues) with what you were trying to do, what happened, and your Windows version, display scaling, and TileWall version. A screenshot or short recording helps if you have one.
+Put any programs, folders, files, and websites on the same wall to make your own all-in-one launchpad.
 
-Ideas are welcome too. What would you like to put on your wall, and which part feels awkward to use?
+You can create tiles from the wall's right-click menu and from the classic File Explorer context menu.
 
-## License
+Want to set things up quickly? The import page supports several sources, automatically filters and groups tiles, and saves you from adding them one by one through the right-click menu. (Importing from the Start menu is ready; more sources are in development.)
 
-The plan is to make TileWall free to use, including for internal office use. Formal license terms have not been published; all rights are reserved until then. Public source code does not mean the project has an open-source license, and permission for commercial distribution or derivative products still needs to be clarified. See the [third-party notices](src/TileWall/THIRD-PARTY-NOTICES.txt).
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="Selecting tiles in a batch and viewing the import result">
+  </picture>
+</p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a> separately.</sub></p>
 
-<details>
-<summary>Build it yourself</summary>
+If you miss the Start menu too, turn on **Menu-style Start** in Settings. The list and tiles appear side by side, and both give you access to the same set of entries.
 
-You need Windows, .NET SDK 10, and the appropriate Windows SDK / Visual Studio C++ build tools. This command publishes a portable folder; installer and release packaging scripts are not included in the public source mirror. From the repository root:
+## Coming soon
 
-```powershell
-dotnet publish src/TileWall/TileWall.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:WindowsPackageType=None -o artifacts/Release/TileWall
-```
+These requests are on the roadmap. Stay tuned:
 
-Run `TileWall.exe` from `artifacts/Release/TileWall` and keep the complete folder together. Copying only the EXE, or running from a build folder without the published resources, is not sufficient. This creates a portable build; it is not a claim that the build has passed release testing.
+- More import sources, including installed apps, the desktop, and custom configurations
+- Export custom configurations
+- Bulk editing
+- A recycle bin and history
+- Multi-monitor support
+- Links between system features and the legacy icon library
+- High-resolution icons for popular software
+- AI upscaling for blurry icons
+- More native widgets; currently there is only a time and date widget
+- Database updates and performance improvements
+- More languages
 
-</details>
+## Chat and feedback
+
+Click [Join the QQ group](https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT) to join the group. Come chat, and share your tile wall!
+
+If you run into a problem or have an idea, leave a note in [Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions). I read every post carefully. (●ˇ∀ˇ●)
+
+If TileWall has made you like tiles again, please leave a Star and let me know someone enjoys all this tinkering. It would make my day!
