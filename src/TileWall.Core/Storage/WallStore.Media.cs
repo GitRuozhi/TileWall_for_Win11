@@ -162,7 +162,7 @@ public sealed partial class WallStore
             if (!expected.TryGetValue(operation.Asset.Sha256, out var reference) || reference != operation.Asset)
                 throw new IOException("New media is not owned by the transaction snapshot.");
             // An unreadable retained snapshot makes deletion unsafe. Leaving a known orphan
-            // is preferable to deleting an asset that a previous/undo document still owns.
+            // is preferable to deleting an asset that a current or previous document still owns.
             if (protectedIds is null || protectedIds.Contains(reference.Sha256)) continue;
             // A stage that still exists was never moved into this destination. In particular,
             // do not delete a late file that caused the immutable Move(overwrite:false) to fail.

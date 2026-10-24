@@ -128,7 +128,6 @@ public sealed class WallSessionAsyncTests
         Assert.Same(before, session.Current);
         Assert.False(session.Commit(proposal).Committed);
         Assert.False((await session.CommitAsync(proposal)).Committed);
-        Assert.False(session.Undo().Committed);
         Assert.Null(session.Propose(new RemoveMemberAction(0, "tile1"), 500, 500).Proposal);
         Assert.Equal(1, executor.Count);
 
@@ -146,13 +145,11 @@ public sealed class WallSessionAsyncTests
         Assert.False(session.WritePending);
         Assert.Same(session.Current, refreshed);
         Assert.Equal(acceptanceThread, refreshThread);
-        Assert.True(session.CanUndo);
-        Assert.True(session.Undo().Committed);
-        Assert.Empty(session.Current.Lanes[0].Groups);
+        Assert.Single(session.Current.Lanes[0].Groups[0].Members);
     }
 
     [Fact]
-    public async Task FailedTransactionKeepsCommittedSnapshotAndExistingUndo()
+    public async Task FailedTransactionKeepsCommittedSnapshot()
     {
         var (session, files, root, executor, acceptance) = Harness();
         Assert.True(session.Commit(Add(session)).Committed);
@@ -167,10 +164,8 @@ public sealed class WallSessionAsyncTests
         Assert.False(result.Committed);
         Assert.False(session.WritePending);
         Assert.Same(before, session.Current);
-        Assert.True(session.CanUndo);
         Assert.Equal(before.Generation, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
         files.InjectedFault = FaultPoint.None;
-        Assert.True(session.Undo().Committed);
     }
 
     [Fact]
@@ -186,13 +181,11 @@ public sealed class WallSessionAsyncTests
         Assert.True(result.ViewFailed);
         Assert.True(session.ViewBlocked);
         Assert.False(session.RequiresReopen);
-        Assert.True(session.CanUndo);
         Assert.Equal(1, session.Current.Generation);
         Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
         Assert.False((await session.CommitAsync(Add(session))).Committed);
         session.SetViewRefresh(_ => { });
         Assert.True(session.RefreshViewFromCurrent());
-        Assert.True(session.Undo().Committed);
     }
 
     [Fact]
@@ -236,7 +229,6 @@ public sealed class WallSessionAsyncTests
         Assert.False(session.RefreshViewFromCurrent());
         Assert.Equal(0, refreshCount);
         Assert.Null(session.Propose(new RemoveMemberAction(before.Generation, "tile1"), 500, 500).Proposal);
-        Assert.False(session.Undo().Committed);
 
         var reopened = session.Open(1, 6);
         Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
@@ -343,12 +335,10 @@ public sealed class WallSessionAsyncTests
         Assert.False(session.RefreshViewFromCurrent());
         Assert.Equal(0, refreshes);
         Assert.Null(session.Propose(new RemoveMemberAction(before.Generation, "tile1"), 500, 500).Proposal);
-        Assert.True(session.CanUndo);
         var rejectedCommit = session.Commit(proposal);
         Assert.False(rejectedCommit.Committed);
         Assert.Contains("reopen", string.Join(" ", rejectedCommit.Diagnostics), StringComparison.OrdinalIgnoreCase);
         Assert.False((await session.CommitAsync(proposal)).Committed);
-        Assert.False(session.Undo().Committed);
         Assert.Equal(2, WallJson.Deserialize(files.ReadAllBytes(configPath)).Generation);
 
         var previousPath = Path.Combine(root, "Recovery", "config.prev.json");
@@ -369,7 +359,6 @@ public sealed class WallSessionAsyncTests
         Assert.Equal(2, session.Current.Generation);
         Assert.False(session.RequiresReopen);
         Assert.False(session.ViewBlocked);
-        Assert.False(session.CanUndo);
         WallDocument? rendered = null;
         session.SetViewRefresh(document => rendered = document);
         Assert.True(session.RefreshViewFromCurrent());

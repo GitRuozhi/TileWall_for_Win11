@@ -8,6 +8,25 @@ namespace TileWall.Core.Tests.Wall;
 
 public sealed class WallSettingsTests
 {
+    [Fact]
+    public void MissingStartReplacementPreferenceRemainsDisabled()
+    {
+        var json = JsonNode.Parse(WallJson.Serialize(WallDocument.Empty(1, 1)))!;
+        json["settings"]!.AsObject().Remove("replaceStartMenu");
+        Assert.False(WallJson.Deserialize(Encoding.UTF8.GetBytes(json.ToJsonString())).Settings.ReplaceStartMenu);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StartReplacementPreferenceSurvivesPersistence(bool enabled)
+    {
+        var document = WallDocument.Empty(1, 1) with { Settings = new() { ReplaceStartMenu = enabled } };
+        var restored = WallJson.Deserialize(WallJson.Serialize(document));
+        Assert.Equal(enabled, restored.Settings.ReplaceStartMenu);
+        Assert.Empty(WallLayoutEngine.Validate(restored));
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
@@ -25,21 +44,37 @@ public sealed class WallSettingsTests
     }
 
     [Fact]
-    public void MissingAppearanceFieldsUseProductDefaults()
+    public void MissingSettingsFieldsUseProductDefaults()
     {
+        var defaults = new WallSettings();
+        Assert.True(defaults.MenuStart);
+        Assert.Equal(5, defaults.BackgroundTransparency);
+
         var json = JsonNode.Parse(WallJson.Serialize(WallDocument.Empty(1, 1)))!;
-        foreach (var name in new[] { "themeMode", "backgroundMode", "backgroundTransparency", "backgroundImagePath", "languageMode" })
+        foreach (var name in new[] { "themeMode", "backgroundMode", "backgroundTransparency", "backgroundImagePath", "languageMode", "menuStart" })
             json["settings"]!.AsObject().Remove(name);
         var settings = WallJson.Deserialize(Encoding.UTF8.GetBytes(json.ToJsonString())).Settings;
         Assert.Equal(WallThemeMode.System, settings.ThemeMode);
         Assert.Equal(WallBackgroundMode.Acrylic, settings.BackgroundMode);
-        Assert.Equal(10, settings.BackgroundTransparency);
+        Assert.Equal(5, settings.BackgroundTransparency);
+        Assert.True(settings.MenuStart);
         Assert.Null(settings.BackgroundImagePath);
         Assert.Equal(WallLanguageMode.System, settings.LanguageMode);
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MenuStartPreferenceSurvivesPersistence(bool enabled)
+    {
+        var document = WallDocument.Empty(1, 1) with { Settings = new() { MenuStart = enabled } };
+        var restored = WallJson.Deserialize(WallJson.Serialize(document));
+        Assert.Equal(enabled, restored.Settings.MenuStart);
+    }
+
+    [Theory]
     [InlineData(WallThemeMode.System, WallBackgroundMode.Acrylic, WallLanguageMode.System, 0)]
+    [InlineData(WallThemeMode.System, WallBackgroundMode.Acrylic, WallLanguageMode.System, 10)]
     [InlineData(WallThemeMode.Light, WallBackgroundMode.Mica, WallLanguageMode.Chinese, 15)]
     [InlineData(WallThemeMode.Dark, WallBackgroundMode.Custom, WallLanguageMode.English, 100)]
     public void AppearanceAndExternalImagePathSurvivePersistence(WallThemeMode theme, WallBackgroundMode background,

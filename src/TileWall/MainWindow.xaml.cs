@@ -85,7 +85,7 @@ public sealed partial class MainWindow : Window
         Surface.ResolvePuzzleFrame = _puzzles.FrameFor;
         Surface.ResolvePuzzleProgress = _puzzles.ProgressFor;
         Surface.ResolvePuzzleTransition = _puzzles.TransitionFor;
-        Title = $"TileWall {typeof(MainWindow).Assembly.GetName().Version?.ToString(3)}";
+        Title = $"TileWall {ProductVersion.Display}";
         if (AppWindow.Presenter is OverlappedPresenter presenter)
         {
             // RemoveNativeFrame owns the borderless chrome. Toggling the SDK title bar
@@ -162,6 +162,7 @@ public sealed partial class MainWindow : Window
                 CancelResize();
                 QueueAutomaticHideCheck("Deactivated");
             }
+            else UpdateWindowZOrder(IsForegroundWallSession(), raise: true);
         };
         Closed += (_, _) =>
         {
@@ -378,8 +379,7 @@ public sealed partial class MainWindow : Window
         ApplyViewport();
     }
 
-    private string? CommitProposal(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
-        bool recordUndo = true)
+    private string? CommitProposal(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null)
     {
         if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (_viewBlocked) return ProductStrings.Get("Wall.ViewBlocked");
@@ -389,7 +389,7 @@ public sealed partial class MainWindow : Window
         {
             var commitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var media = Task.Run(() => PrepareFormalMediaAsync(proposal)).GetAwaiter().GetResult();
-            var result = _session.Commit(media.Proposal, changes, recordUndo, media.Assets);
+            var result = _session.Commit(media.Proposal, changes, media.Assets);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - commitStarted);
             return DescribeCommit(result);
         }
@@ -451,7 +451,7 @@ public sealed partial class MainWindow : Window
             return string.Format(ProductStrings.Get("Wall.LocationUnavailable"),
                 ProductStrings.WallRejectionReason(result.Rejection), string.Empty).TrimEnd();
         }
-        return await CommitProposalAsync(result.Proposal, recordUndo: false, carousel: true);
+        return await CommitProposalAsync(result.Proposal, carousel: true);
     }
 
     private void UpdatePuzzleGate()
@@ -694,30 +694,6 @@ public sealed partial class MainWindow : Window
             TerminateGesture();
             e.Handled = true;
         }
-        if (e.Key == Windows.System.VirtualKey.Z && (GetKeyState(0x11) & 0x8000) != 0 &&
-            !_modal && !_viewBlocked && !WithinTextBox(e.OriginalSource as DependencyObject))
-        {
-            WallSessionResult result;
-            try
-            {
-                result = _session.Undo(candidate =>
-                {
-                    var fit = WallViewportPolicy.Validate(candidate, CurrentViewportBudget, _metrics);
-                    return fit.Success ? null : ViewportFailure(fit);
-                });
-            }
-            catch (Exception ex)
-            {
-                BlockView(_session.ResultUnknown ? ProductStrings.Get("Wall.ResultUnknown")
-                    : string.Format(ProductStrings.Get("Wall.UndoViewFailed"), ex.Message));
-                e.Handled = true;
-                return;
-            }
-            if (result.ViewFailed || _session.ViewBlocked)
-                BlockView(string.Format(ProductStrings.Get("Wall.UndoViewFailed"), string.Join("；", result.Diagnostics)), retry: true);
-            else if (!result.Committed) Status(string.Join("；", result.Diagnostics));
-            e.Handled = true;
-        }
     }
 
     private static bool WithinTextBox(DependencyObject? source)
@@ -881,8 +857,7 @@ public sealed partial class MainWindow : Window
             return CachedDrop(new MoveGroupAction(Document.Generation, groupId, lane, before));
         }
         if (_gesture.MemberId is not { } memberId || _gestureMembers.GetValueOrDefault(memberId) is not { } member) return null;
-        var target = geometry.Groups.FirstOrDefault(g => g.LaneIndex == lane &&
-            point.Y >= g.Bounds.Y && point.Y < g.Bounds.Y + g.Bounds.Height);
+        var target = WallMemberDropResolver.FindGroup(geometry, lane, new DipPoint(point.X, point.Y));
         var sameSource = _gestureGroups.Values.FirstOrDefault(g =>
             g.Members.Any(m => m.Id == memberId));
         if (target is not null)
@@ -893,15 +868,12 @@ public sealed partial class MainWindow : Window
                 if (desired is not null && destination.Members.Any(other => other.Id != memberId && GestureLaunchIdentity(other) == desired))
                     return InvalidDrop(ProductStrings.Get("SharedEditor.Duplicate"));
             }
-            var first = target.Members.First();
-            var firstMember = _gestureMembers[first.MemberId];
-            var memberOriginY = first.Bounds.Y - _metrics.MemberY(firstMember.LocalBounds.Row);
-            var col = (int)Math.Round((point.X - _gesture.GrabOffset.X - target.Bounds.X) / _metrics.Pitch);
-            var row = (int)Math.Round((point.Y - _gesture.GrabOffset.Y - memberOriginY) / _metrics.Pitch);
-            if (col < 0 || col + member.LocalBounds.Width > 8 || row < 0)
+            var bounds = WallMemberDropResolver.ResolveBounds(target, new DipPoint(point.X, point.Y),
+                new DipPoint(_gesture.GrabOffset.X, _gesture.GrabOffset.Y), member.LocalBounds.Size, _metrics);
+            if (bounds.Column < 0 || bounds.Right > 8 || bounds.Row < 0)
                 return InvalidDrop(ProductStrings.Get("Wall.OutsideGroup"));
             return CachedDrop(new MoveMemberAction(Document.Generation, memberId,
-                new GridRect(col, row, member.LocalBounds.Width, member.LocalBounds.Height), target.GroupId));
+                bounds, target.GroupId));
         }
         var sourceDisappears = sameSource?.Members.Count == 1;
         var insert = geometry.Groups.Count(g => g.LaneIndex == lane &&
@@ -1005,8 +977,6 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetClientRect(nint hwnd, out WorkAreaRect rect);
-    [DllImport("user32.dll")]
-    private static extern short GetKeyState(int key);
     [StructLayout(LayoutKind.Sequential)]
     private struct WorkAreaRect { public int Left; public int Top; public int Right; public int Bottom; }
 }

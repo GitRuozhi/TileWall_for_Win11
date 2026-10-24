@@ -10,6 +10,9 @@ public static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        if (ApplicationModel.ContextMenuAdminCommand.IsRequested(args))
+            return ApplicationModel.ContextMenuAdminCommand.Run(args);
+
         if (IsEmbedding(args))
         {
             try

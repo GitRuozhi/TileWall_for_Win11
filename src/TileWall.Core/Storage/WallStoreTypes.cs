@@ -28,8 +28,6 @@ public sealed record WallCommitRequest(long ExpectedGeneration, WallDocument Pro
 public enum WallCommitStatus { Rejected, Committed, CommittedNeedsCleanup, RecoveryBlocked }
 
 public sealed record WallCommitResult(WallCommitStatus Status, WallDocument? CommittedDocument,
-    WallUndoToken? Undo, IReadOnlyList<string> Diagnostics);
-
-public sealed record WallUndoToken(string CommitId, long CommittedGeneration);
+    IReadOnlyList<string> Diagnostics);
 
 public sealed record WallPlanResult(WallCommitRequest? Request, IReadOnlyList<string> Diagnostics);

@@ -1,5 +1,11 @@
 Third-Party Notices
 
+Inno Setup Simplified Chinese translation (EXE installer)
+Copyright (c) 2019 - 2020 kirakira
+MIT License. See Licenses\InnoSetupChineseTranslationLicense.txt.
+Source: https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation
+Snapshot: 1ff90acc4ed4aee82b1cda43253243deee3daed4.
+
 AsmResolver 6.0.1
 Copyright © 2016-2026 Washi
 MIT License. See Licenses\AsmResolverLicense.txt.

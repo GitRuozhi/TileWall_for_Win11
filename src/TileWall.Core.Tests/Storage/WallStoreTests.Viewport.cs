@@ -48,7 +48,7 @@ public sealed partial class WallStoreTests
         var candidate = WallLayoutEngine.TryApply(initial, new AddMemberAction(0,
             Tile("one"), null, 0, 0, "group"), 30000, 2000);
         Assert.True(candidate.Success, candidate.Detail);
-        var result = store.Commit(initial, Plan(store, initial, candidate.Proposal!.Document), true);
+        var result = store.Commit(initial, Plan(store, initial, candidate.Proposal!.Document));
         Assert.Equal(WallCommitStatus.Committed, result.Status);
         var reopened = new WallStore(files, links, root).Open();
         Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
@@ -74,7 +74,7 @@ public sealed partial class WallStoreTests
         var request = Plan(store, initial, candidate.Proposal!.Document);
         if (fail) files.InjectedFault = FaultPoint.BeforeMove;
 
-        var result = store.Commit(initial, request, true);
+        var result = store.Commit(initial, request);
         files.InjectedFault = FaultPoint.None;
         Assert.Equal(fail ? WallCommitStatus.Rejected : WallCommitStatus.Committed, result.Status);
         var reopened = new WallStore(files, links, root).Open();

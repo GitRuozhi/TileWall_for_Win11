@@ -19,7 +19,8 @@ public sealed partial class MainWindow
     {
         Width = WallViewportPolicy.MenuWidthDip, HorizontalAlignment = HorizontalAlignment.Left,
         VerticalAlignment = VerticalAlignment.Top, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Visibility = Visibility.Collapsed,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Padding = new Thickness(0, 8, 0, 8),
+        Visibility = Visibility.Collapsed,
     };
     private MenuGroupExpansion _menuExpansion = new();
     private MenuStartStateStore? _menuStateStore;
@@ -107,7 +108,7 @@ public sealed partial class MainWindow
                 if (!expanded) return;
                 foreach (var member in entries)
                 {
-                    var content = new Grid();
+                    var content = new Grid { Margin = new Thickness(16, 0, 0, 0) };
                     content.ColumnDefinitions.Add(new() { Width = new GridLength(44) });
                     content.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
                     var icon = new Image { Width = 24, Height = 24, Stretch = Stretch.Uniform };
@@ -185,7 +186,8 @@ public sealed partial class MainWindow
         if (!_hasDocument || !PresentedViewportSettings.MenuStart) return;
         var right = _sidebarAnchor is AnchorCorner.TopRight or AnchorCorner.BottomRight;
         var width = Math.Max(1, (AppWindow.Size.Width - _frameWidth) / Scale);
-        _menuStart.Height = Math.Max(1, (AppWindow.Size.Height - _frameHeight) / Scale);
+        var clientHeight = Math.Max(1, (AppWindow.Size.Height - _frameHeight) / Scale);
+        _menuStart.Height = clientHeight;
         _menuStart.Margin = new Thickness(right ? Math.Max(0, width - WallViewportPolicy.FixedWidth(true))
             : WallViewportPolicy.SidebarWidthDip, 0, 0, 0);
     }

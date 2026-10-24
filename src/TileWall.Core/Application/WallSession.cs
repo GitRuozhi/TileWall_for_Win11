@@ -14,9 +14,6 @@ internal sealed class WallSession
     private readonly object _gate = new();
     private readonly bool _commitPerformanceEnabled = Environment.GetEnvironmentVariable("TILEWALL_PERF") == "1";
     private WallDocument? _current;
-    private WallDocument? _undoPrevious;
-    private WallDocument? _undoCommitted;
-    private WallUndoToken? _undoToken;
     private Action<WallDocument>? _refreshView;
     private IWallStorageExecutor? _executor;
     private Func<Action, Task>? _acceptOnUi;
@@ -40,7 +37,6 @@ internal sealed class WallSession
     public string DataRoot { get; }
     public ILnkFileService LinkFiles { get; }
     public WallDocument Current => _current ?? throw new InvalidOperationException("Wall is not open.");
-    public bool CanUndo => _undoToken is not null;
     public bool ViewBlocked { get; private set; }
     public bool RequiresReopen { get; private set; }
     public bool RecoveryBlocked => _storeRecoveryBlocked;
@@ -105,9 +101,6 @@ internal sealed class WallSession
             if (result.Document is not null && result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious)
             {
                 _current = result.Document;
-                _undoPrevious = null;
-                _undoCommitted = null;
-                _undoToken = null;
                 RequiresReopen = false;
                 _storeRecoveryBlocked = false;
                 _resultUnknown = false;
@@ -147,7 +140,7 @@ internal sealed class WallSession
     }
 
     public WallSessionResult Commit(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
-        bool recordUndo = true, IReadOnlyList<PreparedMediaAsset>? mediaAssets = null)
+        IReadOnlyList<PreparedMediaAsset>? mediaAssets = null)
     {
         var timings = CreateCommitTimings();
         var total = timings?.Measure("session.total");
@@ -169,7 +162,7 @@ internal sealed class WallSession
                 // duplicated the full-wall traversal for every save.
                 var request = new WallCommitRequest(before.Generation, proposal.Document, changes ?? [], mediaAssets);
                 WallCommitResult result;
-                try { result = _store.Commit(before, request, recordUndo, timings); }
+                try { result = _store.Commit(before, request, timings); }
                 catch (Exception)
                 {
                     MarkResultUnknown();
@@ -184,7 +177,7 @@ internal sealed class WallSession
                     return new(false, false, result.Diagnostics);
                 }
 
-                var accepted = AcceptCommitted(before, result, committedDocument, recordUndo, timings);
+                var accepted = AcceptCommitted(result, committedDocument, timings);
                 if (timings is not null && accepted.ViewFailed) outcome += ":view-failed";
                 return accepted;
             }
@@ -199,7 +192,7 @@ internal sealed class WallSession
                 {
                     AppLog.Warn("CommitPerformance", JsonSerializer.Serialize(new
                     {
-                        schema = 1, measurement = "wall-time", generation, recordUndo,
+                        schema = 1, measurement = "wall-time", generation,
                         entryChanges = changes?.Count ?? 0, outcome,
                         stages = timings.Snapshot(),
                     }));
@@ -210,7 +203,7 @@ internal sealed class WallSession
     }
 
     public Task<WallSessionResult> CommitAsync(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
-        bool recordUndo = true, IReadOnlyList<PreparedMediaAsset>? mediaAssets = null)
+        IReadOnlyList<PreparedMediaAsset>? mediaAssets = null)
     {
         lock (_gate)
         {
@@ -225,12 +218,12 @@ internal sealed class WallSession
             var reservation = new UiCommitReservation();
             _writePending = true;
             _activeUiCommit = reservation;
-            return CommitReservedAsync(before, frozen, entryChanges, recordUndo, preparedMedia, reservation, _executor, _acceptOnUi);
+            return CommitReservedAsync(before, frozen, entryChanges, preparedMedia, reservation, _executor, _acceptOnUi);
         }
     }
 
     private async Task<WallSessionResult> CommitReservedAsync(WallDocument before, WallProposal proposal,
-        IReadOnlyList<EntryChange> changes, bool recordUndo, IReadOnlyList<PreparedMediaAsset> mediaAssets, UiCommitReservation reservation,
+        IReadOnlyList<EntryChange> changes, IReadOnlyList<PreparedMediaAsset> mediaAssets, UiCommitReservation reservation,
         IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
     {
         var timings = CreateCommitTimings();
@@ -248,7 +241,7 @@ internal sealed class WallSession
                 // Commit owns planning; a second PlanEntries here duplicated the full wall.
                 return _store.Commit(before,
                     new WallCommitRequest(before.Generation, proposal.Document, changes, mediaAssets),
-                    recordUndo, timings);
+                    timings);
             }).ConfigureAwait(false);
             outcome = stored.Status.ToString();
             if (stored.Status == WallCommitStatus.RecoveryBlocked)
@@ -287,7 +280,7 @@ internal sealed class WallSession
                     // once. Only the live reservation can publish this disk snapshot.
                     if (!ReferenceEquals(_activeUiCommit, reservation) || accepted is not null) return;
                     acceptanceThread = Environment.CurrentManagedThreadId;
-                    accepted = AcceptCommitted(before, stored, committedDocument, recordUndo, timings);
+                    accepted = AcceptCommitted(stored, committedDocument, timings);
                 }
             }).ConfigureAwait(false);
             lock (_gate)
@@ -343,7 +336,7 @@ internal sealed class WallSession
                 {
                     AppLog.Warn("CommitPerformance", JsonSerializer.Serialize(new
                     {
-                        schema = 2, measurement = "wall-time", generation = before.Generation, recordUndo,
+                        schema = 2, measurement = "wall-time", generation = before.Generation,
                         entryChanges = changes.Count, outcome, asynchronous = true,
                         storageThread, acceptanceThread, stages = timings.Snapshot(),
                     }));
@@ -353,18 +346,12 @@ internal sealed class WallSession
         }
     }
 
-    private WallSessionResult AcceptCommitted(WallDocument before, WallCommitResult result,
-        WallDocument committedDocument, bool recordUndo, WallCommitTimings? timings)
+    private WallSessionResult AcceptCommitted(WallCommitResult result,
+        WallDocument committedDocument, WallCommitTimings? timings)
     {
         // Called only on the UI acceptance path; disk replacement is the commit point.
         // WallStore returns a frozen snapshot from every accepting path.
         using (timings?.Measure("session.publish")) _current = committedDocument;
-        if (recordUndo)
-        {
-            _undoPrevious = result.Undo is null ? null : before;
-            _undoCommitted = result.Undo is null ? null : committedDocument;
-            _undoToken = result.Undo;
-        }
         bool viewOkay;
         using (timings?.Measure("session.viewRefresh")) viewOkay = RefreshViewCore();
         return new(true, result.Status == WallCommitStatus.CommittedNeedsCleanup,
@@ -409,47 +396,6 @@ internal sealed class WallSession
         catch { return null; }
     }
 
-    public WallSessionResult Undo(Func<WallDocument, string?>? preflight = null)
-    {
-        lock (_gate)
-        {
-            if (_writePending) return BusyResult();
-            if (ViewBlocked) return BlockedViewResult();
-            if (_undoPrevious is null || _undoCommitted is null || _undoToken is null)
-                return new(false, false, ["没有可撤销的操作。"]);
-            // Store undo preserves current settings and can therefore restore a layout
-            // created in a different viewport mode. Check that exact geometry under the
-            // same lock before touching disk or consuming the active undo material.
-            var prepared = WallStore.PrepareUndoCandidate(_undoPrevious, _undoCommitted, Current);
-            if (prepared.Proposal is not { } undoProposal)
-                return new(false, false, [prepared.Detail ?? prepared.Rejection.ToString()]);
-            var candidate = undoProposal.Document;
-            if (preflight?.Invoke(candidate) is { } rejection)
-                return new(false, false, [rejection]);
-            WallCommitResult result;
-            try { result = _store.Undo(Current, _undoPrevious, _undoToken, Current.Generation, candidate); }
-            catch (Exception)
-            {
-                MarkResultUnknown();
-                throw;
-            }
-            if (result.Status is not (WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup) ||
-                result.CommittedDocument is null)
-            {
-                if (result.Status == WallCommitStatus.RecoveryBlocked)
-                    MarkStoreRecoveryBlocked();
-                return new(false, false, result.Diagnostics);
-            }
-            _current = result.CommittedDocument;
-            _undoPrevious = null;
-            _undoCommitted = null;
-            _undoToken = null;
-            var viewOkay = RefreshViewCore();
-            return new(true, result.Status == WallCommitStatus.CommittedNeedsCleanup,
-                viewOkay ? result.Diagnostics : [.. result.Diagnostics, "Undo committed on disk; view refresh failed."],
-                !viewOkay);
-        }
-    }
 }
 
 internal sealed record WallSessionResult(bool Committed, bool NeedsCleanup,

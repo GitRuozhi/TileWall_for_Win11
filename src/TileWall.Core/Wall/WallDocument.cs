@@ -55,7 +55,7 @@ public sealed record WallSettings
     public AnchorCorner AnchorCorner { get; init; } = AnchorCorner.BottomLeft;
     public bool FullScreen { get; init; }
     public bool ExpandColumns { get; init; }
-    public bool MenuStart { get; init; }
+    public bool MenuStart { get; init; } = true;
     public int? WindowedColumns { get; init; }
     public int? WindowedRows { get; init; }
     /// <summary>Visible window client width, including the fixed sidebar and optional menu.</summary>
@@ -65,7 +65,7 @@ public sealed record WallSettings
     public WallVisualStyle VisualStyle { get; init; } = WallVisualStyle.Win10;
     public WallThemeMode ThemeMode { get; init; } = WallThemeMode.System;
     public WallBackgroundMode BackgroundMode { get; init; } = WallBackgroundMode.Acrylic;
-    public int BackgroundTransparency { get; init; } = 10;
+    public int BackgroundTransparency { get; init; } = 5;
     public string? BackgroundImagePath { get; init; }
     public ManagedMediaReference? BackgroundMedia { get; init; }
     public bool AlwaysOnTop { get; init; } = true;
@@ -73,6 +73,7 @@ public sealed record WallSettings
     public bool ShowGrid { get; init; }
     public WallLanguageMode LanguageMode { get; init; } = WallLanguageMode.System;
     public string? HotKey { get; init; } = "Win+Oem3";
+    public bool ReplaceStartMenu { get; init; }
     public bool RunAtLogin { get; init; }
 }
 

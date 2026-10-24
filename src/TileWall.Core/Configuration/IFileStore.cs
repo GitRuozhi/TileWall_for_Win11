@@ -36,7 +36,7 @@ public interface IFileStore
     /// </summary>
     IReadOnlyList<string> ListFiles(string directoryPath);
 
-    /// <summary>尽力递归删除目录；不存在时静默（Directory.Delete 语义）。M4：暂存区/撤销材料清理。</summary>
+    /// <summary>尽力递归删除目录；不存在时静默（Directory.Delete 语义）。用于暂存区和事务恢复材料清理。</summary>
     void DeleteDirectory(string directoryPath);
 }
 

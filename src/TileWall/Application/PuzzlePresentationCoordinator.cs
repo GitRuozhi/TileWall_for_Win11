@@ -520,7 +520,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 if (state.Frame is { } previous &&
                     !StringComparer.OrdinalIgnoreCase.Equals(previous.CanonicalPath, frame.CanonicalPath))
                 {
-                    // Undo/restoration may need a visual flip from the previous frame without changing
+                    // Restoration may need a visual flip from the previous frame without changing
                     // the time already committed for this exact image.
                     var restoreSaved = StringComparer.OrdinalIgnoreCase.Equals(frame.CanonicalPath, current) &&
                         state.Member.Carousel?.LastSwitchUtc is not null;
@@ -670,7 +670,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         if (!Current(state, generation) || !ReferenceEquals(state.Capture, capture)) return false;
         if (error is not null)
         {
-            // A failed switch never survives into a later edit/undo generation as a stale capture.
+            // A failed switch never survives into a later edit generation as a stale capture.
             state.Frame = state.PreviousFrame;
             state.PreviousFrame = null;
             state.NextFrame = null;

@@ -316,7 +316,7 @@ public sealed class WallResizeCompactionTests
     }
 
     [Fact]
-    public void CompactedResizeSaveFailureKeepsSnapshotAndRetryCanUndoAllCompaction()
+    public void CompactedResizeSaveFailureKeepsSnapshotAndRetryCommitsCompaction()
     {
         var files = new InMemoryFileStore();
         var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-resize-" + Guid.NewGuid().ToString("N")));
@@ -339,10 +339,6 @@ public sealed class WallResizeCompactionTests
         Assert.True(session.Commit(resize.Proposal!).Committed);
         Assert.Equal(1, session.Current.Columns);
         Assert.Equal(0, session.Current.Lanes[0].Groups[0].Members[0].LocalBounds.Row);
-        var undo = session.Undo();
-        Assert.True(undo.Committed, string.Join("; ", undo.Diagnostics));
-        var original = WallJson.Deserialize(before);
-        Assert.Equal(before, WallJson.Serialize(session.Current with { Generation = original.Generation }));
         Assert.Equal(session.Current.Generation,
             WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
     }

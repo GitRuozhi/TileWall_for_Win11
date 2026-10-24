@@ -110,32 +110,4 @@ public sealed class WallMemberHeightLimitTests
         Assert.Equal(before, WallJson.Serialize(source));
     }
 
-    [Fact]
-    public void UndoCannotRestoreAnOversizedMemberAndRetainsItsToken()
-    {
-        var files = new InMemoryFileStore();
-        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-member-height-" + Guid.NewGuid().ToString("N")));
-        var session = new WallSession(root, files, new FakeLinkFileService(files));
-        Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 20).Status);
-        // Clock dimensions retain their structural rule. This fixture reaches the generic
-        // viewport guard that tiles/puzzles now reject earlier in the shared size contract.
-        var clock = new ClockMember { Id = "member", LocalBounds = new(0, 0, 2, 13) };
-        var structural = session.Propose(new AddMemberAction(0, clock, null, NewGroupId: "group"), 3000, 2000);
-        Assert.True(structural.Success, structural.Detail);
-        Assert.True(session.Commit(structural.Proposal!).Committed);
-        var removed = session.Propose(new RemoveMemberAction(session.Current.Generation, "member"), 3000, 2000);
-        Assert.True(session.Commit(removed.Proposal!).Committed);
-        var before = WallJson.Serialize(session.Current);
-        var saved = files.ReadAllBytes(Path.Combine(root, "config.json"));
-        var result = session.Undo(candidate =>
-        {
-            var fit = WallViewportPolicy.Validate(candidate, RuntimeBudget);
-            return fit.Success ? null : fit.Detail;
-        });
-        Assert.False(result.Committed);
-        Assert.Equal("MEMBER_TOO_TALL:13:12", Assert.Single(result.Diagnostics));
-        Assert.True(session.CanUndo);
-        Assert.Equal(before, WallJson.Serialize(session.Current));
-        Assert.Equal(saved, files.ReadAllBytes(Path.Combine(root, "config.json")));
-    }
 }

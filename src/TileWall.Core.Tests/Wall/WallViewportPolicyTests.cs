@@ -165,7 +165,7 @@ public sealed class WallViewportPolicyTests
         var next = WallJson.Deserialize(WallJson.Serialize(source));
         Assert.Equal(WallDocument.CurrentSchemaVersion, next.SchemaVersion);
         Assert.Equal(source.Settings, next.Settings);
-        Assert.Equal(10, new WallSettings().BackgroundTransparency);
+        Assert.Equal(5, new WallSettings().BackgroundTransparency);
     }
 
     [Fact]

@@ -159,40 +159,28 @@ public sealed partial class MainWindow
                     throw new IOException(ProductStrings.Get("Import.UnsupportedProtocol"));
                 return item with { ExpectedIdentityKey = identity.Key };
             }).ToArray();
-            var plan = WallBatchPlanner.TryPlan(Document, items.Select(item => item.Member).ToArray(), null, 0,
-                "external-group-" + items[0].Member.Id, WorkWidthDip, WorkHeightDip, _metrics);
+            var current = Document;
+            var lastGroup = current.Lanes.SelectMany(lane => lane.Groups).LastOrDefault();
+            var identityKeys = items.ToDictionary(item => item.Member.Id, item => item.ExpectedIdentityKey!, StringComparer.Ordinal);
+            if (lastGroup is not null)
+                foreach (var member in lastGroup.Members)
+                    if (StartMenuImportPreparation.TryIdentity(member, _session.DataRoot, identities) is { } identity)
+                        identityKeys[member.Id] = identity.Key;
+            var plan = WallBatchPlanner.TryPlan(current, items.Select(item => item.Member).ToArray(), lastGroup?.Id, null,
+                "external-group-" + items[0].Member.Id, WorkWidthDip, WorkHeightDip, _metrics,
+                appendOnly: true, launchIdentityKeys: identityKeys);
             if (plan.Proposal is null) return new(string.Format(ProductStrings.Get("Import.NoSpace"),
                 ProductStrings.WallRejectionReason(plan.Rejection)), false, 0);
-            var incoming = items.ToDictionary(item => item.Member.Id, StringComparer.Ordinal);
-            var skippedIds = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var group in plan.Proposal.Document.Lanes.SelectMany(lane => lane.Groups))
-            {
-                var seen = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var member in group.Members)
-                    if (incoming.TryGetValue(member.Id, out var item) && !seen.Add(item.ExpectedIdentityKey!)) skippedIds.Add(member.Id);
-            }
-            var proposal = plan.Proposal;
-            if (skippedIds.Count != 0)
-            {
-                var document = proposal.Document with
-                {
-                    Lanes = proposal.Document.Lanes.Select(lane => lane with
-                    {
-                        Groups = lane.Groups.Select(group => group with
-                        {
-                            Members = group.Members.Where(member => !skippedIds.Contains(member.Id)).ToArray(),
-                        }).Where(group => group.Members.Count != 0).ToArray(),
-                    }).ToArray(),
-                };
-                proposal = WallLayoutEngine.NormalizeExpanded(document, _metrics).Proposal ?? throw new IOException("Invalid external import layout.");
-            }
-            var accepted = items.Where(item => !skippedIds.Contains(item.Member.Id)).ToArray();
-            var error = CommitProposal(proposal, accepted.Select(item => item.Kind == ExplorerAddKind.CopyShortcut
+            var placedIds = plan.Proposal.Document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
+                .Select(member => member.Id).ToHashSet(StringComparer.Ordinal);
+            var accepted = items.Where(item => placedIds.Contains(item.Member.Id)).ToArray();
+            var skippedCount = items.Length - accepted.Length;
+            var error = accepted.Length == 0 ? null : CommitProposal(plan.Proposal, accepted.Select(item => item.Kind == ExplorerAddKind.CopyShortcut
                 ? (EntryChange)new EntryChange.CopyShortcut(item.Member.Id, item.SourcePath)
                 : new EntryChange.CreateLink(item.Member.Id, item.SourcePath)).ToArray());
             var text = error is null ? string.Format(ProductStrings.Get("Import.Added"), accepted.Length)
                 : string.Format(ProductStrings.Get("Import.Failed"), error);
-            if (skippedIds.Count != 0) text += " " + string.Format(ProductStrings.Get("Import.SkippedDuplicates"), skippedIds.Count);
+            if (skippedCount != 0) text += " " + string.Format(ProductStrings.Get("Import.SkippedDuplicates"), skippedCount);
             if (message.Truncated) text += " " + ProductStrings.Get("Import.Truncated");
             return new(text, error is null, error is null ? accepted.Length : 0);
         }

@@ -64,7 +64,7 @@ public sealed partial class MainWindow
     }
 
     private Task<string?> CommitProposalAsync(WallProposal proposal,
-        IReadOnlyList<EntryChange>? changes = null, bool recordUndo = true, bool carousel = false,
+        IReadOnlyList<EntryChange>? changes = null, bool carousel = false,
         Action<string?>? settle = null)
     {
         Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
@@ -75,23 +75,23 @@ public sealed partial class MainWindow
         _persistencePending = true;
         _pendingCarouselCommit = carousel;
         _puzzles.SetPersistenceBusy(true);
-        WallRoot.IsHitTestVisible = false;
+        UpdateWallHitTesting();
         Surface.IsHitTestVisible = false;
         UpdateResizeZones();
-        var operation = CommitProposalAsyncCore(proposal, changes, recordUndo, settle);
+        var operation = CommitProposalAsyncCore(proposal, changes, settle);
         _pendingPersistence = operation.IsCompleted ? null : operation;
         return operation;
     }
 
     private async Task<string?> CommitProposalAsyncCore(WallProposal proposal,
-        IReadOnlyList<EntryChange>? changes, bool recordUndo, Action<string?>? settle)
+        IReadOnlyList<EntryChange>? changes, Action<string?>? settle)
     {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         string? error = null;
         try
         {
             var media = await PrepareFormalMediaAsync(proposal);
-            var result = await _session.CommitAsync(media.Proposal, changes, recordUndo, media.Assets);
+            var result = await _session.CommitAsync(media.Proposal, changes, media.Assets);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);
             error = DescribeCommit(result);
         }
@@ -123,7 +123,7 @@ public sealed partial class MainWindow
                 if (!_windowClosing)
                 {
                     Surface.IsHitTestVisible = !_viewBlocked && !_persistenceAdmissionClosed;
-                    WallRoot.IsHitTestVisible = !_persistenceAdmissionClosed;
+                    UpdateWallHitTesting();
                     _puzzles.SetPersistenceBusy(_persistenceAdmissionClosed);
                     UpdateResizeZones();
                     if (_environmentAfterPersistence)
@@ -151,7 +151,7 @@ public sealed partial class MainWindow
     {
         _persistenceAdmissionClosed = true;
         _puzzles.SetPersistenceBusy(true);
-        WallRoot.IsHitTestVisible = false;
+        UpdateWallHitTesting();
         Surface.IsHitTestVisible = false;
         UpdateResizeZones();
         CancelTransientState();
@@ -162,7 +162,7 @@ public sealed partial class MainWindow
         _persistenceAdmissionClosed = false;
         if (_windowClosing) return;
         _puzzles.SetPersistenceBusy(_persistencePending);
-        WallRoot.IsHitTestVisible = !_persistencePending;
+        UpdateWallHitTesting();
         Surface.IsHitTestVisible = !_persistencePending && !_viewBlocked;
         UpdateResizeZones();
         ImportReadinessChanged?.Invoke();

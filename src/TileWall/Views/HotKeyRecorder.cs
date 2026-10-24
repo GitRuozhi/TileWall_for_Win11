@@ -4,37 +4,39 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using TileWall.Core.Settings;
 using TileWall.Resources;
+using TileWall.Shell.Interop;
 using Windows.System;
 
 namespace TileWall.Views;
 
-/// <summary>Records a valid key chord; cancellation never becomes a settings edit.</summary>
+/// <summary>Records a chord only after the host has released its global input hooks.</summary>
 internal sealed partial class HotKeyRecorder : TextBox
 {
     private string _configured = string.Empty;
-    // Keep the native callback alive for the lifetime of this control.
-    private readonly KeyboardHook _keyboardHook;
+    private readonly Win32Api.LowLevelHookProc _keyboardHook;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _focusWatch;
-    private IntPtr _hook;
-    private IntPtr _recordingWindow;
-    private uint _modifierKeys;
-    private uint _suppressedModifiers;
+    private readonly HashSet<uint> _suppressedKeys = [];
+    private readonly HashSet<uint> _bypassKeys = [];
+    private Task _transition = Task.CompletedTask;
+    private Task _gestureCompletion = Task.CompletedTask;
+    private TaskCompletionSource? _pairedReleases;
+    private IntPtr _hook, _recordingWindow;
+    private uint _modifierKeys, _suppressedModifiers;
     private int _recordingGeneration;
-    private bool _inputPending;
+    private bool _requested, _admitted, _inputPending;
     internal bool IsRecording { get; private set; }
-    internal event Action<bool>? RecordingChanged;
+    internal bool HasPendingTransition => _requested || !_transition.IsCompleted || !_gestureCompletion.IsCompleted || _hook != IntPtr.Zero || _admitted;
+    internal event Func<bool, Task>? RecordingChanged;
     internal event Action<HotKeyGesture>? GestureRecorded;
     internal event Action<string>? RecordingFailed;
 
     internal HotKeyRecorder()
     {
         _keyboardHook = OnKeyboardHook;
-        // XAML can retain its logical focus when another window is activated.
-        // Watch only during recording so deactivation also releases the hook.
         _focusWatch = DispatcherQueue.CreateTimer();
         _focusWatch.Interval = TimeSpan.FromMilliseconds(100);
         _focusWatch.IsRepeating = true;
-        _focusWatch.Tick += (_, _) => { if (!HasRecordingFocus()) CancelRecording(); };
+        _focusWatch.Tick += (_, _) => { if (_requested && !HasRecordingFocus()) CancelRecording(); };
         IsReadOnly = true; IsSpellCheckEnabled = false; IsTextPredictionEnabled = false;
         Width = 220; MinHeight = 32; CornerRadius = new CornerRadius(0); FontSize = 14; Padding = new Thickness(8, 4, 8, 4);
         HorizontalAlignment = HorizontalAlignment.Left;
@@ -48,92 +50,167 @@ internal sealed partial class HotKeyRecorder : TextBox
     internal void SetConfigured(string? configured)
     {
         _configured = Display(configured);
-        if (!IsRecording) Text = _configured;
+        if (!_requested && !IsRecording) Text = _configured;
     }
 
-    internal void CancelRecording()
+    internal void CancelRecording() => _ = CancelRecordingAsync();
+
+    internal Task CancelRecordingAsync()
     {
-        _focusWatch.Stop();
-        RemoveHook();
-        if (!IsRecording) return;
-        IsRecording = false; _inputPending = false; _modifierKeys = 0; _suppressedModifiers = 0; _recordingWindow = IntPtr.Zero;
+        _requested = false; IsRecording = false; _inputPending = false;
         _recordingGeneration++;
-        Text = _configured; RecordingChanged?.Invoke(false);
+        _focusWatch.Stop(); Text = _configured;
+        if (_transition.IsCompleted && !_admitted && _hook == IntPtr.Zero) return _transition;
+        return QueueTransition(EndRecordingCoreAsync);
+    }
+
+    internal async Task WaitForIdleAsync()
+    {
+        Task observed;
+        do { observed = _transition; await observed; await _gestureCompletion; } while (!ReferenceEquals(observed, _transition));
+    }
+
+    private Task QueueTransition(Func<Task> operation)
+    {
+        var previous = _transition;
+        return _transition = RunAsync();
+        async Task RunAsync()
+        {
+            try { await previous; } catch { /* A new cancellation can retry native teardown. */ }
+            await operation();
+        }
     }
 
     private void BeginRecording()
     {
-        if (IsRecording || !IsEnabled || XamlRoot is null || !ReferenceEquals(FocusManager.GetFocusedElement(XamlRoot), this)) return;
+        if (HasPendingTransition || !CanRecord()) return;
+        _requested = true;
+        var generation = ++_recordingGeneration;
+        _ = QueueTransition(() => BeginRecordingCoreAsync(generation));
+    }
+
+    private async Task BeginRecordingCoreAsync(int generation)
+    {
+        if (!_requested || generation != _recordingGeneration || !CanRecord()) return;
         try
         {
-            // Do not overwrite a handle if native teardown ever failed.
-            RemoveHook();
-            if (_hook != IntPtr.Zero) { FailRecording(ProductStrings.Get("Settings.HotKeyRecordingFailed")); return; }
+            // Pair admission even when a partially completed host pause throws.
+            _admitted = true;
+            if (RecordingChanged is { } changed) await changed(true);
+            if (!_requested || generation != _recordingGeneration || !CanRecord())
+            { await EndRecordingCoreAsync(); return; }
             _recordingWindow = GetForegroundWindow();
-            GetWindowThreadProcessId(_recordingWindow, out var processId);
-            if (_recordingWindow == IntPtr.Zero || processId != Environment.ProcessId) return;
-            // LL hooks run before asynchronous key state changes. Track modifier
-            // transitions ourselves, including keys already held when recording starts.
-            _modifierKeys = 0; _suppressedModifiers = 0;
+            Win32Api.GetWindowThreadProcessId(_recordingWindow, out var processId);
+            if (_recordingWindow == IntPtr.Zero || processId != Environment.ProcessId)
+            { _requested = false; await EndRecordingCoreAsync(); return; }
+            if (_hook != IntPtr.Zero) throw new InvalidOperationException();
+            _modifierKeys = 0;
             foreach (var key in new[] { 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C })
-                if (GetAsyncKeyState(key) < 0) _modifierKeys |= ModifierKeyBit((uint)key);
-            _hook = SetWindowsHookEx(13, _keyboardHook, GetModuleHandle(null), 0);
-            if (_hook == IntPtr.Zero) { FailRecording(ProductStrings.Get("Settings.HotKeyRecordingFailed")); return; }
-            _recordingGeneration++;
-            IsRecording = true; RecordingChanged?.Invoke(true);
-            _focusWatch.Start();
-            Text = "…";
+                if (Win32Api.GetAsyncKeyState(key) < 0) _modifierKeys |= ModifierKeyBit((uint)key);
+            _bypassKeys.Clear();
+            for (uint key = 1; key < 255; key++)
+                if (ModifierKeyBit(key) == 0 && Win32Api.GetAsyncKeyState((int)key) < 0) _bypassKeys.Add(key);
+            _hook = Win32Api.SetWindowsHookExW(13, _keyboardHook, Win32Api.GetModuleHandleW(null), 0);
+            if (_hook == IntPtr.Zero) throw new InvalidOperationException();
+            IsRecording = true; _focusWatch.Start(); Text = "…";
         }
-        catch { FailRecording(ProductStrings.Get("Settings.HotKeyRecordingFailed")); }
+        catch
+        {
+            _requested = false; IsRecording = false;
+            await EndRecordingCoreAsync();
+            RecordingFailed?.Invoke(ProductStrings.Get("Settings.HotKeyRecordingFailed"));
+        }
+    }
+
+    private async Task EndRecordingCoreAsync()
+    {
+        IsRecording = false;
+        // Only consume real releases paired with swallowed downs while stopping.
+        if (_suppressedModifiers != 0 || _suppressedKeys.Count != 0)
+        {
+            _pairedReleases ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await _pairedReleases.Task;
+        }
+        if (_hook != IntPtr.Zero)
+        {
+            if (!Win32Api.UnhookWindowsHookEx(_hook))
+            {
+                RecordingFailed?.Invoke(ProductStrings.Get("Settings.HotKeyRecordingFailed"));
+                throw new InvalidOperationException(ProductStrings.Get("Settings.HotKeyRecordingFailed"));
+            }
+            _hook = IntPtr.Zero;
+        }
+        _modifierKeys = 0; _bypassKeys.Clear(); _recordingWindow = IntPtr.Zero; _pairedReleases = null;
+        if (!_admitted) return;
+        _admitted = false;
+        try { if (RecordingChanged is { } changed) await changed(false); }
+        catch
+        {
+            RecordingFailed?.Invoke(ProductStrings.Get("Settings.HotKeyRecordingFailed"));
+            throw;
+        }
     }
 
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (!IsRecording) return;
+        if (!_requested) return;
         if (e.Key == VirtualKey.Tab) { CancelRecording(); return; }
         e.Handled = true;
-        if (e.Key == VirtualKey.Escape) { CancelRecording(); return; }
-        // The hook owns chord capture, including registered hotkeys that never
-        // produce a routed KeyDown. Do not submit the same chord a second time.
+        if (e.Key == VirtualKey.Escape) CancelRecording();
     }
 
     private IntPtr OnKeyboardHook(int code, IntPtr message, IntPtr data)
     {
-        if (code < 0) return CallNextHookEx(_hook, code, message, data);
+        if (code < 0) return Win32Api.CallNextHookEx(_hook, code, message, data);
         try
         {
+            var down = message.ToInt64() is 0x0100 or 0x0104;
+            var up = message.ToInt64() is 0x0101 or 0x0105;
+            if (!down && !up) return Win32Api.CallNextHookEx(_hook, code, message, data);
+            var input = Marshal.PtrToStructure<Win32Api.LowLevelKeyboardInput>(data);
+            // Injected releases cannot settle swallowed physical downs.
+            if ((input.Flags & 0x12) != 0) return Win32Api.CallNextHookEx(_hook, code, message, data);
+            var key = input.VirtualKey;
+            var bit = ModifierKeyBit(key);
+            if (_bypassKeys.Contains(key))
+            {
+                if (up) _bypassKeys.Remove(key);
+                return Win32Api.CallNextHookEx(_hook, code, message, data);
+            }
+            var paired = bit != 0 ? (_suppressedModifiers & bit) != 0 : _suppressedKeys.Contains(key);
+            if (paired)
+            {
+                if (up)
+                {
+                    _suppressedModifiers &= ~bit; _modifierKeys &= ~bit; _suppressedKeys.Remove(key);
+                    if (_suppressedModifiers == 0 && _suppressedKeys.Count == 0) _pairedReleases?.TrySetResult();
+                }
+                return new IntPtr(1);
+            }
             if (!HasRecordingFocus())
             {
-                if (IsRecording) QueueInput(CancelRecording);
-                return CallNextHookEx(_hook, code, message, data);
+                if (_requested) QueueInput(CancelRecording);
+                return Win32Api.CallNextHookEx(_hook, code, message, data);
             }
-            var down = message.ToInt64() is 0x0100 or 0x0104; // WM_KEYDOWN / WM_SYSKEYDOWN
-            var up = message.ToInt64() is 0x0101 or 0x0105;
-            if (!down && !up) return CallNextHookEx(_hook, code, message, data);
-            // Only the VK is needed; do not inspect/store text, scan codes or extra
-            // input metadata. SendInput is intentionally accepted for accessibility.
-            var key = unchecked((uint)Marshal.ReadInt32(data));
-            var bit = ModifierKeyBit(key);
             if (bit != 0)
             {
                 if (down)
                 {
-                    if ((_modifierKeys & bit) == 0) _suppressedModifiers |= bit;
+                    var heldBeforeRecording = (_modifierKeys & bit) != 0;
                     _modifierKeys |= bit;
+                    if (!heldBeforeRecording) { _suppressedModifiers |= bit; return new IntPtr(1); }
                 }
-                var suppress = (_suppressedModifiers & bit) != 0;
-                if (up) { _modifierKeys &= ~bit; _suppressedModifiers &= ~bit; }
-                // Suppress Win down as well as the chord so releasing Win cannot
-                // open Start after completion. A modifier held before recording
-                // must still deliver its release, avoiding a stuck system key.
-                return suppress ? new IntPtr(1) : CallNextHookEx(_hook, code, message, data);
+                if (up) _modifierKeys &= ~bit;
+                return Win32Api.CallNextHookEx(_hook, code, message, data);
             }
             if (key == (uint)VirtualKey.Tab)
             {
                 if (down) QueueInput(CancelRecording);
-                return CallNextHookEx(_hook, code, message, data);
+                return Win32Api.CallNextHookEx(_hook, code, message, data);
             }
-            if (down && !_inputPending)
+            if (up) return Win32Api.CallNextHookEx(_hook, code, message, data);
+            _suppressedKeys.Add(key);
+            if (!_inputPending)
             {
                 if (key == (uint)VirtualKey.Escape) QueueInput(CancelRecording);
                 else
@@ -143,33 +220,23 @@ internal sealed partial class HotKeyRecorder : TextBox
                     if ((_modifierKeys & 0x038) != 0) modifiers |= HotKeyGesture.ModCtrl;
                     if ((_modifierKeys & 0x1C0) != 0) modifiers |= HotKeyGesture.ModAlt;
                     if ((_modifierKeys & 0x007) != 0) modifiers |= HotKeyGesture.ModShift;
-                    var gesture = new HotKeyGesture(modifiers, key);
-                    QueueInput(() => RecordGesture(gesture));
+                    QueueInput(() => RecordGesture(new HotKeyGesture(modifiers, key)));
                 }
             }
             return new IntPtr(1);
         }
         catch
         {
-            // Never allow managed exceptions to cross the native callback boundary.
-            var generation = _recordingGeneration;
-            RemoveHook();
-            try
-            {
-                DispatcherQueue.TryEnqueue(() =>
-                {
-                    if (IsRecording && generation == _recordingGeneration)
-                        FailRecording(ProductStrings.Get("Settings.HotKeyRecordingFailed"));
-                });
-            }
+            // Keep paired-release ownership; never throw across the native boundary.
+            try { DispatcherQueue.TryEnqueue(() => { CancelRecording(); RecordingFailed?.Invoke(ProductStrings.Get("Settings.HotKeyRecordingFailed")); }); }
             catch { }
-            return CallNextHookEx(IntPtr.Zero, code, message, data);
+            return Win32Api.CallNextHookEx(_hook, code, message, data);
         }
     }
 
-    private bool HasRecordingFocus() => IsRecording && IsEnabled && XamlRoot is not null
-        && GetForegroundWindow() == _recordingWindow
+    private bool CanRecord() => IsEnabled && XamlRoot is not null
         && ReferenceEquals(FocusManager.GetFocusedElement(XamlRoot), this);
+    private bool HasRecordingFocus() => IsRecording && _requested && CanRecord() && GetForegroundWindow() == _recordingWindow;
 
     private void QueueInput(Action action)
     {
@@ -181,28 +248,25 @@ internal sealed partial class HotKeyRecorder : TextBox
             if (!IsRecording || generation != _recordingGeneration) return;
             _inputPending = false;
             if (!HasRecordingFocus()) { CancelRecording(); return; }
-            try { action(); }
-            catch { FailRecording(ProductStrings.Get("Settings.HotKeyRecordingFailed")); }
-        })) FailRecording(ProductStrings.Get("Settings.HotKeyRecordingFailed"));
+            action();
+        })) CancelRecording();
     }
 
     private void RecordGesture(HotKeyGesture gesture)
     {
         if (HotKeyGesture.Validate(gesture) is { } error) { RecordingFailed?.Invoke(error); return; }
-        CancelRecording();
+        _gestureCompletion = CompleteGestureAsync(gesture);
+    }
+
+    private async Task CompleteGestureAsync(HotKeyGesture gesture)
+    {
+        var completion = CancelRecordingAsync();
+        var generation = _recordingGeneration;
+        try { await completion; }
+        catch { return; }
+        if (generation != _recordingGeneration || _hook != IntPtr.Zero || _admitted) return;
         Text = Display(gesture.ToConfigString());
         GestureRecorded?.Invoke(gesture);
-    }
-
-    private void FailRecording(string error)
-    {
-        CancelRecording(); Text = _configured; RecordingFailed?.Invoke(error);
-    }
-
-    private void RemoveHook()
-    {
-        if (_hook == IntPtr.Zero) return;
-        if (UnhookWindowsHookEx(_hook)) _hook = IntPtr.Zero;
     }
 
     private static uint ModifierKeyBit(uint key) => key switch
@@ -214,24 +278,10 @@ internal sealed partial class HotKeyRecorder : TextBox
         _ => 0,
     };
 
-    private delegate IntPtr KeyboardHook(int code, IntPtr message, IntPtr data);
-    [DllImport("user32.dll", EntryPoint = "SetWindowsHookExW", SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(int id, KeyboardHook callback, IntPtr module, uint threadId);
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool UnhookWindowsHookEx(IntPtr hook);
-    [DllImport("user32.dll")]
-    private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
-    [DllImport("user32.dll")]
-    private static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
-    [DllImport("kernel32.dll", EntryPoint = "GetModuleHandleW", CharSet = CharSet.Unicode)]
-    private static extern IntPtr GetModuleHandle(string? moduleName);
 
     private static string Display(string? configured) =>
-        HotKeyGesture.TryParse(configured, out var gesture) && gesture!.VirtualKey == 0xC0
-            ? gesture.ToConfigString().Replace("Oem3", "~", StringComparison.Ordinal) : configured ?? string.Empty;
+        HotKeyGesture.TryParse(configured, out var gesture)
+            ? gesture!.ToDisplayString() : configured ?? string.Empty;
 }

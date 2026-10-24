@@ -29,12 +29,12 @@ public sealed class WallStoreMediaAuditTests
             var initial = WallDocument.Empty(1, 4);
             Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
             var firstDocument = initial with { Generation = 1, InactiveMembers = MediaMembers(assets) };
-            var first = store.Commit(initial, new(0, firstDocument, [], assets), recordUndo: true);
+            var first = store.Commit(initial, new(0, firstDocument, [], assets));
             Assert.Equal(WallCommitStatus.Committed, first.Status);
 
             var current = first.CommittedDocument!;
-            current = CommitSettings(store, current, !current.Settings.ShowGrid, recordUndo: false).CommittedDocument!;
-            Assert.Equal(2, io.ListDirectories(Path.Combine(dataRoot, "Recovery", "Entries")).Count);
+            current = CommitSettings(store, current, !current.Settings.ShowGrid).CommittedDocument!;
+            Assert.Single(io.ListDirectories(Path.Combine(dataRoot, "Recovery", "Entries")));
 
             io.ClearMediaReads();
             var candidate = current with
@@ -43,7 +43,7 @@ public sealed class WallStoreMediaAuditTests
                 Settings = current.Settings with { ShowGrid = !current.Settings.ShowGrid },
             };
             var timings = new WallCommitTimings();
-            var measured = store.Commit(current, new(current.Generation, candidate, []), recordUndo: false, timings: timings);
+            var measured = store.Commit(current, new(current.Generation, candidate, []), timings: timings);
             Assert.Equal(WallCommitStatus.Committed, measured.Status);
 
             var phaseReads = io.MediaReads.GroupBy(read => read.Phase, StringComparer.Ordinal)
@@ -69,7 +69,7 @@ public sealed class WallStoreMediaAuditTests
             Assert.Equal(new[] { "store.media.audit", "store.media.install", "store.media.plan", "store.media.stage" },
                 mediaTimings.Select(timing => timing.Stage).Order(StringComparer.Ordinal).ToArray());
             foreach (var timing in mediaTimings)
-                Assert.Equal(timing.Stage == "store.media.audit" ? 2 : 1, timing.Count);
+                Assert.Equal(1, timing.Count);
 
             var label = Environment.GetEnvironmentVariable("TILEWALL_MEDIA_AUDIT_LABEL") ?? "latest";
             Assert.Matches("^[a-z0-9-]+$", label);
@@ -77,7 +77,7 @@ public sealed class WallStoreMediaAuditTests
             {
                 Label = label,
                 Input = "Deterministic representative-size payloads read and written through LocalFileStore; not image-decoder input.",
-                RetainedJournals = 2,
+                RetainedJournals = 1,
                 Media = assets.Select(asset => new { asset.Reference.Sha256, asset.Reference.Extension, asset.Reference.Length }).ToArray(),
                 ReadsByPhase = phaseReads,
                 MediaPhaseTiming = mediaTimings,
@@ -109,7 +109,7 @@ public sealed class WallStoreMediaAuditTests
             var initial = WallDocument.Empty(1, 4);
             Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
             var withMedia = initial with { Generation = 1, InactiveMembers = MediaMembers([asset]) };
-            var added = store.Commit(initial, new(0, withMedia, [], [asset]), recordUndo: true);
+            var added = store.Commit(initial, new(0, withMedia, [], [asset]));
             Assert.Equal(WallCommitStatus.Committed, added.Status);
             var current = added.CommittedDocument!;
             var configPath = Path.Combine(dataRoot, "config.json");
@@ -125,7 +125,7 @@ public sealed class WallStoreMediaAuditTests
                 Generation = current.Generation + 1,
                 Settings = current.Settings with { ShowGrid = !current.Settings.ShowGrid },
             };
-            var rejected = store.Commit(current, new(current.Generation, candidate, []), recordUndo: false);
+            var rejected = store.Commit(current, new(current.Generation, candidate, []));
             Assert.Equal(WallCommitStatus.Rejected, rejected.Status);
             Assert.True(io.TamperApplied);
             Assert.Equal(configBefore, local.ReadAllBytes(configPath));
@@ -142,14 +142,14 @@ public sealed class WallStoreMediaAuditTests
         }
     }
 
-    private static WallCommitResult CommitSettings(WallStore store, WallDocument current, bool showGrid, bool recordUndo)
+    private static WallCommitResult CommitSettings(WallStore store, WallDocument current, bool showGrid)
     {
         var candidate = current with
         {
             Generation = current.Generation + 1,
             Settings = current.Settings with { ShowGrid = showGrid },
         };
-        var result = store.Commit(current, new(current.Generation, candidate, []), recordUndo);
+        var result = store.Commit(current, new(current.Generation, candidate, []));
         Assert.Equal(WallCommitStatus.Committed, result.Status);
         return result;
     }

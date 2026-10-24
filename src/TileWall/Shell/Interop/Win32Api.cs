@@ -9,6 +9,103 @@ namespace TileWall.Shell.Interop;
 /// </summary>
 internal static class Win32Api
 {
+    // Low-level input and the dedicated hook-thread message loop (Windows SDK winuser.h).
+    internal delegate nint LowLevelHookProc(int code, nint message, nint data);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct LowLevelKeyboardInput
+    {
+        internal uint VirtualKey, ScanCode, Flags, Time;
+        internal nuint ExtraInformation;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct LowLevelMouseInput
+    {
+        internal InteropPoint Point;
+        internal uint MouseData, Flags, Time;
+        internal nuint ExtraInformation;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ThreadMessage
+    {
+        internal nint Window;
+        internal uint Message;
+        internal nuint WParam;
+        internal nint LParam;
+        internal uint Time;
+        internal InteropPoint Point;
+        internal uint Private;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct KeyboardInput
+    {
+        internal ushort VirtualKey, ScanCode;
+        internal uint Flags, Time;
+        internal nuint ExtraInformation;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MouseInput
+    {
+        internal int X, Y;
+        internal uint MouseData, Flags, Time;
+        internal nuint ExtraInformation;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    internal struct InputUnion
+    {
+        [FieldOffset(0)] internal KeyboardInput Keyboard;
+        [FieldOffset(0)] internal MouseInput Mouse;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct SyntheticInput
+    {
+        internal uint Type;
+        internal InputUnion Data;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern nint SetWindowsHookExW(int hookType, LowLevelHookProc callback, nint module, uint threadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool UnhookWindowsHookEx(nint hook);
+
+    [DllImport("user32.dll")]
+    internal static extern nint CallNextHookEx(nint hook, int code, nint message, nint data);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint SendInput(uint count, [In] SyntheticInput[] inputs, int size);
+
+    [DllImport("user32.dll")]
+    internal static extern short GetAsyncKeyState(int virtualKey);
+
+    [DllImport("kernel32.dll")]
+    internal static extern uint GetCurrentThreadId();
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern nint GetModuleHandleW(string? moduleName);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool PeekMessageW(out ThreadMessage message, nint window, uint minimum, uint maximum, uint remove);
+
+    // BOOL here is signed: -1 is failure, 0 is WM_QUIT, >0 is a message.
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern int GetMessageW(out ThreadMessage message, nint window, uint minimum, uint maximum);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool PostThreadMessageW(uint threadId, uint message, nuint wParam, nint lParam);
+
+    [DllImport("user32.dll")]
+    internal static extern nint DispatchMessageW(ref ThreadMessage message);
+
     // Native ownership, frame suppression, and owner input gating for modal windows.
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
     private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int index);
