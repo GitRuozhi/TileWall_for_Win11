@@ -2,6 +2,7 @@
 using Microsoft.UI.Xaml.Media;
 using TileWall.ApplicationModel;
 using TileWall.Core.Wall;
+using TileWall.Core.Grid;
 using TileWall.Core.Application;
 using Windows.Foundation;
 
@@ -9,11 +10,16 @@ namespace TileWall;
 
 public sealed partial class MainWindow
 {
-    private bool _frameSubscribed, _dragInputPending, _resizeInputPending;
+    private bool _frameSubscribed, _dragInputPending, _resizeInputPending, _dragFrameWakeQueued;
     private Point _latestDragPoint, _latestResizePoint;
+    private Point? _gestureScreenStart;
+    private Point _gestureMarginStart, _gesturePointerScrollStart;
     private double _gestureScale;
     private WallDocument? _gestureDocument;
     private WallGeometry? _gestureGeometry;
+    private WallMemberDropSession? _memberDropSession;
+    private WallMemberDropSlot? _memberDropSlot;
+    private WallLayoutResult? _memberDropResult;
     private Dictionary<string, WallMember> _gestureMembers = new(StringComparer.Ordinal);
     private Dictionary<string, StartGroup> _gestureGroups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> _gestureLaunchKeys = new(StringComparer.Ordinal);
@@ -28,6 +34,9 @@ public sealed partial class MainWindow
         _gestureScale = Scale;
         _gestureGroups = Document.Lanes.SelectMany(l => l.Groups).ToDictionary(g => g.Id, StringComparer.Ordinal);
         _gestureMembers = _gestureGroups.Values.SelectMany(g => g.Members).ToDictionary(m => m.Id, StringComparer.Ordinal);
+        _memberDropSession = _gesture.MemberId is { } memberId
+            ? new WallMemberDropSession(Document, memberId, _gesture.NewGroupId, _metrics) : null;
+        _memberDropSlot = null; _memberDropResult = null;
         _dropCache.Clear(); _drawnDrop = null; _dragInputPending = false;
         _gestureLaunchKeys.Clear();
         _performance.Begin("drag", Document, Scale, Surface.VisualCreationCount, Surface.GridCreationCount);
@@ -67,6 +76,22 @@ public sealed partial class MainWindow
         else CompositionTarget.Rendering -= OnInteractionFrame;
         InvalidateInteractionCommit();
         EndInteractionTimer();
+    }
+
+    private void QueueDragFrameWake()
+    {
+        if (_displayPulseActive || _dragFrameWakeQueued || !_dragInputPending || _windowClosing || ShutdownStarted) return;
+        // An otherwise idle XAML surface may not deliver Rendering until something
+        // changes visually. Coalesce input at low priority to wake that first preview.
+        _dragFrameWakeQueued = true;
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            _dragFrameWakeQueued = false;
+            if (_displayPulseActive || !_dragInputPending || _gesture.Phase == GesturePhase.Idle ||
+                _windowClosing || ShutdownStarted) return;
+            OnInteractionFrame(null, EventArgs.Empty);
+            if (_dragInputPending) QueueDragFrameWake();
+        })) _dragFrameWakeQueued = false;
     }
 
     private void OnInteractionFrame(object? sender, object e)
@@ -149,6 +174,7 @@ public sealed partial class MainWindow
             _drawnDrop = proposal;
             _performance.View(Stopwatch.GetTimestamp() - start);
         }
+        _memberDropSession?.SetDisplayed(proposal?.Proposal is not null ? _memberDropSlot : null);
         var origin = AppWindow.Position;
         var originX = _pendingWindowRect?.X ?? origin.X;
         var originY = _pendingWindowRect?.Y ?? origin.Y;

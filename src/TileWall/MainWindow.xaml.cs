@@ -713,6 +713,12 @@ public sealed partial class MainWindow : Window
         try
         {
             var point = e.GetCurrentPoint(Surface).Position;
+            Point? screenStart = e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse &&
+                TryGetResizeScreenPoint(e.GetCurrentPoint(WallRoot).Position, Scale, out var screenPoint)
+                    ? screenPoint : null;
+            var origin = AppWindow.Position;
+            var pointerScrollStart = new Point(WallScroll.HorizontalOffset, WallScroll.VerticalOffset);
+            var marginStart = new Point(WallScroll.Margin.Left, WallScroll.Margin.Top);
             var hit = Surface.Hit(point);
             TraceInput($"PressHit member={hit.MemberId} group={hit.GroupId} handle={hit.GroupHandle} x={point.X:F1} y={point.Y:F1}");
             if (hit.MemberId is null && !hit.GroupHandle) return;
@@ -725,13 +731,16 @@ public sealed partial class MainWindow : Window
                 : geometry.Groups.First(g => g.GroupId == hit.GroupId).Bounds;
             var offset = new Point(point.X - bounds.X, point.Y - bounds.Y);
             var ghost = Surface.CreateDragVisual(hit.MemberId, hit.GroupHandle ? hit.GroupId : null);
-            var origin = AppWindow.Position;
             _gestureScrollOffset = new(WallScroll.HorizontalOffset, WallScroll.VerticalOffset);
             var began = _gesture.Begin(e.Pointer.PointerId, point, offset, new Point(origin.X, origin.Y), ghost,
                 hit.MemberId, hit.GroupHandle ? hit.GroupId : null);
             TraceInput($"Begin result={began} phase={_gesture.Phase}");
+            if (_traceInput) TraceInput($"DragOrigin grab={offset.X:F1},{offset.Y:F1} window={origin.X},{origin.Y} bounds={bounds.X:F1},{bounds.Y:F1},{bounds.Width:F1},{bounds.Height:F1}");
             if (began)
             {
+                _gestureScreenStart = screenStart;
+                _gesturePointerScrollStart = pointerScrollStart;
+                _gestureMarginStart = marginStart;
                 BeginGestureFrames(geometry);
                 UpdatePuzzleGate();
                 for (var source = e.OriginalSource as DependencyObject;
@@ -772,6 +781,7 @@ public sealed partial class MainWindow : Window
             _dragInputPending = true;
             _performance.Input();
             EnsureFrameSubscription();
+            QueueDragFrameWake();
         }
         catch (Exception ex) { RecoverGestureError(ex); }
     }
@@ -786,8 +796,11 @@ public sealed partial class MainWindow : Window
             _dragInputPending = false;
             var point = CommittedPointerPoint(e);
             _performance.Input();
-            var dragged = _gesture.Phase == GesturePhase.Dragging || _gesture.Advance(point, 7);
-            var proposal = dragged ? CalculateDrop(point) : null;
+            // A release can arrive before the next display callback. Consume and draw its
+            // sample through the same path, then commit that exact displayed proposal.
+            ConsumeDragSample(point);
+            var dragged = _gesture.Phase == GesturePhase.Dragging;
+            var proposal = dragged ? _gesture.Preview : null;
             var id = _gesture.MemberId;
             TraceInput($"ReleaseDecision dragged={dragged} member={id} proposal={proposal?.Proposal is not null}");
             TerminateGesture(restoreScroll: false, restoreView: proposal?.Proposal is null);
@@ -815,6 +828,14 @@ public sealed partial class MainWindow : Window
 
     private Point CommittedPointerPoint(PointerRoutedEventArgs e)
     {
+        // Resizing a bottom/right anchored preview can queue PointerMoved with coordinates
+        // from before the native window move. Do not combine that old local point with
+        // the new window origin: it fabricates movement while the mouse is stationary.
+        if (_gestureScreenStart is { } start && GetCursorPos(out var cursor))
+            return new Point(_gesture.Start.X + (cursor.X - start.X) / _gestureScale +
+                WallScroll.HorizontalOffset - _gesturePointerScrollStart.X - WallScroll.Margin.Left + _gestureMarginStart.X,
+                _gesture.Start.Y + (cursor.Y - start.Y) / _gestureScale +
+                WallScroll.VerticalOffset - _gesturePointerScrollStart.Y - WallScroll.Margin.Top + _gestureMarginStart.Y);
         var local = e.GetCurrentPoint(Surface).Position;
         var origin = AppWindow.Position;
         return _gesture.ToCommittedPoint(local, new Point(origin.X, origin.Y), Scale);
@@ -822,6 +843,7 @@ public sealed partial class MainWindow : Window
 
     private WallLayoutResult? CalculateDrop(Point point)
     {
+        if (_gesture.MemberId is not null) return CalculateMemberDrop(point);
         var geometry = _gestureGeometry ?? WallLayoutEngine.Measure(Document, _metrics);
         var derivedLanes = Settings.FullScreen || Settings.ExpandColumns;
         var rightAnchor = !derivedLanes && Settings.AnchorCorner is AnchorCorner.TopRight or AnchorCorner.BottomRight;
@@ -838,10 +860,6 @@ public sealed partial class MainWindow : Window
             WallAction action;
             if (_gesture.GroupId is { } movedGroup)
                 action = new MoveGroupAction(Document.Generation, movedGroup, 0, 0);
-            else if (_gesture.MemberId is { } movedId && _gestureMembers.GetValueOrDefault(movedId) is { } moved)
-                action = new MoveMemberAction(Document.Generation, movedId,
-                    new TileWall.Core.Grid.GridRect(0, 0, moved.LocalBounds.Width, moved.LocalBounds.Height),
-                    null, 0, 0, _gesture.NewGroupId);
             else return null;
             return CachedDrop(action, expanded);
         }
@@ -856,32 +874,60 @@ public sealed partial class MainWindow : Window
                 g.TitleBounds.Y + g.TitleBounds.Height / 2 < point.Y);
             return CachedDrop(new MoveGroupAction(Document.Generation, groupId, lane, before));
         }
-        if (_gesture.MemberId is not { } memberId || _gestureMembers.GetValueOrDefault(memberId) is not { } member) return null;
-        var target = WallMemberDropResolver.FindGroup(geometry, lane, new DipPoint(point.X, point.Y));
-        var sameSource = _gestureGroups.Values.FirstOrDefault(g =>
-            g.Members.Any(m => m.Id == memberId));
-        if (target is not null)
+        return null;
+    }
+
+    private WallLayoutResult? CalculateMemberDrop(Point point)
+    {
+        if (_gesture.MemberId is not { } memberId || _gestureMembers.GetValueOrDefault(memberId) is not { } member ||
+            _memberDropSession is null) return null;
+        var dragged = WallMemberDropResolver.DragBounds(new DipPoint(point.X, point.Y),
+            new DipPoint(_gesture.GrabOffset.X, _gesture.GrabOffset.Y), member.LocalBounds.Size, _metrics);
+        var slot = _memberDropSession.Snap(dragged);
+        if (_memberDropSlot == slot) return _memberDropResult;
+        _memberDropSlot = slot;
+        return _memberDropResult = ResolveMemberDrop(slot, member);
+    }
+
+    private WallLayoutResult ResolveMemberDrop(WallMemberDropSlot slot, WallMember member)
+    {
+        var original = _gestureGeometry!;
+        var derivedLanes = Settings.FullScreen || Settings.ExpandColumns;
+        var rightAnchor = !derivedLanes && Settings.AnchorCorner is AnchorCorner.TopRight or AnchorCorner.BottomRight;
+        if (slot.Bounds.Row < 0)
+            return InvalidDrop(ProductStrings.Get("Wall.OutsideWall"));
+        if (slot.LaneIndex == -1 && rightAnchor)
         {
-            if (sameSource?.Id != target.GroupId && _gestureGroups.TryGetValue(target.GroupId, out var destination))
-            {
-                var desired = GestureLaunchIdentity(member);
-                if (desired is not null && destination.Members.Any(other => other.Id != memberId && GestureLaunchIdentity(other) == desired))
-                    return InvalidDrop(ProductStrings.Get("SharedEditor.Duplicate"));
-            }
-            var bounds = WallMemberDropResolver.ResolveBounds(target, new DipPoint(point.X, point.Y),
-                new DipPoint(_gesture.GrabOffset.X, _gesture.GrabOffset.Y), member.LocalBounds.Size, _metrics);
-            if (bounds.Column < 0 || bounds.Right > 8 || bounds.Row < 0)
-                return InvalidDrop(ProductStrings.Get("Wall.OutsideGroup"));
-            return CachedDrop(new MoveMemberAction(Document.Generation, memberId,
-                bounds, target.GroupId));
+            if (Document.Columns >= 64) return InvalidDrop(ProductStrings.Get("Wall.OutsideLane"));
+            if (slot.Bounds.Row == 0) return InvalidDrop(ProductStrings.Get("Wall.OutsideGroup"));
+            var expanded = Document with { Columns = Document.Columns + 1,
+                Lanes = new[] { new WallLane { Groups = [] } }.Concat(Document.Lanes).ToArray() };
+            var prepend = new MoveMemberAction(Document.Generation, member.Id,
+                slot.Bounds with { Row = slot.Bounds.Row - 1 }, null, 0, 0, _gesture.NewGroupId);
+            return CachedDrop(prepend, expanded);
         }
-        var sourceDisappears = sameSource?.Members.Count == 1;
-        var insert = geometry.Groups.Count(g => g.LaneIndex == lane &&
-            (!sourceDisappears || g.GroupId != sameSource?.Id) &&
-            g.TitleBounds.Y + g.TitleBounds.Height / 2 < point.Y);
-        return CachedDrop(new MoveMemberAction(Document.Generation, memberId,
-            new GridRect(0, 0, member.LocalBounds.Width, member.LocalBounds.Height),
-            null, lane, insert, _gesture.NewGroupId));
+        var availableLanes = derivedLanes
+            ? Math.Max(Document.Columns, (int)Math.Floor((Math.Max(original.WallWidth, WallScroll.ViewportWidth) -
+                2 * _metrics.Margin + _metrics.ColumnGap) / (_metrics.LaneWidth + _metrics.ColumnGap)))
+            : Document.Columns + (rightAnchor ? 0 : 1);
+        if (slot.LaneIndex < 0 || slot.LaneIndex >= 64 || slot.LaneIndex >= availableLanes)
+            return InvalidDrop(ProductStrings.Get("Wall.OutsideLane"));
+        var lane = WallViewportPolicy.MapCreationLane(_gestureDocument!, slot.LaneIndex);
+        var action = _memberDropSession!.Resolve(slot with { LaneIndex = lane });
+        if (_traceInput)
+        {
+            TraceInput($"MemberDrop grid={slot.LaneIndex}:{slot.Bounds.Column},{slot.Bounds.Row},{slot.Bounds.Width},{slot.Bounds.Height} target={action.TargetGroupId ?? action.NewGroupId} new={action.TargetGroupId is null} local={action.TargetBounds.Column},{action.TargetBounds.Row}");
+        }
+        if (action.TargetGroupId is { } targetId && _gestureGroups.TryGetValue(targetId, out var destination) &&
+            !destination.Members.Any(other => other.Id == member.Id))
+        {
+            var desired = GestureLaunchIdentity(member);
+            if (desired is not null && destination.Members.Any(other => other.Id != member.Id && GestureLaunchIdentity(other) == desired))
+                return InvalidDrop(ProductStrings.Get("SharedEditor.Duplicate"));
+        }
+        if (action.TargetBounds.Column < 0 || action.TargetBounds.Right > 8 || action.TargetBounds.Row < 0)
+            return InvalidDrop(ProductStrings.Get("Wall.OutsideGroup"));
+        return CachedDrop(action);
     }
 
     private readonly Dictionary<string, WallLayoutResult> _invalidDrops = new(StringComparer.Ordinal);
@@ -925,9 +971,11 @@ public sealed partial class MainWindow : Window
         if (_gesture.Phase == GesturePhase.Idle) return;
         TraceInput($"End phase={_gesture.Phase} member={_gesture.MemberId} group={_gesture.GroupId}");
         _dragInputPending = false;
+        _gestureScreenStart = null;
         ClearGhostComposition();
         var wasDragging = _gesture.End();
         _dropCache.Clear(); _gestureDocument = null; _gestureGeometry = null; _drawnDrop = null;
+        _memberDropSession = null; _memberDropSlot = null; _memberDropResult = null;
         StopFrameSubscriptionIfIdle();
         if (restoreView) _performance.End("cancel-or-click", Surface.VisualCreationCount, Surface.GridCreationCount);
         UpdatePuzzleGate();
