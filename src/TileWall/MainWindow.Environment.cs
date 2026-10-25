@@ -19,11 +19,11 @@ public sealed partial class MainWindow
 
     private void QueueEnvironmentAdaptation()
     {
-        if (_environmentAdaptQueued || _windowClosing || ShutdownStarted || !_hasDocument || _viewBlocked) return;
+        if (_environmentAdaptQueued || _windowClosing || ShutdownStarted || _welcomeInitializationPending || !_hasDocument || _viewBlocked) return;
         _environmentAdaptQueued = DispatcherQueue.TryEnqueue(async () =>
         {
             _environmentAdaptQueued = false;
-            if (_windowClosing || ShutdownStarted || !_hasDocument || _viewBlocked) return;
+            if (_windowClosing || ShutdownStarted || _welcomeInitializationPending || !_hasDocument || _viewBlocked) return;
             if (PersistenceInteractionBlocked) { _environmentAfterPersistence = true; return; }
             if (_modal || _resizing || _gesture.Phase != ApplicationModel.GesturePhase.Idle)
             { _environmentAfterInteraction = true; return; }

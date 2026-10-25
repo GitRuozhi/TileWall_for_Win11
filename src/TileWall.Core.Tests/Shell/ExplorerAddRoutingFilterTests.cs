@@ -8,6 +8,7 @@ namespace TileWall.Core.Tests.Shell;
 public sealed class ExplorerAddRoutingFilterTests
 {
     private const string SelfPath = @"C:\Apps\TileWall\TileWall.exe";
+    private static readonly ExplorerAddProcessIdentity Self = new(SelfPath, "S-1-5-21-1000", 1, true);
 
     [Fact]
     public void 私有魔数为_TWl1_的小端数值()
@@ -23,16 +24,16 @@ public sealed class ExplorerAddRoutingFilterTests
     {
         Assert.Equal(
             ExplorerAddRoutingVerdict.RejectBadMagic,
-            ExplorerAddRoutingFilter.Evaluate(0, SelfPath, SelfPath)); // 即便映像完全一致也先拒魔数
+            ExplorerAddRoutingFilter.Evaluate(0, Self, Self));
         Assert.Equal(
             ExplorerAddRoutingVerdict.RejectBadMagic,
-            ExplorerAddRoutingFilter.Evaluate(uint.MaxValue, SelfPath, SelfPath));
+            ExplorerAddRoutingFilter.Evaluate(uint.MaxValue, Self, Self));
     }
 
     [Fact]
     public void 同一映像路径_通过路由过滤()
     {
-        Assert.Equal(ExplorerAddRoutingVerdict.Accept, ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic, SelfPath, SelfPath));
+        Assert.Equal(ExplorerAddRoutingVerdict.Accept, ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic, Self, Self));
     }
 
     [Fact]
@@ -41,7 +42,7 @@ public sealed class ExplorerAddRoutingFilterTests
         Assert.True(ExplorerAddRoutingFilter.DeclaredWindowImageMatches(@"c:\apps\tilewall\tilewall.exe", @"C:\APPS\TILEWALL\TILEWALL.EXE"));
         Assert.Equal(
             ExplorerAddRoutingVerdict.Accept,
-            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic, @"c:\apps\tilewall\tilewall.exe", SelfPath));
+            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic, Self with { ImagePath = @"c:\apps\tilewall\tilewall.exe" }, Self));
     }
 
     [Fact]
@@ -56,7 +57,8 @@ public sealed class ExplorerAddRoutingFilterTests
     {
         Assert.Equal(
             ExplorerAddRoutingVerdict.RejectImagePathMismatch,
-            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic, @"D:\OtherCopy\TileWall.exe", SelfPath));
+            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic,
+                Self with { ImagePath = @"D:\OtherCopy\TileWall.exe", IsTileWall = false }, Self));
         Assert.False(ExplorerAddRoutingFilter.DeclaredWindowImageMatches(@"C:\Apps\TileWall\TileWall2.exe", SelfPath));
         Assert.False(ExplorerAddRoutingFilter.DeclaredWindowImageMatches(@"C:\Apps\TileWall\TileWall.exe.bak", SelfPath));
     }
@@ -68,10 +70,39 @@ public sealed class ExplorerAddRoutingFilterTests
         Assert.False(ExplorerAddRoutingFilter.DeclaredWindowImageMatches(string.Empty, SelfPath));
         Assert.False(ExplorerAddRoutingFilter.DeclaredWindowImageMatches(" ", SelfPath));
         Assert.Equal(
-            ExplorerAddRoutingVerdict.RejectImagePathMismatch,
-            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic, null, SelfPath));
+            ExplorerAddRoutingVerdict.RejectProcessUnavailable,
+            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic, null, Self));
         Assert.Equal(
             ExplorerAddRoutingVerdict.RejectSelfImageUnavailable,
-            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic, SelfPath, null)); // 本进程路径不可得：无法进行路由过滤
+            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic, Self, null));
+    }
+
+    [Fact]
+    public void DifferentInstallationOfSameProductInSameUserAndSessionIsAccepted()
+    {
+        var installed = Self with { ImagePath = @"C:\Program Files\WindowsApps\Ruozhi.TileWall_1.3.6.0_x64\TileWall.exe" };
+        Assert.Equal(ExplorerAddRoutingVerdict.Accept,
+            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic, installed, Self));
+    }
+
+    [Fact]
+    public void SameExecutableInAnotherUserOrLoginSessionIsRejected()
+    {
+        Assert.Equal(ExplorerAddRoutingVerdict.RejectUserMismatch,
+            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic,
+                Self with { UserSid = "S-1-5-21-2000" }, Self));
+        Assert.Equal(ExplorerAddRoutingVerdict.RejectSessionMismatch,
+            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic,
+                Self with { SessionId = 2 }, Self));
+    }
+
+    [Theory]
+    [InlineData("", 1)]
+    [InlineData("S-1-5-21-1000", -1)]
+    public void IncompleteProcessObservationIsRejected(string sid, int session)
+    {
+        Assert.Equal(ExplorerAddRoutingVerdict.RejectProcessUnavailable,
+            ExplorerAddRoutingFilter.Evaluate(ExplorerAddRoutingFilter.Magic,
+                Self with { UserSid = sid, SessionId = session }, Self));
     }
 }

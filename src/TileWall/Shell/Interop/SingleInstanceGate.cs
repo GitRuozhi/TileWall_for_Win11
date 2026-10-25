@@ -12,7 +12,7 @@ public enum SingleInstanceAcquireResult
 }
 
 /// <summary>
-/// 单实例门（M7 设计 §7.1）：命名互斥体 <see cref="MutexName"/>——「Local\」按登录会话隔离，
+/// 单实例门：RuntimeScope 按数据根生成命名互斥体，「Local\」按登录会话隔离，
 /// 快速用户切换下另一用户的会话互不误杀。二次启动 FindWindowW 宿主窗 + PostMessage 注册消息后
 /// 干净退出（不建任何窗口、不触碰数据目录，EntryRecovery.Sweep 不双跑）；
 /// 宿主窗找不到（首实例正在退出）→ 等待互斥体归属 ≤2s：获得则升级为首实例，超时静默退出（无 UI 僵局）。
@@ -20,13 +20,6 @@ public enum SingleInstanceAcquireResult
 /// </summary>
 public sealed class SingleInstanceGate : IDisposable
 {
-#if TILEWALL_PACKAGED
-    /// <summary>互斥体名（packaged 带 .pkg 后缀，M9 设计 §3.3）：两模式数据目录不同，身份必须隔离防互串。</summary>
-    public const string MutexName = @"Local\TileWall.SingleInstance.pkg.v1";
-#else
-    public const string MutexName = @"Local\TileWall.SingleInstance.v1";
-#endif
-
     private static readonly TimeSpan LocateWaitBudget = TimeSpan.FromSeconds(2);
 
     private IntPtr _mutex;

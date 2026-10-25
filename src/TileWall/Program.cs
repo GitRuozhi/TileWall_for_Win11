@@ -2,31 +2,35 @@ namespace TileWall;
 
 /// <summary>
 /// 自有入口（M9 设计 §1.2）：csproj 定义 DISABLE_XAML_GENERATED_MAIN 后，XAML 生成 Main 让位于本类。
-/// `-Embedding`（COM 以此参数激活 com:ExeServer）→ ExplorerCommandServer：仅 COM 分支——不触单实例门/
-/// 数据目录/XAML/窗口（§4.1 红线）；其余命令行（含 --background / --add）按生成代码的原序列启动 WinUI 应用。
+/// 管理命令在 WinUI 初始化前处理；普通命令行（含 --background / --add）按生成代码的原序列启动应用。
+/// 打包版 Explorer 命令由独立原生 DLL 承担，只通过系统应用激活进入 --add。
 /// </summary>
 public static class Program
 {
     [STAThread]
     public static int Main(string[] args)
     {
-        if (ApplicationModel.ContextMenuAdminCommand.IsRequested(args))
-            return ApplicationModel.ContextMenuAdminCommand.Run(args);
-
-        if (IsEmbedding(args))
+        if (ApplicationModel.ContextMenuUserCommand.IsRequested(args))
         {
-            try
-            {
-                var result = Shell.Interop.ExplorerCommandServer.Run();
-                if (result < 0)
-                    Shell.AppLogSetup.WriteWindowsEventLogError($"TileWall -Embedding COM server failed (HRESULT 0x{result:X8}).");
-                return result;
-            }
-            catch (Exception ex)
-            {
-                Shell.AppLogSetup.WriteWindowsEventLogError($"TileWall -Embedding COM server exception: {ex}");
-                throw;
-            }
+            // Retired and mixed helper requests must fail before COM, RuntimeScope, and XAML initialization.
+            if (!ApplicationModel.ContextMenuUserCommand.TryParse(args, out _))
+                return ApplicationModel.ContextMenuUserCommand.InvalidArguments;
+#if TILEWALL_PACKAGED
+            // The package owns this user's menu registration; only unpackaged distributions use HKCU verbs.
+            return ApplicationModel.ContextMenuUserCommand.OperationFailed;
+#else
+            return ApplicationModel.ContextMenuUserCommand.Run(args);
+#endif
+        }
+        if (ApplicationModel.CurrentUserUninstallCommand.IsRequested(args))
+        {
+            if (!ApplicationModel.CurrentUserUninstallCommand.TryParse(args, out _))
+                return ApplicationModel.ContextMenuUserCommand.InvalidArguments;
+#if TILEWALL_PACKAGED
+            return ApplicationModel.ContextMenuUserCommand.OperationFailed;
+#else
+            return ApplicationModel.CurrentUserUninstallCommand.Run(args);
+#endif
         }
         try { return RunApplication(args); }
         catch (Exception ex)
@@ -68,7 +72,4 @@ public static class Program
         return 0;
     }
 
-    /// <summary>COM 激活标记：系统以 `TileWall.exe -Embedding` 拉起 com:ExeServer 进程。</summary>
-    private static bool IsEmbedding(string[] args) =>
-        args.Length > 0 && string.Equals(args[0], "-Embedding", StringComparison.OrdinalIgnoreCase);
 }

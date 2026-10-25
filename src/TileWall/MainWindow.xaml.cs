@@ -224,6 +224,7 @@ public sealed partial class MainWindow : Window
             return;
         }
         _hasDocument = true;
+        BeginFreshWelcomeInitialization(result);
         if (!_session.RefreshViewFromCurrent())
             BlockView(ProductStrings.Get("Wall.ViewFailed"), retry: true);
         else QueueEnvironmentAdaptation();
@@ -379,7 +380,9 @@ public sealed partial class MainWindow : Window
         ApplyViewport();
     }
 
-    private string? CommitProposal(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null)
+    private string? CommitProposal(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
+        IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
     {
         if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (_viewBlocked) return ProductStrings.Get("Wall.ViewBlocked");
@@ -389,7 +392,8 @@ public sealed partial class MainWindow : Window
         {
             var commitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var media = Task.Run(() => PrepareFormalMediaAsync(proposal)).GetAwaiter().GetResult();
-            var result = _session.Commit(media.Proposal, changes, media.Assets);
+            var result = _session.Commit(media.Proposal, changes,
+                AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia), expectedEntrySha256);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - commitStarted);
             return DescribeCommit(result);
         }

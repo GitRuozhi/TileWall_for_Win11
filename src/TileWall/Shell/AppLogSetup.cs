@@ -7,8 +7,8 @@ namespace TileWall.Shell;
 
 /// <summary>
 /// 仅取得SingleInstanceGate所有权的主实例装配滚动文件日志（含--add冷启动）。
-/// 二次启动与-Embedding COM进程不打开同名writer；前置失败仅使用已注册事件源兜底。
-/// 落盘位置：unpackaged = &lt;LOCALAPPDATA&gt;\TileWall\logs\；packaged = LocalFolder\logs\。
+/// 二次启动不打开同名 writer；前置失败仅使用已注册事件源兜底。
+/// 请求的日志目录由 RuntimeScope.LogRoot 统一解析；显式测试根沿各自隔离目录。
 /// 初始化失败（磁盘满/权限）静默降级为无日志：日志系统绝不能反过来阻断启动。
 /// </summary>
 internal static class AppLogSetup

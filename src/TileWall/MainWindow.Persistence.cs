@@ -65,7 +65,8 @@ public sealed partial class MainWindow
 
     private Task<string?> CommitProposalAsync(WallProposal proposal,
         IReadOnlyList<EntryChange>? changes = null, bool carousel = false,
-        Action<string?>? settle = null)
+        Action<string?>? settle = null, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
     {
         Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
         if (PersistenceInteractionBlocked) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
@@ -78,20 +79,22 @@ public sealed partial class MainWindow
         UpdateWallHitTesting();
         Surface.IsHitTestVisible = false;
         UpdateResizeZones();
-        var operation = CommitProposalAsyncCore(proposal, changes, settle);
+        var operation = CommitProposalAsyncCore(proposal, changes, settle, preparedMedia, expectedEntrySha256);
         _pendingPersistence = operation.IsCompleted ? null : operation;
         return operation;
     }
 
     private async Task<string?> CommitProposalAsyncCore(WallProposal proposal,
-        IReadOnlyList<EntryChange>? changes, Action<string?>? settle)
+        IReadOnlyList<EntryChange>? changes, Action<string?>? settle, IReadOnlyList<PreparedMediaAsset>? preparedMedia,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256)
     {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         string? error = null;
         try
         {
             var media = await PrepareFormalMediaAsync(proposal);
-            var result = await _session.CommitAsync(media.Proposal, changes, media.Assets);
+            var result = await _session.CommitAsync(media.Proposal, changes,
+                AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia), expectedEntrySha256);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);
             error = DescribeCommit(result);
         }
@@ -178,6 +181,8 @@ public sealed partial class MainWindow
     private async Task ShutdownPersistenceCoreAsync()
     {
         _shutdownStarted = true;
+        CancelWelcomeInitialization();
+        await WaitForWelcomeInitializationAsync();
         _statusTimer.Stop();
         _clockTimer.Stop();
         _focusCheckRetry?.Stop();

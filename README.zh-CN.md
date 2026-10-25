@@ -5,13 +5,20 @@
 <h1 align="center">TileWall</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Preview-0.3.3-0078D4?style=flat-square" alt="版本 0.3.3 Preview">
-  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="面向 Windows 10 和 11">
-  <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md"><strong>简体中文</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md">Español</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> · <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md"><strong>简体中文</strong></a>
+  <img src="https://img.shields.io/badge/Preview-0.3.3-0078D4?style=flat-square" alt="版本 0.3.3 Preview">
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="面向 Windows 10 和 11">
+  <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
 </p>
 
 <p align="center">

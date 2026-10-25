@@ -1,0 +1,2 @@
+#define IDI_MENU_ICON 101
+#define IDS_MENU_TITLE 201

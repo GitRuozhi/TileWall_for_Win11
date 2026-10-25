@@ -26,6 +26,12 @@ internal sealed class GuardedWallFiles(IFileStore inner, WallStoragePaths paths)
         return _inner.ReadAllBytes(path);
     }
 
+    public Stream OpenReadProtected(string path)
+    {
+        _paths.Guard(path);
+        return _inner.OpenReadProtected(path);
+    }
+
     public void WriteAllBytes(string path, byte[] bytes)
     {
         _paths.Guard(path);

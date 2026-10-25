@@ -1,6 +1,7 @@
 using TileWall.Core.Configuration;
 using System.Threading.Channels;
 using System.Text;
+using System.Security.Cryptography;
 using TileWall.Core.Application;
 using TileWall.Core.Grid;
 using TileWall.Core.Storage;
@@ -12,6 +13,67 @@ namespace TileWall.Core.Tests.Application;
 
 public sealed class WallSessionAsyncTests
 {
+    [Fact]
+    public async Task AsyncEntryPreconditionsFreezeBeforeQueueAndRejectWithoutLatchingRecovery()
+    {
+        var (session, files, _, executor, _) = Harness();
+        Assert.True(session.Commit(Add(session), [new EntryChange.CreateUrl("tile1", "https://original.example/")]).Committed);
+        var member = session.Current.EnumerateAllMembers().Single();
+        var path = session.ManagedEntryPath(member)!;
+        var expected = new Dictionary<string, string>
+        { [member.Id] = Convert.ToHexString(SHA256.HashData(files.ReadAllBytes(path))) };
+        var proposal = session.Propose(new ReplaceMemberAction(session.Current.Generation, member.Id,
+            member with { Visual = member.Visual with { ShowTitle = false } }), 500, 500).Proposal!;
+        var operation = session.CommitAsync(proposal, [new EntryChange.CreateUrl(member.Id, "https://imported.example/")],
+            expectedEntrySha256: expected);
+        var external = TileWall.Core.Entries.UrlShortcut.CreateContent("https://external.example/");
+        files.WriteAllBytes(path, external);
+        expected[member.Id] = Convert.ToHexString(SHA256.HashData(external));
+        await executor.RunNextAsync();
+
+        var result = await operation;
+
+        Assert.False(result.Committed);
+        Assert.Contains(WallStore.ImportDestinationChanged, result.Diagnostics);
+        Assert.Equal(1, session.Current.Generation);
+        Assert.False(session.ResultUnknown);
+        Assert.False(session.RecoveryBlocked);
+        Assert.False(session.ViewBlocked);
+        Assert.False(session.WritePending);
+        Assert.Equal(external, files.ReadAllBytes(path));
+    }
+
+    private sealed class UncertainExecutor : IWallStorageExecutor
+    {
+        public Task<T> ExecuteAsync<T>(Func<T> work) => Task.FromException<T>(new InvalidOperationException("uncertain store result"));
+        public Task ShutdownAsync() => Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task UnknownAsyncResultRejectsRefreshAndFailedOpenUntilSuccessfulReopen()
+    {
+        var (session, files, root, _, _) = Harness();
+        session.ConfigureAsyncExecution(new UncertainExecutor(), _ => Task.CompletedTask);
+        var refreshes = 0; session.SetViewRefresh(_ => refreshes++);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.CommitAsync(Add(session)));
+        Assert.True(session.ResultUnknown);
+        Assert.False(session.WritePending);
+        Assert.False(session.RefreshViewFromCurrent());
+        Assert.Equal(0, refreshes);
+        Assert.True(session.ViewBlocked);
+        var config = Path.Combine(root, "config.json");
+        var bytes = files.ReadAllBytes(config);
+        files.WriteAllBytes(config, Encoding.UTF8.GetBytes("{"));
+        Assert.Equal(WallOpenStatus.CorruptBlocked, session.Open(1, 6).Status);
+        Assert.True(session.ResultUnknown);
+        Assert.False(session.RefreshViewFromCurrent());
+        files.WriteAllBytes(config, bytes);
+        Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
+        Assert.False(session.ResultUnknown);
+        Assert.True(session.RefreshViewFromCurrent());
+        Assert.Equal(1, refreshes);
+    }
+
     private sealed class FaultingFiles(IFileStore inner) : IFileStore
     {
         public List<Func<string, string?, string?, bool>> Rules { get; } = [];

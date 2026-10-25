@@ -5,7 +5,7 @@ namespace TileWall.ApplicationModel;
 
 /// <summary>
 /// Resolves one process identity and its writable directories before logging or WinUI starts.
-/// A test root is explicit so development runs cannot touch the active user's application state.
+/// Test roots are reserved for explicitly isolated deployment and failure fixtures.
 /// </summary>
 internal sealed class RuntimeScope
 {
@@ -80,10 +80,7 @@ internal sealed class RuntimeScope
 
     private static string ResolveNormalDataRoot()
     {
-#if TILEWALL_PACKAGED
-        return Windows.Storage.ApplicationData.Current.LocalFolder.Path;
-#else
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TileWall");
-#endif
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(
+            Path.Combine(Shell.Interop.KnownFolderPaths.LocalAppData, "TileWall")));
     }
 }

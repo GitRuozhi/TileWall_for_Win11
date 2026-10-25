@@ -9,6 +9,7 @@ using TileWall.Core.Shell;
 using TileWall.Core.Entries;
 using TileWall.Core.Storage;
 using TileWall.Resources;
+using TileWall.Shell.Interop;
 using TileWall.Views;
 using Windows.Foundation;
 using Windows.Graphics;
@@ -42,7 +43,13 @@ public sealed partial class MainWindow
     internal event Action? DialogClosed;
     internal event Action? DialogOpened;
 
-    internal void InitializeSession() => OpenWall();
+    internal async Task InitializeSessionAsync()
+    {
+        OpenWall();
+        if (!_welcomeInitializationPending) return;
+        var error = await InitializeWelcomeWallAsync(fresh: true);
+        if (error is not null && !_viewBlocked) Status(error);
+    }
     internal void ShowStatus(string message) => Status(message);
     internal void ShowTransientStatus(string message) => TransientStatus(message);
 
@@ -129,7 +136,7 @@ public sealed partial class MainWindow
         UpdateWindowZOrder(IsForegroundWallSession(), raise: true);
     }
 
-    private bool IsForegroundWallSession()
+    internal bool IsForegroundWallSession()
     {
         var foreground = GetForegroundWindow();
         return foreground != IntPtr.Zero && GetWindowThreadProcessId(foreground, out var processId) != 0 &&
@@ -205,7 +212,8 @@ public sealed partial class MainWindow
         try
         {
             if (!await BeginModalAsync()) return;
-            var dialog = new SettingsDialog(DialogOwner, read, apply, hotKeyRecordingChanged, retryStartReplacement);
+            var dialog = new SettingsDialog(DialogOwner, ExplorerContextMenuController.Create(_session.DataRoot), read, apply, hotKeyRecordingChanged, retryStartReplacement,
+                token => InitializeWelcomeWallAsync(fresh: false, token));
             ActiveDialog = dialog;
             await dialog.ShowAsync();
         }

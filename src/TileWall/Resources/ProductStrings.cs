@@ -21,9 +21,11 @@ internal static class ProductStrings
         Language = mode;
     }
 
-    public static string Get(string key)
+    public static string Get(string key) => Get(key, Language);
+
+    public static string Get(string key, WallLanguageMode mode)
     {
-        var dictionary = UsesChinese(Language)
+        var dictionary = UsesChinese(mode)
             ? (_chinese ??= new ResourceDictionary { Source = new Uri("ms-appx:///Resources/ProductStrings.xaml") })
             : (_english ??= new ResourceDictionary { Source = new Uri("ms-appx:///Resources/ProductStrings.en.xaml") });
         return dictionary.TryGetValue(key, out var value) && value is string text ? text : key;

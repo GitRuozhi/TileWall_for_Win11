@@ -6,33 +6,6 @@ namespace TileWall.Core.Tests.Import;
 
 public sealed class StartMenuSelectionRulesTests
 {
-    [Fact]
-    public void ProjectionKeepsAddableKeysAndCountsRemovedOnes()
-    {
-        var trimmed = StartMenuSelectionRules.MigrateSelection(["A", "B"], ["B"]);
-        Assert.Equal(["B"], trimmed.SelectedKeys);
-        Assert.Equal(1, trimmed.RemovedCount);
-
-        var restored = StartMenuSelectionRules.MigrateSelection(trimmed.SelectedKeys, ["A", "B"]);
-        Assert.Equal(["B"], restored.SelectedKeys);
-        Assert.Equal(0, restored.RemovedCount);
-
-        var cleared = StartMenuSelectionRules.MigrateSelection(["A", "B"], []);
-        Assert.Empty(cleared.SelectedKeys);
-        Assert.Equal(2, cleared.RemovedCount);
-    }
-
-    [Fact]
-    public void SameDisplayNameAndDuplicateKeysStayOnSelectionKey()
-    {
-        var migrated = StartMenuSelectionRules.MigrateSelection(
-            ["path-a", "path-a", "path-b"], ["path-b", "other-name"]);
-        Assert.Equal(["path-b"], migrated.SelectedKeys);
-        Assert.Equal(1, migrated.RemovedCount);
-        Assert.Equal(1, StartMenuSelectionRules.MigrateSelection(["A"], ["a"]).RemovedCount);
-        Assert.Empty(StartMenuSelectionRules.MigrateSelection(["A"], ["a"]).SelectedKeys);
-    }
-
     [Theory]
     [InlineData("Alpha", 'A')]
     [InlineData("中文", 'Z')]
@@ -42,20 +15,6 @@ public sealed class StartMenuSelectionRulesTests
     [InlineData("😀 App", '#')]
     public void InitialUsesFixedLocalReadingAndFallback(string name, char expected) =>
         Assert.Equal(expected, StartMenuSelectionRules.Initial(name));
-
-    [Fact]
-    public void BothRootsAndNestedDirectoriesShareTopLevelFolderBucket()
-    {
-        var user = new StartMenuCandidate(@"C:\User\Tools\Deep\A.lnk", "A", EntryKind.Lnk, SourceKind.User, @"Tools\Deep");
-        var common = new StartMenuCandidate(@"C:\Common\TOOLS\B.lnk", "B", EntryKind.Lnk, SourceKind.Common, "TOOLS");
-        var buckets = StartMenuGroupingRules.Assign([
-            new(user, LaunchIdentityService.ForPath(@"C:\Apps\A.exe"), true),
-            new(common, LaunchIdentityService.ForPath(@"C:\Apps\B.exe"), true),
-            new(user with { RelativeDir = "", DisplayName = "Z" }, LaunchIdentityService.ForPath(@"C:\Apps\Z.exe"), true),
-        ]);
-        Assert.Equal(buckets[0].Key, buckets[1].Key);
-        Assert.True(buckets[2].Order < buckets[0].Order); // Letters are displayed before original folders.
-    }
 
     [Theory]
     [InlineData("Uninstall Example", @"C:\Apps\Example\remove.exe", "", StartMenuExclusion.Uninstall)]

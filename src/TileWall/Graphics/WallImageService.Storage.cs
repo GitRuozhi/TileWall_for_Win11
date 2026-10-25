@@ -47,6 +47,36 @@ public sealed partial class WallImageService
     }
 
     private sealed record VerifiedOriginal(PreparedMediaAsset Asset, byte[] Bytes);
+
+    public Task<bool> VerifyPackageImageAsync(ReadOnlyMemory<byte> bytes, string extension, CancellationToken ct = default)
+    {
+        lock (_workGate)
+        {
+            if (_cacheStopping || _disposed || ct.IsCancellationRequested)
+                return Task.FromCanceled<bool>(new CancellationToken(true));
+            var request = CancellationTokenSource.CreateLinkedTokenSource(ct, _cacheLifetime.Token);
+            return TrackCacheWork(VerifyPackageImageCoreAsync(bytes, extension, request));
+        }
+    }
+
+    private static async Task<bool> VerifyPackageImageCoreAsync(ReadOnlyMemory<byte> bytes, string extension,
+        CancellationTokenSource request)
+    {
+        using (request)
+        {
+            try
+            {
+                var actual = await Task.Run(() => ProbeOriginalBytesAsync(bytes, request.Token), request.Token).ConfigureAwait(false);
+                return PreparedMediaAsset.NormalizeExtension(extension) == actual;
+            }
+            catch (Exception ex) when (ex is InvalidDataException or ArgumentException or
+                System.Runtime.InteropServices.COMException or OverflowException)
+            {
+                return false;
+            }
+        }
+    }
+
     private static async Task<VerifiedOriginal> VerifyOriginalAsync(string path, CancellationToken ct)
     {
         var full = NormalizeImageFilePath(path) ?? throw new IOException("Invalid image path.");
@@ -57,8 +87,19 @@ public sealed partial class WallImageService
         before.Refresh();
         if (!before.Exists || before.Length != length || before.LastWriteTimeUtc != modified || bytes.LongLength != length)
             throw new IOException("Image changed while being prepared.");
+        var extension = await ProbeOriginalBytesAsync(bytes, ct).ConfigureAwait(false);
+        return new(PreparedMediaAsset.FromVerifiedImage(bytes, extension), bytes);
+    }
+
+    private static async Task<string> ProbeOriginalBytesAsync(ReadOnlyMemory<byte> bytes, CancellationToken ct)
+    {
+        if (bytes.Length is < 1 or > PreparedMediaAsset.MaximumBytes)
+            throw new InvalidDataException("Image byte length exceeds the source budget.");
+        ct.ThrowIfCancellationRequested();
         using var stream = new InMemoryRandomAccessStream();
-        using (var writer = new DataWriter(stream)) { writer.WriteBytes(bytes); await writer.StoreAsync().AsTask(ct).ConfigureAwait(false); writer.DetachStream(); }
+        var buffer = System.Runtime.InteropServices.MemoryMarshal.TryGetArray(bytes, out var segment) &&
+            segment.Offset == 0 && segment.Count == segment.Array!.Length ? segment.Array : bytes.ToArray();
+        using (var writer = new DataWriter(stream)) { writer.WriteBytes(buffer); await writer.StoreAsync().AsTask(ct).ConfigureAwait(false); writer.DetachStream(); }
         stream.Seek(0); var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(ct).ConfigureAwait(false); ct.ThrowIfCancellationRequested();
         if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 || (long)decoder.PixelWidth * decoder.PixelHeight > 80_000_000)
             throw new InvalidDataException("Image dimensions exceed the source budget.");
@@ -68,7 +109,7 @@ public sealed partial class WallImageService
         ct.ThrowIfCancellationRequested();
         var extension = decoder.DecoderInformation.FileExtensions.FirstOrDefault()
             ?? throw new InvalidDataException("Image codec supplies no file extension.");
-        return new(PreparedMediaAsset.FromVerifiedImage(bytes, extension), bytes);
+        return PreparedMediaAsset.NormalizeExtension(extension);
     }
 
     private string? ManagedMediaPath(ManagedMediaReference? media)

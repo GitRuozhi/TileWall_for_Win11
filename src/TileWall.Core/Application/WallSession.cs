@@ -60,7 +60,7 @@ internal sealed class WallSession
 
     public bool RefreshViewFromCurrent()
     {
-        lock (_gate) return !_writePending && !RequiresReopen && !_storeRecoveryBlocked && RefreshViewCore();
+        lock (_gate) return !_writePending && !RequiresReopen && !_storeRecoveryBlocked && !_resultUnknown && RefreshViewCore();
     }
 
     private bool RefreshViewCore()
@@ -90,6 +90,19 @@ internal sealed class WallSession
     public string? ManagedMediaPath(ManagedMediaReference? media) =>
         media is null ? null : _store.ManagedMediaPath(media);
 
+    public Task<LaunchIdentity> ObservePackageEntryAsync(ManagedEntryKind kind, ReadOnlyMemory<byte> bytes,
+        CancellationToken token = default)
+    {
+        token.ThrowIfCancellationRequested();
+        if (bytes.Length is < 1 or > EntryObservation.MaximumBytes) throw new InvalidDataException("Invalid shortcut byte budget.");
+        var frozen = bytes.ToArray();
+        lock (_gate)
+        {
+            if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            return _executor.ExecuteAsync(() => _store.ObservePackageEntry(kind, frozen, token));
+        }
+    }
+
     public WallOpenResult Open(int initialColumns, int initialRows)
     {
         lock (_gate)
@@ -97,7 +110,11 @@ internal sealed class WallSession
             if (_writePending) throw new InvalidOperationException("A storage operation is pending.");
             var result = _store.Open();
             if (result.Status == WallOpenStatus.Fresh)
+            {
                 result = _store.InitializeFresh(WallDocument.Empty(initialColumns, initialRows));
+                if (result.Status == WallOpenStatus.Loaded && result.Document is not null)
+                    result = result with { InitializedFresh = true };
+            }
             if (result.Document is not null && result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious)
             {
                 _current = result.Document;
@@ -140,7 +157,8 @@ internal sealed class WallSession
     }
 
     public WallSessionResult Commit(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
-        IReadOnlyList<PreparedMediaAsset>? mediaAssets = null)
+        IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
     {
         var timings = CreateCommitTimings();
         var total = timings?.Measure("session.total");
@@ -160,7 +178,8 @@ internal sealed class WallSession
                 generation = before.Generation;
                 // The store plans and validates the same request inside Commit; planning here
                 // duplicated the full-wall traversal for every save.
-                var request = new WallCommitRequest(before.Generation, proposal.Document, changes ?? [], mediaAssets);
+                var request = new WallCommitRequest(before.Generation, proposal.Document, changes ?? [], mediaAssets,
+                    expectedEntrySha256?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal));
                 WallCommitResult result;
                 try { result = _store.Commit(before, request, timings); }
                 catch (Exception)
@@ -203,7 +222,8 @@ internal sealed class WallSession
     }
 
     public Task<WallSessionResult> CommitAsync(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
-        IReadOnlyList<PreparedMediaAsset>? mediaAssets = null)
+        IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
     {
         lock (_gate)
         {
@@ -215,15 +235,17 @@ internal sealed class WallSession
             var frozen = proposal with { Document = WallJson.Freeze(proposal.Document) };
             var entryChanges = changes?.ToArray() ?? [];
             var preparedMedia = mediaAssets?.ToArray() ?? [];
+            var preconditions = expectedEntrySha256?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
             var reservation = new UiCommitReservation();
             _writePending = true;
             _activeUiCommit = reservation;
-            return CommitReservedAsync(before, frozen, entryChanges, preparedMedia, reservation, _executor, _acceptOnUi);
+            return CommitReservedAsync(before, frozen, entryChanges, preparedMedia, preconditions, reservation, _executor, _acceptOnUi);
         }
     }
 
     private async Task<WallSessionResult> CommitReservedAsync(WallDocument before, WallProposal proposal,
-        IReadOnlyList<EntryChange> changes, IReadOnlyList<PreparedMediaAsset> mediaAssets, UiCommitReservation reservation,
+        IReadOnlyList<EntryChange> changes, IReadOnlyList<PreparedMediaAsset> mediaAssets,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256, UiCommitReservation reservation,
         IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
     {
         var timings = CreateCommitTimings();
@@ -240,7 +262,7 @@ internal sealed class WallSession
                 storageThread = Environment.CurrentManagedThreadId;
                 // Commit owns planning; a second PlanEntries here duplicated the full wall.
                 return _store.Commit(before,
-                    new WallCommitRequest(before.Generation, proposal.Document, changes, mediaAssets),
+                    new WallCommitRequest(before.Generation, proposal.Document, changes, mediaAssets, expectedEntrySha256),
                     timings);
             }).ConfigureAwait(false);
             outcome = stored.Status.ToString();

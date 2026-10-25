@@ -12,6 +12,10 @@ public interface IFileStore
 
     byte[] ReadAllBytes(string path);
 
+    /// <summary>Hold an immutable original for one wall-file export. Local storage denies writes/deletion;
+    /// the default supports existing in-memory fault fixtures.</summary>
+    Stream OpenReadProtected(string path) => new MemoryStream(ReadAllBytes(path), writable: false);
+
     void WriteAllBytes(string path, byte[] bytes);
 
     /// <summary>同卷原子替换（唯一提交点）。</summary>

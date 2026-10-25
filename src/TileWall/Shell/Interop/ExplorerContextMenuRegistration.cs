@@ -2,19 +2,20 @@ using Microsoft.Win32;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Security.Principal;
 using TileWall.Core.Shell;
 
 namespace TileWall.Shell.Interop;
 
-internal enum MachineContextMenuStatus { NotRegistered, CurrentExecutable, OtherExecutable, PartialOrMixed, ReadFailed }
-internal sealed record MachineContextMenuState(MachineContextMenuStatus Status, IReadOnlyList<string> Targets,
+internal enum ContextMenuStatus { NotRegistered, CurrentExecutable, OtherExecutable, PartialOrMixed, ReadFailed }
+internal sealed record ContextMenuState(ContextMenuStatus Status, IReadOnlyList<string> Targets,
     bool HasUnrecognizedConflict = false, string? Error = null)
 {
-    public bool IsCurrentExecutableComplete => Status == MachineContextMenuStatus.CurrentExecutable;
+    public bool IsCurrentExecutableComplete => Status == ContextMenuStatus.CurrentExecutable;
 }
 internal sealed record ContextMenuRegistrationResult(bool Success, bool RollbackIncomplete = false, string? Error = null);
 
-/// <summary>One machine-wide, 64-bit classic-menu registration for every distribution mode.</summary>
+/// <summary>Current-user, 64-bit classic-menu registration for unpackaged distributions.</summary>
 [SupportedOSPlatform("windows")]
 internal static class ExplorerContextMenuRegistration
 {
@@ -30,23 +31,24 @@ internal static class ExplorerContextMenuRegistration
         [FileVerbPath, DirectoryVerbPath, UrlVerbPath];
     private static readonly string[] LegacyCleanupPaths =
         [.. VerbPaths, LegacyInternetShortcutVerbPath, LegacyUrlAssociationVerbPath, LegacyVerbPath];
-    private const string WriteMutexName = @"Global\TileWall.ContextMenu.Write.v1";
+    internal const RegistryHive RegistrationHive = RegistryHive.CurrentUser;
+    internal const RegistryView RegistrationView = RegistryView.Registry64;
     private const string CommandSuffix = "\" " + ExplorerAddCommandLine.AddArgument + " \"%1\"";
     private sealed record Value(string Name, object Data, RegistryValueKind Kind);
     private sealed record Snapshot(Value[] Values, Dictionary<string, Snapshot> Children);
 
-    internal static MachineContextMenuState ReadMachineState()
+    internal static ContextMenuState ReadCurrentUserState()
     {
         try
         {
-            using var root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-            return ReadMachineState(root, CurrentExecutable(), IsRecognizedTileWall);
+            using var root = RegistryKey.OpenBaseKey(RegistrationHive, RegistrationView);
+            return ReadCurrentUserState(root, CurrentExecutable(), IsRecognizedTileWall);
         }
         catch (Exception ex) when (IsRegistryError(ex))
-        { return new(MachineContextMenuStatus.ReadFailed, [], Error: ex.Message); }
+        { return new(ContextMenuStatus.ReadFailed, [], Error: ex.Message); }
     }
 
-    internal static MachineContextMenuState ReadMachineState(RegistryKey root, string executable,
+    internal static ContextMenuState ReadCurrentUserState(RegistryKey root, string executable,
         Func<string, bool> recognizeOther)
     {
         try
@@ -71,34 +73,40 @@ internal static class ExplorerContextMenuRegistration
                     labels.Add((string)key.GetValue("MUIVerb")!);
                 }
             }
-            var status = present == 0 ? MachineContextMenuStatus.NotRegistered
+            var status = present == 0 ? ContextMenuStatus.NotRegistered
                 : !conflict && complete == VerbPaths.Length && targets.Count == 1 && labels.Count == 1
-                    ? SameExecutable(targets.Single(), executable) ? MachineContextMenuStatus.CurrentExecutable : MachineContextMenuStatus.OtherExecutable
-                    : MachineContextMenuStatus.PartialOrMixed;
+                    ? SameExecutable(targets.Single(), executable) ? ContextMenuStatus.CurrentExecutable : ContextMenuStatus.OtherExecutable
+                    : ContextMenuStatus.PartialOrMixed;
             return new(status, targets.Order(StringComparer.OrdinalIgnoreCase).ToArray(), conflict);
         }
         catch (Exception ex) when (IsRegistryError(ex))
-        { return new(MachineContextMenuStatus.ReadFailed, [], Error: ex.Message); }
+        { return new(ContextMenuStatus.ReadFailed, [], Error: ex.Message); }
     }
 
-    internal static ContextMenuRegistrationResult RegisterMachineForCurrentExecutable(string menuText) =>
-        WithMachineWriteLock(root => RegisterMachine(menuText, root, CurrentExecutable(), NotifyShell, IsRecognizedTileWall));
+    internal static ContextMenuRegistrationResult RegisterCurrentUserForCurrentExecutable(string menuText) =>
+        WithCurrentUserWriteLock(root => RegisterCurrentUser(menuText, root, CurrentExecutable(), NotifyShell, IsRecognizedTileWall));
 
-    internal static ContextMenuRegistrationResult UnregisterMachineOwnedByCurrentExecutable() =>
-        WithMachineWriteLock(root => UnregisterOwned(root, CurrentExecutable(), NotifyShell, includeLegacy: true));
+    internal static ContextMenuRegistrationResult UnregisterCurrentUserOwnedByCurrentExecutable(Action? afterMutation = null) =>
+        WithCurrentUserWriteLock(root => UnregisterOwned(root, CurrentExecutable(), NotifyShell,
+            includeLegacy: true, afterMutation: afterMutation));
 
-    private static ContextMenuRegistrationResult WithMachineWriteLock(Func<RegistryKey, ContextMenuRegistrationResult> operation)
+    internal static string WriteMutexName(string userSid) => @"Global\TileWall.ContextMenu.Write." + userSid + ".v1";
+
+    private static ContextMenuRegistrationResult WithCurrentUserWriteLock(Func<RegistryKey, ContextMenuRegistrationResult> operation)
     {
         try
         {
-            using var mutex = new Mutex(false, WriteMutexName);
+            // A SID-scoped global name serializes this user's operations across login sessions.
+            using var identity = WindowsIdentity.GetCurrent();
+            var sid = identity.User?.Value ?? throw new IOException("The current user identity is unavailable.");
+            using var mutex = new Mutex(false, WriteMutexName(sid));
             var held = false;
             try
             {
                 try { held = mutex.WaitOne(TimeSpan.FromSeconds(5)); }
                 catch (AbandonedMutexException) { held = true; }
                 if (!held) return new(false, Error: "Another context-menu operation is still running.");
-                using var root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+                using var root = RegistryKey.OpenBaseKey(RegistrationHive, RegistrationView);
                 return operation(root);
             }
             finally { if (held) mutex.ReleaseMutex(); }
@@ -107,8 +115,8 @@ internal static class ExplorerContextMenuRegistration
         { return new(false, Error: ex.Message); }
     }
 
-    // Tests use a random HKCU root; production only reaches this under the machine lock.
-    internal static ContextMenuRegistrationResult RegisterMachine(string menuText, RegistryKey root, string executable,
+    // Tests use a random HKCU root; production only reaches this under the current-user lock.
+    internal static ContextMenuRegistrationResult RegisterCurrentUser(string menuText, RegistryKey root, string executable,
         Action notifyShell, Func<string, bool> recognizeOther, Action<string>? afterChange = null,
         Action<string>? beforeRollback = null)
     {
@@ -133,18 +141,18 @@ internal static class ExplorerContextMenuRegistration
             if (path == UrlVerbPath) key.SetValue("AppliesTo", UrlAppliesTo, RegistryValueKind.String);
             using var command = key.CreateSubKey("command", writable: true);
             command.SetValue(string.Empty, BuildCommand(executable), RegistryValueKind.String);
-        }, afterChange, beforeRollback);
+        }, afterChange, beforeRollback, afterMutation: null);
     }
 
     internal static ContextMenuRegistrationResult UnregisterOwned(RegistryKey root, string executable,
         Action notifyShell, Action<string>? afterChange = null, Action<string>? beforeRollback = null,
-        bool includeLegacy = false) => Mutate(root, includeLegacy ? LegacyCleanupPaths : VerbPaths, notifyShell,
+        bool includeLegacy = false, Action? afterMutation = null) => Mutate(root, includeLegacy ? LegacyCleanupPaths : VerbPaths, notifyShell,
             (_, previous) => previous is not null && ReadTarget(previous) is { } target && SameExecutable(target, executable),
-            path => root.DeleteSubKeyTree(path, throwOnMissingSubKey: false), afterChange, beforeRollback);
+            path => root.DeleteSubKeyTree(path, throwOnMissingSubKey: false), afterChange, beforeRollback, afterMutation);
 
     private static ContextMenuRegistrationResult Mutate(RegistryKey root, string[] paths, Action notifyShell,
         Func<string, RegistryKey?, bool> shouldChange, Action<string> change, Action<string>? afterChange,
-        Action<string>? beforeRollback)
+        Action<string>? beforeRollback, Action? afterMutation)
     {
         var before = new Dictionary<string, Snapshot?>(StringComparer.Ordinal);
         try
@@ -168,8 +176,11 @@ internal static class ExplorerContextMenuRegistration
                 change(path);
                 afterChange?.Invoke(path);
             }
+            // Starting the file uninstaller is part of removal: a failed/cancelled handoff restores the menu.
+            // Invoke even if no owned verbs exist, while still holding the user's registration lock.
+            afterMutation?.Invoke();
         }
-        catch (Exception ex) when (IsRegistryError(ex))
+        catch (Exception ex)
         {
             var errors = new List<string>();
             foreach (var path in changed.AsEnumerable().Reverse())
@@ -226,7 +237,7 @@ internal static class ExplorerContextMenuRegistration
             : key.GetValue("AppliesTo") is null) &&
         new[] { "Extended", "LegacyDisable", "ProgrammaticAccessOnly" }.All(name => key.GetValue(name) is null);
 
-    private static bool IsRecognizedTileWall(string target)
+    internal static bool IsRecognizedTileWall(string target)
     {
         if (!string.Equals(Path.GetFileName(target), "TileWall.exe", StringComparison.OrdinalIgnoreCase) || !File.Exists(target)) return false;
         try

@@ -96,6 +96,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     }
     private bool _refreshing, _saved, _closed, _opened, _allowDiscard, _discardConfirmed, _pickerBusy, _syncingGalleryScrollBar;
     private bool _titleDirty, _targetDirty, _sourceDirty, _ratioDirty;
+    private string? _targetSourceError;
     private string? _galleryVersion;
     private MemberImageSource? _galleryVersionSource;
     private (MemberImageSource Source, PuzzleCandidateResult Snapshot, long Revision)? _deferredGallerySnapshot;
@@ -416,7 +417,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _pendingOperations.RemoveWhere(task => task.IsCompletedSuccessfully || task.IsCanceled);
         _pendingOperations.Add(operation);
     }
-    public bool HasUnsavedDraft => _sourceDirty || _titleDirty || _targetDirty || _ratioDirty || _width.HasPendingInput || _height.HasPendingInput || MemberPresentationRules.HasUserPropertyChanges(_original, _draft);
+    public bool HasUnsavedDraft => !_closed && (_sourceDirty || _titleDirty || _targetDirty || _ratioDirty || _width.HasPendingInput || _height.HasPendingInput || MemberPresentationRules.HasUserPropertyChanges(_original, _draft));
     public async Task WaitForPendingAsync()
     {
         if (_closed || _previewClosing) return;
@@ -444,7 +445,11 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         do { pending = _pending; await pending; }
         while (!_closed && !_previewClosing && !ReferenceEquals(pending, _pending));
     }
-    public Task<ExitDecision> ConfirmExitAsync() { _preview.FinishGesture(notifyCompleted: false); return _exit.ConfirmAsync(); }
+    public Task<ExitDecision> ConfirmExitAsync()
+    {
+        if (_closed) return Task.FromResult(ExitDecision.DiscardAndExit);
+        _preview.FinishGesture(notifyCompleted: false); return _exit.ConfirmAsync();
+    }
     public void DiscardDraft() { _discardConfirmed = true; }
     public void RequestDismiss() => _dialog.Hide();
     public void Close() { _discardConfirmed = true; _preview.FinishGesture(notifyCompleted: false); _dialog.Hide(); }
@@ -909,6 +914,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         var pendingTitle = _title.Text;
         var applyPendingTitle = _titleDirty && (!_targetDirty || _titleRevision > _targetRevision);
         if (_targetDirty && !ConfirmTarget()) return _error.Text;
+        if (_targetSourceError is { } targetSourceError) return ShowError(targetSourceError);
         if (applyPendingTitle) { _refreshing = true; _title.Text = pendingTitle; _refreshing = false; _titleDirty = true; }
         if (_titleDirty && !ConfirmTitle()) return _error.Text;
         try
@@ -1131,6 +1137,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         // A new confirmation supersedes all earlier inference, even when the
         // path is unchanged. Old folder callbacks must not replace its save wait.
         _sourceRevision = ++_inputRevision;
+        _targetSourceError = null;
         _targetDirty = _titleDirty = false;
         _draft = _draft with { TargetInput = target, Visual = _draft.Visual with { TitleMode = MemberTitleMode.Automatic, Title = null } };
         Changed(); RefreshFields(); GallerySourceChanged?.Invoke();
@@ -1224,29 +1231,25 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private async Task ApplyTargetSourceAsync(string? target)
     {
         if (_closed || _previewClosing) return;
-        var source = new MemberImageSource(); var sourceRevision = _sourceRevision;
+        var sourceRevision = _sourceRevision;
         var request = BeginRequest();
-        PuzzleCandidateResult? candidates = null;
+        TargetImageSourceResult? result;
         try
         {
-            if (Directory.Exists(target))
-            {
-                var folder = new MemberImageSource { Kind = MemberImageSourceKind.Folder, Path = target };
-                candidates = await _images.EnumerateMemberCandidatesAsync(folder, request.Token);
-                if (candidates.Paths.Count > 0) source = folder;
-            }
-            else if (File.Exists(target) && !Path.GetExtension(target).Equals(".lnk", StringComparison.OrdinalIgnoreCase))
-            {
-                var file = new MemberImageSource { Kind = MemberImageSourceKind.Single, Path = target };
-                candidates = await _images.EnumerateMemberCandidatesAsync(file, request.Token);
-                if (candidates.Paths.Count > 0) source = file;
-            }
+            result = await _images.ResolveTargetSourceAsync(target, request.Token);
         }
         catch (OperationCanceledException) { return; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            if (Active(request.Generation) && sourceRevision == _sourceRevision && string.Equals(target, _draft.TargetInput, StringComparison.Ordinal))
+            { _targetSourceError = ex.Message; _sourceStatus.Text = ex.Message; ShowError(ex.Message); }
+            return;
+        }
         if (!Active(request.Generation) || sourceRevision != _sourceRevision || !string.Equals(target, _draft.TargetInput, StringComparison.Ordinal)) return;
+        if (result is null) return;
         _sourceDirty = false; _previewPath = null; _frame = null;
-        _draft = _draft with { Images = source, Carousel = null, Visual = _draft.Visual with { BackgroundMode = source.Kind == MemberImageSourceKind.Automatic ? MemberBackgroundMode.Default : MemberBackgroundMode.Blur, BackgroundTransparency = source.Kind == MemberImageSourceKind.Automatic ? 50 : _draft.Visual.BackgroundTransparency } };
-        RefreshFields(); GallerySourceChanged?.Invoke(); await ReloadCandidatesAsync(source.Kind == MemberImageSourceKind.Automatic ? null : candidates);
+        _draft = result.ApplyTo(_draft);
+        RefreshFields(); GallerySourceChanged?.Invoke(); await ReloadCandidatesAsync(result.Source.Kind == MemberImageSourceKind.Automatic ? null : result.Candidates);
     }
 
     private sealed class Thumbnail(string path)

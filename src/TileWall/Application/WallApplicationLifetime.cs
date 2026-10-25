@@ -33,6 +33,8 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private Task? _startup;
     private bool _showWhenStarted;
     private bool _drainQueued;
+    private Task? _addDrain;
+    private CancellationTokenSource? _addPreparation;
     private bool _inAddSequence;
     private int _addSucceeded, _addFailed, _addCount;
     private string? _lastAddFailure;
@@ -96,7 +98,8 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         try
         {
             // No Activate/Show is needed to open the committed session or register process resources.
-            _window.InitializeSession();
+            await _window.InitializeSessionAsync();
+            if (_exitPending || _tearingDown) return;
             _window.ScheduleStartMenuStartupRefresh();
             ProductStrings.ApplyLanguage(_window.Settings.LanguageMode);
             _window.RefreshAppearance();
@@ -109,12 +112,15 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             if (_exitPending || _tearingDown) return;
             QueueAddDrain();
             if (intent.Add is { } add) ReceiveAdd(add);
-            if (!intent.Background || _showWhenStarted || intent.Add is not null) Request(WallShowTrigger.Show);
+            // External adds use the same background lifetime as login startup;
+            // only an explicit show request may bring that cold start forward.
+            if (_showWhenStarted || !intent.Background && intent.Add is null) Request(WallShowTrigger.Show);
             if (!_hotKey.IsRegistered) _window.ShowStatus(ProductStrings.Get("Wall.HotKeyUnavailable"));
             if (login.Error is not null) _window.ShowStatus(login.Error);
             if (_startReplacementError is not null) _window.ShowStatus(_startReplacementError);
             UpdateTray();
         }
+        catch (OperationCanceledException) when (_exitPending) { }
         catch (Exception ex)
         {
             AppLog.Error("Startup", ex.ToString());
@@ -148,7 +154,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private bool ReceiveAdd(ExplorerAddMessage message)
     {
         if (_tearingDown || _exitPending) return false;
-        if (_pendingAdds.Count >= 64 || _queuedPaths + message.Paths.Count > 4096)
+        if (_pendingAdds.Count + (_addPreparation is null ? 0 : 1) >= 64 || _queuedPaths + message.Paths.Count > 4096)
         {
             _window.DispatcherQueue.TryEnqueue(() =>
             {
@@ -166,30 +172,53 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
 
     private void QueueAddDrain()
     {
-        if (_drainQueued || _pendingAdds.Count == 0 || _tearingDown) return;
+        if (_drainQueued || _addDrain is { IsCompleted: false } || _pendingAdds.Count == 0 || _tearingDown || _exitPending) return;
         _drainQueued = _window.DispatcherQueue.TryEnqueue(DrainNextAdd);
     }
 
     private void DrainNextAdd()
     {
         _drainQueued = false;
+        if (_addDrain is { IsCompleted: false }) return;
+        var operation = DrainNextAddAsync();
+        _addDrain = operation.IsCompleted ? null : operation;
+    }
+
+    private async Task DrainNextAddAsync()
+    {
         if (!_started || _tearingDown || _exitPending || _pendingAdds.Count == 0) return;
         if (!_window.CanProcessExternalImport)
         {
-            if (_window.CanShowExternalImportNotice) Request(WallShowTrigger.Show);
             _window.ShowStatus($"{ProductStrings.Get("Wall.PendingAdd")} ({_pendingAdds.Count})");
             return;
         }
         var message = _pendingAdds.Dequeue();
-        _queuedPaths -= message.Paths.Count;
         if (!_inAddSequence)
         {
             _addSucceeded = _addFailed = _addCount = 0;
             _lastAddFailure = null;
             _addTruncated = false;
         }
-        Request(WallShowTrigger.Show);
-        var result = _window.ImportExternalBatch(message);
+        using var preparation = new CancellationTokenSource();
+        _addPreparation = preparation;
+        ExternalImportResult result;
+        try { result = await _window.ImportExternalBatchAsync(message, preparation.Token); }
+        catch (OperationCanceledException) when (preparation.IsCancellationRequested)
+        {
+            _inAddSequence = false;
+            return;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("ExternalAdd", ex.ToString());
+            result = new(string.Format(ProductStrings.Get("Import.Failed"), ex.Message), false, 0);
+        }
+        finally
+        {
+            _queuedPaths -= message.Paths.Count;
+            if (ReferenceEquals(_addPreparation, preparation)) _addPreparation = null;
+            _addDrain = null;
+        }
         if (result.Succeeded) { _addSucceeded++; _addCount += result.AddedCount; }
         else { _addFailed++; _lastAddFailure = result.Message; }
         _addTruncated |= message.Truncated;
@@ -209,6 +238,8 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         if (_exitPending || _tearingDown) return;
         _exitPending = true;
+        _window.CancelWelcomeInitialization();
+        _addPreparation?.Cancel();
         // Tray commands and AppWindow.Closing arrive inside native callbacks. Let
         // their menus/closing frames unwind before destroying any HWND or XAML state.
         if (!_window.DispatcherQueue.TryEnqueue(() => _ = RequestExitAsync()))
@@ -225,6 +256,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             // In packaged runs the login-state read can yield during startup.
             // Its continuation must finish before any owned resource is stopped.
             if (_startup is { } startup) await startup;
+            if (_addDrain is { } adding) await adding;
             var titleError = _window.FinishActiveTitleEditForExit();
             if (titleError is not null)
             {

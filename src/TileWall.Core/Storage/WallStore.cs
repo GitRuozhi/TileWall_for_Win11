@@ -9,6 +9,7 @@ namespace TileWall.Core.Storage;
 /// <summary>Wall and managed entries, committed at one config replacement point.</summary>
 public sealed partial class WallStore
 {
+    public const string ImportDestinationChanged = "IMPORT_DESTINATION_CHANGED";
     private readonly IFileStore _files;
     private readonly ILnkFileService _links;
     private readonly WallStoragePaths _paths;
@@ -112,7 +113,8 @@ public sealed partial class WallStore
     }
 
     public WallPlanResult PlanEntries(WallDocument current, WallDocument candidate,
-        IReadOnlyList<EntryChange> changes, IReadOnlyList<PreparedMediaAsset>? mediaAssets = null)
+        IReadOnlyList<EntryChange> changes, IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
     {
         try
         {
@@ -126,7 +128,14 @@ public sealed partial class WallStore
             if (changes.OfType<EntryChange.CopyShortcut>().Any(copy =>
                 copy.ExpectedSourceSha256 is not null && !ValidHash(copy.ExpectedSourceSha256)))
                 return new WallPlanResult(null, ["Invalid shortcut source fingerprint."]);
+            if (changes.OfType<EntryChange.FromPackage>().Any(copy => copy.Source is null))
+                return new WallPlanResult(null, ["Invalid verified package shortcut."]);
             var old = Members(current);
+            if (expectedEntrySha256 is not null && expectedEntrySha256.Any(pair =>
+                !WallStoragePaths.ValidId(pair.Key) || !ValidHash(pair.Value) || old.GetValueOrDefault(pair.Key)?.Entry is null))
+                return new WallPlanResult(null, ["Invalid entry precondition."]);
+            var frozenPreconditions = expectedEntrySha256?.ToDictionary(pair => pair.Key,
+                pair => pair.Value.ToUpperInvariant(), StringComparer.Ordinal);
             var provisional = new Dictionary<string, ManagedEntryReference?>(StringComparer.Ordinal);
             foreach (var changed in changes)
                 if (changed is not null && changed.MemberId is not null)
@@ -148,7 +157,7 @@ public sealed partial class WallStore
                 if (before is null && after is null) throw new InvalidDataException($"Unknown member: {id}");
                 if (ops.Count(o => o is EntryChange.Keep) > 0 && ops.Length != 1)
                     throw new InvalidDataException($"Keep cannot be combined: {id}");
-                if (ops.Count(o => o is EntryChange.CopyShortcut or EntryChange.CreateLink or EntryChange.CreateUrl or EntryChange.Remove) > 1 ||
+                if (ops.Count(o => o is EntryChange.CopyShortcut or EntryChange.FromPackage or EntryChange.CreateLink or EntryChange.CreateUrl or EntryChange.Remove) > 1 ||
                     ops.Count(o => o is EntryChange.ChangeTarget) > 1 || ops.Count(o => o is EntryChange.Rename) > 1)
                     throw new InvalidDataException($"Conflicting entry changes: {id}");
                 if (ops.Any(o => o is EntryChange.Keep))
@@ -166,12 +175,13 @@ public sealed partial class WallStore
                 if (after is null || after is ClockMember)
                     throw new InvalidDataException($"Entry operation has no eligible member: {id}");
                 var entry = before?.Entry;
-                var replacement = ops.SingleOrDefault(o => o is EntryChange.CopyShortcut or EntryChange.CreateLink or EntryChange.CreateUrl);
+                var replacement = ops.SingleOrDefault(o => o is EntryChange.CopyShortcut or EntryChange.FromPackage or EntryChange.CreateLink or EntryChange.CreateUrl);
                 if (replacement is not null)
                 {
                     var kind = replacement switch
                     {
                         EntryChange.CopyShortcut copy => SourceKind(copy.SourcePath),
+                        EntryChange.FromPackage copy => copy.Source.Kind,
                         EntryChange.CreateLink link when Path.IsPathFullyQualified(link.TargetPath) => ManagedEntryKind.Lnk,
                         EntryChange.CreateUrl url when UrlShortcut.ValidateUrl(url.Url).Count == 0 => ManagedEntryKind.Url,
                         _ => throw new InvalidDataException($"Invalid entry source: {id}")
@@ -231,7 +241,7 @@ public sealed partial class WallStore
             var normalized = ReplaceEntries(candidate, planned);
             errors = Validate(normalized).ToList();
             return errors.Count == 0
-                ? new WallPlanResult(new WallCommitRequest(current.Generation, WallJson.Freeze(normalized), changes.ToArray(), mediaAssets?.ToArray()), [])
+                ? new WallPlanResult(new WallCommitRequest(current.Generation, WallJson.Freeze(normalized), changes.ToArray(), mediaAssets?.ToArray(), frozenPreconditions), [])
                 : new WallPlanResult(null, errors);
         }
         catch (Exception ex) when (IsStorageError(ex))
@@ -254,7 +264,7 @@ public sealed partial class WallStore
                     return CommitResult(WallCommitStatus.Rejected, null, "Current generation or config bytes differ from disk.");
             WallPlanResult plan;
             using (timings?.Measure("store.planning"))
-                plan = PlanEntries(current, request.Proposed, request.EntryChanges, request.MediaAssets);
+                plan = PlanEntries(current, request.Proposed, request.EntryChanges, request.MediaAssets, request.ExpectedEntrySha256);
             using (timings?.Measure("store.canonicalValidation"))
             {
                 // Commit owns one planning pass. Use the canonical request it produced;
@@ -266,11 +276,15 @@ public sealed partial class WallStore
             }
             using (timings?.Measure("store.openPreflight"))
             {
-                var blocked = PreflightForCommit(current, expectedHash, timings);
+                var blocked = PreflightForCommit(current, expectedHash, timings, plan.Request.ExpectedEntrySha256);
                 if (blocked is not null) return blocked;
             }
             return CommitCore(current, plan.Request.Proposed, plan.Request.EntryChanges,
-                expectedHash, timings, plan.Request.MediaAssets);
+                expectedHash, timings, plan.Request.MediaAssets, plan.Request.ExpectedEntrySha256);
+        }
+        catch (EntryPreconditionChangedException)
+        {
+            return CommitResult(WallCommitStatus.Rejected, null, ImportDestinationChanged);
         }
         catch (Exception ex) when (IsStorageError(ex))
         {
@@ -283,7 +297,7 @@ public sealed partial class WallStore
     /// Sweep may still change disk; the hash is checked again before any entry is installed.
     /// </summary>
     private WallCommitResult? PreflightForCommit(WallDocument current, string expectedHash,
-        WallCommitTimings? timings)
+        WallCommitTimings? timings, IReadOnlyDictionary<string, string>? expectedEntrySha256)
     {
         _paths.Guard(_paths.Root);
         _paths.Guard(_paths.Config);
@@ -303,14 +317,15 @@ public sealed partial class WallStore
         AuditRecoveryMaterials(timings);
         if (Hash(_files.ReadAllBytes(_paths.Config)) != expectedHash)
             return CommitResult(WallCommitStatus.Rejected, null, "Config changed during commit preflight.");
-        CheckActiveEntries(current, verifyMediaContents: false, observeIdentities: false);
+        CheckActiveEntries(current, verifyMediaContents: false, observeIdentities: false, expectedEntrySha256);
         return null;
     }
 
     private WallCommitResult CommitCore(WallDocument current, WallDocument proposed,
         IReadOnlyList<EntryChange> changes,
         string expectedDiskHash, WallCommitTimings? timings = null,
-        IReadOnlyList<PreparedMediaAsset>? mediaAssets = null)
+        IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
     {
         using var total = timings?.Measure("store.transactionTotal");
         var commitId = Guid.NewGuid().ToString("N");
@@ -351,13 +366,14 @@ public sealed partial class WallStore
             if (oldRef is null && newRef is null) continue;
             var oldPath = oldRef?.RelativePath;
             var newPath = newRef?.RelativePath;
-            byte[]? oldEntryBytes = oldRef is null ? null : _files.ReadAllBytes(_paths.Entry(oldRef));
+            byte[]? oldEntryBytes = oldRef is null ? null : ReadCommitEntryBytes(id, _paths.Entry(oldRef), expectedEntrySha256);
             var oldHash = oldEntryBytes is null ? null : Hash(oldEntryBytes);
+            RequireExpectedEntryHash(id, oldHash, expectedEntrySha256);
             var oldLength = oldEntryBytes?.LongLength ?? 0;
             ops.Add(new WallJournalOp(id, oldPath, newPath, oldHash, oldLength, null, 0));
         }
         List<WallObservedEntry> observed;
-        using (timings?.Measure("store.entryObservation")) observed = ObserveUnchanged(current, ops, ActiveMemberIds(proposed));
+        using (timings?.Measure("store.entryObservation")) observed = ObserveUnchanged(current, ops, ActiveMemberIds(proposed), expectedEntrySha256);
         var journal = new WallJournal(WallDocument.CurrentSchemaVersion, commitId, current.Generation, proposed.Generation,
             Hash(oldBytes), Hash(newBytes), false, ops, observed, media);
         using (timings?.Measure("store.guardCommitPaths"))
@@ -394,9 +410,13 @@ public sealed partial class WallStore
                     var backup = BackupPath(commitId, op.MemberId);
                     _paths.Guard(backup);
                     _files.Copy(_paths.Entry(old[op.MemberId].Entry!), backup, false);
-                    if (!Verify(backup, op.OldHash, op.OldLength)) throw new IOException("Entry backup verification failed.");
+                    if (!Verify(backup, op.OldHash, op.OldLength))
+                    {
+                        if (expectedEntrySha256?.ContainsKey(op.MemberId) == true) throw new EntryPreconditionChangedException();
+                        throw new IOException("Entry backup verification failed.");
+                    }
                 }
-            }, timings);
+            }, timings, () => VerifyExpectedEntryPreconditions(journal, expectedEntrySha256));
         if (installed.Error is not null)
             return FinishFailedInstall(installed, commitId, stageDir, materialDir, journal, timings,
                 () => CommitResult(WallCommitStatus.CommittedNeedsCleanup, WallJson.Freeze(proposed), installed.Error.Message));
@@ -416,7 +436,7 @@ public sealed partial class WallStore
     /// </summary>
     private InstallTransactionResult ExecuteInstallTransaction(WallJournal journal, byte[] newConfig,
         byte[] previousBytes, byte[]? corruptDiagnostic, Action stageEntries, Action backupEntries,
-        WallCommitTimings? timings = null)
+        WallCommitTimings? timings = null, Action? beforeIntent = null)
     {
         var intentPublished = false;
         try
@@ -438,6 +458,7 @@ public sealed partial class WallStore
             _files.WriteAllBytes(journalTemp, JsonSerializer.SerializeToUtf8Bytes(journal, JournalJson));
             _files.Move(journalTemp, _paths.Under("Staging", journal.CommitId, JournalName), false);
             backupEntries();
+            beforeIntent?.Invoke();
             var markerTemp = _paths.Under("Staging", journal.CommitId, "intent.tmp");
             _files.WriteAllBytes(markerTemp, []);
             _files.Move(markerTemp, _paths.Under("Staging", journal.CommitId, IntentName), false);
@@ -511,9 +532,12 @@ public sealed partial class WallStore
     private byte[] ProduceEntry(string id, ManagedEntryReference? oldEntry, ManagedEntryReference newEntry,
         EntryChange[] changes, string staged)
     {
-        var replacement = changes.FirstOrDefault(c => c is EntryChange.CopyShortcut or EntryChange.CreateLink or EntryChange.CreateUrl);
+        var replacement = changes.FirstOrDefault(c => c is EntryChange.CopyShortcut or EntryChange.FromPackage or EntryChange.CreateLink or EntryChange.CreateUrl);
         switch (replacement)
         {
+            case EntryChange.FromPackage package:
+                _files.WriteAllBytes(staged, package.Source.CopyBytes());
+                break;
             case EntryChange.CopyShortcut copy:
                 var source = Path.GetFullPath(copy.SourcePath);
                 _paths.Guard(source, allowExternalRead: true);
@@ -547,6 +571,10 @@ public sealed partial class WallStore
         if (replacement is EntryChange.CopyShortcut { ExpectedSourceSha256: { } expected } &&
             !string.Equals(Hash(stagedBytes), expected, StringComparison.OrdinalIgnoreCase))
             throw new IOException("Shortcut source changed after confirmation.");
+        if (replacement is EntryChange.FromPackage packageSource &&
+            (stagedBytes.Length != packageSource.Source.Length || Hash(stagedBytes) != packageSource.Source.Sha256 ||
+             EntryObservation.Observe(_identities, newEntry.Kind, staged, stagedBytes).Key != packageSource.Source.Identity.Key))
+            throw new IOException("Package shortcut differs from verified entry bytes or identity.");
         return stagedBytes;
     }
 
@@ -1016,7 +1044,8 @@ public sealed partial class WallStore
     private sealed record RecoveryEntry(string MemberId, string? CurrentPath, string? PreviousPath,
         byte[]? CurrentBytes, byte[]? PreviousBytes);
 
-    private void CheckActiveEntries(WallDocument document, bool verifyMediaContents = true, bool observeIdentities = true)
+    private void CheckActiveEntries(WallDocument document, bool verifyMediaContents = true, bool observeIdentities = true,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
     {
         var identityHashes = new Dictionary<string, string>(StringComparer.Ordinal);
         var active = ActiveMemberIds(document);
@@ -1025,7 +1054,11 @@ public sealed partial class WallStore
             if (member.Entry is not { } entry) continue;
             var path = _paths.Entry(entry);
             _paths.Guard(path);
-            if (!_files.GetPathInfo(path).Exists) throw new IOException($"Referenced entry is missing: {path}");
+            if (!_files.GetPathInfo(path).Exists)
+            {
+                if (expectedEntrySha256?.ContainsKey(member.Id) == true) throw new EntryPreconditionChangedException();
+                throw new IOException($"Referenced entry is missing: {path}");
+            }
             if (observeIdentities && active.Contains(member.Id))
             {
                 var bytes = _files.ReadAllBytes(path);
@@ -1043,7 +1076,7 @@ public sealed partial class WallStore
     /// earlier read in the same commit, so the full observation stays.
     /// </summary>
     private List<WallObservedEntry> ObserveUnchanged(WallDocument document, List<WallJournalOp> operations,
-        HashSet<string>? requiredIdentities = null)
+        HashSet<string>? requiredIdentities = null, IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
     {
         var changed = operations.Select(o => o.MemberId).ToHashSet(StringComparer.Ordinal);
         var result = new List<WallObservedEntry>();
@@ -1052,13 +1085,49 @@ public sealed partial class WallStore
         {
             if (member.Entry is null || changed.Contains(member.Id)) continue;
             var path = _paths.Entry(member.Entry);
-            var bytes = _files.ReadAllBytes(path);
+            var bytes = ReadCommitEntryBytes(member.Id, path, expectedEntrySha256);
             var hash = Hash(bytes);
+            RequireExpectedEntryHash(member.Id, hash, expectedEntrySha256);
             if (active.Contains(member.Id)) ObserveIdentity(member.Entry.Kind, path, bytes, hash);
             result.Add(new WallObservedEntry(member.Id, member.Entry.RelativePath, hash, bytes.LongLength));
         }
         return result;
     }
+
+    private byte[] ReadCommitEntryBytes(string memberId, string path,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256)
+    {
+        try { return _files.ReadAllBytes(path); }
+        catch (Exception ex) when ((ex is FileNotFoundException or DirectoryNotFoundException) &&
+            expectedEntrySha256?.ContainsKey(memberId) == true)
+        { throw new EntryPreconditionChangedException(); }
+    }
+
+    private static void RequireExpectedEntryHash(string memberId, string? actual,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256)
+    {
+        if (expectedEntrySha256 is not null && expectedEntrySha256.TryGetValue(memberId, out var expected) && actual != expected)
+            throw new EntryPreconditionChangedException();
+    }
+
+    private void VerifyExpectedEntryPreconditions(WallJournal journal,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256)
+    {
+        if (expectedEntrySha256 is null || expectedEntrySha256.Count == 0) return;
+        // This is a distinct IO boundary after staging and backup, before any install
+        // intent or formal replacement. Recheck only the affected destination facts.
+        var paths = journal.Ops.Where(op => op.OldPath is not null)
+            .ToDictionary(op => op.MemberId, op => op.OldPath!, StringComparer.Ordinal);
+        foreach (var observed in journal.Observed) paths.Add(observed.MemberId, observed.RelativePath);
+        foreach (var memberId in expectedEntrySha256.Keys)
+        {
+            if (!paths.TryGetValue(memberId, out var relative)) throw new EntryPreconditionChangedException();
+            var bytes = ReadCommitEntryBytes(memberId, EntryPath(memberId, relative), expectedEntrySha256);
+            RequireExpectedEntryHash(memberId, Hash(bytes), expectedEntrySha256);
+        }
+    }
+
+    private sealed class EntryPreconditionChangedException() : IOException(ImportDestinationChanged) { }
 
     private void VerifyObserved(WallJournal journal)
     {

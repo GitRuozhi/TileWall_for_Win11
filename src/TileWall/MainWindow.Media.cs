@@ -10,6 +10,27 @@ public sealed partial class MainWindow
     private Action<MemberImageSource, PuzzleCandidateResult>? _editorGalleryHandler;
     private SharedMemberEditorDialog? _galleryEditor;
 
+    private static IReadOnlyList<PreparedMediaAsset> AcceptedMediaAssets(WallDocument document,
+        IReadOnlyList<PreparedMediaAsset> local, IReadOnlyList<PreparedMediaAsset>? imported)
+    {
+        var references = document.EnumerateAllMembers().Select(member => member.Images.Media)
+            .Append(document.Settings.BackgroundMedia).OfType<ManagedMediaReference>()
+            .GroupBy(reference => reference.Sha256, StringComparer.Ordinal).ToDictionary(group => group.Key, group =>
+            {
+                var first = group.First();
+                if (group.Any(reference => reference != first)) throw new InvalidDataException("Conflicting original image references.");
+                return first;
+            }, StringComparer.Ordinal);
+        var assets = new Dictionary<string, PreparedMediaAsset>(StringComparer.Ordinal);
+        foreach (var asset in local.Concat(imported ?? []))
+        {
+            if (!references.TryGetValue(asset.Reference.Sha256, out var required)) continue;
+            if (required != asset.Reference) throw new InvalidDataException("Prepared original image differs from its reference.");
+            assets.TryAdd(asset.Reference.Sha256, asset);
+        }
+        return assets.Values.ToArray();
+    }
+
     private async Task<(WallProposal Proposal, IReadOnlyList<PreparedMediaAsset> Assets)> PrepareFormalMediaAsync(WallProposal proposal)
     {
         var document = proposal.Document;

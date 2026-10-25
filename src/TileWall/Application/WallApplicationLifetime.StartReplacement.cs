@@ -24,7 +24,8 @@ internal sealed partial class WallApplicationLifetime
             if (!NativeStartMenu.TryOpen(_host.Hwnd))
                 _window.ShowStatus(ProductStrings.Get("Settings.StartReplacementUnavailable"));
         }
-        else Request(TileWall.Core.Shell.WallShowTrigger.Toggle);
+        else Request(_show.State == TileWall.Core.Shell.WallShowState.Hidden || !_window.IsForegroundWallSession()
+            ? TileWall.Core.Shell.WallShowTrigger.Show : TileWall.Core.Shell.WallShowTrigger.Toggle);
     }
 
     private void QueueStartReplacementToggle(long generation) => _window.DispatcherQueue.TryEnqueue(() =>

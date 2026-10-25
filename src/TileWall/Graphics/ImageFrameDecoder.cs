@@ -48,7 +48,10 @@ public sealed class ImageFrameDecoder
                 1, 1, ct, maxEdge: 1) is not null;
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or
+        // Read failures are different from a readable non-image. The candidate
+        // service reports them as Invalid so target inference cannot accept them
+        // as an authoritative empty source/Automatic tile.
+        catch (Exception ex) when (ex is COMException or
             ArgumentException or OverflowException or InvalidOperationException) { return false; }
     }
 
@@ -151,6 +154,25 @@ public sealed class ImageFrameDecoder
             ? new(path, fileBytes, lastWriteUtc, orientedWidth, orientedHeight,
                 dimensions.Width, dimensions.Height, pixels)
             : null;
+    }
+
+    /// <summary>Bounded thumbnail decode of a verified package original, without writing a temporary file.</summary>
+    internal async Task<ImageDecodeResult> DecodePackageThumbnailAsync(byte[] bytes, string identity,
+        int edge, CancellationToken token)
+    {
+        if (bytes.LongLength is < 1 or > MaxSourceBytes) return new(ImageDecodeStatus.SourceTooLarge, null);
+        edge = Math.Clamp(edge, 64, 256);
+        token.ThrowIfCancellationRequested();
+        using var file = new MemoryStream(bytes, writable: false);
+        using var stream = file.AsRandomAccessStream();
+        var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token).ConfigureAwait(false);
+        var rawWidth = checked((int)decoder.PixelWidth); var rawHeight = checked((int)decoder.PixelHeight);
+        var width = checked((int)decoder.OrientedPixelWidth); var height = checked((int)decoder.OrientedPixelHeight);
+        if (rawWidth <= 0 || rawHeight <= 0 || (long)rawWidth * rawHeight > MaxSourcePixels ||
+            (long)width * height != (long)rawWidth * rawHeight) return new(ImageDecodeStatus.SourceTooLarge, null);
+        var frame = await DecodePlaneAsync(decoder, identity, bytes.Length, DateTime.MinValue,
+            rawWidth, rawHeight, width, height, edge, edge, token, edge).ConfigureAwait(false);
+        return new(frame is null ? ImageDecodeStatus.InvalidImage : ImageDecodeStatus.Success, frame);
     }
 
     /// <param name="requiredWidthPx">Target physical width, including current zoom reserve.</param>

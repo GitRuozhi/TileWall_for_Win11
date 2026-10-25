@@ -23,11 +23,14 @@ internal sealed class SettingsDialog : IWallDialogSession
     private const string CommunityGroupUrl =
         "https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT";
     private readonly Window _owner;
+    private readonly ExplorerContextMenuController _contextMenuController;
     private readonly Func<SettingsDialogState> _readState;
     private readonly Func<WallSettings, bool, Task<SettingsDialogState>> _apply;
     private readonly Func<Task<SettingsDialogState>>? _retryStartReplacement;
+    private readonly Func<CancellationToken, Task<string?>> _initializeWall;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _startReplacementWatch;
     private readonly ContentDialog _dialog;
+    private readonly Grid _settingsBody;
     private readonly Grid _form = new() { RowSpacing = 12, ColumnSpacing = 16 };
     private readonly Dictionary<string, TextBlock> _labels = [];
     private readonly ScrollViewer _formHost = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -46,6 +49,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly NumberBox _transparencyInput = new() { Minimum = 0, Maximum = 100, SmallChange = 1, Width = 56, MinWidth = 0, Padding = new Thickness(8, 5, 8, 5), SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden };
     private readonly TextBlock _backgroundPath = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     private readonly Button _reset = new();
+    private readonly Button _initialize = new();
     private readonly ToggleSwitch _contextMenu = new();
     private readonly TextBlock _contextMenuTransfer = new() { TextWrapping = TextWrapping.Wrap };
     private readonly StackPanel _contextMenuConfirmation = new() { Spacing = 8, Visibility = Visibility.Collapsed };
@@ -56,23 +60,29 @@ internal sealed class SettingsDialog : IWallDialogSession
     private Task _pending = Task.CompletedTask;
     private Task _contextPending = Task.CompletedTask;
     private CancellationTokenSource? _backgroundProbe;
+    private CancellationTokenSource? _initialization;
+    private TaskCompletionSource<bool>? _initializationConfirmation;
     private bool _refreshing, _busy, _closeRequested, _forceClose, _showFailureBeforeClose;
-    private bool _contextPageOpen, _contextRefreshing, _contextRefreshRequested;
+    private bool _contextPageOpen;
+    private bool _contextRefreshing, _contextRefreshRequested;
     private long _contextMutationRevision;
     private string? _contextOutcomeKey, _contextOutcomeArgument;
     private string[]? _contextTransferTargets;
-    private MachineContextMenuState? _contextMachineState;
+    private ExplorerContextMenuState? _contextState;
     private readonly bool _traceInput = Environment.GetEnvironmentVariable("TILEWALL_TRACE_SETTINGS") == "1" ||
         Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1";
     private readonly HashSet<Thumb> _tracedThumbs = [];
     private int _inputSequence;
 
-    public SettingsDialog(Window owner, Func<SettingsDialogState> readState,
+    public SettingsDialog(Window owner, ExplorerContextMenuController contextMenuController, Func<SettingsDialogState> readState,
         Func<WallSettings, bool, Task<SettingsDialogState>> applyAsync, Func<bool, Task>? hotKeyRecordingChanged = null,
-        Func<Task<SettingsDialogState>>? retryStartReplacement = null)
+        Func<Task<SettingsDialogState>>? retryStartReplacement = null,
+        Func<CancellationToken, Task<string?>>? initializeWall = null)
     {
+        _contextMenuController = contextMenuController;
         _owner = owner; _readState = readState; _apply = applyAsync; _state = readState();
         _retryStartReplacement = retryStartReplacement;
+        _initializeWall = initializeWall ?? (_ => Task.FromResult<string?>(ProductStrings.Get("Wall.SettingsBlocked")));
         _startReplacementWatch = _form.DispatcherQueue.CreateTimer();
         _startReplacementWatch.Interval = TimeSpan.FromMilliseconds(500);
         _startReplacementWatch.IsRepeating = true;
@@ -138,7 +148,9 @@ internal sealed class SettingsDialog : IWallDialogSession
         AddRow("Settings.MenuStart", _menuStart);
         AddRow("Settings.FullScreen", _fullScreen);
         AddRow("Settings.ExpandColumns", _expandColumns);
-        AddRow("Settings.Reset", _reset);
+        var initializationActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        initializationActions.Children.Add(_reset); initializationActions.Children.Add(_initialize);
+        AddRow("Settings.Initialization", initializationActions);
         var contextMenuRow = new StackPanel { Spacing = 8 };
         contextMenuRow.Children.Add(_contextMenu);
         _contextMenuConfirmation.Children.Add(_contextMenuTransfer);
@@ -151,14 +163,14 @@ internal sealed class SettingsDialog : IWallDialogSession
         AddRow("Settings.Product", new TextBlock { Text = "TileWall", VerticalAlignment = VerticalAlignment.Center });
         AddRow("Settings.VersionLabel", _version);
         var visitLinks = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        var storeLink = Link("Settings.MicrosoftStore", "https://apps.microsoft.com/");
+        var storeLink = Link("Settings.MicrosoftStore", "https://apps.microsoft.com/detail/9NZZN35FDB0C");
         var sourceLink = Link("Settings.OpenSource", "https://github.com/GitRuozhi/TileWall_for_Win11");
         var developerLink = Link("Settings.Developer", "https://github.com/GitRuozhi");
         Id(storeLink, "visit-store"); Id(sourceLink, "visit-source"); Id(developerLink, "visit-developer");
         visitLinks.Children.Add(storeLink); visitLinks.Children.Add(sourceLink); visitLinks.Children.Add(developerLink);
         AddRow("Settings.Visit", visitLinks);
         var feedbackLinks = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        var storeFeedbackLink = Link("Settings.MicrosoftStore", "https://apps.microsoft.com/");
+        var storeFeedbackLink = Link("Settings.MicrosoftStore", "https://apps.microsoft.com/detail/9NZZN35FDB0C");
         var discussionLink = Link("Settings.Discussion", "https://github.com/GitRuozhi/TileWall_for_Win11/discussions");
         var communityLink = Link("Settings.QQGroup", CommunityGroupUrl,
             "Settings.CommunityOpenFailed");
@@ -174,12 +186,15 @@ internal sealed class SettingsDialog : IWallDialogSession
         var statusHost = new ScrollViewer { Content = _status, MaxHeight = 90, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         Grid.SetRow(statusHost, 1); body.Children.Add(statusHost);
         _dialog = new ContentDialog { XamlRoot = root, Content = body, DefaultButton = ContentDialogButton.None };
+        _settingsBody = body;
         _dialog.Resources["ContentDialogMaxWidth"] = 700d;
         Id(_dialog, "dialog"); Id(_anchor, "anchor"); Id(_topmost, "topmost"); Id(_stayVisible, "stay-visible");
         Id(_language, "language"); Id(_visualStyle, "visual-style"); Id(_theme, "theme"); Id(_background, "background");
         Id(_hotKey, "hotkey"); Id(_transparency, "transparency"); Id(_transparencyInput, "transparency-input");
         Id(_backgroundPath, "background-path"); Id(_showGrid, "show-grid"); Id(_runAtLogin, "run-at-login"); Id(_reset, "reset"); Id(_status, "status");
         Id(_contextMenu, "context-menu");
+        Id(_initialize, "initialize-wall");
+        _initialize.Click += (_, _) => BeginInitializeWall();
         Id(_replaceStartMenu, "replace-start-menu"); Id(_startReplacementStatus, "start-replacement-state");
         Id(_retryStart, "start-replacement-retry");
         Id(_confirmContextTransfer, "context-menu-confirm-transfer"); Id(_cancelContextTransfer, "context-menu-cancel-transfer");
@@ -192,7 +207,9 @@ internal sealed class SettingsDialog : IWallDialogSession
                 TraceSettings("DoubleTapped", $"source={e.OriginalSource?.GetType().Name}")), true);
             body.SizeChanged += (_, _) => TraceSettings("BodySize", $"size={body.ActualWidth:F2},{body.ActualHeight:F2}");
             foreach (var toggle in new[] { _showGrid, _runAtLogin, _topmost, _stayVisible, _menuStart,
-                _fullScreen, _expandColumns, _replaceStartMenu, _contextMenu })
+                _fullScreen, _expandColumns, _replaceStartMenu,
+                _contextMenu,
+            })
             {
                 toggle.Toggled += (_, _) => TraceSettings("Toggled",
                     $"{AutomationProperties.GetAutomationId(toggle)} isOn={toggle.IsOn}");
@@ -267,9 +284,25 @@ internal sealed class SettingsDialog : IWallDialogSession
             _contextTransferTargets = null;
             RefreshContextMenuPresentation();
         };
+        _dialog.PrimaryButtonClick += (_, e) =>
+        {
+            if (_initializationConfirmation is not { } confirmation) return;
+            e.Cancel = true; confirmation.TrySetResult(true);
+        };
+        _dialog.CloseButtonClick += (_, e) =>
+        {
+            if (_initializationConfirmation is not { } confirmation) return;
+            e.Cancel = true; confirmation.TrySetResult(false);
+        };
         _dialog.Closing += (_, e) =>
         {
             _backgroundProbe?.Cancel();
+            // Esc cancels the warning in place; the owned host stays alive.
+            if (_initializationConfirmation is { } confirmation)
+            {
+                e.Cancel = true; confirmation.TrySetResult(false); return;
+            }
+            _initialization?.Cancel();
             // Explicitly settle NumberBox's inner text before moving focus, so
             // its apply enters _pending before deciding whether this page closes.
             OwnedDialogWindow.ReleaseTextFocus(_dialog);
@@ -304,6 +337,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     public async Task WaitForPendingAsync()
     {
         _backgroundProbe?.Cancel();
+        CancelInitialization();
         OwnedDialogWindow.ReleaseTextFocus(_dialog);
         await _hotKey.CancelRecordingAsync();
         await _hotKey.WaitForIdleAsync();
@@ -313,16 +347,18 @@ internal sealed class SettingsDialog : IWallDialogSession
     public Task<ExitDecision> ConfirmExitAsync() => Task.FromResult(ExitDecision.DiscardAndExit);
     public string? TrySaveNow() => _busy ? ProductStrings.Get("Settings.Saving") : null;
     public void DiscardDraft() { }
-    public void RequestDismiss() => _dialog.Hide();
+    public void RequestDismiss() => Close();
     public void Close()
     {
         _backgroundProbe?.Cancel();
+        CancelInitialization();
         if (_busy) _closeRequested = true;
         else { _forceClose = true; _dialog.Hide(); }
     }
 
     public void RefreshStrings()
     {
+        if (_initializationConfirmation is not null) return;
         _refreshing = true;
         _dialog.Title = ProductStrings.Get("Settings.Title"); _dialog.CloseButtonText = ProductStrings.Get("Common.Close");
         ActionIcon.DecorateDialog(_dialog);
@@ -345,13 +381,15 @@ internal sealed class SettingsDialog : IWallDialogSession
             (_showGrid, "Settings.ShowGrid"), (_runAtLogin, "Settings.RunAtLogin"), (_fullScreen, "Settings.FullScreen"),
             (_expandColumns, "Settings.ExpandColumns"), (_menuStart, "Settings.MenuStart"),
             (_replaceStartMenu, "Settings.ReplaceStartMenu"),
-            (_contextMenu, "Settings.ContextMenuToggle") })
+            (_contextMenu, "Settings.ContextMenuToggle"),
+        })
         {
             toggle.OnContent = string.Empty; toggle.OffContent = string.Empty;
             var name = ProductStrings.Get(key);
             AutomationProperties.SetName(toggle, name); ToolTipService.SetToolTip(toggle, name);
         }
         ActionIcon.Set(_reset, ProductStrings.Get("Settings.Reset"), ActionIcon.Reset);
+        ActionIcon.Set(_initialize, ProductStrings.Get("Settings.InitializeWall"), ActionIcon.Reset);
         ActionIcon.SetIcon(_resetHotKey, ProductStrings.Get("Settings.ResetHotKey"), ActionIcon.Reset);
         foreach (var (key, control, helpKey) in new (string, FrameworkElement, string)[]
         {
@@ -364,9 +402,10 @@ internal sealed class SettingsDialog : IWallDialogSession
             ("Settings.MenuStart", _menuStart, "Settings.MenuStartHelp"),
             ("Settings.FullScreen", _fullScreen, "Settings.FullScreenHelp"),
             ("Settings.ExpandColumns", _expandColumns, "Settings.ExpandColumnsHelp"),
-            ("Settings.Reset", _reset, "Settings.ResetHelp"),
-            ("Settings.ExplorerMenu", _contextMenu, "Settings.ContextMenuHelp"),
+            ("Settings.Initialization", _reset, "Settings.ResetHelp"),
+            ("Settings.ExplorerMenu", _contextMenu, _contextMenuController.HelpKey),
         }) SetHelp(key, control, ProductStrings.Get(helpKey));
+        ToolTipService.SetToolTip(_initialize, ProductStrings.Get("Settings.InitializeWallHelp"));
         _retryStart.Content = ProductStrings.Get("Settings.StartReplacementRetry");
         _confirmContextTransfer.Content = ProductStrings.Get("Settings.ContextMenuConfirmTransfer");
         _cancelContextTransfer.Content = ProductStrings.Get("Common.Cancel");
@@ -518,7 +557,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         var observedRevision = _contextMutationRevision;
         try
         {
-            var snapshot = await Task.Run(ExplorerContextMenuRegistration.ReadMachineState);
+            var snapshot = await _contextMenuController.ReadAsync();
             if (!_contextPageOpen) return;
             // A menu write may have started and finished while this read was running.
             if (_busy || observedRevision != _contextMutationRevision)
@@ -526,7 +565,20 @@ internal sealed class SettingsDialog : IWallDialogSession
                 _contextRefreshRequested = true;
                 return;
             }
-            _contextMachineState = snapshot;
+            _contextState = snapshot;
+            if (!snapshot.ReadSucceeded)
+            {
+                _contextOutcomeKey = "Settings.ContextMenuReadFailed";
+                _contextOutcomeArgument = snapshot.Error;
+                _status.Text = ProductStrings.Get(_contextOutcomeKey);
+                _status.Visibility = Visibility.Visible;
+            }
+            else if (_contextOutcomeKey == "Settings.ContextMenuReadFailed")
+            {
+                _contextOutcomeKey = null; _contextOutcomeArgument = null;
+                _status.Text = _state.Error is null ? string.Empty : string.Format(ProductStrings.Get("Settings.ApplyFailed"), _state.Error);
+                _status.Visibility = _state.Error is null ? Visibility.Collapsed : Visibility.Visible;
+            }
             // Keep transfer confirmation controls stable through activation clicks.
             // Confirmation performs its own fresh ownership check before writing.
         }
@@ -540,14 +592,6 @@ internal sealed class SettingsDialog : IWallDialogSession
             }
         }
     }
-
-    private static bool IsCurrentContextTarget(string target) => Environment.ProcessPath is { } executable &&
-        string.Equals(Path.GetFullPath(target), Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase);
-
-    private string[] OtherContextTargets() => _contextMachineState?.Targets.Where(target => !IsCurrentContextTarget(target))
-        .Order(StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
-
-    private bool HasCurrentContextEntries => _contextMachineState?.Targets.Any(IsCurrentContextTarget) == true;
 
     private void BeginContextMenuChange(bool enable, string[]? confirmedTargets = null)
     {
@@ -566,55 +610,25 @@ internal sealed class SettingsDialog : IWallDialogSession
         try
         {
             await _hotKey.CancelRecordingAsync();
-            // Fresh ownership before either a transfer confirmation or UAC.
-            _contextMachineState = await Task.Run(ExplorerContextMenuRegistration.ReadMachineState);
-            var machine = _contextMachineState!;
-            if (machine.Status == MachineContextMenuStatus.ReadFailed || enable && machine.HasUnrecognizedConflict)
-            {
-                failed = true;
-                _contextOutcomeKey = machine.Status == MachineContextMenuStatus.ReadFailed
-                    ? "Settings.ContextMenuReadFailed" : "Settings.ContextMenuConflict";
-                _contextOutcomeArgument = machine.Error;
-                return;
-            }
-            var otherTargets = OtherContextTargets();
-            if (enable && otherTargets.Length != 0 && (confirmedTargets is null ||
-                !otherTargets.SequenceEqual(confirmedTargets, StringComparer.OrdinalIgnoreCase)))
-            {
-                _contextTransferTargets = otherTargets;
-                return;
-            }
-
             RefreshContextMenuPresentation();
             var language = ProductStrings.Language == WallLanguageMode.Chinese ||
                 ProductStrings.Language == WallLanguageMode.System &&
                 System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase)
                 ? "zh" : "en";
-            var result = await ContextMenuElevation.ApplyAsync(enable, language);
-            _contextMachineState = result.State;
+            var result = await _contextMenuController.ApplyAsync(enable, language, confirmedTargets);
+            _contextState = result.State;
             _contextRefreshRequested = false;
-            var actual = result.State;
-            var matchesRequest = actual.Status != MachineContextMenuStatus.ReadFailed &&
-                (enable ? actual.IsCurrentExecutableComplete : !HasCurrentContextEntries);
-            failed = result.Status != ContextMenuElevationStatus.Completed || !matchesRequest;
-            _contextOutcomeKey = result.Status switch
-            {
-                ContextMenuElevationStatus.Cancelled => "Settings.ContextMenuCancelled",
-                ContextMenuElevationStatus.LaunchFailed => "Settings.ContextMenuLaunchFailed",
-                ContextMenuElevationStatus.HelperFailed when result.ExitCode == ApplicationModel.ContextMenuAdminCommand.RollbackIncomplete
-                    => "Settings.ContextMenuRollbackIncomplete",
-                ContextMenuElevationStatus.HelperFailed => "Settings.ContextMenuOperationFailed",
-                _ => matchesRequest ? null : "Settings.ContextMenuChangedElsewhere"
-            };
-            _contextOutcomeArgument = result.Status == ContextMenuElevationStatus.HelperFailed
-                ? result.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) : result.Error;
+            _contextTransferTargets = result.TransferTargets;
+            _contextOutcomeKey = result.OutcomeKey;
+            _contextOutcomeArgument = result.Detail;
+            failed = result.Failed;
         }
         catch (Exception ex)
         {
             failed = true;
             _contextOutcomeKey = "Settings.ContextMenuLaunchFailed";
             _contextOutcomeArgument = ex.Message;
-            _contextMachineState = await Task.Run(ExplorerContextMenuRegistration.ReadMachineState);
+            _contextState = await _contextMenuController.ReadAsync();
         }
         finally
         {
@@ -646,8 +660,13 @@ internal sealed class SettingsDialog : IWallDialogSession
         try
         {
             // A mixed state can still contain this copy's entries; On permits their exact removal.
-            _contextMenu.IsOn = HasCurrentContextEntries;
-            _contextMenu.IsEnabled = !_busy && _contextMachineState is not null;
+            _contextMenu.IsOn = _contextState?.Enabled == true;
+            _contextMenu.IsEnabled = !_busy && _contextState?.ReadSucceeded == true;
+            if (_contextState is { ReadSucceeded: false })
+            {
+                _status.Text = ProductStrings.Get("Settings.ContextMenuReadFailed");
+                _status.Visibility = Visibility.Visible;
+            }
             _confirmContextTransfer.IsEnabled = _cancelContextTransfer.IsEnabled = !_busy;
             _contextMenuConfirmation.Visibility = _contextTransferTargets is null ? Visibility.Collapsed : Visibility.Visible;
             if (_contextTransferTargets is not null)
@@ -733,6 +752,104 @@ internal sealed class SettingsDialog : IWallDialogSession
         finally { _busy = false; _formHost.IsEnabled = true; RestoreState(); }
         if (path is not null) await ApplyAsync(_state.Settings with { BackgroundMode = WallBackgroundMode.Custom, BackgroundImagePath = path, BackgroundMedia = null });
         else FinishPending();
+    }
+
+    private void BeginInitializeWall()
+    {
+        if (_refreshing || _busy || !_contextPageOpen) return;
+        // A NumberBox may start an ordinary settings apply when its text settles.
+        // Let that operation finish before offering a destructive confirmation.
+        OwnedDialogWindow.ReleaseTextFocus(_dialog);
+        if (_busy || !_pending.IsCompleted) return;
+        var cancellation = new CancellationTokenSource();
+        _initialization = cancellation;
+        _busy = true; _formHost.IsEnabled = false;
+        _pending = InitializeWallCoreAsync(cancellation);
+    }
+
+    private void CancelInitialization()
+    {
+        _initialization?.Cancel();
+        _initializationConfirmation?.TrySetResult(false);
+    }
+
+    private async Task InitializeWallCoreAsync(CancellationTokenSource cancellation)
+    {
+        var completed = false;
+        try
+        {
+            await _hotKey.CancelRecordingAsync();
+            await _hotKey.WaitForIdleAsync();
+            await _contextPending;
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (!_contextPageOpen || _closeRequested) return;
+            var confirmation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _initializationConfirmation = confirmation;
+            try
+            {
+                _dialog.Title = ProductStrings.Get("Settings.InitializeWall");
+                _dialog.Content = new TextBlock
+                {
+                    Text = ProductStrings.Get("Settings.InitializeWallWarning"), TextWrapping = TextWrapping.Wrap,
+                    Width = Math.Min(460, _settingsBody.Width),
+                };
+                _dialog.PrimaryButtonText = ProductStrings.Get("Settings.InitializeWall");
+                _dialog.CloseButtonText = ProductStrings.Get("Common.Cancel");
+                _dialog.DefaultButton = ContentDialogButton.Close;
+                ActionIcon.DecorateDialog(_dialog, ActionIcon.Reset, ActionIcon.Delete, ActionIcon.Cancel);
+                // Refreshing DefaultButton updates Enter behavior; move actual
+                // focus off the destructive command as well.
+                _dialog.DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!ReferenceEquals(_initializationConfirmation, confirmation)) return;
+                    FocusInitializationCancel(_dialog);
+                });
+                if (!await confirmation.Task) return;
+            }
+            finally
+            {
+                _initializationConfirmation = null;
+                _dialog.Content = _settingsBody;
+                _dialog.PrimaryButtonText = string.Empty;
+                _dialog.DefaultButton = ContentDialogButton.None;
+                _dialog.Title = ProductStrings.Get("Settings.Title");
+                _dialog.CloseButtonText = ProductStrings.Get("Common.Close");
+                ActionIcon.DecorateDialog(_dialog);
+            }
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (!_contextPageOpen || _closeRequested) return;
+            _status.Text = ProductStrings.Get("Settings.InitializingWall");
+            _status.Visibility = Visibility.Visible;
+            var error = await _initializeWall(cancellation.Token);
+            _state = _readState() with { Error = error };
+            completed = error is null;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            _state = _readState() with { Error = string.Format(ProductStrings.Get("Welcome.Failed"), ex.Message) };
+        }
+        finally
+        {
+            if (ReferenceEquals(_initialization, cancellation)) _initialization = null;
+            cancellation.Dispose();
+            _busy = false; _formHost.IsEnabled = true;
+            RestoreState();
+            if (completed)
+            {
+                _status.Text = ProductStrings.Get("Settings.InitializedWall");
+                _status.Visibility = Visibility.Visible;
+            }
+            FinishPending();
+        }
+    }
+
+    private static bool FocusInitializationCancel(DependencyObject parent)
+    {
+        if (parent is Button { Name: "CloseButton" } cancel) return cancel.Focus(FocusState.Programmatic);
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+            if (FocusInitializationCancel(VisualTreeHelper.GetChild(parent, index))) return true;
+        return false;
     }
 
     private void BeginApply(Func<WallSettings, WallSettings> change)

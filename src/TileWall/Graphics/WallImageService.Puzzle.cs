@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using TileWall.Core.Imaging;
@@ -25,8 +27,114 @@ public sealed record PuzzleFrame(string CanonicalPath, long SourceBytes, DateTim
 
 public enum MemberImagePurpose { Content, Thumbnail }
 
+public sealed record TargetImageSourceResult(MemberImageSource Source, PuzzleCandidateResult? Candidates)
+{
+    internal string? TargetPath { get; init; }
+    internal string? SourceFingerprint { get; init; }
+
+    public WallMember ApplyTo(WallMember member) => member with
+    {
+        Images = Source, Carousel = null,
+        Visual = member.Visual with
+        {
+            BackgroundMode = Source.Kind == MemberImageSourceKind.Automatic ? MemberBackgroundMode.Default : MemberBackgroundMode.Blur,
+            BackgroundTransparency = Source.Kind == MemberImageSourceKind.Automatic ? 50 : member.Visual.BackgroundTransparency,
+        },
+    };
+}
+
 public sealed partial class WallImageService
 {
+    /// <summary>Infer from readable target contents, using the same candidates as the editor and gallery.</summary>
+    public Task<TargetImageSourceResult?> ResolveTargetSourceAsync(string? target, CancellationToken ct = default) =>
+        StartImageRequest<TargetImageSourceResult?>(token => ResolveTargetSourceCoreAsync(target, token), ct, null);
+
+    private async Task<TargetImageSourceResult?> ResolveTargetSourceCoreAsync(string? target, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(target) || !Path.IsPathFullyQualified(target)) return new(new(), null);
+        var before = await Task.Run(() => ReadTargetFingerprint(target, ct), ct).ConfigureAwait(false);
+        var source = new MemberImageSource();
+        PuzzleCandidateResult? candidates = null;
+        if (before.Directory || !Path.GetExtension(target).Equals(".lnk", StringComparison.OrdinalIgnoreCase))
+        {
+            var proposed = new MemberImageSource
+            { Kind = before.Directory ? MemberImageSourceKind.Folder : MemberImageSourceKind.Single, Path = target };
+            if (before.Directory)
+            {
+                // A confirmation checks this source now. Share any in-flight producer,
+                // but do not accept an old fallback or wait for the periodic deadline.
+                var folder = NormalizeImageFilePath(target);
+                lock (_workGate)
+                    if (folder is not null && _gallerySources.TryGetValue(folder, out var state)) state.Due = DateTimeOffset.MinValue;
+            }
+            candidates = await EnumerateCandidatesCoreAsync(proposed, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            if (candidates.Status == WallImageStatus.Cancelled) throw new OperationCanceledException(ct);
+            if (!candidates.IsComplete || candidates.Status is WallImageStatus.Fallback or WallImageStatus.Invalid)
+                throw new IOException(DescribeCandidateDiagnostic(candidates) ?? "Image source is unavailable.");
+            if (candidates.Paths.Count > 0) source = proposed;
+        }
+        var after = await Task.Run(() => ReadTargetFingerprint(target, ct), ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (before != after) throw new IOException("Target changed while its image source was being read.");
+        return new(source, candidates) { TargetPath = target, SourceFingerprint = before.Fingerprint };
+    }
+
+    public Task<bool> IsTargetSourceCurrentAsync(TargetImageSourceResult result, CancellationToken ct = default) =>
+        StartImageRequest(token => IsTargetSourceCurrentCoreAsync(result, token), ct, false);
+
+    private async Task<bool> IsTargetSourceCurrentCoreAsync(TargetImageSourceResult result, CancellationToken ct)
+    {
+        await _slots.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(() => result.TargetPath is null ||
+                ReadTargetFingerprint(result.TargetPath, ct).Fingerprint == result.SourceFingerprint, ct).ConfigureAwait(false);
+        }
+        finally { _slots.Release(); }
+    }
+
+    private static (bool Directory, string Fingerprint) ReadTargetFingerprint(string path, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var attributes = File.GetAttributes(path);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        void Add(string value) => hash.AppendData(Encoding.UTF8.GetBytes(value + "\n"));
+        var directory = (attributes & FileAttributes.Directory) != 0;
+        Add(directory ? "directory" : "file");
+        if (directory)
+        {
+            // Materialize the whole listing: an unreadable/incomplete directory is
+            // never an authoritative empty gallery. Only top-level files participate.
+            foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.TopDirectoryOnly)
+                         .OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ThenBy(value => value, StringComparer.Ordinal))
+            {
+                ct.ThrowIfCancellationRequested();
+                var info = new FileInfo(file);
+                if (!info.Exists) throw new IOException("Target directory changed during enumeration.");
+                Add(info.Name); Add(info.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                Add(info.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
+        else
+        {
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var info = new FileInfo(path);
+            Add(file.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            Add(info.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            // Hash possible originals as well as shortcut bytes. Large ordinary
+            // files remain valid launch targets without reading their whole contents.
+            if (file.Length <= TileWall.Core.Storage.PreparedMediaAsset.MaximumBytes)
+            {
+                var buffer = new byte[64 * 1024];
+                int read;
+                while ((read = file.Read(buffer)) != 0) { ct.ThrowIfCancellationRequested(); hash.AppendData(buffer.AsSpan(0, read)); }
+            }
+        }
+        ct.ThrowIfCancellationRequested();
+        return (directory, Convert.ToHexString(hash.GetHashAndReset()));
+    }
+
     public Task<PuzzleCandidateResult> EnumerateMemberCandidatesAsync(
         MemberImageSource source, CancellationToken ct = default) =>
         StartImageRequest(token => EnumerateCandidatesCoreAsync(source, token), ct,

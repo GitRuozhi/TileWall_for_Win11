@@ -231,6 +231,12 @@ public sealed class WallSessionTests
         Assert.True(session.ResultUnknown);
         Assert.False(session.RequiresReopen);
         Assert.True(session.ViewBlocked);
+        var refreshes = 0;
+        session.SetViewRefresh(_ => refreshes++);
+        Assert.False(session.RefreshViewFromCurrent());
+        Assert.Equal(0, refreshes);
+        Assert.True(session.ViewBlocked);
+        Assert.True(session.ResultUnknown);
         Assert.Null(session.Propose(new RemoveMemberAction(session.Current.Generation, "tile1"), 500, 500).Proposal);
         Assert.False(session.Commit(added.Proposal!).Committed);
         files.ThrowOnWrite = false;
