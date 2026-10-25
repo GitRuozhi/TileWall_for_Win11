@@ -1,13 +1,45 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Xaml.Media.Imaging;
+using TileWall.Core.Shell;
+using TileWall.Shell.Interop;
 using Windows.Graphics;
 
 namespace TileWall.Graphics;
 
-/// <summary>One bounded capture while the wall is hidden; pixels never leave process memory.</summary>
+/// <summary>One bounded desktop capture; pixels never leave process memory.</summary>
 internal static class DesktopBackdropSnapshot
 {
+    internal static DecodedImageFrame? CaptureExcludingWindow(RectInt32 region, IntPtr window)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041) || window == IntPtr.Zero ||
+            Win32Api.GetWindowThreadProcessId(window, out var owner) == 0 || owner != (uint)Environment.ProcessId ||
+            (Win32Api.GetWindowLongPtrW(window, -16).ToInt64() & 0x40000000) != 0) // GWL_STYLE / WS_CHILD
+            return null;
+        if (!Win32Api.GetWindowDisplayAffinity(window, out var original))
+        {
+            AppLog.Warn("BackdropSnapshot", $"Read display affinity failed: {Marshal.GetLastWin32Error()}");
+            return null;
+        }
+        if (!Win32Api.SetWindowDisplayAffinity(window, Win32Api.WdaExcludeFromCapture))
+        {
+            AppLog.Warn("BackdropSnapshot", $"Exclude window from capture failed: {Marshal.GetLastWin32Error()}");
+            return null;
+        }
+        DecodedImageFrame? captured;
+        bool restored;
+        try { captured = Capture(region); }
+        finally
+        {
+            // Keep this scope synchronous and short. Blur/bitmap preparation happens
+            // only after the original screenshot/recording policy has been restored.
+            restored = Win32Api.SetWindowDisplayAffinity(window, original) &&
+                Win32Api.GetWindowDisplayAffinity(window, out var actual) && actual == original;
+            if (!restored) AppLog.Warn("BackdropSnapshot", $"Restore display affinity failed: {Marshal.GetLastWin32Error()}");
+        }
+        return restored ? captured : null;
+    }
+
     internal static DecodedImageFrame? Capture(RectInt32 region)
     {
         if (region.Width <= 0 || region.Height <= 0 || region.Width > 20000 || region.Height > 20000) return null;

@@ -514,7 +514,7 @@ internal sealed class SettingsDialog : IWallDialogSession
 
     private void SetTransparency(double value, bool apply)
     {
-        if (_refreshing || _busy) return;
+        if (_refreshing || _busy || _initialization is not null) return;
         var percent = (int)Math.Clamp(Math.Round(value), 0, 100);
         _refreshing = true; _transparency.Value = percent; _transparencyInput.Value = percent; _refreshing = false;
         if (apply) ApplyTransparency();
@@ -678,7 +678,7 @@ internal sealed class SettingsDialog : IWallDialogSession
 
     private void BeginChoiceApply(ComboBox box, Func<WallSettings, WallSettings> change, bool pickImage = false)
     {
-        if (_refreshing || _busy) return;
+        if (_refreshing || _busy || _initialization is not null) return;
         var candidate = change(_state.Settings);
         if (!pickImage && candidate == _state.Settings) return;
         // Publish cancellation ownership before the queued popup unwind. Exit
@@ -831,10 +831,19 @@ internal sealed class SettingsDialog : IWallDialogSession
         }
         finally
         {
-            if (ReferenceEquals(_initialization, cancellation)) _initialization = null;
-            cancellation.Dispose();
-            _busy = false; _formHost.IsEnabled = true;
-            RestoreState();
+            // Reattaching/enabling the form can raise control events. Restore
+            // committed values before releasing initialization's input gate.
+            try
+            {
+                RestoreState();
+                _formHost.IsEnabled = true;
+            }
+            finally
+            {
+                _busy = false;
+                if (ReferenceEquals(_initialization, cancellation)) _initialization = null;
+                cancellation.Dispose();
+            }
             if (completed)
             {
                 _status.Text = ProductStrings.Get("Settings.InitializedWall");
@@ -855,7 +864,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private void BeginApply(Func<WallSettings, WallSettings> change)
     {
         TraceSettings("BeginApply");
-        if (_refreshing || _busy) { TraceSettings("IgnoredBusyOrRefresh"); return; }
+        if (_refreshing || _busy || _initialization is not null) { TraceSettings("IgnoredBusyOrRefresh"); return; }
         var candidate = change(_state.Settings);
         if (candidate == _state.Settings) { TraceSettings("IgnoredUnchanged"); return; }
         TraceSettings("Candidate", SettingsFlags(candidate));

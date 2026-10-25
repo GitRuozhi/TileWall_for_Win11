@@ -20,6 +20,9 @@ public sealed partial class MainWindow
     private readonly SemaphoreSlim _snapshotSlot = new(1, 1);
     private CancellationTokenSource? _snapshotRequest;
     private (int X, int Y, int W, int H, double Scale, bool Dark)? _snapshotKey;
+    private (int X, int Y, int W, int H, double Scale, bool Dark)? _snapshotRequestKey;
+    private long _snapshotGeneration, _snapshotFocusCycle, _snapshotRequestedFocusCycle = -1;
+    private bool _snapshotExternalFocus, _snapshotFocusLossRequest;
     private CancellationTokenSource? _backgroundRequest;
     private CancellationTokenSource? _backgroundCommitRequest;
     private Task<bool>? _backgroundCommitWork;
@@ -76,6 +79,9 @@ public sealed partial class MainWindow
             : _themeDark ? Color.FromArgb(240, 32, 32, 32) : Color.FromArgb(240, 243, 243, 243);
         if (StatusPanel.Background is not SolidColorBrush statusBrush || !statusBrush.Color.Equals(statusBackground))
             StatusPanel.Background = new SolidColorBrush(statusBackground);
+        if (_snapshotRequestKey is not null && (settings.BackgroundMode != WallBackgroundMode.Acrylic || contrast ||
+            !_appearanceSettings.AdvancedEffectsEnabled || _snapshotFocusLossRequest && !CanRefreshFocusLossSnapshot))
+            CancelSnapshotRequest();
         InvalidateSnapshotIfGeometryChanged();
         _wallBackdrop.Configure(settings, _backdropActive, _themeDark, HasValidSnapshot);
         var path = settings.BackgroundMode == WallBackgroundMode.Custom ? settings.BackgroundMedia?.Sha256 ?? settings.BackgroundImagePath : null;
@@ -230,7 +236,9 @@ public sealed partial class MainWindow
 
     private void InvalidateSnapshotIfGeometryChanged()
     {
-        if (_snapshotKey is null || _snapshotKey == CurrentSnapshotKey) return;
+        var key = CurrentSnapshotKey;
+        if ((_snapshotKey is null || _snapshotKey == key) &&
+            (_snapshotRequestKey is null || _snapshotRequestKey == key)) return;
         ReleaseBackdropSnapshot();
         _wallBackdrop.Configure(Settings, _backdropActive, _themeDark, false);
         UpdateBackgroundLayer();
@@ -239,7 +247,8 @@ public sealed partial class MainWindow
     private void ReleaseBackdropSnapshot()
     {
         CancelBackgroundCommit();
-        _snapshotRequest?.Cancel(); _snapshotRequest?.Dispose(); _snapshotRequest = null;
+        CancelSnapshotRequest();
+        if (!AppWindow.IsVisible) _snapshotExternalFocus = false;
         _snapshotKey = null;
         // Invalidating a visible snapshot must install the solid replacement before
         // removing its pixels. Hide/close use the same cancellation boundary.
@@ -252,18 +261,65 @@ public sealed partial class MainWindow
     {
         if (_appearanceStopping || _windowClosing || AppWindow.IsVisible || _modal || Settings.BackgroundMode != WallBackgroundMode.Acrylic ||
             _accessibilitySettings.HighContrast || !_appearanceSettings.AdvancedEffectsEnabled) return;
-        _snapshotRequest?.Cancel(); _snapshotRequest?.Dispose();
-        _snapshotRequest = new();
-        _snapshotImage.Source = null;
-        _wallBackdrop.Configure(Settings, _backdropActive, _themeDark, false);
         var key = CurrentSnapshotKey;
-        _snapshotKey = key;
+        BeginSnapshotRequest(key, focusLoss: false);
         var captured = DesktopBackdropSnapshot.Capture(new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H));
-        if (captured is not null) TrackAppearanceWork(PrepareSnapshotAsync(captured, key, _snapshotRequest.Token));
+        if (captured is not null)
+            TrackAppearanceWork(PrepareSnapshotAsync(captured, key, _snapshotGeneration, null, _snapshotRequest!.Token));
+    }
+
+    private bool CanRefreshFocusLossSnapshot => !_appearanceStopping && !_windowClosing && !ShutdownStarted &&
+        AppWindow.IsVisible && !_backdropActive && !_modal && !_contextMenuOpen &&
+        Settings.StayVisibleOnFocusLoss && Settings.BackgroundMode == WallBackgroundMode.Acrylic &&
+        !_accessibilitySettings.HighContrast && _appearanceSettings.AdvancedEffectsEnabled && IsForegroundOutsideWallSession();
+
+    private void RefreshBackdropOnFocusLoss()
+    {
+        if (!_snapshotExternalFocus)
+        {
+            _snapshotExternalFocus = true;
+            _snapshotFocusCycle++;
+        }
+        if (!CanRefreshFocusLossSnapshot || _snapshotRequestedFocusCycle == _snapshotFocusCycle) return;
+        // Mark admission, including a failed capture, once per real external focus
+        // cycle. Switching among external apps never starts a capture loop.
+        _snapshotRequestedFocusCycle = _snapshotFocusCycle;
+        var key = CurrentSnapshotKey;
+        BeginSnapshotRequest(key, focusLoss: true);
+        TraceInput($"BackdropSnapshot capture focusCycle={_snapshotFocusCycle} generation={_snapshotGeneration}");
+        var capture = DesktopBackdropSnapshot.CaptureExcludingWindow(
+            new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H), WinRT.Interop.WindowNative.GetWindowHandle(this));
+        if (capture is not null)
+            TrackAppearanceWork(PrepareSnapshotAsync(capture, key, _snapshotGeneration, _snapshotFocusCycle, _snapshotRequest!.Token));
+    }
+
+    private void CancelFocusLossSnapshot()
+    {
+        _snapshotExternalFocus = false;
+        // A hidden-before-show frame may still be preparing after first activation.
+        // Its validity is geometric; only visible refreshes belong to a focus cycle.
+        if (_snapshotFocusLossRequest) CancelSnapshotRequest();
+    }
+
+    private void CancelSnapshotRequest()
+    {
+        _snapshotGeneration++;
+        _snapshotRequest?.Cancel(); _snapshotRequest?.Dispose(); _snapshotRequest = null;
+        _snapshotRequestKey = null;
+        _snapshotFocusLossRequest = false;
+    }
+
+    private void BeginSnapshotRequest((int X, int Y, int W, int H, double Scale, bool Dark) key, bool focusLoss)
+    {
+        CancelSnapshotRequest();
+        _snapshotRequest = new();
+        _snapshotRequestKey = key;
+        _snapshotFocusLossRequest = focusLoss;
     }
 
     private async Task PrepareSnapshotAsync(DecodedImageFrame capture,
-        (int X, int Y, int W, int H, double Scale, bool Dark) key, CancellationToken token)
+        (int X, int Y, int W, int H, double Scale, bool Dark) key,
+        long generation, long? focusCycle, CancellationToken token)
     {
         try
         {
@@ -271,8 +327,18 @@ public sealed partial class MainWindow
             DecodedImageFrame blurred;
             try { blurred = await Task.Run(() => DesktopBackdropSnapshot.BlurAndTint(capture, key.Dark), token); }
             finally { _snapshotSlot.Release(); }
-            if (token.IsCancellationRequested || _windowClosing || _snapshotKey != key || CurrentSnapshotKey != key) return;
-            _snapshotImage.Source = DesktopBackdropSnapshot.ToBitmap(blurred);
+            bool IsCurrent() => !token.IsCancellationRequested && !_windowClosing && !_appearanceStopping && !ShutdownStarted &&
+                generation == _snapshotGeneration && _snapshotRequestKey == key && CurrentSnapshotKey == key &&
+                (focusCycle is null || _snapshotExternalFocus && focusCycle == _snapshotFocusCycle && CanRefreshFocusLossSnapshot);
+            if (!IsCurrent()) return;
+            var candidate = DesktopBackdropSnapshot.ToBitmap(blurred);
+            if (!IsCurrent()) return;
+            // No committed key/source changes until the independent candidate is
+            // complete. Failed, canceled and stale requests leave the old plane.
+            CancelBackgroundCommit();
+            _snapshotImage.Source = candidate;
+            _snapshotKey = key;
+            TraceInput($"BackdropSnapshot accepted focusCycle={focusCycle} generation={generation}");
             RefreshAppearance();
         }
         catch (OperationCanceledException) { }

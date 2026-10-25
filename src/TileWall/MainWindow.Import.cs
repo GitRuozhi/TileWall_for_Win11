@@ -24,6 +24,7 @@ public sealed partial class MainWindow
     private WallPackageReader CreateWallPackageReader() => new(
         _session.ObservePackageEntryAsync, _images.VerifyPackageImageAsync);
     private StartMenuImportCoordinator? _startMenuImports;
+    private readonly StartMenuImportProjection _importSourceProjection = new();
     private sealed record ImportedIconCopy(string MemberId, string Sha256, string? TargetPath,
         string? IconPath, int? IconIndex, string Directory, string Key);
     private (long Generation, ImportedIconCopy[] Copies)? _pendingImportIconCopies;
@@ -61,9 +62,11 @@ public sealed partial class MainWindow
         try
         {
             if (!await BeginModalAsync()) return;
+            _importSourceProjection.BeginPage();
             var dialog = new ImportDialog(DialogOwner, _images, StartMenuImports, CreateWallPackageReader(),
-                ReadImportContextAsync, ReadImportSourceAsync, SaveImportAsync, IsImportContextCurrent,
-                member => _session.ManagedEntryPath(member), Document.Settings.VisualStyle, LoadStartMenuIconAsync);
+                ReadImportContextAsync, (source, path, token) => ReadImportSourceAsync(_importSourceProjection, source, path, token),
+                (context, source, projection, token) => PrepareImportPageAsync(_importSourceProjection, context, source, projection, token),
+                SaveImportAsync, IsImportContextCurrent, Document.Settings.VisualStyle, LoadStartMenuIconAsync);
             ActiveDialog = dialog;
             await dialog.ShowAsync();
         }
@@ -80,58 +83,85 @@ public sealed partial class MainWindow
         !_session.ResultUnknown && !_session.RequiresReopen && !_session.RecoveryBlocked &&
         Document.Generation == context.Document.Generation && CurrentViewportBudget == context.Budget;
 
-    private async Task<ImportPageContext> ReadImportContextAsync(CancellationToken token)
+    private Task<ImportPageContext> ReadImportContextAsync(CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         var current = Document;
         var budget = CurrentViewportBudget;
-        var observations = await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
-        {
-            var files = new LocalFileStore();
-            var guarded = new GuardedWallFiles(files, new WallStoragePaths(files, _session.DataRoot));
-            var identities = ImportIdentities;
-            var result = new Dictionary<string, string>(StringComparer.Ordinal);
-            var hashes = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var member in current.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members))
-            {
-                token.ThrowIfCancellationRequested();
-                if (member.Entry is not { } entry) continue;
-                var path = _session.ManagedEntryPath(member) ?? throw new IOException("Invalid formal entry path.");
-                using var stream = guarded.OpenReadProtected(path);
-                if (stream.Length is < 1 or > EntryObservation.MaximumBytes) throw new InvalidDataException("Invalid formal entry length.");
-                var bytes = new byte[checked((int)stream.Length)]; stream.ReadExactly(bytes);
-                var fields = entry.Kind == ManagedEntryKind.Lnk ? _session.LinkFiles.Read(path) : null;
-                result[member.Id] = EntryObservation.Observe(identities, entry.Kind, path, bytes, fields).Key;
-                hashes[member.Id] = Convert.ToHexString(SHA256.HashData(bytes));
-            }
-            return (Identities: result, Hashes: hashes);
-        });
-        token.ThrowIfCancellationRequested();
-        var context = new ImportPageContext(current, budget, observations.Identities, observations.Hashes);
+        var context = new ImportPageContext(current, budget, new Dictionary<string, string>(StringComparer.Ordinal),
+            new Dictionary<string, string>(StringComparer.Ordinal));
         if (!IsImportContextCurrent(context)) throw new IOException(ProductStrings.Get("Import.SourceChanged"));
-        return context;
+        return Task.FromResult(context);
     }
 
-    private async Task<ImportPageSource> ReadImportSourceAsync(int source, string? path, CancellationToken token)
+    private async Task<ImportPagePreparation> PrepareImportPageAsync(StartMenuImportProjection sourceProjection,
+        ImportPageContext context, ImportPageSource source, ImportSourceProjection projection, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!IsImportContextCurrent(context) || projection.Generation != context.Document.Generation)
+            throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+        var current = context.Document;
+        var destinationIds = projection.Groups.Select(group => group.DestinationGroupId).OfType<string>()
+            .Where(id => !context.ObservedDestinationGroups.Contains(id)).ToHashSet(StringComparer.Ordinal);
+        // Group assignment is pure data. No entry in an unrelated wall group is
+        // opened while presenting or refreshing source candidates.
+        if (destinationIds.Count != 0)
+        {
+            var observations = await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
+            {
+                var files = new LocalFileStore();
+                var guarded = new GuardedWallFiles(files, new WallStoragePaths(files, _session.DataRoot));
+                var identities = ImportIdentities;
+                var result = new Dictionary<string, string>(context.ExistingIdentities, StringComparer.Ordinal);
+                var hashes = new Dictionary<string, string>(context.ExistingEntrySha256, StringComparer.Ordinal);
+                foreach (var member in current.Lanes.SelectMany(lane => lane.Groups)
+                             .Where(group => destinationIds.Contains(group.Id)).SelectMany(group => group.Members))
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (member.Entry is not { } entry) continue;
+                    var path = _session.ManagedEntryPath(member) ?? throw new IOException("Invalid formal entry path.");
+                    using var stream = guarded.OpenReadProtected(path);
+                    if (stream.Length is < 1 or > EntryObservation.MaximumBytes) throw new InvalidDataException("Invalid formal entry length.");
+                    var bytes = new byte[checked((int)stream.Length)]; stream.ReadExactly(bytes);
+                    var fields = entry.Kind == ManagedEntryKind.Lnk ? _session.LinkFiles.Read(path) : null;
+                    result[member.Id] = EntryObservation.Observe(identities, entry.Kind, path, bytes, fields).Key;
+                    hashes[member.Id] = Convert.ToHexString(SHA256.HashData(bytes));
+                }
+                return (Identities: result, Hashes: hashes);
+            });
+            token.ThrowIfCancellationRequested();
+            var observedGroups = context.ObservedDestinationGroups.Concat(destinationIds).ToHashSet(StringComparer.Ordinal);
+            context = context with { ExistingIdentities = observations.Identities, ExistingEntrySha256 = observations.Hashes,
+                ObservedDestinationGroups = observedGroups };
+        }
+        source = await sourceProjection.PrepareAvailabilityAsync(source, token);
+        token.ThrowIfCancellationRequested();
+        if (!IsImportContextCurrent(context)) throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+        return new(context, source);
+    }
+
+    private async Task<ImportPageSource> ReadImportSourceAsync(StartMenuImportProjection projection, int source, string? path, CancellationToken token)
     {
         if (source == 0)
         {
             await StartMenuImports.ReadCachedAsync().WaitAsync(token);
             var snapshot = StartMenuImports.Snapshot;
-            return await Task.Run(() => StartMenuImportProjection.FromStartMenu(snapshot, StartMenuImports.IconsDirectory, token), token);
+            return await Task.Run(() => projection.FromStartMenu(snapshot, StartMenuImports.IconsDirectory, token), token);
         }
         if (source != 3 || path is null) return new([], new Dictionary<string, StartMenuImportCandidate>());
         var read = await CreateWallPackageReader().ReadPreviewAsync(path, token: token);
         token.ThrowIfCancellationRequested();
         if (read.Preview is null) throw new IOException(read.Status == WallPackageReadStatus.UnsupportedFormat
             ? ProductStrings.Get("Import.FutureFormat") : string.Format(ProductStrings.Get("Import.PackageInvalid"), read.Diagnostic));
-        return await Task.Run(() => StartMenuImportProjection.FromPackage(read.Preview, token), token);
+        return await Task.Run(() => projection.FromPackage(read.Preview, token), token);
     }
 
     private async Task<ImportPageResult> SaveImportAsync(ImportPageRequest request)
     {
         var plan = request.Plan;
         bool Current() => request.IsCurrent() && IsImportContextCurrent(request.Context) && !PersistenceInteractionBlocked;
-        if (!Current()) return new(ProductStrings.Get("Import.SourceChanged"), true);
+        if (!Current() || !request.Source.AvailabilityPrepared || !request.Context.Covers(request.Projection))
+            return new(ProductStrings.Get("Import.SourceChanged"), true);
         if (plan.Status == ImportPlanStatus.NoChange) return new();
         if (plan.Status != ImportPlanStatus.Ready || plan.Proposal is null) return new(ProductStrings.Get("Import.LayoutRejected"));
         var changes = new List<EntryChange>();

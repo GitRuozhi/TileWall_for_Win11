@@ -146,6 +146,41 @@ public sealed class ImportSourcePlannerTests
     }
 
     [Fact]
+    public void DestinationObservationUpdatesFilteringWithoutChangingGroupsOrExpandingSelection()
+    {
+        var existing = Tile("existing");
+        var wall = WallDocument.Empty(1, 8) with
+        {
+            Lanes = [new() { Groups = [Group("tools", "Tools", existing), Group("other", "Other", Tile("unrelated"))] }],
+        };
+        var tools = new ImportSourceGroup("incoming-tools", "Tools", 0);
+        var duplicate = Item("duplicate", "Alpha", tools, "same");
+        var fresh = Item("fresh", "Beta", tools, "new", order: 1);
+        var elsewhere = Item("elsewhere", "Gamma", new("incoming-other", "Other", 1), "same");
+        var candidates = new[] { duplicate, fresh, elsewhere };
+        var initial = ImportSourcePlanner.Project(wall, candidates, recognizeGroups: false);
+        var selected = new Dictionary<string, string>
+        {
+            [duplicate.SourceKey] = duplicate.SelectionIdentity,
+            [fresh.SourceKey] = fresh.SelectionIdentity,
+        };
+
+        var observed = ImportSourcePlanner.Project(wall, candidates, recognizeGroups: false,
+            existingIdentityKeys: new Dictionary<string, string> { [existing.Id] = duplicate.Identity!.Key });
+        Assert.Equal(initial.Groups.Select(group => group.Key), observed.Groups.Select(group => group.Key));
+        Assert.Equal(["tools", "other"], observed.Groups.Select(group => group.DestinationGroupId));
+        Assert.Equal(ImportFilterReason.AlreadyInGroup,
+            observed.Candidates.Single(candidate => candidate.SelectionKey == duplicate.SourceKey).FilterReason);
+        Assert.True(observed.Candidates.Single(candidate => candidate.SelectionKey == elsewhere.SourceKey).CanAdd);
+        var migrated = ImportSourcePlanner.MigrateSelection(selected, observed);
+        Assert.Equal("fresh", Assert.Single(migrated.Selected).Key);
+        Assert.Equal(1, migrated.RemovedCount);
+        var plan = Plan(wall, observed, migrated.Selected.Keys);
+        Assert.Equal("fresh", Assert.Single(plan.Accepted).SourceKey);
+        Assert.Equal("tools", plan.Accepted[0].GroupId);
+    }
+
+    [Fact]
     public void SameIdentityInDifferentDestinationGroupsIsLegalAndDecorationIsNeverIdentityGuessed()
     {
         var first = new ImportSourceGroup("first", "First", 0); var second = new ImportSourceGroup("second", "Second", 1);

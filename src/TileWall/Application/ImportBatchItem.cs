@@ -44,13 +44,25 @@ internal sealed record ImportBatchItem(string SourcePath, TileMember Member, Exp
 internal sealed record ExternalImportResult(string Message, bool Succeeded, int AddedCount);
 
 internal sealed record ImportPageContext(WallDocument Document, WallViewportBudget Budget,
-    IReadOnlyDictionary<string, string> ExistingIdentities, IReadOnlyDictionary<string, string> ExistingEntrySha256);
+    IReadOnlyDictionary<string, string> ExistingIdentities, IReadOnlyDictionary<string, string> ExistingEntrySha256)
+{
+    public IReadOnlySet<string> ObservedDestinationGroups { get; init; } = new HashSet<string>(StringComparer.Ordinal);
+
+    public bool Covers(ImportSourceProjection projection) => projection.Generation == Document.Generation &&
+        projection.Groups.All(group => group.DestinationGroupId is null || ObservedDestinationGroups.Contains(group.DestinationGroupId));
+}
 
 /// <summary>Page-owned read-only descriptors, never a second formal wall or a persistent import service.</summary>
 internal sealed record ImportPageSource(IReadOnlyList<ImportSourceCandidate> Candidates,
     IReadOnlyDictionary<string, StartMenuImportCandidate> StartMenuSources,
     WallPackagePreview? Package = null, int Scanned = 0, int Skipped = 0, int ReadErrors = 0,
-    bool Refreshing = false, string? ErrorCode = null);
+    bool Refreshing = false, string? ErrorCode = null)
+{
+    public IReadOnlyDictionary<string, string> AvailabilityFacts { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    public bool AvailabilityPrepared { get; init; }
+}
+
+internal sealed record ImportPagePreparation(ImportPageContext Context, ImportPageSource Source);
 
 internal sealed record ImportPageRequest(ImportPageContext Context, ImportPageSource Source,
     ImportSourceProjection Projection, ImportSourcePlan Plan, Func<bool> IsCurrent);

@@ -188,6 +188,7 @@ public sealed partial class MainWindow : Window
 
     private void SetBackdropActive(bool active)
     {
+        if (active || _backdropActive != active) CancelFocusLossSnapshot();
         _backdropActive = active;
         if (_backdropUpdateQueued || _windowClosing) return;
         _backdropUpdateQueued = DispatcherQueue.TryEnqueue(() =>

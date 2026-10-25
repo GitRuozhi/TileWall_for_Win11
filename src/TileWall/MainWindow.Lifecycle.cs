@@ -115,9 +115,14 @@ public sealed partial class MainWindow
             var wall = WinRT.Interop.WindowNative.GetWindowHandle(this);
             var inSession = processId == (uint)Environment.ProcessId || GetAncestor(foreground, 3) == wall;
             UpdateWindowZOrder(inSession);
+            if (inSession) CancelFocusLossSnapshot();
             if (_modal || _contextMenuOpen) return;
             AppLog.Info("WindowFocus", $"Automatic hide check reason={reason} foreground={foreground} pid={processId} inSession={inSession}");
-            if (!inSession) AutomaticHideRequested?.Invoke();
+            if (!inSession)
+            {
+                RefreshBackdropOnFocusLoss();
+                AutomaticHideRequested?.Invoke();
+            }
         });
     }
 
@@ -142,6 +147,14 @@ public sealed partial class MainWindow
         return foreground != IntPtr.Zero && GetWindowThreadProcessId(foreground, out var processId) != 0 &&
             (processId == (uint)Environment.ProcessId ||
                 GetAncestor(foreground, 3) == WinRT.Interop.WindowNative.GetWindowHandle(this));
+    }
+
+    private bool IsForegroundOutsideWallSession()
+    {
+        var foreground = GetForegroundWindow();
+        return foreground != IntPtr.Zero && GetWindowThreadProcessId(foreground, out var processId) != 0 &&
+            processId != (uint)Environment.ProcessId &&
+            GetAncestor(foreground, 3) != WinRT.Interop.WindowNative.GetWindowHandle(this);
     }
 
     private void UpdateWindowZOrder(bool foregroundInSession, bool raise = false)
