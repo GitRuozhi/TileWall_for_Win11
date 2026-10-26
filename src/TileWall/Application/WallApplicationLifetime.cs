@@ -16,6 +16,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private readonly ShellMessageHost _host;
     private readonly SingleInstanceGate _instance;
     private readonly ShellNotifyIconHost _tray;
+    private readonly ExplorerAddNotification _notifications;
     private readonly GlobalHotKeyRegistrar _hotKey;
     private readonly LoginStartupController _login;
     private readonly Microsoft.UI.Xaml.Application _application;
@@ -89,6 +90,8 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         };
         _host.AcceptPaths = ReceiveAdd;
         _hotKey.RegistrationChanged += UpdateTray;
+        _notifications = new ExplorerAddNotification(scope.IsTest, () =>
+            _window.DispatcherQueue.TryEnqueue(() => Request(WallShowTrigger.Show)));
     }
 
     public Task StartAsync(StartupIntent intent) => _startup ??= StartCoreAsync(intent);
@@ -97,6 +100,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         try
         {
+            _notifications.Register(intent.NotificationActivation);
             // No Activate/Show is needed to open the committed session or register process resources.
             await _window.InitializeSessionAsync();
             if (_exitPending || _tearingDown) return;
@@ -229,6 +233,10 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         if (_addFailed == 0 && !_addTruncated) _window.ShowTransientStatus(resultMessage);
         else _window.ShowStatus(resultMessage);
         _inAddSequence = _pendingAdds.Count != 0;
+        // ImportExternalBatchAsync returns a positive count only after the formal
+        // commit succeeds. Notification delivery is outside that transaction.
+        if (!_inAddSequence && !_exitPending && !_tearingDown && _addCount > 0)
+            _notifications.ShowAdded(_addCount, _addFailed != 0 || _addTruncated);
         QueueAddDrain();
     }
     private void UpdateTray() => _tray.UpdateTooltip(_hotKey.IsRegistered
@@ -317,7 +325,11 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     public void SnapHideWall() => SnapHide();
     public void UnregisterHotKey() => _hotKey.Dispose();
     public void RemoveTrayIcon() => _tray.Dispose();
-    public void DestroyShellHostWindow() => _host.Dispose();
+    public void DestroyShellHostWindow()
+    {
+        _notifications.Dispose();
+        _host.Dispose();
+    }
     public void ReleaseSingleInstanceMutex()
     {
         // The next owner must never acquire the gate while this process still

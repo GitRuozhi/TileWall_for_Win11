@@ -93,7 +93,18 @@ public sealed partial class WallImageService : IDisposable
     }
 
     private async Task<Prepared> PrepareAutoAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct,
-        bool skipNative = false, bool cacheAllowed = true)
+        bool skipNative = false, bool cacheAllowed = true, MmcIconSource? mmcSource = null, bool followShellTarget = true)
+    {
+        var policy = new AutomaticMemoryPolicy();
+        var prepared = await PrepareAutoCoreAsync(entryOrTargetPath, width, height, ct,
+            skipNative, cacheAllowed, mmcSource, followShellTarget, policy).ConfigureAwait(false);
+        return prepared with { MemoryCacheAllowed = prepared.MemoryCacheAllowed && policy.Allowed };
+    }
+
+    private sealed class AutomaticMemoryPolicy { public bool Allowed = true; }
+
+    private async Task<Prepared> PrepareAutoCoreAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct,
+        bool skipNative, bool cacheAllowed, MmcIconSource? mmcSource, bool followShellTarget, AutomaticMemoryPolicy memoryPolicy)
     {
         ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(entryOrTargetPath))
@@ -103,12 +114,14 @@ public sealed partial class WallImageService : IDisposable
         string? target = entry ?? entryOrTargetPath;
         string? iconPath = null;
         int? iconIndex = null;
+        var shellLink = false;
         var shellIdentity = entry ?? entryOrTargetPath;
         if (extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
         {
             try
             {
                 var fields = _links.Read(entry!);
+                shellLink = fields.HasIdList;
                 target = !string.IsNullOrWhiteSpace(fields.ShellParsingName) ? fields.ShellParsingName : fields.TargetPath;
                 iconPath = fields.IconPath;
                 iconIndex = fields.IconIndex;
@@ -126,30 +139,72 @@ public sealed partial class WallImageService : IDisposable
             if (new FileInfo(entry!).Length <= TileWall.Core.Entries.EntryObservation.MaximumBytes)
                 target = TileWall.Core.Entries.UrlShortcut.ReadUrlLine(File.ReadAllBytes(entry!));
         }
+        var hasPersistedIconLocation = !string.IsNullOrWhiteSpace(iconPath);
         var targetFile = NormalizePath(target);
         var protocol = targetFile is null && Uri.TryCreate(target, UriKind.Absolute, out var parsed) && !parsed.IsFile ? parsed : null;
         var web = protocol?.Scheme is "http" or "https";
         var registeredSearch = protocol?.Scheme.Equals("ms-search", StringComparison.OrdinalIgnoreCase) == true;
-        var shellNamespace = target?.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) == true ||
+        var shellNamespace = shellLink || target?.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) == true ||
             target?.StartsWith("::{", StringComparison.Ordinal) == true;
+        if (!skipNative && !hasPersistedIconLocation && IsMmcConsolePath(targetFile))
+        {
+            var requestCacheAllowed = cacheAllowed;
+            var mmc = mmcSource is not null && string.Equals(mmcSource.ConsolePath, targetFile,
+                StringComparison.OrdinalIgnoreCase) ? mmcSource : ReadMmcIconSource(targetFile!);
+            cacheAllowed &= mmc.CacheAllowed;
+            if (mmc.Declaration is { } declaration && IsSafeExternalFilePath(declaration.Path))
+            {
+                // MMC's XML declaration is authoritative only when the source
+                // shortcut did not persist its own icon location. Parse its
+                // native resource through the same bounded PE/ICO frame path,
+                // but keep the native-package reader request-only; the outer
+                // automatic stamp below includes the exact console and resource
+                // content dependencies before it may persist these pixels.
+                var declared = await PreparePeIconAsync(targetFile!, declaration.Path, declaration.Index,
+                    entryOrTargetPath, width, height, ct, cacheAllowed: false);
+                if (declared.Status == WallImageStatus.Cancelled) return declared;
+                if (declared.Pixels is not null)
+                    return declared with { CacheAllowed = requestCacheAllowed && mmc.CacheAllowed };
+                if (TryPrepareMmcNativeIcon(declaration, width, height, ct) is { Pixels: not null } native)
+                    return native;
+                // Do not persist a Shell/placeholder result when an explicitly
+                // declared native icon could not be read or decoded.
+                cacheAllowed = false;
+            }
+            var knownSystem = await TryPrepareBundledSystemAsync(target, width, height, ct).ConfigureAwait(false);
+            if (knownSystem?.Pixels is not null) return knownSystem;
+            if (knownSystem is not null) cacheAllowed &= knownSystem.CacheAllowed;
+        }
         // A shortcut's persisted IconFile/IconLocation is a separate authority
         // from an IExtractIcon handler's potentially opaque location string.
         var persistedIcon = NormalizePath(iconPath) is not null;
         // URI shortcuts must resolve the protocol's own icon, rather than the
         // InternetShortcut association, for system settings and other native URIs.
-        if (protocol is not null && !web) shellIdentity = target!;
+        if (protocol is not null && !web && !extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase)) shellIdentity = target!;
         if (protocol?.Scheme.Equals("ms-settings", StringComparison.OrdinalIgnoreCase) == true)
         {
             var settings = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "ImmersiveControlPanel", "SystemSettings.exe");
             if (File.Exists(settings)) { targetFile = settings; shellIdentity = settings; }
         }
         var locationFacts = !skipNative && (!web || entry is not null) ? ShellItemCatalog.IconLocation(shellIdentity, Math.Max(width, height)) : null;
-        if (locationFacts is { CanCache: false }) cacheAllowed = false;
+        if (locationFacts is { CanCache: false })
+        {
+            cacheAllowed = false;
+            memoryPolicy.Allowed = false; // Respect an explicit native GIL_DONTCACHE.
+        }
         if (shellNamespace || locationFacts is { Flags: var instanceFlags } && (instanceFlags & 2) != 0 ||
             !web && locationFacts is null) cacheAllowed = false;
         var independentExplicitIcon = persistedIcon && !(locationFacts is { Flags: var persistedFlags } && (persistedFlags & 2) != 0);
+        // AppsFolder's image factory may plate a tiny legacy logo onto an
+        // opaque tile. Resolve this registered package's app-list resource
+        // before accepting that composition, while respecting explicit icons.
+        if (!persistedIcon && await TryPreparePackagedAppIconAsync(target, width, height, ct) is { } packaged)
+            return packaged;
         if (!independentExplicitIcon && (locationFacts is { CanCache: false } || locationFacts is { CanReadResource: false }))
+        {
             skipNative = true;
+            cacheAllowed = false;
+        }
         if (iconPath is null && !web &&
             locationFacts is { CanReadResource: true, Path: not null })
         { iconPath = locationFacts.Path; iconIndex = locationFacts.Index; }
@@ -234,7 +289,7 @@ public sealed partial class WallImageService : IDisposable
         }
         if (shell is { } plane)
             return new(WallImageStatus.Loaded, plane.Pixels, plane.Width, plane.Height,
-                $"ShellImageFactory:{plane.Width}x{plane.Height}:requested={width}x{height}:cache={(cacheAllowed ? "request-only" : "disabled")}")
+                $"ShellImageFactory:{plane.Width}x{plane.Height}:requested={width}x{height}:disk-cache={(cacheAllowed ? "allowed" : "disabled")}")
                 { CacheAllowed = cacheAllowed };
         if (protocol is null || web)
         {
@@ -260,6 +315,18 @@ public sealed partial class WallImageService : IDisposable
             }
             catch (Exception ex) when (ex is IOException or COMException or ArgumentException or InvalidOperationException)
             { cacheAllowed = false; }
+        }
+        if (shellNamespace && followShellTarget && ShellItemCatalog.LinkedTargetPath(shellIdentity) is { } linked &&
+            !string.Equals(linked, entry, StringComparison.OrdinalIgnoreCase) &&
+            Path.GetExtension(linked).ToLowerInvariant() is ".url" or ".lnk" &&
+            File.Exists(linked) && new FileInfo(linked).Length is > 0 and <= EntryObservation.MaximumBytes)
+        {
+            // AppsFolder may expose a link-to-shortcut whose own handler has no
+            // image. Follow only its explicit metadata, never a title/path guess,
+            // and retain the original Shell launch identity. One hop prevents cycles.
+            var linkedIcon = await PrepareAutoAsync(linked, width, height, ct, followShellTarget: false);
+            if (linkedIcon.Pixels is not null)
+                return linkedIcon with { CacheAllowed = false, Diagnostic = "ShellLinkedTarget:" + linkedIcon.Diagnostic };
         }
         return await PrepareSystemOrGenericFallbackAsync(target, targetFile, width, height, ct, cacheAllowed,
             protocol is null ? "GenericPlaceholder" : "NativeProtocolIconUnavailable");
@@ -401,6 +468,11 @@ public sealed partial class WallImageService : IDisposable
                 _lru.AddFirst(node);
                 if (node.Value.Value is Prepared cached)
                 {
+                    if (cached.MemoryValidUntil <= DateTimeOffset.UtcNow)
+                    {
+                        _lru.Remove(node); _cache.Remove(key); _cacheBytes -= node.Value.Bytes;
+                        prepared = null!; return false;
+                    }
                     prepared = cached;
                     return true;
                 }
@@ -410,9 +482,10 @@ public sealed partial class WallImageService : IDisposable
         return false;
     }
 
-    private void Cache(string key, Prepared frame)
+    private void Cache(string key, Prepared frame, bool allowMemoryOnly = false)
     {
-        if (!frame.CacheAllowed || frame.Pixels is null || frame.Pixels.LongLength > CacheLimitBytes / 2) return;
+        if (!frame.MemoryCacheAllowed || !frame.CacheAllowed && !allowMemoryOnly ||
+            frame.Pixels is null || frame.Pixels.LongLength > CacheLimitBytes / 2) return;
         lock (_cacheLock)
         {
             if (_disposed || _cacheLifetime.IsCancellationRequested || _cache.ContainsKey(key)) return;
@@ -446,6 +519,8 @@ public sealed partial class WallImageService : IDisposable
     private sealed record Prepared(WallImageStatus Status, byte[]? Pixels, int Width, int Height,
         string? Diagnostic = null)
     {
+        public bool MemoryCacheAllowed { get; init; } = true;
+        public DateTimeOffset MemoryValidUntil { get; init; } = DateTimeOffset.MaxValue;
         public bool CacheAllowed { get; init; } = true;
     }
 

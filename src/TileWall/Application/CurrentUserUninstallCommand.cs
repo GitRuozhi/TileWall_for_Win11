@@ -43,14 +43,14 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
     }
 
     [SupportedOSPlatform("windows")]
-    internal static int Run(string[] args)
+    internal static int Run(string[] args, Action? afterUninstall = null)
     {
         if (!TryParse(args, out var command)) return ContextMenuUserCommand.InvalidArguments;
         int result;
         try
         {
             result = ExecuteEntry(command!, ContextMenuUserCommand.IsElevated,
-                () => RunInstalled(command!), () => DelegateToDesktop(command!));
+                () => RunInstalled(command!, afterUninstall), () => DelegateToDesktop(command!));
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
@@ -84,7 +84,7 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
     }
 
     [SupportedOSPlatform("windows")]
-    private static int RunInstalled(CurrentUserUninstallCommand command)
+    private static int RunInstalled(CurrentUserUninstallCommand command, Action? afterUninstall)
     {
         var executable = Environment.ProcessPath ?? throw new IOException("The installed executable is unavailable.");
         executable = Path.GetFullPath(executable);
@@ -114,7 +114,14 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
                 return ContextMenuUserCommand.Success;
             }
             connected.GetAwaiter().GetResult();
-            return ExecuteHandshake(pipe, afterMutation => RemoveCurrentUserState(executable, afterMutation), deadline.Token);
+            var cleanupRequested = false;
+            var result = ExecuteHandshake(pipe, afterMutation =>
+            {
+                cleanupRequested = true;
+                return RemoveCurrentUserState(executable, afterMutation);
+            }, deadline.Token);
+            if (cleanupRequested && result == ContextMenuUserCommand.Success) afterUninstall?.Invoke();
+            return result;
         }
         finally { deadline.Cancel(); }
         // Do not wait for child after O/A: it waits for this EXE to exit before removing program files.

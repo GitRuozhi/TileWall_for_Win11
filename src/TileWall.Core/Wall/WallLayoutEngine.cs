@@ -44,8 +44,14 @@ public enum WallRejection
     WorkAreaTooSmall,
 }
 
-/// <summary>A complete document and geometry proposal. The caller persists Document before adopting it.</summary>
-public sealed record WallProposal(WallDocument Document, WallGeometry Geometry);
+/// <summary>A document and geometry proposal. The caller persists it before adopting its active view.</summary>
+public sealed record WallProposal(WallDocument Document, WallGeometry Geometry)
+{
+    /// <summary>Explicit recycle-bin replacement based on an observed committed snapshot; null preserves disk content.</summary>
+    public RecycleBinSnapshot? RecycleBin { get; init; }
+    /// <summary>Explicitly clears retained content together with the wall transaction.</summary>
+    public bool ClearRecycleBin { get; init; }
+}
 public sealed record WallLayoutResult(WallProposal? Proposal, WallRejection Rejection, string? Detail = null)
 {
     public bool Success => Proposal is not null;

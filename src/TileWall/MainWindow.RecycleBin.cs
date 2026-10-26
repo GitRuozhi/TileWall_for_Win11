@@ -16,33 +16,32 @@ public sealed partial class MainWindow
         if (PersistenceInteractionBlocked || _modal || _viewBlocked || !_hasDocument) return;
         try
         {
+            if (!await BeginModalAsync()) return;
             var before = Document;
-            var overflow = RecycleBinRules.Overflow(before, ids);
+            var recycle = await _session.ReadRecycleBinAsync(before.Generation, CancellationToken.None);
+            if (!ReferenceEquals(before, Document) || PersistenceInteractionBlocked || ShutdownStarted) return;
+            var overflow = RecycleBinRules.Overflow(before, recycle, ids);
             if (overflow.Count != 0)
             {
-                if (!await BeginModalAsync()) return;
-                try
-                {
-                    var body = string.Format(ProductStrings.Get("Recycle.OverflowConfirm"), overflow.Count,
-                        RecycleBinRules.Capacity) + "\n\n" + MemberList(overflow) + "\n\n" +
-                        ProductStrings.Get("Recycle.UnpinBatch") + "\n" + MemberList(RecycleBinRules.OrderedActive(before, ids)) +
-                        "\n\n" + ProductStrings.Get("Recycle.PhysicalRetention");
-                    var confirmation = new RecycleBinConfirmationDialog(DialogOwner, ProductStrings.Get("Recycle.Title"), body);
-                    ActiveDialog = confirmation;
-                    if (!await confirmation.ShowAsync()) return;
-                }
-                finally { EndModal(); }
+                var body = string.Format(ProductStrings.Get("Recycle.OverflowConfirm"), overflow.Count,
+                    RecycleBinRules.Capacity) + "\n\n" + MemberList(overflow) + "\n\n" +
+                    ProductStrings.Get("Recycle.UnpinBatch") + "\n" + MemberList(RecycleBinRules.OrderedActive(before, ids)) +
+                    "\n\n" + ProductStrings.Get("Recycle.PhysicalRetention");
+                var confirmation = new RecycleBinConfirmationDialog(DialogOwner, ProductStrings.Get("Recycle.Title"), body);
+                ActiveDialog = confirmation;
+                if (!await confirmation.ShowAsync()) return;
             }
             if (!ReferenceEquals(before, Document) || PersistenceInteractionBlocked || ShutdownStarted) return;
-            var result = WallLayoutEngine.TryApply(before, new UnpinMembersAction(before.Generation, ids, ConfirmOverflow: true),
+            var result = RecycleBinRules.Propose(before, recycle, new UnpinMembersAction(before.Generation, ids, ConfirmOverflow: true),
                 CurrentViewportBudget.MaxWidthDip, CurrentViewportBudget.MaxHeightDip, _metrics);
             if (result.Proposal is not { } proposal) { Status(RecycleFailure(result)); return; }
-            var error = await CommitRecycleProposalAsync(before, proposal);
+            var error = await CommitProposalAsync(proposal, []);
             if (error is not null) Status(error);
-            else if (before.RecycleBinEnabled && proposal.Document.InactiveMembers.Count >= RecycleBinRules.WarningCount)
-                Status(string.Format(ProductStrings.Get("Recycle.NearlyFull"), proposal.Document.InactiveMembers.Count, RecycleBinRules.Capacity));
+            else if (proposal.RecycleBin is { } updated && updated.Members.Count >= RecycleBinRules.WarningCount)
+                Status(string.Format(ProductStrings.Get("Recycle.NearlyFull"), updated.Members.Count, RecycleBinRules.Capacity));
         }
         catch (Exception ex) { if (!_windowClosing) Status(string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message)); }
+        finally { EndModal(); }
     }
 
     private async Task<string?> RestoreRecycledMembersAsync(IReadOnlyList<string> ids,
@@ -52,6 +51,9 @@ public sealed partial class MainWindow
         if (PersistenceInteractionBlocked || _viewBlocked || !_hasDocument || ShutdownStarted || Document.Generation != generation)
             return ProductStrings.Get("Recycle.Changed");
         var before = Document;
+        var recycle = await _session.ReadRecycleBinAsync(generation, token);
+        if (!ReferenceEquals(before, Document) || PersistenceInteractionBlocked || ShutdownStarted)
+            return ProductStrings.Get("Recycle.Changed");
         var selected = ids.ToHashSet(StringComparer.Ordinal);
         var observed = await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
             {
@@ -60,7 +62,7 @@ public sealed partial class MainWindow
                 var identities = ImportIdentities;
                 var keys = new Dictionary<string, string>(StringComparer.Ordinal);
                 var fingerprints = new Dictionary<string, string>(StringComparer.Ordinal);
-                foreach (var member in before.InactiveMembers.Where(member => selected.Contains(member.Id)))
+                foreach (var member in recycle.Members.Where(member => selected.Contains(member.Id)))
                 {
                     token.ThrowIfCancellationRequested();
                     if (member.Entry is not { } entry) continue;
@@ -79,18 +81,9 @@ public sealed partial class MainWindow
         token.ThrowIfCancellationRequested();
         if (!ReferenceEquals(before, Document) || PersistenceInteractionBlocked || ShutdownStarted)
             return ProductStrings.Get("Recycle.Changed");
-        var result = WallLayoutEngine.TryApply(before, action, CurrentViewportBudget.MaxWidthDip,
+        var result = RecycleBinRules.Propose(before, recycle, action, CurrentViewportBudget.MaxWidthDip,
             CurrentViewportBudget.MaxHeightDip, _metrics);
-        return result.Proposal is { } proposal ? await CommitRecycleProposalAsync(before, proposal, observed.Hashes) : RecycleFailure(result);
-    }
-
-    private Task<string?> CommitRecycleProposalAsync(WallDocument before, WallProposal proposal,
-        IReadOnlyDictionary<string, string>? hashes = null)
-    {
-        var nextIds = proposal.Document.EnumerateAllMembers().Select(member => member.Id).ToHashSet(StringComparer.Ordinal);
-        var removed = before.EnumerateAllMembers().Where(member => member.Entry is not null && !nextIds.Contains(member.Id))
-            .Select(member => (EntryChange)new EntryChange.Remove(member.Id)).ToArray();
-        return CommitProposalAsync(proposal, removed, expectedEntrySha256: hashes);
+        return result.Proposal is { } proposal ? await CommitProposalAsync(proposal, [], expectedEntrySha256: observed.Hashes) : RecycleFailure(result);
     }
 
     private string RecycleFailure(WallLayoutResult result) => result.Detail switch

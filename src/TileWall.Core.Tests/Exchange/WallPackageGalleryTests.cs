@@ -48,7 +48,7 @@ public sealed class WallPackageGalleryTests : IDisposable
     private async Task<(string Path, WallPackageReader Reader, PreparedManagedGallery Gallery, string Sender)> Export(params string[] ids)
     {
         var (store, document, gallery, root) = Seed();
-        var reader = Reader(); var path = Path.Combine(_directory, "selected.twpack");
+        var reader = Reader(); var path = Path.Combine(_directory, "selected.zip");
         using var snapshot = store.CapturePackageSnapshot(document, document.Generation, ids);
         var result = await new WallPackageWriter(reader).WriteAsync(snapshot, path, "test");
         Assert.Equal(WallPackageWriteStatus.Saved, result.Status);
@@ -184,10 +184,10 @@ public sealed class WallPackageGalleryTests : IDisposable
             new Dictionary<string, WallPackageSnapshotEntry>(), new Dictionary<string, Stream> { [asset.Reference.Sha256] = new MemoryStream(bytes, writable: false) }, [],
             new Dictionary<string, WallPackageSnapshotGallery> { [gallery.Reference.ContentId] = new(gallery.Reference, gallery.ManifestBytes) });
         var reader = Reader(); var writer = new WallPackageWriter(reader);
-        var path = Path.Combine(_directory, "logical.twpack");
+        var path = Path.Combine(_directory, "logical.zip");
         Assert.Equal(WallPackageWriteStatus.Saved, (await writer.WriteAsync(snapshot, path, "test")).Status);
         var limits = byteBudget ? new WallPackageLimits { MaximumExpandedBytes = 1536 * 1024 } : new WallPackageLimits { MaximumEntries = 5 };
-        var rejectedPath = Path.Combine(_directory, "rejected.twpack");
+        var rejectedPath = Path.Combine(_directory, "rejected.zip");
         Assert.Equal(WallPackageWriteStatus.InvalidPackage, (await writer.WriteAsync(snapshot, rejectedPath, "test", limits: limits)).Status);
         Assert.False(File.Exists(rejectedPath));
         Assert.Equal(WallPackageReadStatus.InvalidPackage, (await reader.ReadPreviewAsync(path, limits)).Status);
@@ -206,7 +206,7 @@ public sealed class WallPackageGalleryTests : IDisposable
             new Dictionary<string, WallPackageSnapshotEntry>(), new Dictionary<string, Stream> { [asset.Reference.Sha256] = new MemoryStream(Png, writable: false) }, [],
             new Dictionary<string, WallPackageSnapshotGallery> { [gallery.Reference.ContentId] = new(gallery.Reference, gallery.ManifestBytes) });
         var reader = Reader((bytes, _, _) => Task.FromResult(bytes.Span.SequenceEqual(Png)));
-        var path = Path.Combine(_directory, "extensions.twpack");
+        var path = Path.Combine(_directory, "extensions.zip");
         Assert.Equal(WallPackageWriteStatus.Saved, (await new WallPackageWriter(reader).WriteAsync(snapshot, path, "test")).Status);
         var preview = (await reader.ReadPreviewAsync(path)).Preview!;
         Assert.Single(preview.Manifest.Files, file => file.Purpose == "media");

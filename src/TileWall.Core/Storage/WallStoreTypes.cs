@@ -14,6 +14,7 @@ public sealed record WallOpenResult(WallOpenStatus Status, WallDocument? Documen
 {
     // A fact about this Open call, never persisted or inferred from an empty wall.
     public bool InitializedFresh { get; init; }
+    public string? ManifestSha256 { get; init; }
 }
 
 public abstract record EntryChange(string MemberId)
@@ -32,11 +33,20 @@ public abstract record EntryChange(string MemberId)
 public sealed record WallCommitRequest(long ExpectedGeneration, WallDocument Proposed,
     IReadOnlyList<EntryChange> EntryChanges, IReadOnlyList<PreparedMediaAsset>? MediaAssets = null,
     IReadOnlyDictionary<string, string>? ExpectedEntrySha256 = null,
-    IReadOnlyList<PreparedManagedGallery>? ManagedGalleries = null);
+    IReadOnlyList<PreparedManagedGallery>? ManagedGalleries = null)
+{
+    public bool PreserveStoredRecycleBin { get; init; }
+    public RecycleBinSnapshot? RecycleBin { get; init; }
+    public bool ClearRecycleBin { get; init; }
+    public string? ExpectedManifestSha256 { get; init; }
+}
 
 public enum WallCommitStatus { Rejected, Committed, CommittedNeedsCleanup, RecoveryBlocked }
 
 public sealed record WallCommitResult(WallCommitStatus Status, WallDocument? CommittedDocument,
-    IReadOnlyList<string> Diagnostics);
+    IReadOnlyList<string> Diagnostics)
+{
+    public string? ManifestSha256 { get; init; }
+}
 
 public sealed record WallPlanResult(WallCommitRequest? Request, IReadOnlyList<string> Diagnostics);

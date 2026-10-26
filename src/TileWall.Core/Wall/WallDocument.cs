@@ -5,7 +5,7 @@ using TileWall.Core.Imaging;
 
 namespace TileWall.Core.Wall;
 
-/// <summary>The joint committed runtime view. Storage DTOs publish its settings, active wall and recycle bin together.</summary>
+/// <summary>Wall state. Storage uses a temporary joint document; the session retains only its active view.</summary>
 public sealed record WallDocument
 {
     public const int CurrentSchemaVersion = 4;
@@ -17,6 +17,9 @@ public sealed record WallDocument
     public IReadOnlyList<WallMember> InactiveMembers { get; init; } = [];
     public bool RecycleBinEnabled { get; init; } = true;
     public WallSettings Settings { get; init; } = new();
+
+    /// <summary>Releases retained members before a document becomes session or ordinary UI state.</summary>
+    public WallDocument ActiveView() => InactiveMembers.Count == 0 ? this : this with { InactiveMembers = [] };
 
     /// <summary>All formally owned members, including retained unpinned content.</summary>
     public IEnumerable<WallMember> EnumerateAllMembers() =>

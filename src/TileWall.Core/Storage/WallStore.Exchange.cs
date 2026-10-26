@@ -7,27 +7,41 @@ namespace TileWall.Core.Storage;
 
 public sealed partial class WallStore
 {
-    public IReadOnlyList<ManagedMediaReference> ReusablePackageMedia(WallDocument current)
+    public IReadOnlyList<ManagedMediaReference> ReusablePackageMedia(WallDocument current, string? expectedManifestSha256 = null)
     {
-        if (!CurrentMatchesDisk(current, current.Generation, out _)) throw new IOException("Committed wall changed before original reuse observation.");
-        CheckMediaReferences(current);
-        var references = MediaById(current).Values.Concat(GalleryReferences(current).SelectMany(reference => CheckGallery(reference).Files.Select(file => file.Media)));
+        var activeView = current.InactiveMembers.Count == 0;
+        if (!CurrentMatchesDisk(current, current.Generation, out _, out var stored, activeView, expectedManifestSha256)) throw new IOException("Committed wall changed before original reuse observation.");
+        CheckMediaReferences(stored!);
+        var references = MediaById(stored!).Values.Concat(GalleryReferences(stored!).SelectMany(reference => CheckGallery(reference).Files.Select(file => file.Media)));
         var result = new List<ManagedMediaReference>();
         foreach (var group in references.GroupBy(reference => reference.Sha256, StringComparer.Ordinal))
         {
             if (group.Select(reference => reference.Length).Distinct().Count() != 1) throw new InvalidDataException("Conflicting length for a reusable original.");
             result.Add(group.First());
         }
-        if (!CurrentMatchesDisk(current, current.Generation, out _)) throw new IOException("Committed wall changed during original reuse observation.");
+        if (!CurrentMatchesDisk(current, current.Generation, out _, out _, activeView, expectedManifestSha256)) throw new IOException("Committed wall changed during original reuse observation.");
         return result.AsReadOnly();
+    }
+
+    public IReadOnlyList<ManagedGalleryReference> ReusablePackageGalleries(WallDocument current, string? expectedManifestSha256 = null)
+    {
+        var activeView = current.InactiveMembers.Count == 0;
+        if (!CurrentMatchesDisk(current, current.Generation, out _, out var stored, activeView, expectedManifestSha256))
+            throw new IOException("Committed wall changed before gallery reuse observation.");
+        var references = GalleryReferences(stored!).ToArray();
+        foreach (var reference in references) _ = CheckGallery(reference);
+        if (!CurrentMatchesDisk(current, current.Generation, out _, out _, activeView, expectedManifestSha256))
+            throw new IOException("Committed wall changed during gallery reuse observation.");
+        return Array.AsReadOnly(references);
     }
 
     /// <summary>Capture on the existing storage queue; compression runs after its reservation ends.</summary>
     public WallPackageSnapshot CapturePackageSnapshot(WallDocument current, long expectedGeneration,
-        IEnumerable<string> selectedMemberIds, CancellationToken token = default)
+        IEnumerable<string> selectedMemberIds, CancellationToken token = default, string? expectedManifestSha256 = null)
     {
         token.ThrowIfCancellationRequested();
-        if (!CurrentMatchesDisk(current, expectedGeneration, out _) || Validate(current).Count != 0)
+        var activeView = current.InactiveMembers.Count == 0;
+        if (!CurrentMatchesDisk(current, expectedGeneration, out _, out var stored, activeView, expectedManifestSha256) || Validate(current).Count != 0)
             throw new IOException("Committed wall changed or is unavailable for export.");
         var content = WallPackageContent.FromSelection(current, selectedMemberIds);
         WallPackageJson.ValidateContent(content);
@@ -45,7 +59,7 @@ public sealed partial class WallStore
         var mediaLengths = new Dictionary<string, long>(StringComparer.Ordinal);
         var galleries = new Dictionary<string, WallPackageSnapshotGallery>(StringComparer.Ordinal);
         var additionalHandles = new List<Stream>();
-        var protectedPaths = current.EnumerateAllMembers().SelectMany(member => new[] { member.TargetInput, member.Images.Path })
+        var protectedPaths = stored!.EnumerateAllMembers().SelectMany(member => new[] { member.TargetInput, member.Images.Path })
             .Append(current.Settings.BackgroundImagePath).OfType<string>().ToList();
         try
         {
@@ -111,7 +125,7 @@ public sealed partial class WallStore
             if (entries.Count + media.Count + galleries.Count + 2 > limits.MaximumEntries)
                 throw new InvalidDataException("Export selection exceeds its entry-count budget.");
             token.ThrowIfCancellationRequested();
-            if (!CurrentMatchesDisk(current, expectedGeneration, out _)) throw new IOException("Committed wall changed during export capture.");
+            if (!CurrentMatchesDisk(current, expectedGeneration, out _, out _, activeView, expectedManifestSha256)) throw new IOException("Committed wall changed during export capture.");
             var snapshot = new WallPackageSnapshot(_paths.Root, expectedGeneration, content, entries, media, protectedPaths, galleries);
             snapshot.AttachResourceLease(new ResourceLease(() =>
             {

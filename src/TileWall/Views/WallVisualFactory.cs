@@ -21,7 +21,7 @@ internal static class WallMemberVisualFactory
 
     /// <summary>Shared pointer/focus states for wall, import and gallery buttons; hit targets never move.</summary>
     internal static Action ConfigureInteraction(ButtonBase button, Grid content, CornerRadius corners,
-        Action<bool>? hoverChanged = null, bool drawHoverEdge = true)
+        Action<bool>? hoverChanged = null, bool drawHoverEdge = true, bool deferHoverExit = false)
     {
         // Stock button templates add theme-dependent fills over image content.
         // Keep its activation/accessibility behavior while drawing our shared states once.
@@ -57,6 +57,7 @@ internal static class WallMemberVisualFactory
         var pointerPressed = false;
         var keyPressed = false;
         var displayedHover = false;
+        var hoverRevision = 0;
         var cueAnimations = new Dictionary<Border, Storyboard>();
         var cueTargets = new Dictionary<Border, double>();
 
@@ -105,11 +106,25 @@ internal static class WallMemberVisualFactory
         }
         void Reset()
         {
+            ++hoverRevision;
             hovering = keyboardFocus = pointerPressed = keyPressed = false;
             Update(immediate: true);
         }
-        button.PointerEntered += (_, _) => { hovering = true; Update(); };
-        button.PointerExited += (_, _) => { hovering = pointerPressed = false; Update(); };
+        button.PointerEntered += (_, _) => { ++hoverRevision; hovering = true; Update(); };
+        button.PointerExited += (_, _) =>
+        {
+            pointerPressed = false;
+            if (!deferHoverExit) { hovering = false; Update(); return; }
+            Update();
+            // Popup/child transitions can exit and re-enter the same tile in one
+            // input turn. Preserve that hover instead of restarting its title.
+            var revision = ++hoverRevision;
+            if (!button.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (revision != hoverRevision) return;
+                hovering = false; Update();
+            })) { hovering = false; Update(); }
+        };
         button.GotFocus += (_, _) => { keyboardFocus = button.FocusState == FocusState.Keyboard; Update(); };
         button.LostFocus += (_, _) => { keyboardFocus = keyPressed = false; Update(); };
         button.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, e) =>

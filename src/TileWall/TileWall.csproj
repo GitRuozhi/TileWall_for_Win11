@@ -55,6 +55,7 @@
 
   <ItemGroup>
     <Content Include="Assets\WelcomeWall\Seasons\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\WelcomeWall\Links\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\FallbackIcons\Generic\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\FallbackIcons\Generic\assets.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\FallbackIcons\System\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
@@ -115,9 +116,61 @@
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.9" />
     <!-- Preserve the existing component version rather than falling back to WinUI's minimum. -->
     <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" />
+    <!-- The component-only self-contained payload omits the Insights resource DLL.
+         Read just that file from the matching cached runtime package; do not import
+         its deployment targets or introduce a framework package dependency. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.5.1"
+                      GeneratePathProperty="true" ExcludeAssets="all" />
     <PackageReference Include="AsmResolver.PE.Win32Resources" Version="6.0.1" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.6.1" />
   </ItemGroup>
+
+  <UsingTask TaskName="ExtractTileWallInsightsResource" TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <PackageFile ParameterType="System.String" Required="true" />
+      <RuntimeBinary ParameterType="System.String" Required="true" />
+      <DestinationFile ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Reference Include="$(MSBuildToolsPath)\ref\netstandard.dll" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.IO.Compression" />
+      <Using Namespace="System.Security.Cryptography" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        using (var package = ZipFile.OpenRead(PackageFile))
+        using (var packagedRuntime = package.GetEntry("Microsoft.WindowsAppRuntime.dll").Open())
+        using (var componentRuntime = File.OpenRead(RuntimeBinary))
+        using (var sha = SHA256.Create())
+        {
+            if (!Convert.ToBase64String(sha.ComputeHash(packagedRuntime)).Equals(
+                    Convert.ToBase64String(sha.ComputeHash(componentRuntime)), StringComparison.Ordinal))
+                throw new InvalidDataException("Windows App SDK Insights resource must match the referenced runtime binary.");
+            Directory.CreateDirectory(Path.GetDirectoryName(DestinationFile));
+            using (var resource = package.GetEntry("Microsoft.WindowsAppRuntime.Insights.Resource.dll").Open())
+            using (var output = File.Create(DestinationFile)) resource.CopyTo(output);
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="IncludeTileWallInsightsResource" BeforeTargets="AssignTargetPaths;CoreCompile"
+          DependsOnTargets="AddMicrosoftWindowsAppSDKPayloadFilesFromComponents"
+          Condition="'$(WindowsAppSDKSelfContained)'=='true'">
+    <PropertyGroup>
+      <TileWallInsightsResourceFile>$(IntermediateOutputPath)WindowsAppSDKInsights\Microsoft.WindowsAppRuntime.Insights.Resource.dll</TileWallInsightsResourceFile>
+    </PropertyGroup>
+    <ItemGroup>
+      <_TileWallComponentRuntime Include="@(MicrosoftWindowsAppSDKDllFiles)"
+                                 Condition="'%(Filename)%(Extension)'=='Microsoft.WindowsAppRuntime.dll'" />
+    </ItemGroup>
+    <ExtractTileWallInsightsResource
+      PackageFile="$(PkgMicrosoft_WindowsAppSDK_Runtime)\tools\MSIX\win10-$(NativePlatform)\Microsoft.WindowsAppRuntime.2.msix"
+      RuntimeBinary="@(_TileWallComponentRuntime)" DestinationFile="$(TileWallInsightsResourceFile)" />
+    <ItemGroup>
+      <Content Include="$(TileWallInsightsResourceFile)" Link="Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+               CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 
   <!--
     Defining the "HasPackageAndPublishMenuAddedByProject" property here allows the Solution

@@ -9,6 +9,31 @@ public static class RecycleBinRules
     public const int Capacity = 200;
     public const int WarningCount = 160;
 
+    /// <summary>Temporarily joins an observed recycle bin for existing pure rules, then returns an active-only proposal.</summary>
+    public static WallLayoutResult Propose(WallDocument currentActive, RecycleBinSnapshot snapshot, WallAction action,
+        double width, double height, WallMetrics? metrics = null)
+    {
+        ArgumentNullException.ThrowIfNull(currentActive);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(action);
+        if (snapshot.Generation != currentActive.Generation)
+            return new(null, WallRejection.StaleGeneration, "SOURCE_CHANGED");
+        if (action is not (UnpinMemberAction or UnpinMembersAction or RestoreRecycledMembersAction or
+            DeleteRecycledMembersAction or ClearRecycleBinAction or SetRecycleBinEnabledAction))
+            return Reject();
+        var result = WallLayoutEngine.TryApply(currentActive with { InactiveMembers = snapshot.Members },
+            action, width, height, metrics);
+        if (result.Proposal is not { } proposal) return result;
+        return result with
+        {
+            Proposal = proposal with
+            {
+                Document = proposal.Document.ActiveView(),
+                RecycleBin = snapshot with { Members = proposal.Document.InactiveMembers },
+            },
+        };
+    }
+
     public static IReadOnlyList<WallMember> OrderedActive(WallDocument current, IEnumerable<string> ids)
     {
         var selected = ids.ToHashSet(StringComparer.Ordinal);
@@ -21,6 +46,13 @@ public static class RecycleBinRules
         if (!current.RecycleBinEnabled) return [];
         var joined = current.InactiveMembers.Concat(OrderedActive(current, ids)).ToArray();
         return joined.Take(Math.Max(0, joined.Length - Capacity)).ToArray();
+    }
+
+    public static IReadOnlyList<WallMember> Overflow(WallDocument current, RecycleBinSnapshot snapshot, IEnumerable<string> ids)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        return Overflow(current with { InactiveMembers = snapshot.Members }, ids);
     }
 
     public static string UniqueGroupTitle(WallDocument current, string title)

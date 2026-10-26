@@ -78,6 +78,12 @@ public sealed partial class MainWindow
             var gallery = await Task.Run(() => WelcomeWallGallerySource.Prepare(
                 new LocalFileStore(), _session.DataRoot, originals, token), token);
             RequireCurrentWelcomeSource(before, token);
+            var guideImage = await _images.PrepareMediaAsync(Path.Combine(AppContext.BaseDirectory,
+                "Assets", "WelcomeWall", "Links", WelcomeWallBuilder.GuideImageFileName), token);
+            RequireCurrentWelcomeSource(before, token);
+            var showcaseImage = await _images.PrepareMediaAsync(Path.Combine(AppContext.BaseDirectory,
+                "Assets", "WelcomeWall", "Links", WelcomeWallBuilder.ShowcaseImageFileName), token);
+            RequireCurrentWelcomeSource(before, token);
             var currentTargets = await Task.Run(() => ReadWelcomeTargets(token), token);
             RequireCurrentWelcomeSource(before, token);
             if (!targets.Items.OrderBy(item => item.Key, StringComparer.Ordinal)
@@ -87,11 +93,12 @@ public sealed partial class MainWindow
             var text = new WelcomeWallText(WelcomeWallBuilder.NativeTargetKeys.Append("Settings")
                 .ToDictionary(key => key, Text, StringComparer.Ordinal));
             var prepared = WelcomeWallBuilder.Prepare(before, targets, text, _session.ManagedGalleryPath(gallery.Reference),
-                ViewportBudget(before.Settings), _metrics, gallery.Reference);
+                ViewportBudget(before.Settings), _metrics, gallery.Reference, guideImage.Reference, showcaseImage.Reference);
             if (prepared.Layout.Proposal is not { } proposal) return ViewportFailure(prepared.Layout);
             RequireCurrentWelcomeSource(before, token);
             // This is the acceptance boundary. Cancellation after it cannot abandon the joint transaction.
-            var error = await CommitProposalAsync(proposal, prepared.EntryChanges, managedGalleries: [gallery]);
+            var error = await CommitProposalAsync(proposal, prepared.EntryChanges,
+                preparedMedia: [guideImage, showcaseImage], managedGalleries: [gallery]);
             if (error is not null) AppLog.Warn("WelcomeWall", (fresh ? "First initialization: " : "Manual initialization: ") + error);
             return error;
         }

@@ -229,27 +229,88 @@ internal static class SystemFeatureCatalog
         "Microsoft.WorkFolders",
     };
 
+    private sealed record FeatureGroup(string Key, string TitleKey, int Order);
+    private sealed record FeatureGroupAssignment(FeatureGroup Group, string[] ItemIds);
+
+    private static readonly IReadOnlyDictionary<string, FeatureGroup> LocationGroups = IndexGroups(
+        Group("system:locations:personal-shared-folders", "Import.SystemGroup.LocationsPersonal", 0,
+            "desktop", "profile", "documents", "downloads", "pictures", "music", "videos", "startup", "public-desktop"),
+        Group("system:locations:system-places", "Import.SystemGroup.LocationsPlaces", 1,
+            "computer", "recycle", "network", "connections", "printers", "libraries", "control-panel", "windows-tools", "user-tools", "fonts"));
+
+    private static readonly IReadOnlyDictionary<string, FeatureGroup> SettingsGroups = IndexGroups(
+        Group("system:settings:display-sound-notifications", "Import.SystemGroup.SettingsDisplaySoundNotifications", 0,
+            "home", "display", "advanced-display", "night-light", "graphics", "sound", "volume", "sound-devices", "notifications", "focus-assist", "focus", "about"),
+        Group("system:settings:power-storage-operations", "Import.SystemGroup.SettingsPowerStorageOperations", 1,
+            "power", "battery", "battery-settings", "battery-use", "storage", "storage-policies", "save-locations", "storage-recommendations", "storage-spaces", "multitasking", "projection", "remote-desktop", "clipboard"),
+        Group("system:settings:devices-input", "Import.SystemGroup.SettingsDevicesInput", 2,
+            "bluetooth", "connected-devices", "printers", "mouse", "touchpad", "pen", "typing", "hardware-typing", "autoplay", "usb", "cameras"),
+        Group("system:settings:network-connectivity", "Import.SystemGroup.SettingsNetwork", 3,
+            "network", "wifi", "known-networks", "ethernet", "vpn", "proxy", "airplane", "hotspot", "dialup", "advanced-network"),
+        Group("system:settings:personalization", "Import.SystemGroup.SettingsPersonalization", 4,
+            "background", "colors", "lock-screen", "themes", "start", "taskbar", "fonts", "text-input", "touch-keyboard"),
+        Group("system:settings:accounts-sign-in", "Import.SystemGroup.SettingsAccountsSignIn", 5,
+            "your-info", "email-accounts", "signin", "dynamic-lock", "work-school", "other-users", "account-sync", "backup"),
+        Group("system:settings:apps-media-games", "Import.SystemGroup.SettingsAppsMediaGames", 6,
+            "apps", "default-apps", "apps-websites", "optional-features", "startup-apps", "video", "offline-maps", "gamebar", "game-captures", "game-mode"),
+        Group("system:settings:date-language-speech", "Import.SystemGroup.SettingsDateLanguageSpeech", 7,
+            "date-time", "language", "region", "speech", "keyboard"),
+        Group("system:settings:privacy-diagnostics-search", "Import.SystemGroup.SettingsPrivacyDiagnosticsSearch", 8,
+            "privacy-general", "privacy-speech", "privacy-inking", "privacy-feedback", "privacy-history", "privacy-background", "privacy-app-diagnostics", "search-permissions", "search-indexing"),
+        Group("system:settings:personal-data-permissions", "Import.SystemGroup.SettingsPersonalDataPermissions", 9,
+            "privacy-location", "privacy-account", "privacy-contacts", "privacy-calendar", "privacy-calls", "privacy-email", "privacy-tasks", "privacy-messaging", "privacy-phone"),
+        Group("system:settings:device-file-permissions", "Import.SystemGroup.SettingsDeviceFilePermissions", 10,
+            "privacy-camera", "privacy-microphone", "privacy-notifications", "privacy-radios", "privacy-devices", "privacy-downloads", "privacy-documents", "privacy-pictures", "privacy-videos", "privacy-filesystem", "privacy-downloadsfolder", "privacy-voice", "privacy-screenshots"),
+        Group("system:settings:update-security-recovery", "Import.SystemGroup.SettingsUpdateSecurityRecovery", 11,
+            "update", "update-history", "update-options", "update-restart", "delivery", "security", "recovery", "activation", "troubleshoot", "developers"),
+        Group("system:settings:accessibility", "Import.SystemGroup.SettingsAccessibility", 12,
+            "accessibility-display", "accessibility-audio", "captions", "color-filters", "contrast", "magnifier", "narrator", "accessibility-keyboard", "accessibility-mouse", "pointer", "text-cursor", "visual-effects"));
+
+    private static readonly IReadOnlyDictionary<string, FeatureGroup> ControlPanelGroups = IndexGroups(
+        Group("system:control-panel:system-security", "Import.SystemGroup.ControlPanelSystemSecurity", 0,
+            "Microsoft.ActionCenter", "Microsoft.AdministrativeTools", "Microsoft.BitLockerDriveEncryption", "Microsoft.CredentialManager", "Microsoft.PowerOptions", "Microsoft.Recovery", "Microsoft.System", "Microsoft.Troubleshooting", "Microsoft.UserAccounts", "Microsoft.WindowsDefender", "Microsoft.WindowsFirewall"),
+        Group("system:control-panel:devices-network-sound", "Import.SystemGroup.ControlPanelDevicesNetworkSound", 1,
+            "Microsoft.AutoPlay", "Microsoft.DeviceManager", "Microsoft.DevicesAndPrinters", "Microsoft.iSCSIInitiator", "Microsoft.InternetOptions", "Microsoft.NetworkAndSharingCenter", "Microsoft.PhoneAndModem", "Microsoft.RemoteAppAndDesktopConnections", "Microsoft.Sound", "Microsoft.WindowsMobilityCenter"),
+        Group("system:control-panel:personalization-accessibility", "Import.SystemGroup.ControlPanelPersonalizationAccessibility", 2,
+            "Microsoft.ColorManagement", "Microsoft.EaseOfAccessCenter", "Microsoft.FolderOptions", "Microsoft.Fonts", "Microsoft.Keyboard", "Microsoft.Mouse", "Microsoft.NotificationAreaIcons", "Microsoft.PenAndTouch", "Microsoft.Personalization", "Microsoft.SpeechRecognition", "Microsoft.TabletPCSettings", "Microsoft.Taskbar"),
+        Group("system:control-panel:apps-storage-region", "Import.SystemGroup.ControlPanelAppsStorageRegion", 3,
+            "Microsoft.DateAndTime", "Microsoft.DefaultPrograms", "Microsoft.FileHistory", "Microsoft.IndexingOptions", "Microsoft.ProgramsAndFeatures", "Microsoft.RegionAndLanguage", "Microsoft.StorageSpaces", "Microsoft.SyncCenter", "Microsoft.WorkFolders"));
+
+    private static readonly IReadOnlyDictionary<string, FeatureGroup> ToolGroups = IndexGroups(
+        Group("system:tools:administration-monitoring-diagnostics", "Import.SystemGroup.ToolsAdministrationMonitoringDiagnostics", 0,
+            "task-manager", "computer-management", "device-manager", "disk-management", "services", "events", "tasks", "performance", "resources", "system-information", "system-configuration", "windows-version"),
+        Group("system:tools:security-policy-credentials", "Import.SystemGroup.ToolsSecurityPolicyCredentials", 1,
+            "registry", "group-policy", "security-policy", "local-users", "user-certificates", "machine-certificates", "firewall", "component-services"),
+        Group("system:tools:maintenance-components-utilities", "Import.SystemGroup.ToolsMaintenanceComponentsUtilities", 2,
+            "windows-features", "optimize", "cleanup", "print-management", "odbc", "directx", "advanced-system", "system-protection", "remote-properties", "run", "taskbar-search"));
+
+    static SystemFeatureCatalog()
+    {
+        ValidateGroupCoverage(Locations, LocationGroups, nameof(Locations));
+        ValidateGroupCoverage(Settings, SettingsGroups, nameof(Settings));
+        ValidateGroupCoverage(Tools, ToolGroups, nameof(Tools), "run", "taskbar-search");
+        if (!ControlPanelNames.SetEquals(ControlPanelGroups.Keys))
+            throw new InvalidOperationException("Every supported Control Panel canonical name must have exactly one semantic group.");
+    }
+
     internal static IReadOnlyList<NativeImportEntry> Read(CancellationToken token)
     {
         var chinese = ProductStrings.Language == WallLanguageMode.Chinese || ProductStrings.Language == WallLanguageMode.System &&
             CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase);
-        var locations = chinese ? "系统位置" : "System locations";
-        var settings = chinese ? "Windows 设置" : "Windows Settings";
-        var panel = chinese ? "控制面板" : "Control Panel";
-        var tools = chinese ? "系统工具" : "System tools";
         var result = new List<NativeImportEntry>();
-        foreach (var definition in Locations) AddShell(definition, locations);
+        foreach (var definition in Locations) AddShell(definition, LocationGroups[definition.Id]);
         var build = Environment.OSVersion.Version.Build;
         var hasWifi = HasWifi();
         var hasBattery = HasBattery();
         foreach (var definition in Settings)
         {
             token.ThrowIfCancellationRequested();
-            var available = build >= definition.MinimumBuild && build <= definition.MaximumBuild &&
-                (definition.Hardware != "wifi" || hasWifi) && (definition.Hardware != "battery" || hasBattery) &&
-                RegisteredUrlProtocols.IsSupported(definition.Target);
-            result.Add(new(NativeImportCatalog.Key("system|settings|" + definition.Id), Name(definition), definition.Target,
-                NativeImportTarget.Uri, settings, true, false, Error: available ? null : "SourceUnavailable"));
+            bool? hardware = definition.Hardware switch { "wifi" => hasWifi, "battery" => hasBattery, _ => true };
+            var applicable = build >= definition.MinimumBuild && build <= definition.MaximumBuild && hardware != false;
+            var available = applicable && hardware == true && RegisteredUrlProtocols.IsSupported(definition.Target);
+            result.Add(CreateEntry(NativeImportCatalog.Key("system|settings|" + definition.Id), Name(definition), definition.Target,
+                NativeImportTarget.Uri, SettingsGroups[definition.Id], false,
+                error: !applicable ? "SourceNotApplicable" : available ? null : "SourceUnavailable"));
         }
         var professionalTools = HasProfessionalToolsEdition();
         foreach (var definition in Tools)
@@ -259,48 +320,80 @@ internal static class SystemFeatureCatalog
             string? error = definition.RequiresProfessionalEdition && !professionalTools ? "SourceUnavailable" : null;
             try { if ((File.GetAttributes(path) & FileAttributes.Directory) != 0) error = "SourceUnavailable"; }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { error = "SourceUnavailable"; }
-            result.Add(new(NativeImportCatalog.Key("system|tool|" + definition.Id), Name(definition), path,
-                NativeImportTarget.Path, tools, true, false, Error: error));
+            result.Add(CreateEntry(NativeImportCatalog.Key("system|tool|" + definition.Id), Name(definition), path,
+                NativeImportTarget.Path, ToolGroups[definition.Id], false, error: error));
         }
-        AddShell(new("run", "运行", "Run", "shell:::{2559A1F3-21D7-11D4-BDAF-00C04F60B9F0}"), tools);
+        AddShell(new("run", "运行", "Run", "shell:::{2559A1F3-21D7-11D4-BDAF-00C04F60B9F0}"), ToolGroups["run"]);
         // The main integration verifies this native protocol actually presents taskbar Search, not Explorer search.
-        result.Add(new(NativeImportCatalog.Key("system|taskbar-search"), chinese ? "Windows 搜索" : "Windows Search", "ms-search://search/",
-            NativeImportTarget.Uri, tools, true, false, Error: RegisteredUrlProtocols.IsSupported("ms-search:") ? null : "SourceUnavailable"));
+        result.Add(CreateEntry(NativeImportCatalog.Key("system|taskbar-search"), chinese ? "Windows 搜索" : "Windows Search", "ms-search://search/",
+            NativeImportTarget.Uri, ToolGroups["taskbar-search"], false,
+            error: RegisteredUrlProtocols.IsSupported("ms-search:") ? null : "SourceUnavailable"));
         try
         {
             foreach (var item in ShellItemCatalog.Enumerate("shell:ControlPanelFolder", token))
             {
                 token.ThrowIfCancellationRequested();
                 if (ControlPanelName(item.ParsingName) is not { } canonical || !ControlPanelNames.Contains(canonical)) continue;
-                result.Add(new(NativeImportCatalog.Key("system|control-panel|" + canonical), item.Name, item.ParsingName,
-                    NativeImportTarget.Shell, panel, true, item.IsFolder,
-                    Identity: item.Path is { } path ? LaunchIdentityService.ForPath(path) : LaunchIdentityService.ForShell(item.ParsingName)));
+                result.Add(CreateEntry(NativeImportCatalog.Key("system|control-panel|" + canonical), item.Name, item.ParsingName,
+                    NativeImportTarget.Shell, ControlPanelGroups[canonical], item.IsFolder,
+                    identity: ShellItemCatalog.ReadForLink(item.ParsingName).Identity));
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or COMException)
         {
-            result.Add(new(NativeImportCatalog.Key("system|control-panel-unavailable"), panel, "shell:ControlPanelFolder",
-                NativeImportTarget.Shell, panel, true, true, Error: "SourceUnavailable"));
+            result.Add(CreateEntry(NativeImportCatalog.Key("system|control-panel-unavailable"), chinese ? "控制面板" : "Control Panel",
+                "shell:ControlPanelFolder", NativeImportTarget.Shell, ControlPanelGroups["Microsoft.ActionCenter"], true,
+                error: "SourceUnavailable"));
         }
         return result.DistinctBy(entry => entry.Key).ToArray();
 
         string Name(Definition definition) => chinese ? definition.Chinese : definition.English;
-        void AddShell(Definition definition, string group)
+        void AddShell(Definition definition, FeatureGroup group)
         {
             token.ThrowIfCancellationRequested();
             try
             {
-                var actual = ShellItemCatalog.Read(definition.Target);
-                result.Add(new(NativeImportCatalog.Key("system|location|" + definition.Id), Name(definition), definition.Target,
-                    NativeImportTarget.Shell, group, true, actual.IsFolder,
-                    Identity: actual.Path is { } path ? LaunchIdentityService.ForPath(path) : LaunchIdentityService.ForShell(actual.ParsingName)));
+                var (actual, identity) = ShellItemCatalog.ReadForLink(definition.Target);
+                result.Add(CreateEntry(NativeImportCatalog.Key("system|location|" + definition.Id), Name(definition), definition.Target,
+                    NativeImportTarget.Shell, group, actual.IsFolder,
+                    identity: identity));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or COMException)
             {
-                result.Add(new(NativeImportCatalog.Key("system|location|" + definition.Id), Name(definition), definition.Target,
-                    NativeImportTarget.Shell, group, true, true, Error: "SourceUnavailable"));
+                result.Add(CreateEntry(NativeImportCatalog.Key("system|location|" + definition.Id), Name(definition), definition.Target,
+                    NativeImportTarget.Shell, group, true, error: "SourceUnavailable"));
             }
         }
+    }
+
+    private static NativeImportEntry CreateEntry(string key, string name, string target, NativeImportTarget kind,
+        FeatureGroup group, bool directory, LaunchIdentity? identity = null, string? error = null) =>
+        new(key, name, target, kind, group.Key, true, directory, Identity: identity, Error: error)
+        {
+            GroupTitleKey = group.TitleKey,
+            GroupOrder = group.Order,
+        };
+
+    private static FeatureGroupAssignment Group(string key, string titleKey, int order, params string[] itemIds) =>
+        new(new(key, titleKey, order), itemIds);
+
+    private static IReadOnlyDictionary<string, FeatureGroup> IndexGroups(params FeatureGroupAssignment[] assignments)
+    {
+        var groups = new Dictionary<string, FeatureGroup>(StringComparer.OrdinalIgnoreCase);
+        foreach (var assignment in assignments)
+            foreach (var id in assignment.ItemIds)
+                if (!groups.TryAdd(id, assignment.Group))
+                    throw new InvalidOperationException($"Catalog item '{id}' belongs to more than one semantic group.");
+        return groups;
+    }
+
+    private static void ValidateGroupCoverage(IEnumerable<Definition> definitions,
+        IReadOnlyDictionary<string, FeatureGroup> groups, string catalogName, params string[] extraIds)
+    {
+        var ids = definitions.Select(definition => definition.Id).Concat(extraIds).ToArray();
+        var expected = ids.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (expected.Count != ids.Length || expected.Count != groups.Count || !expected.SetEquals(groups.Keys))
+            throw new InvalidOperationException($"Every {catalogName} catalog item must have exactly one semantic group.");
     }
 
     private static string? ControlPanelName(string parsingName)
@@ -315,13 +408,14 @@ internal static class SystemFeatureCatalog
         return null;
     }
 
-    private static bool HasWifi()
+    private static bool? HasWifi()
     {
         try { return NetworkInterface.GetAllNetworkInterfaces().Any(item => item.NetworkInterfaceType == NetworkInterfaceType.Wireless80211); }
-        catch (NetworkInformationException) { return false; }
+        catch (NetworkInformationException) { return null; }
     }
 
-    private static bool HasBattery() => GetSystemPowerStatus(out var status) && status.BatteryFlag != 255 && (status.BatteryFlag & 128) == 0;
+    private static bool? HasBattery() => GetSystemPowerStatus(out var status) && status.BatteryFlag != 255
+        ? (status.BatteryFlag & 128) == 0 : null;
 
     private static bool HasProfessionalToolsEdition()
     {

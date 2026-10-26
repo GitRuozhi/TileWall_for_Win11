@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using TileWall.ApplicationModel;
 using TileWall.Core.Application;
 using TileWall.Core.Exchange;
@@ -41,6 +42,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly Func<ImportPageContext, bool> _contextCurrent;
     private readonly Func<ImportSourceCandidate, int, int, CancellationToken, Task<PuzzleFrameResult>>? _loadIcon;
     private readonly string? _initialExportDirectory;
+    private readonly string _exportFileTimestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
     private readonly Func<IReadOnlyList<string>, long, CancellationToken, Task<string?>>? _restoreRecycled;
     private readonly WallVisualStyle _style;
     private readonly WallMetrics _metrics = new();
@@ -50,13 +52,14 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly Dictionary<string, ImportProjectedCandidate> _candidateByKey = new(StringComparer.Ordinal);
     private readonly HashSet<CandidateRow> _rows = [];
     private readonly Dictionary<string, PuzzleFrame> _frames = new(StringComparer.Ordinal);
-    private readonly Queue<string> _frameOrder = new();
+    private const long PreviewFrameLimitBytes = 64L * 1024 * 1024;
+    private readonly LinkedList<string> _frameOrder = new();
+    private readonly Dictionary<string, LinkedListNode<string>> _frameNodes = new(StringComparer.Ordinal);
+    private long _frameBytes;
     private readonly Dictionary<string, ImportTargetRecognition> _recognizedTargets = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _recognitionAcceptedKeys = new(StringComparer.Ordinal);
     private ImportSourceProjection? _recognitionProjection;
     private ImportPageContext? _recognitionContext;
     private IReadOnlyDictionary<string, string>? _recognitionFacts;
-    private string? _recognitionSelection;
     private bool _recognitionReady;
     private readonly SemaphoreSlim _packageMediaSlots = new(2, 2);
     private PackagePreviewSource? _packageSource;
@@ -64,17 +67,24 @@ internal sealed class ImportDialog : IWallDialogSession
     private IReadOnlyDictionary<string, string>? _projectedIdentities;
     private readonly ComboBox _mode = new(), _source = new(), _position = new();
     private readonly CheckBox _selectAll = new() { IsThreeState = true };
+    private readonly TextBox _filter = new() { MinWidth = 0, FontSize = 12 };
     private readonly ToggleSwitch _autoFilter = new() { IsOn = true, OnContent = "", OffContent = "" },
         _recognizeGroups = new() { IsOn = true, OnContent = "", OffContent = "" };
     private readonly ToggleButton _small = new(), _medium = new();
     private readonly Button _chooseFile = new() { MinWidth = 32, Width = 32, Padding = new Thickness(0) };
     private readonly TextBox _path = new() { IsReadOnly = true, MinWidth = 0, FontSize = 12 };
-    private readonly TextBlock[] _optionLabels = Enumerable.Range(0, 8).Select(_ => Label()).ToArray();
-    private readonly TextBlock[] _numbers = Enumerable.Range(0, 14).Select(_ => new TextBlock { Text = "0", FontSize = 24,
-        VerticalAlignment = VerticalAlignment.Bottom, TextAlignment = TextAlignment.Left }).ToArray();
-    private readonly TextBlock[] _numberLabels = Enumerable.Range(0, 14).Select(_ => new TextBlock { FontSize = 12,
-        TextWrapping = TextWrapping.Wrap, LineHeight = 16, VerticalAlignment = VerticalAlignment.Bottom }).ToArray();
+    private readonly TextBlock[] _optionLabels = Enumerable.Range(0, 9).Select(_ => Label()).ToArray();
+    private readonly TextBlock[] _numbers = Enumerable.Range(0, 14).Select(_ => new TextBlock { Text = "0", FontSize = 14,
+        HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center,
+        TextAlignment = TextAlignment.Center, TextWrapping = TextWrapping.NoWrap }).ToArray();
+    private readonly TextBlock[] _numberLabels = Enumerable.Range(0, 14).Select(_ => new TextBlock { FontSize = 10,
+        TextWrapping = TextWrapping.Wrap, HorizontalAlignment = HorizontalAlignment.Stretch,
+        VerticalAlignment = VerticalAlignment.Center }).ToArray();
     private readonly Border[] _statisticCells = new Border[14];
+    private readonly Grid[] _statisticRows = Enumerable.Range(0, 3).Select(_ => new Grid
+        { ColumnSpacing = 4, RowSpacing = 4, HorizontalAlignment = HorizontalAlignment.Left }).ToArray();
+    private readonly StackPanel _statistics = new() { Spacing = 16, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Border _statisticsCard;
     private readonly Grid _page;
     private readonly ColumnDefinition _statisticsColumn;
     private readonly TextBlock _status = Label();
@@ -95,12 +105,14 @@ internal sealed class ImportDialog : IWallDialogSession
     private ImportPageSource? _sourceData;
     private ImportSourceProjection? _projection;
     private ImportSourceProjection? _previewProjection;
+    private string _previewFilter = "";
     private int _previewTileSize;
     private double _previewHeight, _previewScale;
     private XamlRoot? _previewRoot;
     private ImportSourcePlan? _plan;
     private string? _packagePath, _exportPath, _notice, _error;
     private string? _statisticLayoutKey;
+    private readonly double _statisticsMaximumColumnWidth, _statisticsPreviewWidth;
     private bool _shown, _closed, _dismissRequested, _reading, _adding, _picking, _refreshingStrings, _readsSuspended,
         _preparing, _prepared, _synchronizingSelection, _exportPathPicked, _updatingPreviewItems;
     private int _sourceEpoch, _renderEpoch, _preparationEpoch, _tileSize = 1, _catalogRevision, _lastImportSource;
@@ -123,13 +135,15 @@ internal sealed class ImportDialog : IWallDialogSession
         _readContext = readContext; _readSource = readSource; _prepare = prepare; _save = save; _saveExport = saveExport;
         _contextCurrent = contextCurrent; _style = style; _loadIcon = loadIcon; _initialExportDirectory = initialExportDirectory;
         _restoreRecycled = restoreRecycled;
-        if (!string.IsNullOrWhiteSpace(initialExportDirectory)) _exportPath = Path.Combine(initialExportDirectory, "TileWall.twpack");
+        if (!string.IsNullOrWhiteSpace(initialExportDirectory)) _exportPath = Path.Combine(initialExportDirectory, DefaultExportFileName());
         _catalogChanged = () => owner.DispatcherQueue.TryEnqueue(() => SourceChanged(ImportPageSourceKind.StartMenu));
         _clockTimer = owner.DispatcherQueue.CreateTimer(); _clockTimer.Interval = TimeSpan.FromSeconds(1);
         _clockTimer.Tick += (_, _) => { foreach (var row in _rows) row.Clock?.Refresh(DateTimeOffset.Now); };
         var budget = OwnedDialogWindow.ContentBudget(owner);
         const double rightWidth = 748, columnGap = 16;
         var previewWidth = _metrics.WallWidth(1);
+        _statisticsPreviewWidth = previewWidth;
+        _statisticsMaximumColumnWidth = Math.Max(0, budget.Width - previewWidth - columnGap);
         _options.ColumnDefinitions.Add(new() { Width = new GridLength(92) });
         _options.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         var pathRow = new Grid { ColumnSpacing = 6 };
@@ -138,29 +152,31 @@ internal sealed class ImportDialog : IWallDialogSession
         pathRow.Children.Add(_path); Grid.SetColumn(_chooseFile, 1); pathRow.Children.Add(_chooseFile);
         var sizes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         sizes.Children.Add(_small); sizes.Children.Add(_medium);
-        FrameworkElement[] values = [_mode, _source, pathRow, _autoFilter, _recognizeGroups, sizes, _position, _selectAll];
+        FrameworkElement[] values = [_mode, _source, pathRow, _autoFilter, _recognizeGroups, sizes, _position, _selectAll, _filter];
         for (var index = 0; index < values.Length; index++) AddOption(index, values[index]);
         _optionsHost = new ContentControl { Content = VisualStyles.Card(_options), HorizontalContentAlignment = HorizontalAlignment.Stretch, IsTabStop = false };
-        var stats = new Grid { RowSpacing = 4, ColumnSpacing = 4 };
-        for (var column = 0; column < 7; column++) stats.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        for (var row = 0; row < 3; row++) stats.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        foreach (var row in _statisticRows)
+        {
+            for (var column = 0; column < 4; column++) row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+            _statistics.Children.Add(row);
+        }
         for (var statisticIndex = 0; statisticIndex < StatisticLabels.Length; statisticIndex++)
         {
-            var box = new Grid { ColumnSpacing = 8, Margin = new Thickness(6) };
+            var box = new Grid { ColumnSpacing = 4, Margin = new Thickness(2) };
             box.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-            box.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+            box.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
             box.Children.Add(_numbers[statisticIndex]); Grid.SetColumn(_numberLabels[statisticIndex], 1); box.Children.Add(_numberLabels[statisticIndex]);
             var cell = VisualStyles.InputFrame(); cell.Child = box;
             _statisticCells[statisticIndex] = cell;
-            Grid.SetRow(cell, statisticIndex < 4 ? 0 : statisticIndex < 11 ? 1 : 2);
-            Grid.SetColumn(cell, statisticIndex < 4 ? statisticIndex : statisticIndex < 11 ? statisticIndex - 4 : statisticIndex - 11);
-            stats.Children.Add(cell);
+            var rowIndex = statisticIndex < 4 ? 0 : statisticIndex < 11 ? 1 : 2;
+            var indexInRow = statisticIndex < 4 ? statisticIndex : statisticIndex < 11 ? statisticIndex - 4 : statisticIndex - 11;
+            Grid.SetRow(cell, 0); Grid.SetColumn(cell, indexInRow); _statisticRows[rowIndex].Children.Add(cell);
             Id(_numbers[statisticIndex], "stat-" + StatisticLabels[statisticIndex][13..].ToLowerInvariant());
         }
         var rightBody = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Top };
         rightBody.Children.Add(_optionsHost);
-        var statsCard = VisualStyles.Card(stats);
-        rightBody.Children.Add(statsCard);
+        _statisticsCard = VisualStyles.Card(_statistics);
+        rightBody.Children.Add(_statisticsCard);
         _status.MaxHeight = 70;
         _statusScroll = new ScrollViewer { Content = _status, MaxHeight = 70, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         rightBody.Children.Add(_statusScroll);
@@ -194,7 +210,7 @@ internal sealed class ImportDialog : IWallDialogSession
         _dialog.Resources["ContentDialogMaxWidth"] = budget.Width + 48; _dialog.Resources["ContentDialogMaxHeight"] = budget.Height + 180;
         Id(_dialog, "dialog"); Id(_mode, "mode"); Id(_source, "source"); Id(_path, "path"); Id(_chooseFile, "choose-wall-file");
         Id(_autoFilter, "auto-trim"); Id(_recognizeGroups, "recognize-groups"); Id(_small, "small"); Id(_medium, "medium");
-        Id(_position, "position"); Id(_selectAll, "select-all"); Id(_repeater, "candidates"); Id(_status, "status");
+        Id(_position, "position"); Id(_selectAll, "select-all"); Id(_filter, "filter"); Id(_repeater, "candidates"); Id(_status, "status");
         _mode.SelectionChanged += (_, _) =>
         {
             if (_refreshingStrings || !_shown || _adding) return;
@@ -212,10 +228,18 @@ internal sealed class ImportDialog : IWallDialogSession
         _recognizeGroups.Toggled += (_, _) => { if (!_refreshingStrings) Reproject(); };
         _position.SelectionChanged += (_, _) => { if (!_refreshingStrings) SelectionChanged(); };
         _small.Click += (_, _) => SetSize(1); _medium.Click += (_, _) => SetSize(2);
+        _filter.TextChanged += (_, _) =>
+        {
+            if (_refreshingStrings || _adding) return;
+            RemoveFilteredSelections();
+            _plan = null;
+            RefreshPreview();
+            SelectionChanged();
+        };
         _selectAll.Click += (_, _) =>
         {
             if (_projection is null || _adding) return;
-            var addable = _projection.Candidates.Where(candidate => candidate.CanAdd).ToArray(); var clear = addable.All(IsSelected);
+            var addable = FilteredAddableCandidates(); var clear = addable.All(IsSelected);
             foreach (var candidate in addable) Select(candidate, !clear);
             _error = _notice = null; SelectionChanged();
         };
@@ -239,6 +263,7 @@ internal sealed class ImportDialog : IWallDialogSession
         finally
         {
             StopRequests(); await DrainOperationsAsync(); ClosePreviewSource();
+            _pendingOperations.Clear(); _previewOperations.Clear(); _previewLoad = Task.CompletedTask;
             _packageMediaSlots.Dispose(); _lifetime.Dispose();
         }
     }
@@ -268,8 +293,15 @@ internal sealed class ImportDialog : IWallDialogSession
 
     private void ResetSource()
     {
-        _recognizedTargets.Clear(); _recognitionAcceptedKeys.Clear();
+        var wasRefreshingStrings = _refreshingStrings;
+        _refreshingStrings = true;
+        try { _filter.Text = ""; }
+        finally { _refreshingStrings = wasRefreshingStrings; }
+        _recognizedTargets.Clear();
         _selected.Clear(); _notice = _error = null; _context = null; _sourceData = null; _projection = null; _plan = null;
+        _projectedCandidates = null; _projectedIdentities = null; _previewProjection = null;
+        _recognitionProjection = null; _recognitionContext = null; _recognitionFacts = null;
+        _candidateByKey.Clear(); ClearFrameCache();
         ClearPreview(); BeginRead(resetSelection: true);
         if (SourceKind == ImportPageSourceKind.StartMenu) Track(ObserveCatalogAsync());
     }
@@ -360,9 +392,12 @@ internal sealed class ImportDialog : IWallDialogSession
             Windows.Foundation.IAsyncOperation<Microsoft.Windows.Storage.Pickers.PickFileResult> operation;
             if (mode == ImportPageMode.Export)
             {
-                var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(owner) { SuggestedFileName = "TileWall.twpack",
-                    DefaultFileExtension = ".twpack", ShowOverwritePrompt = true };
-                picker.FileTypeChoices.Add(ProductStrings.Get("Import.WallFileType"), new List<string> { ".twpack" });
+                var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(owner)
+                {
+                    SuggestedFileName = _exportPathPicked && _exportPath is not null ? Path.GetFileName(_exportPath) : DefaultExportFileName(),
+                    DefaultFileExtension = ".zip", ShowOverwritePrompt = true,
+                };
+                picker.FileTypeChoices.Add(ProductStrings.Get("Import.WallFileType"), new List<string> { ".zip" });
                 var directory = _exportPath is null ? _initialExportDirectory : Path.GetDirectoryName(_exportPath);
                 if (!string.IsNullOrWhiteSpace(directory)) { picker.SuggestedFolder = directory; picker.SuggestedStartFolder = directory; }
                 operation = picker.PickSaveFileAsync();
@@ -370,7 +405,8 @@ internal sealed class ImportDialog : IWallDialogSession
             else
             {
                 var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(owner);
-                picker.FileTypeFilter.Add(".twpack"); TargetItemPicker.SetSuggestedFolder(picker, _packagePath);
+                picker.FileTypeFilter.Add(".zip"); picker.FileTypeFilter.Add(".twpack");
+                TargetItemPicker.SetSuggestedFolder(picker, _packagePath);
                 operation = picker.PickSingleFileAsync();
             }
             _pickerOperation = operation;
@@ -418,6 +454,7 @@ internal sealed class ImportDialog : IWallDialogSession
             _projectedCandidates = _sourceData.Candidates; _projectedIdentities = _context.ExistingIdentities;
             var migration = ImportSourcePlanner.MigrateSelection(_selected, _projection);
             _selected.Clear(); foreach (var pair in migration.Selected) _selected.Add(pair.Key, pair.Value);
+            RemoveFilteredSelections();
             if (migration.RemovedCount > 0) _notice = string.Format(ProductStrings.Get("Import.SelectionRemoved"), migration.RemovedCount);
         }
         RefreshPreview(); SelectionChanged();
@@ -460,12 +497,30 @@ internal sealed class ImportDialog : IWallDialogSession
         }
     }
 
-    private bool IsSelected(ImportProjectedCandidate candidate) => candidate.CanAdd && candidate.SourceKeys
+    private string FilterQuery => _filter.Text.Trim();
+    private bool MatchesFilter(ImportProjectedCandidate candidate)
+    {
+        var query = FilterQuery;
+        return candidate.Visible && (query.Length == 0 || candidate.Source.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase));
+    }
+    private ImportProjectedCandidate[] FilteredAddableCandidates() => _projection?.Candidates
+        .Where(candidate => candidate.CanAdd && MatchesFilter(candidate)).ToArray() ?? [];
+    private string[] FilteredSelectedSourceKeys()
+    {
+        var keys = FilteredAddableCandidates().SelectMany(candidate => candidate.SourceKeys).ToHashSet(StringComparer.Ordinal);
+        return _selected.Keys.Where(keys.Contains).ToArray();
+    }
+    private void RemoveFilteredSelections()
+    {
+        var keys = FilteredAddableCandidates().SelectMany(candidate => candidate.SourceKeys).ToHashSet(StringComparer.Ordinal);
+        foreach (var key in _selected.Keys.Where(key => !keys.Contains(key)).ToArray()) _selected.Remove(key);
+    }
+    private bool IsSelected(ImportProjectedCandidate candidate) => candidate.CanAdd && MatchesFilter(candidate) && candidate.SourceKeys
         .Any(key => _selected.GetValueOrDefault(key) == candidate.Source.SelectionIdentity);
     private void Select(ImportProjectedCandidate candidate, bool selected)
     {
         if (selected && IsSelected(candidate)) return;
-        if (selected && candidate.CanAdd) _selected[candidate.SelectionKey] = candidate.Source.SelectionIdentity;
+        if (selected && candidate.CanAdd && MatchesFilter(candidate)) _selected[candidate.SelectionKey] = candidate.Source.SelectionIdentity;
         else foreach (var key in candidate.SourceKeys) _selected.Remove(key);
     }
     private void SelectionChanged() { _plan = null; UpdateSelectionFeedback(); UpdateAvailability(); UpdateStatus(); }
@@ -477,31 +532,25 @@ internal sealed class ImportDialog : IWallDialogSession
         if (_closed || _dismissRequested || _readsSuspended || _reading || _adding || _preparing) return;
         var ready = !Attributed && !_reading && !_adding && _prepared && !_preparing &&
             _sourceData?.Refreshing == false && _context is { } currentContext && _projection is { } currentProjection && currentContext.Covers(currentProjection);
-        var selection = _tileSize + ":" + _position.SelectedIndex + ":" + string.Join("\n", _selected.Select(item => item.Key + "\0" + item.Value));
         if (ReferenceEquals(_recognitionProjection, _projection) && ReferenceEquals(_recognitionContext, _context) &&
-            ReferenceEquals(_recognitionFacts, _sourceData?.AvailabilityFacts) && _recognitionSelection == selection && _recognitionReady == ready) return;
+            ReferenceEquals(_recognitionFacts, _sourceData?.AvailabilityFacts) && _recognitionReady == ready) return;
+        var becameReady = !_recognitionReady && ready;
         _recognitionProjection = _projection; _recognitionContext = _context; _recognitionFacts = _sourceData?.AvailabilityFacts;
-        _recognitionSelection = selection; _recognitionReady = ready;
-        var accepted = new HashSet<string>(StringComparer.Ordinal);
-        if (ready && _context is { } context &&
-            _sourceData is { Refreshing: false } source && _projection is { } projection && context.Covers(projection))
+        _recognitionReady = ready;
+        var changed = false;
+        if (_sourceData is { Refreshing: false } source)
         {
-            var plan = ImportSourcePlanner.TryPlan(context.Document, context.Document.Generation, projection,
-                _selected.Keys, new GridSize(_tileSize, _tileSize), _position.SelectedIndex == 1 ? ImportInsertionPosition.Tail : ImportInsertionPosition.Head,
-                _metrics, context.Budget);
-            if (plan.Status == ImportPlanStatus.Ready)
-                accepted.UnionWith(plan.Accepted.Select(item => item.SourceKey));
+            foreach (var key in _recognizedTargets.Keys.ToArray())
+            {
+                var candidate = source.Candidates.FirstOrDefault(candidate => candidate.SourceKey == key);
+                if (candidate is null || !_recognizedTargets[key].Matches(source, candidate))
+                { _recognizedTargets.Remove(key); changed = true; }
+            }
         }
-        var changed = !_recognitionAcceptedKeys.SetEquals(accepted);
-        foreach (var key in _recognizedTargets.Keys.ToArray())
-        {
-            var candidate = _sourceData?.Candidates.FirstOrDefault(candidate => candidate.SourceKey == key);
-            if (!accepted.Contains(key) || candidate is null || !_recognizedTargets[key].Matches(_sourceData!, candidate))
-            { _recognizedTargets.Remove(key); changed = true; }
-        }
-        if (!changed) return;
-        _recognitionAcceptedKeys.Clear(); _recognitionAcceptedKeys.UnionWith(accepted);
-        RefreshRecognizedRows();
+        // Preview inference applies to visible realized candidates, independent of
+        // selection and current placement capacity. Rebind earlier shell-only frames
+        // when the page becomes ready, and discard presentations whose facts changed.
+        if (changed || becameReady) RefreshRecognizedRows();
     }
 
     private void RefreshRecognizedRows(string? sourceKey = null)
@@ -518,19 +567,20 @@ internal sealed class ImportDialog : IWallDialogSession
     private void RefreshPreview(bool force = false)
     {
         if (_closed || _projection is null || _adding) return;
-        var height = _preview.ViewportHeight;
-        if (!force && ReferenceEquals(_previewProjection, _projection) && _previewTileSize == _tileSize && _previewHeight == height)
+        var height = _preview.ViewportHeight; var query = FilterQuery;
+        if (!force && ReferenceEquals(_previewProjection, _projection) && _previewTileSize == _tileSize && _previewHeight == height && _previewFilter == query)
         {
             RefreshRealizedMetadata(); return;
         }
-        _previewProjection = _projection; _previewTileSize = _tileSize; _previewHeight = height;
-        var preview = ImportSourcePlanner.BuildSourcePreview(_projection, new GridSize(_tileSize, _tileSize), _metrics,
+        _previewProjection = _projection; _previewTileSize = _tileSize; _previewHeight = height; _previewFilter = query;
+        var previewProjection = CreateFilteredPreviewProjection(_projection);
+        var preview = ImportSourcePlanner.BuildSourcePreview(previewProjection, new GridSize(_tileSize, _tileSize), _metrics,
             singleColumn: true);
         if (preview.ErrorCode is { } error) _error = ErrorText(error);
         var groups = preview.Lanes.SelectMany(lane => lane.Groups).ToDictionary(group => group.Id, StringComparer.Ordinal);
         var members = groups.Values.SelectMany(group => group.Members).ToDictionary(member => member.Id, StringComparer.Ordinal);
         var items = new List<PreviewItem>(); _candidateByKey.Clear();
-        foreach (var candidate in _projection.Candidates) _candidateByKey[candidate.SelectionKey] = candidate;
+        foreach (var candidate in previewProjection.Candidates) _candidateByKey[candidate.SelectionKey] = candidate;
         foreach (var group in preview.Geometry.Groups)
         {
             var model = groups[group.GroupId];
@@ -540,6 +590,7 @@ internal sealed class ImportDialog : IWallDialogSession
                     items.Add(new("member:" + placed.MemberId, placed.Bounds, null, members[placed.MemberId], candidate));
         }
         if (force) ClearPreview();
+        _previewFilter = query;
         _previewItems = items;
         // Catalog progress and availability preparation can change a single row.
         // Keep the source and surviving containers stable through those updates.
@@ -566,6 +617,22 @@ internal sealed class ImportDialog : IWallDialogSession
         RefreshRealizedMetadata();
     }
 
+    private ImportSourceProjection CreateFilteredPreviewProjection(ImportSourceProjection projection)
+    {
+        var compactRecordedPositions = FilterQuery.Length != 0;
+        var groups = projection.Groups.Select(group => group with
+        {
+            Candidates = group.Candidates.Where(MatchesFilter).Select(candidate =>
+            {
+                if (!compactRecordedPositions || !candidate.Source.HasRecordedPosition) return candidate;
+                // Search results form a temporary, compact preview. Preserve recorded size and
+                // every source fact; only the preview copy ignores recorded position.
+                return candidate with { Source = candidate.Source with { HasRecordedPosition = false } };
+            }).ToArray(),
+        }).Where(group => group.Candidates.Count != 0).ToArray();
+        return projection with { Groups = groups, Candidates = groups.SelectMany(group => group.Candidates).ToArray() };
+    }
+
     private void RefreshRealizedMetadata()
     {
         foreach (var row in _rows)
@@ -583,8 +650,10 @@ internal sealed class ImportDialog : IWallDialogSession
 
     private void OnPreviewRootChanged(XamlRoot sender, XamlRootChangedEventArgs args)
     {
-        if (_closed || _dismissRequested || _previewScale == sender.RasterizationScale) return;
-        _previewScale = sender.RasterizationScale; RefreshPreview(force: true);
+        if (_closed || _dismissRequested) return;
+        if (_previewScale != sender.RasterizationScale)
+        { _previewScale = sender.RasterizationScale; RefreshPreview(force: true); }
+        UpdateStatisticLayout();
     }
 
     private static bool SamePresentation(PreviewItem left, PreviewItem right)
@@ -615,7 +684,6 @@ internal sealed class ImportDialog : IWallDialogSession
         if (index < 0 || index >= _previewItems.Count) return;
         var item = _previewItems[index];
         if (item.Candidate is { } sourceCandidate && item.Member is { } sourceMember && _sourceData is { } source &&
-            _recognitionAcceptedKeys.Contains(sourceCandidate.Source.SourceKey) &&
             _recognizedTargets.TryGetValue(sourceCandidate.Source.SourceKey, out var recognition) && recognition.Matches(source, sourceCandidate.Source))
             item = item with { Member = recognition.Result.ApplyTo(sourceMember) };
         if (_preparedElements.TryGetValue(host, out var binding) && binding.Epoch == _renderEpoch && SamePresentation(binding.Item, item))
@@ -652,7 +720,7 @@ internal sealed class ImportDialog : IWallDialogSession
             CornerRadius = WallCornerStyle.Corners(_style), HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Stretch };
         var reset = WallMemberVisualFactory.ConfigureInteraction(toggle, card, toggle.CornerRadius,
-            hover => { view?.SetExternalHover(hover); clock?.SetExternalHover(hover); });
+            hover => { view?.SetExternalHover(hover); clock?.SetExternalHover(hover); }, deferHoverExit: true);
         CandidateRow? row = null;
         RoutedEventHandler changed = (_, _) =>
         {
@@ -679,6 +747,7 @@ internal sealed class ImportDialog : IWallDialogSession
         foreach (var element in _preparedElements.Keys.ToArray()) ClearElement(element);
         _previewLayout.SetScene([], 1, 1);
         _previewKeys.Clear(); _previewItems = []; ++_renderEpoch;
+        _previewFilter = "";
     }
     private void UpdateRowTooltip(CandidateRow row)
     {
@@ -730,6 +799,41 @@ internal sealed class ImportDialog : IWallDialogSession
     }
 
 
+    private static long FrameBytes(PuzzleFrame frame) => 4L *
+        ((long)frame.SharpDecodedPixels.Width * (long)frame.SharpDecodedPixels.Height +
+         (long)frame.BlurDecodedPixels.Width * (long)frame.BlurDecodedPixels.Height);
+
+    private bool TryGetFrame(string key, out PuzzleFrame frame)
+    {
+        if (!_frames.TryGetValue(key, out frame!)) return false;
+        var node = _frameNodes[key];
+        _frameOrder.Remove(node); _frameOrder.AddLast(node);
+        return true;
+    }
+
+    private void RememberFrame(string key, PuzzleFrame frame)
+    {
+        var bytes = FrameBytes(frame);
+        if (bytes <= 0 || bytes > PreviewFrameLimitBytes) return;
+        ForgetFrame(key);
+        _frames[key] = frame;
+        _frameNodes[key] = _frameOrder.AddLast(key);
+        _frameBytes += bytes;
+        while (_frameBytes > PreviewFrameLimitBytes && _frameOrder.First is { } oldest)
+            ForgetFrame(oldest.Value);
+    }
+
+    private void ForgetFrame(string key)
+    {
+        if (_frames.Remove(key, out var frame)) _frameBytes -= FrameBytes(frame);
+        if (_frameNodes.Remove(key, out var node)) _frameOrder.Remove(node);
+    }
+
+    private void ClearFrameCache()
+    {
+        _frames.Clear(); _frameNodes.Clear(); _frameOrder.Clear(); _frameBytes = 0;
+    }
+
     private void StartRowImage(CandidateRow row, bool replace = false)
     {
         if (_closed || _dismissRequested || _readsSuspended || _adding || _reading || _sourceData is null || row.Member is ClockMember) return;
@@ -746,11 +850,23 @@ internal sealed class ImportDialog : IWallDialogSession
         var cacheKey = System.Text.Json.JsonSerializer.Serialize(new { row.Candidate.SelectionKey, row.Candidate.Source.SourceKind, Stamp = IconStamp(row.Candidate),
             row.Member.Images, row.Member.ImageDisplay, row.Member.Visual.BackgroundMode,
             CurrentImage = row.Member.Carousel?.CurrentImageId, Width = width, Height = height });
-        if (!replace && row.ImageKey == cacheKey) { row.Request = null; request.Dispose(); return; }
+        var automaticCachePath = source.Package is null && row.Member.Images.Kind == MemberImageSourceKind.Automatic
+            ? AutomaticFrameValidationPath(row.Candidate.Source) : null;
+        PuzzleFrame? cachedAutomaticFrame = null;
+        if (!replace && automaticCachePath is not null && TryGetFrame(cacheKey, out var cachedAutomatic) &&
+            cachedAutomatic.MemoryCacheAllowed && cachedAutomatic.AutomaticStamp is not null)
+            cachedAutomaticFrame = cachedAutomatic;
+        var hasAutomaticCache = cachedAutomaticFrame is not null;
+        if (!replace && row.ImageKey == cacheKey && !hasAutomaticCache)
+        { row.Request = null; request.Dispose(); return; }
         row.RequestKey = cacheKey;
-        // Automatic icons retain resource/handler dependencies in the shared image
-        // service. A page-local frame would bypass that service's revalidation.
-        if (row.Member.Images.Kind != MemberImageSourceKind.Automatic && _frames.TryGetValue(cacheKey, out var cached))
+        if (hasAutomaticCache)
+        {
+            // Keep a previously loaded frame visible while its lightweight source
+            // stamp is checked and, if stale, a replacement is prepared.
+            row.View!.UpdateFrame(cachedAutomaticFrame!);
+        }
+        if (row.Member.Images.Kind != MemberImageSourceKind.Automatic && TryGetFrame(cacheKey, out var cached))
         { row.View!.UpdateFrame(cached); row.ImageKey = cacheKey; row.RequestKey = null; row.Request = null; request.Dispose(); return; }
         PackagePreviewSource? packageSource = null;
         if (source.Package is { } package)
@@ -758,35 +874,67 @@ internal sealed class ImportDialog : IWallDialogSession
             _packageSource ??= new PackagePreviewSource(_reader, package, _previewRequest.Token);
             packageSource = _packageSource; packageSource.Enter();
         }
-        var task = LoadRowImageAsync(row, source, epoch, width, height, cacheKey, request, packageSource);
+        var task = LoadRowImageAsync(row, source, epoch, width, height, cacheKey, request, packageSource,
+            cachedAutomaticFrame, automaticCachePath);
         _previewOperations.RemoveWhere(operation => operation.IsCompleted);
         _previewOperations.Add(task); _previewLoad = Task.WhenAll(_previewOperations); Track(task);
     }
 
     private async Task LoadRowImageAsync(CandidateRow row, ImportPageSource source, int epoch, int width, int height,
-        string cacheKey, CancellationTokenSource request, PackagePreviewSource? packageSource)
+        string cacheKey, CancellationTokenSource request, PackagePreviewSource? packageSource,
+        PuzzleFrame? cachedAutomaticFrame, string? automaticCachePath)
     {
         try
         {
-            var candidate = row.Candidate.Source;
-            if (_recognitionAcceptedKeys.Contains(candidate.SourceKey) && ImportTargetRecognition.AppliesTo(candidate) &&
-                (!_recognizedTargets.TryGetValue(candidate.SourceKey, out var recognized) || !recognized.Matches(source, candidate)))
+            var candidateKey = row.Candidate.Source.SourceKey;
+            if (_sourceData is { Refreshing: false } recognitionSource &&
+                recognitionSource.Candidates.FirstOrDefault(item => item.SourceKey == candidateKey) is { } recognitionCandidate &&
+                CanInferVisibleTarget(row, recognitionSource, recognitionCandidate) &&
+                (!_recognizedTargets.TryGetValue(recognitionCandidate.SourceKey, out var recognized) || !recognized.Matches(recognitionSource, recognitionCandidate)))
             {
-                // Only realized, selected and capacity-admitted pure targets are probed.
-                // The original candidate identity/geometry remains the planner's input.
-                var fact = ImportTargetRecognition.FactFor(source, candidate);
-                var inferred = await _images.ResolveTargetSourceAsync(candidate.Member.TargetInput, request.Token);
-                if (inferred is null || _closed || _dismissRequested || _readsSuspended || _reading || request.IsCancellationRequested ||
-                    epoch != _renderEpoch || !_rows.Contains(row) || !ReferenceEquals(row.Request, request) ||
-                    !_recognitionAcceptedKeys.Contains(candidate.SourceKey) || _sourceData is not { Refreshing: false } currentSource ||
-                    currentSource.Candidates.FirstOrDefault(item => item.SourceKey == candidate.SourceKey) is not { } currentCandidate ||
-                    fact != ImportTargetRecognition.FactFor(currentSource, currentCandidate)) return;
-                _recognizedTargets[candidate.SourceKey] = new(fact, inferred);
-                // Rebuild only changed realized presentations; selection and source geometry stay intact.
-                row.Request = null; row.ImageKey = null;
-                RefreshRecognizedRows(candidate.SourceKey);
-                return;
+                // Probe only visible, realized filesystem targets. Selection and
+                // placement capacity affect Save, not what the preview can recognize.
+                var fact = ImportTargetRecognition.FactFor(recognitionSource, recognitionCandidate);
+                TargetImageSourceResult? inferred = null;
+                try { inferred = await _images.ResolveTargetSourceAsync(recognitionCandidate.Member.TargetInput, request.Token); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
+                    InvalidOperationException or OverflowException or System.Runtime.InteropServices.COMException or NotSupportedException)
+                {
+                    // A preview-only read failure should preserve the ordinary Shell
+                    // icon path below. Do not record a successful inference; Save
+                    // performs its own authoritative read and validation.
+                }
+                if (request.IsCancellationRequested) return;
+                if (inferred is not null)
+                {
+                    if (_closed || _dismissRequested || _readsSuspended || _reading || epoch != _renderEpoch || !_rows.Contains(row) ||
+                        !ReferenceEquals(row.Request, request) || !_recognitionReady || _preparing || _adding ||
+                        _sourceData is not { Refreshing: false } currentSource ||
+                        currentSource.Candidates.FirstOrDefault(item => item.SourceKey == candidateKey) is not { } currentCandidate ||
+                        fact != ImportTargetRecognition.FactFor(currentSource, currentCandidate) ||
+                        !CanInferVisibleTarget(row, currentSource, currentCandidate)) return;
+                    _recognizedTargets[currentCandidate.SourceKey] = new(fact, inferred);
+                    // Rebuild only changed realized presentations; source geometry stays intact.
+                    row.Request = null; row.ImageKey = null;
+                    RefreshRecognizedRows(currentCandidate.SourceKey);
+                    return;
+                }
             }
+            if (cachedAutomaticFrame is { } cachedFrame && automaticCachePath is not null)
+            {
+                var current = await _images.IsAutomaticFrameCurrentAsync(cachedFrame, automaticCachePath, request.Token);
+                if (_closed || _dismissRequested || request.IsCancellationRequested || epoch != _renderEpoch || !_rows.Contains(row) ||
+                    !ReferenceEquals(row.Request, request) || row.RequestKey != cacheKey) return;
+                if (current)
+                {
+                    row.ImageKey = cacheKey;
+                    return;
+                }
+                if (_frames.TryGetValue(cacheKey, out var stillCached) && ReferenceEquals(stillCached, cachedFrame))
+                    ForgetFrame(cacheKey);
+            }
+            var candidate = row.Candidate.Source;
             PuzzleFrameResult? result = null;
             var reserve = row.Member.ImageDisplay.Mode == TileWall.Core.Imaging.ImageDisplayMode.Custom
                 ? Math.Max(1, row.Member.ImageDisplay.CustomScale) : 1;
@@ -847,12 +995,20 @@ internal sealed class ImportDialog : IWallDialogSession
                 !ReferenceEquals(row.Request, request) || row.RequestKey != cacheKey) return;
             if (row.Member.Images.Kind != MemberImageSourceKind.Automatic && cacheAllowed && result is { CacheAllowed: true, Frame: { } frame })
             {
-                _frames[cacheKey] = frame; _frameOrder.Enqueue(cacheKey);
-                while (_frames.Count > 32 && _frameOrder.TryDequeue(out var old)) _frames.Remove(old);
+                RememberFrame(cacheKey, frame);
+            }
+            if (row.Member.Images.Kind == MemberImageSourceKind.Automatic && source.Package is null && automaticCachePath is not null &&
+                result is { MemoryCacheAllowed: true, Frame: { } automaticFrame } && automaticFrame.MemoryCacheAllowed && automaticFrame.AutomaticStamp is not null)
+            {
+                RememberFrame(cacheKey, automaticFrame);
             }
             if (result?.Frame is { } success)
             {
-                row.ImageKey = cacheAllowed && result.CacheAllowed ? cacheKey : null;
+                var canReuseAutomatic = row.Member.Images.Kind == MemberImageSourceKind.Automatic && source.Package is null &&
+                    automaticCachePath is not null && result is { MemoryCacheAllowed: true } && success.MemoryCacheAllowed && success.AutomaticStamp is not null;
+                row.ImageKey = row.Member.Images.Kind == MemberImageSourceKind.Automatic
+                    ? canReuseAutomatic ? cacheKey : null
+                    : cacheAllowed && result.CacheAllowed ? cacheKey : null;
                 row.View!.UpdateFrame(success);
             }
         }
@@ -870,6 +1026,28 @@ internal sealed class ImportDialog : IWallDialogSession
             packageSource?.Release();
         }
     }
+
+    private bool CanInferVisibleTarget(CandidateRow row, ImportPageSource source, ImportSourceCandidate candidate)
+    {
+        if (!_recognitionReady || _closed || _dismissRequested || _readsSuspended || _reading || _preparing || _adding ||
+            source.Refreshing || !ReferenceEquals(_sourceData, source) || !ImportTargetRecognition.AppliesTo(candidate)) return false;
+        var projected = _candidateByKey.GetValueOrDefault(row.Candidate.SelectionKey);
+        if (projected is null || !MatchesFilter(projected) || projected.Source.SourceKey != candidate.SourceKey) return false;
+        if (source.StartMenuSources.TryGetValue(projected.SelectionKey, out var startMenu))
+        {
+            var sourceExtension = Path.GetExtension(startMenu.Candidate.FullPath);
+            if (sourceExtension.Equals(".lnk", StringComparison.OrdinalIgnoreCase) ||
+                sourceExtension.Equals(".url", StringComparison.OrdinalIgnoreCase)) return false;
+        }
+        var target = candidate.Member.TargetInput;
+        // ResolveTargetSourceAsync treats .lnk as opaque and never follows it; the
+        // exact path check also excludes URI targets without guessing a link target.
+        return target is not null && Path.IsPathFullyQualified(target);
+    }
+
+    private static string? AutomaticFrameValidationPath(ImportSourceCandidate candidate) =>
+        candidate.SourceKind is ImportPageSourceKind.CurrentWall or ImportPageSourceKind.RecycleBin or ImportPageSourceKind.WallPackage
+            ? null : candidate.Member.TargetInput ?? candidate.Identity?.Target;
 
     private void StartOperation()
     {
@@ -900,7 +1078,7 @@ internal sealed class ImportDialog : IWallDialogSession
         else
         {
             _plan = ImportSourcePlanner.TryPlan(_context.Document, _context.Document.Generation, projection,
-                _selected.Keys, new GridSize(_tileSize, _tileSize), _position.SelectedIndex == 1 ? ImportInsertionPosition.Tail : ImportInsertionPosition.Head,
+                FilteredSelectedSourceKeys(), new GridSize(_tileSize, _tileSize), _position.SelectedIndex == 1 ? ImportInsertionPosition.Tail : ImportInsertionPosition.Head,
                 _metrics, _context.Budget);
             if (_plan.Status != ImportPlanStatus.Ready) { UpdateStatus(); return; }
             var plan = _plan;
@@ -956,20 +1134,24 @@ internal sealed class ImportDialog : IWallDialogSession
             : ProductStrings.Get("Import.Path.System");
         ToolTipService.SetToolTip(_path, pathEnabled ? path : ProductStrings.Get("Import.Path.System"));
         AutomationProperties.SetHelpText(_path, pathEnabled ? path ?? "" : ProductStrings.Get("Import.Path.System"));
-        _autoFilter.IsEnabled = _recognizeGroups.IsEnabled = !Attributed;
+        _autoFilter.IsEnabled = !Attributed;
+        _recognizeGroups.IsEnabled = !Attributed && SourceKind != ImportPageSourceKind.SystemFeatures;
         _small.IsEnabled = _medium.IsEnabled = !Attributed && (_sourceData?.Candidates.Any(candidate => !candidate.HasRecordedSize) ?? true);
         _position.IsEnabled = !export && !IsRecycle;
         var reason = ProductStrings.Get(export ? "Import.Option.ImportOnly" : "Import.Option.RecordedAttributes");
-        foreach (var control in new Control[] { _autoFilter, _recognizeGroups, _small, _medium })
-            AutomationProperties.SetHelpText(control, control.IsEnabled ? "" : reason);
+        AutomationProperties.SetHelpText(_autoFilter, _autoFilter.IsEnabled ? "" : reason);
+        AutomationProperties.SetHelpText(_recognizeGroups, _recognizeGroups.IsEnabled ? "" :
+            !Attributed && SourceKind == ImportPageSourceKind.SystemFeatures ? ProductStrings.Get("Import.Option.SystemGroups") : reason);
+        AutomationProperties.SetHelpText(_small, _small.IsEnabled ? "" : reason);
+        AutomationProperties.SetHelpText(_medium, _medium.IsEnabled ? "" : reason);
         AutomationProperties.SetHelpText(_position, export || IsRecycle ? reason : "");
-        var addable = _projection?.Candidates.Where(candidate => candidate.CanAdd).ToArray() ?? [];
+        var addable = FilteredAddableCandidates();
         var count = addable.Count(IsSelected);
         _selectAll.IsEnabled = idle && !_reading && addable.Length > 0;
         _selectAll.IsChecked = count == 0 ? false : count == addable.Length ? true : null;
         _dialog.IsPrimaryButtonEnabled = idle && !_reading && !_preparing && _sourceData?.Refreshing == false && _prepared && count > 0 &&
             (!export || !string.IsNullOrWhiteSpace(_exportPath)) && (!IsRecycle || _restoreRecycled is not null) && _context is not null && _contextCurrent(_context);
-        foreach (var row in _rows) row.Toggle.IsEnabled = idle && !_reading && row.Candidate.CanAdd;
+        foreach (var row in _rows) row.Toggle.IsEnabled = idle && !_reading && row.Candidate.CanAdd && MatchesFilter(row.Candidate);
         var primaryText = ProductStrings.Get(export ? "Import.ExportConfirm" : IsRecycle ? "Recycle.Restore" : "Import.Confirm");
         if (_dialog.PrimaryButtonText != primaryText)
         {
@@ -1041,11 +1223,17 @@ internal sealed class ImportDialog : IWallDialogSession
         if (_closed) return;
         _closed = true; _clockTimer.Stop(); CancelPicker(); _lifetime.Cancel(); _pageRequest?.Cancel(); _preparationRequest?.Cancel(); CancelPreview();
         if (_previewRoot is not null) _previewRoot.Changed -= OnPreviewRootChanged;
-        _catalog.Changed -= _catalogChanged; ClearPreview(); _frames.Clear(); _frameOrder.Clear();
+        _catalog.Changed -= _catalogChanged; ClearPreview(); ClearFrameCache();
+        _sourceData = null; _projection = _previewProjection = null; _projectedCandidates = null;
+        _context = null; _plan = null; _projectedIdentities = null;
+        _candidateByKey.Clear(); _selected.Clear(); _recognizedTargets.Clear();
+        _recognitionProjection = null; _recognitionContext = null; _recognitionFacts = null;
     }
 
     public void RefreshStrings()
     {
+        if (!_exportPathPicked && !string.IsNullOrWhiteSpace(_initialExportDirectory))
+            _exportPath = Path.Combine(_initialExportDirectory, DefaultExportFileName());
         _refreshingStrings = true;
         try
         {
@@ -1058,9 +1246,10 @@ internal sealed class ImportDialog : IWallDialogSession
             _position.SelectedIndex = position == 1 ? 1 : 0;
         }
         finally { _refreshingStrings = false; }
-        string[] labels = ["Import.Mode", "Import.Source", "Import.Path", "Import.AutoFilter", "Import.RecognizeGroups", "Import.DefaultTileSize", "Import.Position", "Import.SelectAll"];
+        string[] labels = ["Import.Mode", "Import.Source", "Import.Path", "Import.AutoFilter", "Import.RecognizeGroups", "Import.DefaultTileSize", "Import.Position", "Import.SelectAll", "Import.Filter"];
         for (var index = 0; index < labels.Length; index++) _optionLabels[index].Text = ProductStrings.Get(labels[index]);
         for (var index = 0; index < StatisticLabels.Length; index++) _numberLabels[index].Text = ProductStrings.Get(StatisticLabels[index]);
+        _filter.PlaceholderText = ProductStrings.Get("Import.Filter.Placeholder");
         _selectAll.Content = "";
         _dialog.Title = ProductStrings.Get("Import.Title"); _dialog.CloseButtonText = ProductStrings.Get("Common.Cancel");
         ActionIcon.SetIcon(_chooseFile, ProductStrings.Get("Import.ChoosePath"), ActionIcon.OpenFile);
@@ -1072,10 +1261,14 @@ internal sealed class ImportDialog : IWallDialogSession
         UpdateAvailability(); UpdateStatus();
     }
 
+    private string DefaultExportFileName() => string.Format(CultureInfo.InvariantCulture,
+        ProductStrings.Get("Import.ExportFileNameFormat"), _exportFileTimestamp) + ".zip";
+
     private static string FilterText(ImportFilterReason reason) => ProductStrings.Get("Import.FilterReason." + reason);
     private static string ErrorText(string code) => ProductStrings.Get(code switch
     {
         "InvalidTarget" => "Import.InvalidTarget", "UnsupportedProtocol" => "Import.UnsupportedProtocol",
+        "SourceNotApplicable" => "Import.SourceNotApplicable",
         "SourceChanged" => "Import.SourceChanged", "SourceTooLarge" => "Import.SourceTooLarge", "UnsafeSource" => "Import.UnsafeSource",
         "INVALID_SOURCE_GEOMETRY" or "MEMBER_SIZE_LIMIT" or "SOURCE_LAYOUT_LIMIT" => "Import.LayoutRejected",
         "CacheInvalid" or "CacheWriteFailed" => "Import.CacheUnavailable", "RefreshFailed" => "Import.RefreshFailed", _ => "Import.SourceUnavailable",
@@ -1089,47 +1282,85 @@ internal sealed class ImportDialog : IWallDialogSession
     private static TextBlock Label() => new() { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
     private void UpdateStatisticLayout()
     {
-        var key = string.Join("\n", _numbers.Select(number => number.Text).Concat(_numberLabels.Select(label => label.Text)));
-        if (_statisticLayoutKey == key) return;
-        _statisticLayoutKey = key;
-        // Measure the actual digits and translated labels. Every card shares one size;
-        // the three seven-column rows retain their unused trailing slots.
-        var numberWidth = 0d; var labelHeight = 0d;
-        foreach (var number in _numbers)
-        {
-            number.Width = double.NaN; number.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-            numberWidth = Math.Max(numberWidth, Math.Ceiling(number.DesiredSize.Width));
-        }
-        var labelWidth = 64d;
+        const double numberFontSize = 14, cardGap = 4, cardBorderAndMargin = 6;
+        var numberSample = _numbers[0];
+        var numberText = numberSample.Text;
+        numberSample.Text = "000";
+        numberSample.FontSize = numberFontSize;
+        numberSample.Width = double.NaN;
+        numberSample.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        var numberWidth = Math.Ceiling(numberSample.DesiredSize.Width);
+        var numberHeight = Math.Ceiling(numberSample.DesiredSize.Height);
+        numberSample.Text = numberText;
+
+        var labelSample = _numberLabels[0];
+        var labelText = labelSample.Text;
+        // Ten half-width characters are approximately five Chinese characters.
+        labelSample.Text = "中中中中中";
+        labelSample.Width = double.NaN;
+        labelSample.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        var labelWidth = Math.Ceiling(labelSample.DesiredSize.Width);
+        labelSample.Text = labelText;
+        var labelHeight = 0d;
         foreach (var label in _numberLabels)
         {
-            var word = new TextBlock
-            {
-                FontFamily = label.FontFamily, FontSize = label.FontSize, FontWeight = label.FontWeight,
-                FontStyle = label.FontStyle, FontStretch = label.FontStretch, CharacterSpacing = label.CharacterSpacing,
-                Language = label.Language, IsTextScaleFactorEnabled = label.IsTextScaleFactorEnabled,
-                TextWrapping = TextWrapping.NoWrap,
-            };
-            // Keep each translated word intact; a label without spaces (including CJK) is one word.
-            foreach (var text in label.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
-            {
-                word.Text = text;
-                word.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-                labelWidth = Math.Max(labelWidth, Math.Ceiling(word.DesiredSize.Width));
-            }
-        }
-        foreach (var label in _numberLabels)
-        {
+            label.Width = labelWidth;
             label.Measure(new Windows.Foundation.Size(labelWidth, double.PositiveInfinity));
             labelHeight = Math.Max(labelHeight, Math.Ceiling(label.DesiredSize.Height));
         }
-        var cellWidth = numberWidth + labelWidth + 22;
-        var cellHeight = Math.Max(64, labelHeight + 14);
-        foreach (var number in _numbers) number.Width = numberWidth;
-        foreach (var cell in _statisticCells) { cell.Width = cellWidth; cell.Height = cellHeight; }
-        var rightWidth = cellWidth * 7 + 6 * 4 + 24;
-        _statisticsColumn.Width = new GridLength(rightWidth);
-        _page.Width = _metrics.WallWidth(1) + 16 + rightWidth;
+
+        var cardWidth = numberWidth + labelWidth + 4 + 4 + 2;
+        var cardHeight = Math.Ceiling(Math.Max(numberHeight, labelHeight) + cardBorderAndMargin);
+        foreach (var number in _numbers)
+        {
+            number.Width = double.NaN;
+            number.FontSize = numberFontSize;
+            number.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            if (number.Text.Length > 3 && number.DesiredSize.Width > 0)
+            {
+                var size = Math.Max(6, numberFontSize * Math.Min(3d / number.Text.Length, numberWidth / number.DesiredSize.Width));
+                number.FontSize = size;
+                number.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+                while (number.DesiredSize.Width > numberWidth && number.FontSize > 6)
+                {
+                    number.FontSize = Math.Max(6, number.FontSize - .5);
+                    number.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+                }
+            }
+            number.Width = numberWidth;
+        }
+        foreach (var label in _numberLabels) label.Width = labelWidth;
+
+        // The requested default viewport shows exactly four whole cards.
+        // On a narrower work area, use only whole columns and wrap within each of the three groups.
+        var desiredContentWidth = cardWidth * 4 + cardGap * 3;
+        var availableColumnWidth = Math.Max(cardWidth + 24, _statisticsMaximumColumnWidth);
+        var columnWidth = Math.Min(desiredContentWidth + 24, availableColumnWidth);
+        var contentWidth = Math.Max(cardWidth, columnWidth - 24);
+        var key = string.Join("\n", _numberLabels.Select(label => label.Text)) +
+            $"\n{numberWidth}:{numberHeight}:{labelWidth}:{labelHeight}:{contentWidth}:{cardHeight}";
+        if (_statisticLayoutKey == key) return;
+        _statisticLayoutKey = key;
+        foreach (var cell in _statisticCells) { cell.Width = cardWidth; cell.Height = cardHeight; }
+        _statistics.Width = contentWidth;
+        _statisticsCard.Width = columnWidth;
+        var columns = Math.Clamp((int)Math.Floor((contentWidth + cardGap) / (cardWidth + cardGap)), 1, 4);
+        int[] groupCounts = [4, 7, 3];
+        int[] starts = [0, 4, 11];
+        for (var groupIndex = 0; groupIndex < _statisticRows.Length; groupIndex++)
+        {
+            var rowCount = (groupCounts[groupIndex] + columns - 1) / columns;
+            _statisticRows[groupIndex].RowDefinitions.Clear();
+            for (var row = 0; row < rowCount; row++)
+                _statisticRows[groupIndex].RowDefinitions.Add(new() { Height = GridLength.Auto });
+            for (var index = 0; index < groupCounts[groupIndex]; index++)
+            {
+                Grid.SetRow(_statisticCells[starts[groupIndex] + index], index / columns);
+                Grid.SetColumn(_statisticCells[starts[groupIndex] + index], index % columns);
+            }
+        }
+        _statisticsColumn.Width = new GridLength(columnWidth);
+        _page.Width = _statisticsPreviewWidth + 16 + columnWidth;
     }
 
     private sealed class PackagePreviewSource(WallPackageReader reader, WallPackagePreview preview, CancellationToken parent)

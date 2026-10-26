@@ -21,12 +21,20 @@ public sealed record PuzzleCandidateResult(IReadOnlyList<string> Paths,
 public sealed record PuzzleFrameResult(PuzzleFrame? Frame,
     WallImageStatus Status, string? Diagnostic = null)
 {
+    /// <summary>Whether this result may be reused in the current display session.</summary>
+    public bool MemoryCacheAllowed { get; init; } = true;
+    /// <summary>Whether dependency facts permit reuse from persistent icon caches.</summary>
     public bool CacheAllowed { get; init; } = true;
 }
 
 public sealed record PuzzleFrame(string CanonicalPath, long SourceBytes, DateTime LastWriteUtc,
     PixelSize SourcePixels, PixelSize SharpDecodedPixels, PixelSize BlurDecodedPixels,
-    ImageSource Sharp, ImageSource? BlurredUnderfill);
+    ImageSource Sharp, ImageSource? BlurredUnderfill)
+{
+    public bool MemoryCacheAllowed { get; init; } = true;
+    internal string? AutomaticStamp { get; init; }
+    internal DateTimeOffset MemoryValidUntil { get; init; } = DateTimeOffset.MaxValue;
+}
 
 public enum MemberImagePurpose { Content, Thumbnail }
 

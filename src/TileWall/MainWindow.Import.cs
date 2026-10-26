@@ -210,7 +210,8 @@ public sealed partial class MainWindow
         if (source == ImportPageSourceKind.CurrentWall) return await ReadCurrentWallSourceAsync(token);
         if (source == ImportPageSourceKind.RecycleBin)
         {
-            var rows = Document.InactiveMembers.Select((member, index) =>
+            var recycle = await _session.ReadRecycleBinAsync(Document.Generation, token);
+            var rows = recycle.Members.Select((member, index) =>
             {
                 token.ThrowIfCancellationRequested();
                 return new ImportSourceCandidate("recycle:" + member.Id, RecycleBinPresentation.Title(member), member)
@@ -337,8 +338,7 @@ public sealed partial class MainWindow
                 var acceptedIds = plan.Accepted.Select(accepted => accepted.SourceKey).ToHashSet(StringComparer.Ordinal);
                 var requiredGalleries = request.Source.Candidates.Where(candidate => acceptedIds.Contains(candidate.SourceKey))
                     .Select(candidate => candidate.Member.Images.ManagedGallery).OfType<ManagedGalleryReference>().Distinct();
-                var reusableGalleries = request.Context.Document.EnumerateAllMembers()
-                    .Select(member => member.Images.ManagedGallery).OfType<ManagedGalleryReference>().Distinct();
+                var reusableGalleries = await _session.ReusablePackageGalleriesAsync(request.Context.Document.Generation);
                 var resources = await batch.PrepareResourcesAsync(plan.ReferencedMedia, requiredGalleries, reusable, reusableGalleries);
                 media = resources.MediaAssets;
                 galleries = resources.ManagedGalleries;
@@ -352,9 +352,10 @@ public sealed partial class MainWindow
                 var prepared = await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
                 {
                     var result = new List<EntryChange>();
+                    var confirmed = NativeImports.ConfirmMany(kind, plan.Accepted.Select(item => item.SourceKey).ToArray());
                     foreach (var accepted in plan.Accepted)
                     {
-                        var source = NativeImports.Confirm(kind, accepted.SourceKey);
+                        var source = confirmed[accepted.SourceKey];
                         if (request.Source.AvailabilityFacts.GetValueOrDefault(source.Key) != NativeImportCatalog.Facts(source))
                             throw new ImportSourceChangedException("The import source changed.");
                         result.Add(source.Kind switch
@@ -420,9 +421,11 @@ public sealed partial class MainWindow
                 if (request.Source.Candidates.FirstOrDefault()?.SourceKind is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or ImportPageSourceKind.SystemFeatures)
                     await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
                     {
+                        var kind = request.Source.Candidates[0].SourceKind;
+                        var confirmed = NativeImports.ConfirmMany(kind, plan.Accepted.Select(item => item.SourceKey).ToArray());
                         foreach (var accepted in plan.Accepted)
                         {
-                            var source = NativeImports.Confirm(sourceByKey[accepted.SourceKey].SourceKind, accepted.SourceKey);
+                            var source = confirmed[accepted.SourceKey];
                             if (request.Source.AvailabilityFacts.GetValueOrDefault(source.Key) != NativeImportCatalog.Facts(source))
                                 throw new ImportSourceChangedException("The import source changed.");
                         }

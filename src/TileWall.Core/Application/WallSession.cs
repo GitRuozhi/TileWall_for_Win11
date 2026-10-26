@@ -15,6 +15,7 @@ internal sealed class WallSession
     private readonly object _gate = new();
     private readonly bool _commitPerformanceEnabled = Environment.GetEnvironmentVariable("TILEWALL_PERF") == "1";
     private WallDocument? _current;
+    private string? _manifestSha256;
     private Action<WallDocument>? _refreshView;
     private IWallStorageExecutor? _executor;
     private Func<Action, Task>? _acceptOnUi;
@@ -110,7 +111,7 @@ internal sealed class WallSession
             var current = Current;
             if (current.Generation != expectedGeneration) throw new IOException("Committed wall changed before export.");
             _writePending = true;
-            return CapturePackageSnapshotReservedAsync(current, expectedGeneration, selected, _executor, token);
+            return CapturePackageSnapshotReservedAsync(current, expectedGeneration, selected, _manifestSha256!, _executor, token);
         }
     }
 
@@ -124,21 +125,62 @@ internal sealed class WallSession
                 throw new InvalidOperationException("Wall is unavailable for original reuse observation.");
             if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
             _writePending = true;
-            return ReadReusablePackageMediaReservedAsync(Current, _executor, token);
+            return ReadReusablePackageMediaReservedAsync(Current, _manifestSha256!, _executor, token);
         }
     }
 
-    private async Task<IReadOnlyList<ManagedMediaReference>> ReadReusablePackageMediaReservedAsync(WallDocument current,
-        IWallStorageExecutor executor, CancellationToken token)
+    public Task<RecycleBinSnapshot> ReadRecycleBinAsync(long expectedGeneration, CancellationToken token = default)
     {
-        try { return await executor.ExecuteAsync(() => { token.ThrowIfCancellationRequested(); return _store.ReusablePackageMedia(current); }).ConfigureAwait(false); }
+        token.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_writePending || ViewBlocked || RequiresReopen || _storeRecoveryBlocked || _resultUnknown || Current.Generation != expectedGeneration)
+                throw new InvalidOperationException("Wall is unavailable for recycle-bin observation.");
+            if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            _writePending = true;
+            return ReadRecycleBinReservedAsync(Current, expectedGeneration, _manifestSha256!, _executor, token);
+        }
+    }
+
+    private async Task<RecycleBinSnapshot> ReadRecycleBinReservedAsync(WallDocument current, long generation,
+        string manifestSha256, IWallStorageExecutor executor, CancellationToken token)
+    {
+        try { return await executor.ExecuteAsync(() => _store.ReadRecycleBin(current, generation, token, manifestSha256)).ConfigureAwait(false); }
+        finally { lock (_gate) _writePending = false; }
+    }
+
+    public Task<IReadOnlyList<ManagedGalleryReference>> ReusablePackageGalleriesAsync(long expectedGeneration,
+        CancellationToken token = default)
+    {
+        token.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_writePending || ViewBlocked || RequiresReopen || _storeRecoveryBlocked || _resultUnknown || Current.Generation != expectedGeneration)
+                throw new InvalidOperationException("Wall is unavailable for gallery reuse observation.");
+            if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            _writePending = true;
+            return ReadReusablePackageGalleriesReservedAsync(Current, _manifestSha256!, _executor, token);
+        }
+    }
+
+    private async Task<IReadOnlyList<ManagedGalleryReference>> ReadReusablePackageGalleriesReservedAsync(WallDocument current,
+        string manifestSha256, IWallStorageExecutor executor, CancellationToken token)
+    {
+        try { return await executor.ExecuteAsync(() => { token.ThrowIfCancellationRequested(); return _store.ReusablePackageGalleries(current, manifestSha256); }).ConfigureAwait(false); }
+        finally { lock (_gate) _writePending = false; }
+    }
+
+    private async Task<IReadOnlyList<ManagedMediaReference>> ReadReusablePackageMediaReservedAsync(WallDocument current,
+        string manifestSha256, IWallStorageExecutor executor, CancellationToken token)
+    {
+        try { return await executor.ExecuteAsync(() => { token.ThrowIfCancellationRequested(); return _store.ReusablePackageMedia(current, manifestSha256); }).ConfigureAwait(false); }
         finally { lock (_gate) _writePending = false; }
     }
 
     private async Task<WallPackageSnapshot> CapturePackageSnapshotReservedAsync(WallDocument current, long generation,
-        string[] selected, IWallStorageExecutor executor, CancellationToken token)
+        string[] selected, string manifestSha256, IWallStorageExecutor executor, CancellationToken token)
     {
-        try { return await executor.ExecuteAsync(() => _store.CapturePackageSnapshot(current, generation, selected, token)).ConfigureAwait(false); }
+        try { return await executor.ExecuteAsync(() => _store.CapturePackageSnapshot(current, generation, selected, token, manifestSha256)).ConfigureAwait(false); }
         finally { lock (_gate) _writePending = false; }
     }
 
@@ -169,6 +211,8 @@ internal sealed class WallSession
             }
             if (result.Document is not null && result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious)
             {
+                result = result with { Document = result.Document.ActiveView() };
+                _manifestSha256 = result.ManifestSha256 ?? throw new InvalidOperationException("The opened manifest fingerprint is unavailable.");
                 _current = result.Document;
                 RequiresReopen = false;
                 _storeRecoveryBlocked = false;
@@ -232,7 +276,12 @@ internal sealed class WallSession
                 // The store plans and validates the same request inside Commit; planning here
                 // duplicated the full-wall traversal for every save.
                 var request = new WallCommitRequest(before.Generation, proposal.Document, changes ?? [], mediaAssets,
-                    expectedEntrySha256?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal), managedGalleries?.ToArray());
+                    expectedEntrySha256?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal), managedGalleries?.ToArray())
+                {
+                    PreserveStoredRecycleBin = true, RecycleBin = FreezeRecycleBin(proposal.RecycleBin),
+                    ClearRecycleBin = proposal.ClearRecycleBin,
+                    ExpectedManifestSha256 = _manifestSha256,
+                };
                 WallCommitResult result;
                 try { result = _store.Commit(before, request, timings); }
                 catch (Exception)
@@ -286,20 +335,21 @@ internal sealed class WallSession
             if (_executor is null || _acceptOnUi is null)
                 throw new InvalidOperationException("Asynchronous storage has not been configured.");
             var before = Current;
-            var frozen = proposal with { Document = WallJson.Freeze(proposal.Document) };
+            var frozen = proposal with { Document = WallJson.Freeze(proposal.Document), RecycleBin = FreezeRecycleBin(proposal.RecycleBin) };
             var entryChanges = changes?.ToArray() ?? [];
             var preparedMedia = mediaAssets?.ToArray() ?? [];
             var preconditions = expectedEntrySha256?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
             var reservation = new UiCommitReservation();
             _writePending = true;
             _activeUiCommit = reservation;
-            return CommitReservedAsync(before, frozen, entryChanges, preparedMedia, managedGalleries?.ToArray() ?? [], preconditions, reservation, _executor, _acceptOnUi);
+            return CommitReservedAsync(before, frozen, entryChanges, preparedMedia, managedGalleries?.ToArray() ?? [], preconditions, _manifestSha256!, reservation, _executor, _acceptOnUi);
         }
     }
 
     private async Task<WallSessionResult> CommitReservedAsync(WallDocument before, WallProposal proposal,
         IReadOnlyList<EntryChange> changes, IReadOnlyList<PreparedMediaAsset> mediaAssets,
-        IReadOnlyList<PreparedManagedGallery> managedGalleries, IReadOnlyDictionary<string, string>? expectedEntrySha256, UiCommitReservation reservation,
+        IReadOnlyList<PreparedManagedGallery> managedGalleries, IReadOnlyDictionary<string, string>? expectedEntrySha256,
+        string manifestSha256, UiCommitReservation reservation,
         IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
     {
         var timings = CreateCommitTimings();
@@ -316,7 +366,12 @@ internal sealed class WallSession
                 storageThread = Environment.CurrentManagedThreadId;
                 // Commit owns planning; a second PlanEntries here duplicated the full wall.
                 return _store.Commit(before,
-                    new WallCommitRequest(before.Generation, proposal.Document, changes, mediaAssets, expectedEntrySha256, managedGalleries),
+                    new WallCommitRequest(before.Generation, proposal.Document, changes, mediaAssets, expectedEntrySha256, managedGalleries)
+                    {
+                        PreserveStoredRecycleBin = true, RecycleBin = proposal.RecycleBin,
+                        ClearRecycleBin = proposal.ClearRecycleBin,
+                        ExpectedManifestSha256 = manifestSha256,
+                    },
                     timings);
             }).ConfigureAwait(false);
             outcome = stored.Status.ToString();
@@ -427,7 +482,8 @@ internal sealed class WallSession
     {
         // Called only on the UI acceptance path; disk replacement is the commit point.
         // WallStore returns a frozen snapshot from every accepting path.
-        using (timings?.Measure("session.publish")) _current = committedDocument;
+        _manifestSha256 = result.ManifestSha256 ?? throw new InvalidOperationException("The committed manifest fingerprint is unavailable.");
+        using (timings?.Measure("session.publish")) _current = committedDocument.ActiveView();
         bool viewOkay;
         using (timings?.Measure("session.viewRefresh")) viewOkay = RefreshViewCore();
         return new(true, result.Status == WallCommitStatus.CommittedNeedsCleanup,
@@ -435,6 +491,11 @@ internal sealed class WallSession
     }
 
     private static WallSessionResult BusyResult() => new(false, false, ["A storage operation is pending."]);
+
+    private static RecycleBinSnapshot? FreezeRecycleBin(RecycleBinSnapshot? snapshot) => snapshot is null ? null : snapshot with
+    {
+        Members = WallJson.Freeze(WallDocument.Empty(1, 1) with { InactiveMembers = snapshot.Members }).InactiveMembers,
+    };
 
     private WallSessionResult BlockedViewResult() =>
         new(false, false, [ViewBlockedDiagnostic()]);

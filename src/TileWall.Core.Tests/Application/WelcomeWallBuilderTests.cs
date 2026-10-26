@@ -17,7 +17,7 @@ public sealed class WelcomeWallBuilderTests
     private static readonly string Gallery = Path.GetFullPath("WelcomeWall/Seasons/content-set");
     private static string EntryPath(string root, WallMember member) =>
         Path.Combine(root, member.Entry!.RelativePath.Replace('/', Path.DirectorySeparatorChar));
-    private static WallViewportBudget Budget(int columns = 2, int rows = 10)
+    private static WallViewportBudget Budget(int columns = 2, int rows = 12)
     {
         var metrics = new WallMetrics();
         return new(metrics.WallWidth(columns), metrics.WallHeight(rows), columns, rows, false);
@@ -91,7 +91,7 @@ public sealed class WelcomeWallBuilderTests
         var before = WallDocument.Empty(2, 19) with { Generation = 4, Settings = settings };
         var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, Gallery, Budget(2, 19));
         var proposal = Assert.IsType<WallProposal>(prepared.Layout.Proposal);
-        Assert.Equal(10, proposal.Document.Rows);
+        Assert.Equal(12, proposal.Document.Rows);
         Assert.Equal(26, proposal.Document.EnumerateAllMembers().Count());
         Assert.Same(settings, proposal.Document.Settings);
         Assert.Equal(19, proposal.Document.Settings.WindowedRows);
@@ -180,10 +180,14 @@ public sealed class WelcomeWallBuilderTests
     {
         var (store, files, root, before, external) = ExistingWall();
         var oldEntries = before.EnumerateAllMembers().Select(member => EntryPath(root, member)).ToArray();
-        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, Gallery, Budget());
+        var guideImage = PreparedMediaAsset.FromVerifiedImage(new byte[] { 4, 5, 6 }, ".png");
+        var showcaseImage = PreparedMediaAsset.FromVerifiedImage(new byte[] { 7, 8, 9 }, ".png");
+        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, Gallery, Budget(),
+            guideImage: guideImage.Reference, showcaseImage: showcaseImage.Reference);
         Assert.Equal(new[] { "active", "retained" }, prepared.EntryChanges.OfType<EntryChange.Remove>().Select(change => change.MemberId));
         var proposal = Assert.IsType<WallProposal>(prepared.Layout.Proposal);
-        var result = store.Commit(before, new(before.Generation, proposal.Document, prepared.EntryChanges));
+        var result = store.Commit(before, new(before.Generation, proposal.Document, prepared.EntryChanges,
+            [guideImage, showcaseImage]));
         Assert.Equal(WallCommitStatus.Committed, result.Status);
         var current = result.CommittedDocument!;
         Assert.Equal(before.Settings, current.Settings);
@@ -199,6 +203,14 @@ public sealed class WelcomeWallBuilderTests
         Assert.Equal(current.Generation, reopened.Document!.Generation);
         Assert.Equal(before.Settings, reopened.Document.Settings);
         Assert.Empty(reopened.Document.InactiveMembers);
+        var guide = Assert.Single(reopened.Document.EnumerateAllMembers(), member => member.TargetInput == WelcomeWallBuilder.ProjectUrl);
+        var showcase = Assert.Single(reopened.Document.EnumerateAllMembers(), member => member.TargetInput == WelcomeWallBuilder.DiscussionsUrl);
+        Assert.Equal(MemberImageSourceKind.Single, guide.Images.Kind);
+        Assert.Equal(MemberImageSourceKind.Single, showcase.Images.Kind);
+        Assert.Equal(guideImage.Reference, guide.Images.Media);
+        Assert.Equal(showcaseImage.Reference, showcase.Images.Media);
+        Assert.Equal(new byte[] { 4, 5, 6 }, files.ReadAllBytes(store.ManagedMediaPath(guide.Images.Media!)));
+        Assert.Equal(new byte[] { 7, 8, 9 }, files.ReadAllBytes(store.ManagedMediaPath(showcase.Images.Media!)));
     }
 
     [Theory]

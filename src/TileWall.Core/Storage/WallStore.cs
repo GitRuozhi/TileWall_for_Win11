@@ -61,12 +61,12 @@ public sealed partial class WallStore
             }
             if (primary.Present)
             {
-                if (TryReadDocument(_paths.Config, out var document, out var error))
+                if (TryReadDocument(_paths.Config, out var document, out var error, out var manifestSha256))
                 {
                     AuditRecoveryMaterials();
                     CheckActiveEntries(document!);
                     TryReclaimUnreferencedResources();
-                    return OpenResult(WallOpenStatus.Loaded, document);
+                    return OpenResult(WallOpenStatus.Loaded, document) with { ManifestSha256 = manifestSha256 };
                 }
                 if (previous.Schema != UserDataManifest.CurrentFormatVersion || !TryReadDocument(_paths.Previous, out var prior, out _))
                     return OpenResult(WallOpenStatus.CorruptBlocked, null, $"Invalid primary: {error}");
@@ -108,14 +108,14 @@ public sealed partial class WallStore
             _files.Move(temp, _paths.Config, overwrite: false);
             try { _files.DeleteDirectory(stage); }
             catch (Exception cleanup) when (IsStorageError(cleanup))
-            { return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; staging cleanup remains: " + cleanup.Message); }
-            return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes));
+            { return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; staging cleanup remains: " + cleanup.Message) with { ManifestSha256 = Hash(snapshot.ManifestBytes) }; }
+            return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes)) with { ManifestSha256 = Hash(snapshot.ManifestBytes) };
         }
         catch (Exception ex) when (IsStorageError(ex))
         {
             // A replace implementation may report failure after having installed the new manifest.
             if (snapshot is not null && TryConfigHash() == Hash(snapshot.ManifestBytes))
-                return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; cleanup remains: " + ex.Message);
+                return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; cleanup remains: " + ex.Message) with { ManifestSha256 = Hash(snapshot.ManifestBytes) };
             try
             {
                 if (_files.Exists(_paths.Config)) return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message);
@@ -285,10 +285,37 @@ public sealed partial class WallStore
         {
             if (current is null || request is null || request.Proposed is null || request.EntryChanges is null)
                 return CommitResult(WallCommitStatus.Rejected, null, "Invalid commit request.");
+            if (request.PreserveStoredRecycleBin && (!ShapeOkay(current) || !ShapeOkay(request.Proposed) ||
+                request.EntryChanges.Any(change => change is null) || request.RecycleBin is { Members: null }))
+                return CommitResult(WallCommitStatus.Rejected, null, "Invalid recycle-bin commit structure.");
+            if (request.RecycleBin is not null && request.ClearRecycleBin ||
+                !request.PreserveStoredRecycleBin && (request.RecycleBin is not null || request.ClearRecycleBin) ||
+                request.PreserveStoredRecycleBin && (current.InactiveMembers.Count != 0 || request.Proposed.InactiveMembers.Count != 0))
+                return CommitResult(WallCommitStatus.Rejected, null, "Invalid recycle-bin commit intent.");
             string expectedHash;
+            WallDocument? storedCurrent;
             using (timings?.Measure("store.diskMatch"))
-                if (!CurrentMatchesDisk(current, request.ExpectedGeneration, out expectedHash))
+                if (!CurrentMatchesDisk(current, request.ExpectedGeneration, out expectedHash, out storedCurrent,
+                    request.PreserveStoredRecycleBin, request.ExpectedManifestSha256))
                     return CommitResult(WallCommitStatus.Rejected, null, "Current generation or config bytes differ from disk.");
+            if (request.PreserveStoredRecycleBin)
+            {
+                if (request.RecycleBin is { } recycle &&
+                    (recycle.Generation != current.Generation || recycle.ManifestSha256 != expectedHash))
+                    return CommitResult(WallCommitStatus.Rejected, null, "Recycle-bin observation changed before commit.");
+                current = storedCurrent!;
+                var proposed = request.Proposed with
+                {
+                    InactiveMembers = request.ClearRecycleBin ? [] : request.RecycleBin?.Members ?? current.InactiveMembers,
+                };
+                var retainedIds = proposed.EnumerateAllMembers().Select(member => member.Id).ToHashSet(StringComparer.Ordinal);
+                var changedIds = request.EntryChanges.Select(change => change.MemberId).ToHashSet(StringComparer.Ordinal);
+                var removalCandidates = request.RecycleBin is null ? current.InactiveMembers : current.EnumerateAllMembers();
+                var removedEntries = removalCandidates.Where(member => member.Entry is not null &&
+                    !retainedIds.Contains(member.Id) && !changedIds.Contains(member.Id))
+                    .Select(member => (EntryChange)new EntryChange.Remove(member.Id));
+                request = request with { Proposed = proposed, EntryChanges = request.EntryChanges.Concat(removedEntries).ToArray() };
+            }
             WallPlanResult plan;
             using (timings?.Measure("store.planning"))
                 plan = PlanEntries(current, request.Proposed, request.EntryChanges, request.MediaAssets, request.ExpectedEntrySha256, request.ManagedGalleries);
@@ -306,8 +333,10 @@ public sealed partial class WallStore
                 var blocked = PreflightForCommit(current, expectedHash, timings, plan.Request.ExpectedEntrySha256);
                 if (blocked is not null) return blocked;
             }
-            return CommitCore(current, plan.Request.Proposed, plan.Request.EntryChanges,
+            var committed = CommitCore(current, plan.Request.Proposed, plan.Request.EntryChanges,
                 expectedHash, timings, plan.Request.MediaAssets, plan.Request.ExpectedEntrySha256, plan.Request.ManagedGalleries);
+            return request.PreserveStoredRecycleBin && committed.CommittedDocument is { } document
+                ? committed with { CommittedDocument = document.ActiveView() } : committed;
         }
         catch (EntryPreconditionChangedException)
         {
@@ -453,13 +482,13 @@ public sealed partial class WallStore
             }, timings, () => VerifyExpectedEntryPreconditions(journal, expectedEntrySha256));
         if (installed.Error is not null)
             return FinishFailedInstall(installed, commitId, stageDir, materialDir, journal, timings,
-                () => CommitResult(WallCommitStatus.CommittedNeedsCleanup, WallJson.Freeze(proposed), installed.Error.Message));
+                () => CommitResult(WallCommitStatus.CommittedNeedsCleanup, WallJson.Freeze(proposed), installed.Error.Message) with { ManifestSha256 = journal.NewHash });
         WallCommitStatus cleanupStatus;
         using (timings?.Measure("store.transactionCleanup")) cleanupStatus = CleanupAfterCommit(journal);
         WallDocument frozen;
         using (timings?.Measure("store.resultFreeze")) frozen = WallJson.Freeze(proposed);
         return CommitResult(cleanupStatus, frozen,
-            cleanupStatus == WallCommitStatus.CommittedNeedsCleanup ? "Committed; cleanup needs attention." : null);
+            cleanupStatus == WallCommitStatus.CommittedNeedsCleanup ? "Committed; cleanup needs attention." : null) with { ManifestSha256 = journal.NewHash };
     }
 
     private readonly record struct InstallTransactionResult(bool IntentPublished, bool Committed, bool Blocked, Exception? Error);
@@ -1093,11 +1122,11 @@ public sealed partial class WallStore
         {
             var cleanup = CleanupAfterCommit(journal);
             return OpenResult(WallOpenStatus.RecoveredPrevious, WallJson.Freeze(recovered),
-                cleanup == WallCommitStatus.CommittedNeedsCleanup ? "Recovered; cleanup remains." : null);
+                cleanup == WallCommitStatus.CommittedNeedsCleanup ? "Recovered; cleanup remains." : null) with { ManifestSha256 = journal.NewHash };
         }
         if (installed.Committed)
             return OpenResult(WallOpenStatus.RecoveredPrevious, WallJson.Freeze(recovered),
-                $"Recovered; cleanup remains: {installed.Error.Message}");
+                $"Recovered; cleanup remains: {installed.Error.Message}") with { ManifestSha256 = journal.NewHash };
         if (!installed.Blocked)
         {
             try
@@ -1259,10 +1288,17 @@ public sealed partial class WallStore
         ? ParseClass(_files.ReadAllBytes(path)) : new FileClass(false, null);
 
     private bool TryReadDocument(string path, out WallDocument? document, out string error)
+        => TryReadDocument(path, out document, out error, out _);
+
+    private bool TryReadDocument(string path, out WallDocument? document, out string error, out string? manifestSha256)
     {
+        manifestSha256 = null;
         try
         {
-            return TryReadDocument(_files.ReadAllBytes(path), out document, out error);
+            var bytes = _files.ReadAllBytes(path);
+            if (!TryReadDocument(bytes, out document, out error)) return false;
+            manifestSha256 = Hash(bytes);
+            return true;
         }
         catch (Exception ex) when (IsStorageError(ex))
         {
@@ -1287,15 +1323,18 @@ public sealed partial class WallStore
         return false;
     }
 
-    private bool CurrentMatchesDisk(WallDocument current, long generation, out string diskHash)
+    private bool CurrentMatchesDisk(WallDocument current, long generation, out string diskHash,
+        out WallDocument? disk, bool activeView = false, string? expectedManifestSha256 = null)
     {
         diskHash = "";
+        disk = null;
         if (current.Generation != generation || !_files.Exists(_paths.Config)) return false;
         _paths.Guard(_paths.Config);
         var bytes = _files.ReadAllBytes(_paths.Config);
         diskHash = Hash(bytes);
-        return TryReadDocument(bytes, out var disk, out _) && disk!.Generation == generation &&
-            DocumentEqual(current, disk);
+        if (expectedManifestSha256 is not null && diskHash != expectedManifestSha256) return false;
+        return TryReadDocument(bytes, out disk, out _) && disk!.Generation == generation &&
+            DocumentEqual(current, activeView ? disk.ActiveView() : disk);
     }
 
     private static IReadOnlyList<string> Validate(WallDocument document)

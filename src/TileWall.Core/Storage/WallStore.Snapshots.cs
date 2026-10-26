@@ -6,6 +6,19 @@ public sealed partial class WallStore
 {
     private static readonly string[] SnapshotFileNames = ["settings.json", "wall.json", "recycle-bin.json"];
 
+    public RecycleBinSnapshot ReadRecycleBin(WallDocument current, long expectedGeneration,
+        CancellationToken token = default, string? expectedManifestSha256 = null)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!CurrentMatchesDisk(current, expectedGeneration, out var fingerprint, out var stored,
+            activeView: true, expectedManifestSha256))
+            throw new IOException("Committed wall changed before recycle-bin observation.");
+        token.ThrowIfCancellationRequested();
+        if (Hash(_files.ReadAllBytes(_paths.Config)) != fingerprint)
+            throw new IOException("Committed wall changed during recycle-bin observation.");
+        return new(expectedGeneration, fingerprint, stored!.InactiveMembers);
+    }
+
     private WallDocument ReadSnapshotDocument(byte[] manifestBytes)
     {
         var manifest = UserDataSnapshotJson.ReadManifest(manifestBytes);

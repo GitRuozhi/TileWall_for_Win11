@@ -36,9 +36,9 @@ public sealed class WallPackageWriter
             limits ??= new(); limits.Validate();
             ArgumentException.ThrowIfNullOrWhiteSpace(appVersion);
             ArgumentException.ThrowIfNullOrWhiteSpace(destination);
-            if (!Path.IsPathFullyQualified(destination) || !Path.GetExtension(destination).Equals(".twpack", StringComparison.OrdinalIgnoreCase) ||
+            if (!Path.IsPathFullyQualified(destination) || !Path.GetExtension(destination).Equals(".zip", StringComparison.OrdinalIgnoreCase) ||
                 destination.StartsWith(@"\\.\", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Choose an absolute .twpack file path.");
+                throw new InvalidDataException("Choose an absolute .zip file path.");
             destination = Path.GetFullPath(destination);
             protectedSources = ProtectedSourcePaths(snapshot, additionalProtectedPaths);
             GuardDestination(destination, snapshot.DataRoot, protectedSources);

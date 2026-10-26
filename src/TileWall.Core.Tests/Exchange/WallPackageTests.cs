@@ -54,11 +54,12 @@ public sealed class WallPackageTests : IDisposable
     }
 
     [Fact]
-    public void LegacyDevelopmentDocumentDoesNotSilentlyEnableRetention()
+    public void LegacyDevelopmentDocumentPreservesMembersWithFixedRetention()
     {
         var bytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Compatibility", "wall-schema4-v035.json"));
         var document = WallJson.Deserialize(bytes);
-        Assert.Contains("RECYCLE_DISABLED_CONTENT", WallLayoutEngine.ValidateGeometry(document));
+        Assert.True(document.RecycleBinEnabled);
+        Assert.Empty(WallLayoutEngine.ValidateGeometry(document));
         Assert.Equal(35, document.Generation);
         Assert.Equal("tile-035", document.Lanes[0].Groups[0].Members[0].Id);
         Assert.Equal(new GridRect(1, 1, 2, 2), document.Lanes[0].Groups[0].Members[0].LocalBounds);
@@ -81,9 +82,33 @@ public sealed class WallPackageTests : IDisposable
     private Task<(string Path, WallPackageReader Reader)> TestPackageAsync()
     {
         var reader = Harness();
-        var path = Path.Combine(_directory, "sample.twpack");
+        var path = Path.Combine(_directory, "sample.zip");
         CreatePackage(path);
         return Task.FromResult((path, reader));
+    }
+
+    [Theory]
+    [InlineData(".zip")]
+    [InlineData(".twpack")]
+    public async Task ReaderAcceptsCurrentPackageWithZipOrLegacyExtension(string extension)
+    {
+        var path = Path.Combine(_directory, "compatible" + extension);
+        CreatePackage(path);
+        var result = await Harness().ReadPreviewAsync(path);
+        Assert.Equal(WallPackageReadStatus.Valid, result.Status);
+        Assert.Equal(WallPackageManifest.CurrentFormatVersion, result.Preview!.Manifest.FormatVersion);
+    }
+
+    [Fact]
+    public async Task OrdinaryZipWithoutWallPackageStructureIsRejected()
+    {
+        var path = Path.Combine(_directory, "ordinary.zip");
+        using (var zip = ZipFile.Open(path, ZipArchiveMode.Create))
+        using (var text = new StreamWriter(zip.CreateEntry("notes.txt").Open()))
+            await text.WriteAsync("An ordinary ZIP archive.");
+        var result = await Harness().ReadPreviewAsync(path);
+        Assert.Equal(WallPackageReadStatus.InvalidPackage, result.Status);
+        Assert.Null(result.Preview);
     }
 
     [Fact]

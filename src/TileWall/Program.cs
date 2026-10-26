@@ -29,7 +29,7 @@ public static class Program
 #if TILEWALL_PACKAGED
             return ApplicationModel.ContextMenuUserCommand.OperationFailed;
 #else
-            return ApplicationModel.CurrentUserUninstallCommand.Run(args);
+            return ApplicationModel.CurrentUserUninstallCommand.Run(args, Shell.Interop.ExplorerAddNotification.UnregisterForUninstall);
 #endif
         }
         try { return RunApplication(args); }
@@ -49,9 +49,14 @@ public static class Program
     {
         global::WinRT.ComWrappersSupport.InitializeComWrappers();
         var startupTask = false;
+        var notificationActivation = Shell.Interop.ExplorerAddNotification.IsActivation(args);
+        // COM notification activation carries no import payload. Register its sink only
+        // after acquiring our existing single-instance gate; GetActivatedEventArgs can
+        // otherwise wait for an AppNotificationManager registration that does not exist yet.
+        if (notificationActivation) args = Array.Empty<string>();
 #if TILEWALL_PACKAGED
         // Packaged activation arguments are consumable only once; read before XAML startup.
-        var activation = global::Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs();
+        var activation = notificationActivation ? null : global::Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs();
         startupTask = activation?.Kind == global::Microsoft.Windows.AppLifecycle.ExtendedActivationKind.StartupTask;
         if (activation is not null && activation.Kind == global::Microsoft.Windows.AppLifecycle.ExtendedActivationKind.Launch &&
             activation.Data is global::Windows.ApplicationModel.Activation.ILaunchActivatedEventArgs launch &&
@@ -59,7 +64,7 @@ public static class Program
             args = ApplicationModel.StartupIntent.ReadLaunchArguments(launch.Arguments);
 #endif
         var scope = ApplicationModel.RuntimeScope.FromArguments(args);
-        var intent = ApplicationModel.StartupIntent.Parse(args, startupTask);
+        var intent = ApplicationModel.StartupIntent.Parse(args, startupTask) with { NotificationActivation = notificationActivation };
 
         // Preserve the generated Main's XAML dispatcher/synchronization-context startup sequence.
         global::Microsoft.UI.Xaml.Application.Start(p =>

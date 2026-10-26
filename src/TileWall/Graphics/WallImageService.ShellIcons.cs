@@ -93,74 +93,125 @@ public sealed partial class WallImageService
             entryOrTargetPath, widthPixels, heightPixels, blur, token), ct, new PuzzleFrameResult(null, WallImageStatus.Cancelled));
 
     private readonly Dictionary<string, Task<Prepared>> _automaticPrepared = new(StringComparer.Ordinal);
-    private int _automaticUnsharedWork;
-    private readonly Dictionary<string, (string? Target, string? Icon, int? Index)> _automaticDescriptors = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim _automaticAdmissions = new(256, 256);
+    private static readonly TimeSpan VolatileIconMemoryLifetime = TimeSpan.FromMinutes(5);
+    private readonly Dictionary<string, (string? Target, string? Icon, int? Index, bool ShellLink)> _automaticDescriptors = new(StringComparer.Ordinal);
+    private sealed record AutomaticSourceSnapshot(string? Stamp, bool CacheAllowed, MmcIconSource? MmcSource);
     private sealed record AutomaticDiskMapping(int Format, string Stamp, string PackageKey, string PixelsSha256,
         int Width, int Height, WallImageStatus Status, string? Diagnostic);
 
-    private async Task<Prepared> PrepareAutomaticSharedAsync(string? source, int width, int height, string? stamp,
-        CancellationToken token)
+    private async Task<Prepared> PrepareAutomaticSharedAsync(string? source, int width, int height,
+        AutomaticSourceSnapshot snapshot, CancellationToken token)
     {
-        var key = ManagedImageCache.Key($"automatic-v6|{stamp}|{width}x{height}|BGRA8-premultiplied");
-        if (TryGetCached(key, out var cached)) return cached;
-        Task<Prepared> production;
+        var key = ManagedImageCache.Key($"automatic-v6|{snapshot.Stamp}|{width}x{height}|BGRA8-premultiplied");
+        if (snapshot.CacheAllowed && TryGetCached(key, out var cached)) return cached;
+        if (!snapshot.CacheAllowed)
+            return await StartUnsharedAutomaticAsync(source, width, height, snapshot, key, token).ConfigureAwait(false);
+        Task<Prepared>? production;
         var ownsProduction = false;
         lock (_workGate)
         {
             if (_cacheStopping || _disposed) throw new OperationCanceledException(_cacheLifetime.Token);
-            if (!_automaticPrepared.TryGetValue(key, out production!))
+            _automaticPrepared.TryGetValue(key, out production);
+        }
+        if (production is null)
+        {
+            await _automaticAdmissions.WaitAsync(token).ConfigureAwait(false);
+            var releaseAdmission = true;
+            try
             {
-                if (_automaticPrepared.Count >= 256) return new(WallImageStatus.Fallback, null, 0, 0, "IconWorkBudget");
-                production = ProduceAutomaticAsync(source, width, height, stamp, key, allowPixelCache: true);
-                ownsProduction = true;
-                _automaticPrepared.Add(key, production);
-                TrackCacheWork(production);
-                _ = production.ContinueWith(_ => { lock (_workGate) _automaticPrepared.Remove(key); },
-                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                lock (_workGate)
+                {
+                    if (_cacheStopping || _disposed) throw new OperationCanceledException(_cacheLifetime.Token);
+                    token.ThrowIfCancellationRequested();
+                    // Another caller may have published a producer or a ready
+                    // frame while this request waited for admission.
+                    if (!_automaticPrepared.TryGetValue(key, out production))
+                    {
+                        if (TryGetCached(key, out cached)) return cached;
+                        production = ProduceAutomaticAsync(source, width, height, snapshot, key,
+                            allowPixelCache: true, allowResultCache: true);
+                        ownsProduction = true;
+                        _automaticPrepared.Add(key, production);
+                        TrackAutomaticProduction(production, key);
+                        releaseAdmission = false;
+                    }
+                }
             }
+            finally { if (releaseAdmission) _automaticAdmissions.Release(); }
         }
         // The service owns production. A caller only abandons its own wait.
-        var result = await production.WaitAsync(token).ConfigureAwait(false);
-        if (ownsProduction || result.CacheAllowed) return result;
+        var result = await production!.WaitAsync(token).ConfigureAwait(false);
+        if (ownsProduction || result.MemoryCacheAllowed) return result;
         token.ThrowIfCancellationRequested();
-        // The first observation establishes handler policy. An uncacheable
-        // result belongs to that request, including during concurrent loading.
-        return await StartUnsharedAutomaticAsync(source, width, height, stamp, key).WaitAsync(token).ConfigureAwait(false);
+        // A native DONTCACHE result belongs only to its owning request.
+        return await StartUnsharedAutomaticAsync(source, width, height, snapshot, key, token).ConfigureAwait(false);
     }
 
-    private Task<Prepared> StartUnsharedAutomaticAsync(string? source, int width, int height, string? stamp, string key)
+    private async Task<Prepared> StartUnsharedAutomaticAsync(string? source, int width, int height,
+        AutomaticSourceSnapshot snapshot, string key, CancellationToken token)
     {
-        lock (_workGate)
+        // The request token already includes the service lifetime. Cancelling an
+        // admission wait creates no producer; an admitted producer owns its work
+        // independently until completion, even when this caller abandons its wait.
+        await _automaticAdmissions.WaitAsync(token).ConfigureAwait(false);
+        Task<Prepared> production;
+        var releaseAdmission = true;
+        try
         {
-            if (_cacheStopping || _disposed) return Task.FromCanceled<Prepared>(new CancellationToken(true));
-            if (_automaticUnsharedWork >= 256)
-                return Task.FromResult(new Prepared(WallImageStatus.Fallback, null, 0, 0, "IconWorkBudget") { CacheAllowed = false });
-            _automaticUnsharedWork++;
-            var task = ProduceAutomaticAsync(source, width, height, stamp, key, allowPixelCache: false);
-            TrackCacheWork(task);
-            _ = task.ContinueWith(_ => { lock (_workGate) _automaticUnsharedWork--; },
-                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-            return task;
+            lock (_workGate)
+            {
+                if (_cacheStopping || _disposed) throw new OperationCanceledException(_cacheLifetime.Token);
+                token.ThrowIfCancellationRequested();
+                production = ProduceAutomaticAsync(source, width, height, snapshot, key,
+                    allowPixelCache: false, allowResultCache: false);
+                TrackAutomaticProduction(production, null);
+                releaseAdmission = false;
+            }
         }
+        finally { if (releaseAdmission) _automaticAdmissions.Release(); }
+        return await production.WaitAsync(token).ConfigureAwait(false);
     }
 
-    private Task<Prepared> ProduceAutomaticAsync(string? source, int width, int height, string? stamp,
-        string key, bool allowPixelCache) => Task.Run(async () =>
+    private void TrackAutomaticProduction(Task<Prepared> production, string? sharedKey)
+    {
+        TrackCacheWork(production);
+        _ = production.ContinueWith(completed =>
+        {
+            if (sharedKey is not null)
+                lock (_workGate)
+                    if (_automaticPrepared.TryGetValue(sharedKey, out var current) && ReferenceEquals(current, completed))
+                        _automaticPrepared.Remove(sharedKey);
+            // Runs for success, failure and cancellation, including a Task.Run
+            // cancelled before its body acquired an actual decode slot.
+            _automaticAdmissions.Release();
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private Task<Prepared> ProduceAutomaticAsync(string? source, int width, int height,
+        AutomaticSourceSnapshot snapshot, string key, bool allowPixelCache, bool allowResultCache) => Task.Run(async () =>
     {
         var lifetime = _cacheLifetime.Token;
         await _automaticSlots.WaitAsync(lifetime).ConfigureAwait(false);
         try
         {
-            var diskHit = allowPixelCache ? ReadAutomaticPixels(key, stamp) : null;
-            if (diskHit is not null && stamp == AutomaticSourceStamp(source)) return diskHit;
-            var prepared = await PrepareAutoAsync(source, width, height, lifetime).ConfigureAwait(false);
+            var diskHit = allowPixelCache && snapshot.CacheAllowed ? ReadAutomaticPixels(key, snapshot.Stamp) : null;
+            if (diskHit is not null && snapshot == AutomaticSourceStamp(source)) return diskHit;
+            var prepared = await PrepareAutoAsync(source, width, height, lifetime,
+                cacheAllowed: allowResultCache, mmcSource: snapshot.MmcSource).ConfigureAwait(false);
             lifetime.ThrowIfCancellationRequested();
-            if (stamp != AutomaticSourceStamp(source))
+            if (snapshot != AutomaticSourceStamp(source))
                 return new Prepared(WallImageStatus.Invalid, null, 0, 0, "IconSourceChanged") { CacheAllowed = false };
-            if (allowPixelCache && prepared.Pixels is not null && prepared.CacheAllowed)
+            prepared = prepared with
             {
-                Cache(key, prepared);
-                SaveAutomaticPixels(key, stamp, width, height, prepared, lifetime);
+                MemoryCacheAllowed = prepared.MemoryCacheAllowed && snapshot.CacheAllowed && allowResultCache,
+                MemoryValidUntil = prepared.CacheAllowed ? DateTimeOffset.MaxValue : DateTimeOffset.UtcNow + VolatileIconMemoryLifetime,
+            };
+            if (allowPixelCache && prepared.Pixels is not null && prepared.MemoryCacheAllowed)
+            {
+                Cache(key, prepared, allowMemoryOnly: true);
+                if (prepared.CacheAllowed)
+                    SaveAutomaticPixels(key, snapshot.Stamp, width, height, prepared, lifetime);
             }
             return prepared;
         }
@@ -221,7 +272,8 @@ public sealed partial class WallImageService
             var prepared = await PrepareAutomaticSharedAsync(source, width, height, before, token);
             token.ThrowIfCancellationRequested();
             if (before != await Task.Run(() => AutomaticSourceStamp(source), token)) return new(null, WallImageStatus.Invalid, "IconSourceChanged");
-            if (prepared.Pixels is null) return new(null, prepared.Status, prepared.Diagnostic) { CacheAllowed = prepared.CacheAllowed };
+            if (prepared.Pixels is null) return new(null, prepared.Status, prepared.Diagnostic)
+                { CacheAllowed = prepared.CacheAllowed, MemoryCacheAllowed = false };
             var sharp = new DecodedImageFrame(source ?? "automatic", 0, DateTime.MinValue, prepared.Width, prepared.Height,
                 prepared.Width, prepared.Height, prepared.Pixels);
             var blurred = blur ? await Task.Run(() => LowResolutionBlur.Apply(BlurInput(sharp)), token) : null;
@@ -229,18 +281,39 @@ public sealed partial class WallImageService
             return new(new PuzzleFrame(sharp.SourcePath, 0, DateTime.MinValue,
                 new PixelSize(sharp.SourceWidth, sharp.SourceHeight), new PixelSize(sharp.Width, sharp.Height),
                 blurred is null ? default : new PixelSize(blurred.Width, blurred.Height), MakeBitmap(sharp),
-                blurred is null ? null : MakeBitmap(blurred)), prepared.Status, prepared.Diagnostic) { CacheAllowed = prepared.CacheAllowed };
+                blurred is null ? null : MakeBitmap(blurred))
+                {
+                    AutomaticStamp = before.Stamp, MemoryCacheAllowed = prepared.MemoryCacheAllowed,
+                    MemoryValidUntil = prepared.MemoryValidUntil,
+                }, prepared.Status, prepared.Diagnostic)
+                { CacheAllowed = prepared.CacheAllowed, MemoryCacheAllowed = prepared.MemoryCacheAllowed };
         }
         catch (OperationCanceledException) { return new(null, WallImageStatus.Cancelled); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or ArgumentException or InvalidOperationException or OverflowException)
         { return new(null, WallImageStatus.Invalid, ex.GetType().Name); }
     }
 
-    private string? AutomaticSourceStamp(string? source)
+    public Task<bool> IsAutomaticFrameCurrentAsync(PuzzleFrame frame, string? entryOrTargetPath,
+        CancellationToken ct = default) => StartImageRequest(token => Task.Run(() =>
+    {
+        try
+        {
+            if (!frame.MemoryCacheAllowed || frame.AutomaticStamp is null || frame.MemoryValidUntil <= DateTimeOffset.UtcNow) return false;
+            var current = AutomaticSourceStamp(entryOrTargetPath);
+            return current.CacheAllowed && frame.AutomaticStamp == current.Stamp;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or ArgumentException or InvalidOperationException or NotSupportedException)
+        { return false; }
+    }, token), ct, false);
+
+    private AutomaticSourceSnapshot AutomaticSourceStamp(string? source) => AutomaticSourceStampCore(source, followLinkedTarget: true);
+
+    private AutomaticSourceSnapshot AutomaticSourceStampCore(string? source, bool followLinkedTarget)
     {
         var path = NormalizePath(source);
         string? target = source, explicitIcon = null; int? iconIndex = null;
         var entryStamp = source;
+        var shellLink = false;
         if (path is not null && File.Exists(path))
         {
             var extension = Path.GetExtension(path);
@@ -250,19 +323,19 @@ public sealed partial class WallImageService
                 entryStamp = FileContentHash(path);
                 if (extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
                 {
-                    (string? Target, string? Icon, int? Index) descriptor;
+                    (string? Target, string? Icon, int? Index, bool ShellLink) descriptor;
                     lock (_workGate)
                     {
                         if (!_automaticDescriptors.TryGetValue(entryStamp, out descriptor))
                         {
                             var fields = _links.Read(path);
                             descriptor = (!string.IsNullOrWhiteSpace(fields.ShellParsingName) ? fields.ShellParsingName : fields.TargetPath,
-                                fields.IconPath, fields.IconIndex);
+                                fields.IconPath, fields.IconIndex, fields.HasIdList);
                             if (_automaticDescriptors.Count >= 2048) _automaticDescriptors.Clear();
                             _automaticDescriptors[entryStamp] = descriptor;
                         }
                     }
-                    (target, explicitIcon, iconIndex) = descriptor;
+                    (target, explicitIcon, iconIndex, shellLink) = descriptor;
                 }
                 else
                 {
@@ -290,12 +363,30 @@ public sealed partial class WallImageService
             association = ShellItemCatalog.AssociationValue(extension, false, 20) + "|" + associationIcon;
         }
         else association = "folder";
-        return string.Join("|", "automatic-v6", source, entryStamp, target,
+        var mmc = canonical is not null && IsMmcConsolePath(canonical) && string.IsNullOrWhiteSpace(explicitIcon)
+            ? ReadMmcIconSource(canonical) : null;
+        var stamp = string.Join("|", "automatic-v6", source, entryStamp, target,
             canonical is null ? null : Fingerprint(canonical, "target"), Fingerprint(explicitIcon, "explicit") ?? explicitIcon,
             iconIndex, association, AssociationResourceStamp(associationIcon), Fingerprint(associationExecutable, "association-executable"),
             canonical is not null && Directory.Exists(canonical) ? Fingerprint(Path.Combine(canonical, "desktop.ini"), "folder-customization") : null,
             System.Globalization.CultureInfo.CurrentUICulture.Name, Environment.OSVersion.VersionString,
             TileWall.Core.Imaging.WebsiteIconCatalog.VersionStamp, TileWall.Core.Imaging.SystemIconCatalog.VersionStamp);
+        if (mmc is not null) stamp += "|mmc-icon-v1|" + mmc.Stamp;
+        var packagedApp = PackagedAppIdentity(target) is not null;
+        var shellIconContext = (path is not null && Path.GetExtension(path).Equals(".lnk", StringComparison.OrdinalIgnoreCase)) ||
+            source?.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) == true ||
+            target?.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) == true ||
+            source?.StartsWith("::{", StringComparison.Ordinal) == true ||
+            target?.StartsWith("::{", StringComparison.Ordinal) == true || packagedApp;
+        if (shellIconContext)
+            stamp += "|shell-icon-context-v2";
+        if (packagedApp) stamp += "|package-app-list-v1|" + PackageRegistrationStamp(target);
+        if (followLinkedTarget && (shellLink || source?.StartsWith("shell:AppsFolder\\", StringComparison.OrdinalIgnoreCase) == true) &&
+            ShellItemCatalog.LinkedTargetPath(source!) is { } linked &&
+            !string.Equals(source, linked, StringComparison.OrdinalIgnoreCase) &&
+            Path.GetExtension(linked).ToLowerInvariant() is ".lnk" or ".url" && File.Exists(linked))
+            stamp += "|linked-icon-target-v1|" + AutomaticSourceStampCore(linked, followLinkedTarget: false).Stamp;
+        return new(stamp, mmc?.CacheAllowed ?? true, mmc);
     }
 
     private static string? AssociationResourceStamp(string? descriptor)

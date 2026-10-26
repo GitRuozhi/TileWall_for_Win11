@@ -27,8 +27,11 @@ public static class ImportSourcePlanner
         for (var index = 0; index < sourceRows.Length; index++)
         {
             var row = sourceRows[index];
-            if (!autoFilter || row.Error is not null || row.Source.Policy == ImportSourcePolicy.Attributed) continue;
-            var reason = FilterReason(row.Source);
+            if (!autoFilter || row.Source.Policy == ImportSourcePolicy.Attributed) continue;
+            var reason = row.Error is not null
+                ? row.Source.TargetAvailability == ImportTargetAvailability.Missing
+                    ? ImportFilterReason.MissingTarget : ImportFilterReason.NonPrimaryEntry
+                : FilterReason(row.Source);
             if (reason == ImportFilterReason.None && row.Source.Identity is { } identity)
             {
                 if (representatives.TryGetValue(identity.Key, out var representative))
@@ -44,7 +47,8 @@ public static class ImportSourcePlanner
         }
         foreach (var (index, keys) in duplicateKeys) sourceRows[index] = sourceRows[index] with { Keys = keys.ToArray() };
         // Only the remaining source objects contribute to family/folder counts.
-        // Invalid rows remain visible diagnostics, never duplicate representatives.
+        // Attributed records and filtering-off diagnostics remain distinct;
+        // invalid rows never become duplicate representatives.
         var remaining = sourceRows.Where(row => row.FilterReason == ImportFilterReason.None).ToArray();
         var assigned = AssignGroups(remaining.Select(row => new ImportGroupingItem(row.Source.DisplayName,
             row.Source.SourceGroup, row.Source.Identity, row.Error is null, row.Source.RelativeDirectory,
@@ -54,8 +58,10 @@ public static class ImportSourcePlanner
             .ToDictionary(group => StartMenuSourceCache.GroupNameKey(group.Title), StringComparer.Ordinal);
         var rows = remaining.Select((row, index) => (Row: row, Group: assigned[index])).ToArray();
         var projectedGroups = new List<ImportProjectedGroup>();
-        foreach (var merged in rows.GroupBy(item => string.IsNullOrWhiteSpace(item.Group.Title)
-                     ? "unnamed:" + item.Group.Key : "name:" + StartMenuSourceCache.GroupNameKey(item.Group.Title), StringComparer.Ordinal)
+        foreach (var merged in rows.GroupBy(item => item.Group.PreserveStableKey
+                     ? "stable:" + item.Group.Key
+                     : string.IsNullOrWhiteSpace(item.Group.Title)
+                         ? "unnamed:" + item.Group.Key : "name:" + StartMenuSourceCache.GroupNameKey(item.Group.Title), StringComparer.Ordinal)
                      .OrderBy(group => group.Min(item => item.Group.Category))
                      .ThenBy(group => group.Min(item => item.Group.Order))
                      .ThenBy(group => group.First().Group.Title, StringComparer.OrdinalIgnoreCase))
@@ -69,7 +75,7 @@ public static class ImportSourcePlanner
                 foreach (var member in destination.Members)
                     if (existingIdentityKeys.TryGetValue(member.Id, out var identity))
                         destinationIds.TryAdd(identity, member.Id);
-            var groupKey = merged.Key;
+            var groupKey = first.PreserveStableKey ? first.Key : merged.Key;
             var projected = merged.GroupBy(item => item.Row.Error is null
                     ? item.Row.Source.SelectionIdentity : "invalid:" + item.Row.Source.SourceKey, StringComparer.Ordinal)
                 .Select(group =>
@@ -159,8 +165,9 @@ public static class ImportSourcePlanner
             var old = projectedGroup.DestinationGroupId is { } destinationId ? existingGroups.GetValueOrDefault(destinationId) : null;
             if (projectedGroup.DestinationGroupId is not null && old is null)
                 return Reject(WallRejection.StaleGeneration, "SOURCE_CHANGED");
-            var groupId = old?.Id ?? AllocateId("import-group-", projectedGroup.Key, usedIds);
-            var built = BuildGroup(projectedGroup, selectedRows, defaultSize, old, groupId, usedIds, preview: false);
+            var groupId = old?.Id ?? AllocateId("import-group-", GenerationKey(current.Generation, projectedGroup.Key), usedIds);
+            var built = BuildGroup(projectedGroup, selectedRows, defaultSize, old, groupId, usedIds,
+                preview: false, generation: current.Generation);
             if (built.Group is null) return Reject(built.Rejection, built.Detail);
             incoming.Add(built.Group); accepted.AddRange(built.Accepted);
         }
@@ -221,7 +228,7 @@ public static class ImportSourcePlanner
     }
 
     private static GroupBuildResult BuildGroup(ImportProjectedGroup group, IReadOnlyList<ImportProjectedCandidate> rows,
-        GridSize defaultSize, StartGroup? old, string groupId, HashSet<string> usedIds, bool preview)
+        GridSize defaultSize, StartGroup? old, string groupId, HashSet<string> usedIds, bool preview, long generation = 0)
     {
         var replaced = rows.Select(candidate => candidate.ReplacedMemberId).OfType<string>().ToHashSet(StringComparer.Ordinal);
         var members = old?.Members.Where(member => !replaced.Contains(member.Id)).ToList() ?? [];
@@ -265,7 +272,7 @@ public static class ImportSourcePlanner
             {
                 var id = preview
                     ? usedIds.Add(candidate.Source.Member.Id) ? candidate.Source.Member.Id : AllocateId("preview-member-", candidate.Source.SourceKey, usedIds)
-                    : candidate.ReplacedMemberId ?? AllocateId("import-member-", candidate.Source.SourceKey, usedIds);
+                    : candidate.ReplacedMemberId ?? AllocateId("import-member-", GenerationKey(generation, candidate.Source.SourceKey), usedIds);
                 placed.Add(Remap(sized, id, groupId, group.Key) with { LocalBounds = bounds });
                 Occupy(bounds);
                 accepted.Add(new(candidate.Source.SourceKey, id, groupId, preview ? null : candidate.ReplacedMemberId));
@@ -305,13 +312,14 @@ public static class ImportSourcePlanner
 
     internal static IReadOnlyList<ImportGroupAssignment> AssignGroups(IReadOnlyList<ImportGroupingItem> items, bool recognizeGroups)
     {
-        var presets = items.Select(item => item.Policy != ImportSourcePolicy.Attributed && recognizeGroups && item.Identity is { } identity
+        var presets = items.Select(item => item.Policy is (ImportSourcePolicy.Shortcut or ImportSourcePolicy.DirectTarget or ImportSourcePolicy.Application) &&
+            recognizeGroups && item.Identity is { } identity
             ? StartMenuPresetRules.Match(item.DisplayName, item.RelativeDirectory, identity, item.Company) : null).ToArray();
         var presetCounts = items.Select((item, index) => (Item: item, Preset: presets[index]))
             .Where(pair => pair.Item.CanAdd && pair.Preset is not null).GroupBy(pair => pair.Preset!.Key, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Select(pair => pair.Item.IdentityKey).Distinct(StringComparer.Ordinal).Count(), StringComparer.Ordinal);
         var folderCounts = items.Select((item, index) => (Item: item, Preset: presets[index]))
-            .Where(pair => pair.Item.CanAdd && pair.Item.Policy != ImportSourcePolicy.Attributed &&
+            .Where(pair => pair.Item.CanAdd && pair.Item.Policy is not (ImportSourcePolicy.Attributed or ImportSourcePolicy.SystemFeature) &&
                 pair.Item.SourceGroup is not null && pair.Preset is null)
             .GroupBy(pair => pair.Item.SourceGroup!.Key, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Select(pair => pair.Item.IdentityKey).Distinct(StringComparer.Ordinal).Count(), StringComparer.Ordinal);
@@ -320,6 +328,9 @@ public static class ImportSourcePlanner
             if (item.Policy == ImportSourcePolicy.Attributed)
                 return new ImportGroupAssignment(item.SourceGroup?.Key ?? "attributed", item.SourceGroup?.Title,
                     item.SourceGroup?.Order ?? 0, -1);
+            if (item.Policy == ImportSourcePolicy.SystemFeature && item.SourceGroup is { } systemGroup)
+                return new ImportGroupAssignment(systemGroup.Key, systemGroup.Title, systemGroup.Order, -2,
+                    PreserveStableKey: true);
             if (!recognizeGroups && item.SourceGroup is { } original)
                 return new ImportGroupAssignment(original.Key, original.Title, original.Order, 1);
             if (presets[index] is { } preset)
@@ -353,6 +364,7 @@ public static class ImportSourcePlanner
 
     private static ImportFilterReason FilterReason(ImportSourceCandidate source) =>
         source.TargetAvailability == ImportTargetAvailability.Missing ? ImportFilterReason.MissingTarget :
+        source.ErrorCode == "SourceNotApplicable" ? ImportFilterReason.NonPrimaryEntry :
         (source.Policy is ImportSourcePolicy.Shortcut or ImportSourcePolicy.Application) && source.Exclusion != StartMenuExclusion.None
             ? ImportFilterReason.NonPrimaryEntry : ImportFilterReason.None;
 
@@ -379,6 +391,10 @@ public static class ImportSourcePlanner
         ImportSource = source.ImportSource is { } metadata ? metadata with { OriginGroupId = groupId, GroupBucketKey = bucketKey } : null,
     };
 
+    // A later import of a retained source must not reuse its old ID without loading the recycle bin.
+    private static string GenerationKey(long generation, string key) =>
+        generation.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\n" + key;
+
     private static string AllocateId(string prefix, string key, HashSet<string> used)
     {
         var stem = prefix + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant()[..24];
@@ -398,4 +414,5 @@ public static class ImportSourcePlanner
 
 internal sealed record ImportGroupingItem(string DisplayName, ImportSourceGroup? SourceGroup, LaunchIdentity? Identity,
     bool CanAdd, string RelativeDirectory, string? Company, string IdentityKey, ImportSourcePolicy Policy);
-internal sealed record ImportGroupAssignment(string Key, string? Title, int Order, int Category);
+internal sealed record ImportGroupAssignment(string Key, string? Title, int Order, int Category,
+    bool PreserveStableKey = false);

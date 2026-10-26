@@ -66,12 +66,18 @@
         <!-- Native modern/classic interfaces share one system COM surrogate and package activation. -->
         <com:Extension Category="windows.comServer">
           <com:ComServer>
+            <com:ExeServer Executable="TileWall.exe" Arguments="----AppNotificationActivated:" DisplayName="TileWall">
+              <com:Class Id="de9c314c-7f05-4c18-88c2-0239a01315b8" />
+            </com:ExeServer>
             <com:SurrogateServer DisplayName="TileWall Explorer Command">
               <com:Class Id="cb391e98-9cf2-4a54-abea-fbc529ca2d44"
                          Path="TileWall.ExplorerExtension.dll" ThreadingModel="STA" />
             </com:SurrogateServer>
           </com:ComServer>
         </com:Extension>
+        <desktop:Extension Category="windows.toastNotificationActivation">
+          <desktop:ToastNotificationActivation ToastActivatorCLSID="de9c314c-7f05-4c18-88c2-0239a01315b8" />
+        </desktop:Extension>
         <!-- (2) Explorer 右键「添加到 TileWall」：文件/程序/快捷方式（Type="*"）与文件夹（Type="Directory"）。
              文件项用 desktop4:ItemType（min OS 1803；Type 仅允许 */.ext）；文件夹项必须用 desktop5:ItemType
              （ST_FileTypeOrStarWithDirectory 才含 Directory；min OS 1809=17763，由清单 MinVersion 覆盖；其父元素

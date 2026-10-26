@@ -22,7 +22,20 @@ internal sealed record NativeImportEntry(string Key, string Name, string Target,
     string Group, bool SystemFeature, bool Directory, string? SourcePath = null, string? Sha256 = null,
     string? Stamp = null, LaunchIdentity? Identity = null, string? Error = null, int Priority = 0,
     ImportTargetAvailability Availability = ImportTargetAvailability.Unknown, bool TargetIsDirectory = false,
-    StartMenuExclusion Exclusion = StartMenuExclusion.None, bool Stale = false);
+    StartMenuExclusion Exclusion = StartMenuExclusion.None, bool Stale = false)
+{
+    /// <summary>Localized resource key for a catalog-provided group; never used as its identity.</summary>
+    public string? GroupTitleKey { get; init; }
+    /// <summary>Stable display order within the source catalog.</summary>
+    public int GroupOrder { get; init; }
+    /// <summary>Actual AppsFolder membership facts, independent of the resolved launch identity.</summary>
+    public ShellItemCatalog.Item? AppSource { get; init; }
+    public string? Company { get; init; }
+    /// <summary>EXE metadata dependency; its path is fixed by Identity.Target.</summary>
+    public string? CompanyStamp { get; init; }
+    /// <summary>Explicit Shell link metadata, used only for availability; never a shortcut source or launch identity.</summary>
+    public string? LinkedTargetPath { get; init; }
+}
 
 /// <summary>Disposable source facts. Cache contents never authorize an import or contain user selection.</summary>
 internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links)
@@ -36,7 +49,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
     private readonly Dictionary<ImportPageSourceKind, string> _scopes = [];
     private readonly Dictionary<ImportPageSourceKind, bool> _refreshing = [];
     private readonly Dictionary<ImportPageSourceKind, string?> _errors = [];
-    private const int CacheVersion = 3, SystemCatalogVersion = 1;
+    private const int CacheVersion = 3, SystemCatalogVersion = 4, AppsCatalogVersion = 4, OtherNativeCatalogVersion = 1;
     private readonly Dictionary<ImportPageSourceKind, SemaphoreSlim> _refreshGates = [];
     private readonly Dictionary<ImportPageSourceKind, (IReadOnlyList<NativeImportEntry> Entries, ImportPageSource Source)> _projections = [];
 
@@ -53,7 +66,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
 
     private IReadOnlyList<NativeImportEntry> Cached(ImportPageSourceKind kind)
     {
-        var scope = CacheScope();
+        var scope = CacheScope(kind);
         lock (_sync)
             if (_snapshots.TryGetValue(kind, out var cached) && _scopes.GetValueOrDefault(kind) == scope) return cached;
         try
@@ -64,7 +77,8 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             if (stream.Length is < 1 or > MaximumCacheBytes) return [];
             var value = JsonSerializer.Deserialize<CacheEnvelope>(stream);
             if (UnsafeCache(path)) return [];
-            if (value is not null && (value.Version == CacheVersion && value.Scope == scope || value.Version == 2 && value.Scope == LegacyCacheScope()) && value.Kind == kind &&
+            if (value is not null && (value.Version == CacheVersion && value.Scope == scope ||
+                    kind == ImportPageSourceKind.Desktop && value.Version == 2 && value.Scope == LegacyCacheScope()) && value.Kind == kind &&
                 value.Entries is { Count: <= MaximumEntries } && value.Entries.All(ValidCachedEntry) &&
                 value.Entries.Select(entry => entry.Key).Distinct(StringComparer.Ordinal).Count() == value.Entries.Count)
             {
@@ -94,9 +108,10 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         {
             var clock = Stopwatch.StartNew();
             var previous = Cached(kind);
-            var scope = CacheScope();
+            var scope = CacheScope(kind);
             var observed = new Dictionary<string, NativeImportEntry>(StringComparer.Ordinal);
             var targets = new Dictionary<string, StartMenuImportProjection.TargetObservation>(StringComparer.OrdinalIgnoreCase);
+            var companies = new Dictionary<string, (string? Company, string? Stamp)>(StringComparer.OrdinalIgnoreCase);
             var progress = Stopwatch.StartNew();
             double? firstFactsMs = null;
             var skipped = 0;
@@ -107,7 +122,8 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             {
                 token.ThrowIfCancellationRequested();
                 if (observed.Count >= MaximumEntries && !observed.ContainsKey(entry.Key)) { skipped++; return; }
-                observed[entry.Key] = ObserveTarget(entry with { Stale = false }, kind, token, targets);
+                var current = ObserveTarget(entry with { Stale = false }, kind, token, targets);
+                observed[entry.Key] = kind == ImportPageSourceKind.InstalledApplications ? ObserveCompany(current, token, companies) : current;
                 if (observed.Count == 1 || progress.ElapsedMilliseconds >= 150)
                 {
                     Publish(Merge(completeScan: false), refreshing: true);
@@ -125,7 +141,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             void Publish(IReadOnlyList<NativeImportEntry> entries, bool refreshing)
             {
                 token.ThrowIfCancellationRequested();
-                if (CacheScope() != scope) throw new OperationCanceledException("Native source scope changed.", token);
+                if (CacheScope(kind) != scope) throw new OperationCanceledException("Native source scope changed.", token);
                 var notify = true;
                 lock (_sync)
                 {
@@ -141,7 +157,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             try
             {
                 if (kind == ImportPageSourceKind.InstalledApplications)
-                    complete = await ReadAppsAsync(Observe, token).ConfigureAwait(false);
+                    complete = await ReadAppsAsync(Observe, previous, token).ConfigureAwait(false);
                 else
                 {
                     var entries = kind == ImportPageSourceKind.Desktop ? Desktop(token, out skipped) : SystemFeatureCatalog.Read(token);
@@ -167,8 +183,9 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
     }, token);
     }
 
-    private static async Task<bool> ReadAppsAsync(Action<NativeImportEntry> observe, CancellationToken token)
+    private async Task<bool> ReadAppsAsync(Action<NativeImportEntry> observe, IReadOnlyList<NativeImportEntry> previous, CancellationToken token)
     {
+        var prior = previous.ToDictionary(entry => entry.Key, StringComparer.Ordinal);
         using var enumeration = CancellationTokenSource.CreateLinkedTokenSource(token);
         var batches = Channel.CreateBounded<IReadOnlyList<ShellItemCatalog.Item>>(new BoundedChannelOptions(8)
             { SingleReader = true, SingleWriter = true });
@@ -190,7 +207,8 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                 foreach (var item in batch)
                 {
                     token.ThrowIfCancellationRequested();
-                    if (!string.IsNullOrWhiteSpace(item.ParsingName)) observe(AppEntry(item));
+                    if (!string.IsNullOrWhiteSpace(item.ParsingName))
+                        observe(AppEntry(item, token, prior.GetValueOrDefault(Key("app|" + item.ParsingName))));
                 }
         }
         finally
@@ -240,10 +258,11 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             })
             {
                 SourceKind = kind, Policy = policy, TargetKind = targetKind, HasLaunchTarget = true,
-                SourcePriority = entry.Priority, SourceOrder = index, SourceGroup = entry.Group.Length == 0 ? null : new(entry.Group, entry.Group, 100),
+                SourcePriority = entry.Priority, SourceOrder = index, SourceGroup = SourceGroup(entry),
                 Identity = identity, RequiresIdentity = true, ErrorCode = entry.Error ?? (entry.Stale ? "SourceChanged" : null),
                 Exclusion = entry.Exclusion,
                 TargetAvailability = entry.Availability,
+                Company = entry.Company,
             };
         }).ToArray();
         if (previousRows is not null)
@@ -256,12 +275,16 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         IReadOnlyList<ImportSourceCandidate> candidates = priorProjection.Source is { } priorSource && priorSource.Candidates.Count == rows.Length &&
             rows.Select((row, index) => ReferenceEquals(row, priorSource.Candidates[index])).All(same => same) ? priorSource.Candidates : rows;
         var result = new ImportPageSource(candidates, new Dictionary<string, TileWall.Core.Application.StartMenuImportCandidate>(), Scanned: entries.Count, Skipped: skipped,
-            ReadErrors: entries.Count(entry => entry.Error is not null), Refreshing: refreshing, ErrorCode: error)
+            ReadErrors: entries.Count(entry => entry.Error is not null and not "SourceNotApplicable"), Refreshing: refreshing, ErrorCode: error)
         { AvailabilityPrepared = true, AvailabilityFacts = entries.ToDictionary(entry => entry.Key, Facts, StringComparer.Ordinal) };
         _projections[kind] = (entries, result);
         return result;
         }
     }
+
+    private static ImportSourceGroup? SourceGroup(NativeImportEntry entry) => entry.Group.Length == 0 ? null :
+        new(entry.Group, entry.GroupTitleKey is { Length: > 0 } titleKey ? ProductStrings.Get(titleKey) : entry.Group,
+            entry.SystemFeature ? entry.GroupOrder : 100);
 
     internal static string Facts(NativeImportEntry entry) => JsonSerializer.Serialize(entry);
 
@@ -269,9 +292,44 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
     { lock (_sync) return (_snapshots.GetValueOrDefault(kind) ?? []).SingleOrDefault(entry => entry.Key == key)
         ?? throw new ImportSourceChangedException("The selected source no longer exists."); }
 
-    internal NativeImportEntry Confirm(ImportPageSourceKind kind, string key)
+    internal NativeImportEntry Confirm(ImportPageSourceKind kind, string key) => ConfirmMany(kind, [key])[key];
+
+    internal IReadOnlyDictionary<string, NativeImportEntry> ConfirmMany(ImportPageSourceKind kind, IReadOnlyCollection<string> keys)
     {
-        try { return ConfirmCurrent(kind, key); }
+        try
+        {
+            var selected = keys.Distinct(StringComparer.Ordinal).ToDictionary(key => key, key => Find(kind, key), StringComparer.Ordinal);
+            if (selected.Count == 0) return selected;
+            if (kind != ImportPageSourceKind.InstalledApplications)
+                return selected.Keys.ToDictionary(key => key, key => ConfirmCurrent(kind, key), StringComparer.Ordinal);
+            if (selected.Values.Any(entry => entry.Error is not null || entry.Stale || entry.AppSource is null))
+                throw new IOException("The source is unavailable.");
+            // Membership belongs to the actual AppsFolder enumeration. Opening an arbitrary
+            // filesystem parsing name alone would not prove that it is still an app source.
+            var items = new Dictionary<string, ShellItemCatalog.Item>(StringComparer.Ordinal);
+            var complete = ShellItemCatalog.EnumerateBatches("shell:AppsFolder", batch =>
+            {
+                foreach (var item in batch)
+                {
+                    var key = Key("app|" + item.ParsingName);
+                    if (selected.ContainsKey(key)) items[key] = item;
+                }
+            }, CancellationToken.None);
+            if (!complete || items.Count != selected.Count) throw new IOException("The app source changed.");
+            var targets = new Dictionary<string, StartMenuImportProjection.TargetObservation>(StringComparer.OrdinalIgnoreCase);
+            var companies = new Dictionary<string, (string? Company, string? Stamp)>(StringComparer.OrdinalIgnoreCase);
+            var result = new Dictionary<string, NativeImportEntry>(StringComparer.Ordinal);
+            foreach (var (key, old) in selected)
+            {
+                var item = items[key];
+                if (item != old.AppSource) throw new IOException("The app source changed.");
+                var current = ObserveCompany(ObserveTarget(AppEntry(item, CancellationToken.None), kind, CancellationToken.None, targets),
+                    CancellationToken.None, companies);
+                if (Facts(current) != Facts(old)) throw new IOException("The app facts changed.");
+                result.Add(key, current);
+            }
+            return result;
+        }
         catch (Exception ex) when (SourceReadError(ex))
         { throw new ImportSourceChangedException("The selected source changed or is unavailable.", ex); }
     }
@@ -301,8 +359,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         }
         else if (old.Kind == NativeImportTarget.Shell)
         {
-            var actual = ShellItemCatalog.Read(old.Target);
-            var identity = actual.Path is { } path ? LaunchIdentityService.ForPath(path) : LaunchIdentityService.ForShell(actual.ParsingName);
+            var (_, identity) = ShellItemCatalog.ReadForLink(old.Target);
             if (identity.Key != (old.Identity ?? LaunchIdentityService.ForShell(old.Target)).Key) throw new IOException("The Shell target changed.");
         }
         else if (!RegisteredUrlProtocols.IsSupported(old.Target)) throw new IOException("The native protocol is unavailable.");
@@ -372,25 +429,59 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         return result;
     }
 
-    private static NativeImportEntry AppEntry(ShellItemCatalog.Item item)
+    private NativeImportEntry AppEntry(ShellItemCatalog.Item item, CancellationToken token, NativeImportEntry? prior = null)
     {
         var parsing = item.ParsingName;
-        var target = item.Path is { } path && Path.IsPathFullyQualified(path) ? path : parsing;
+        var target = AppSourcePath(item) ?? parsing;
         NativeImportTarget kind;
         if (Path.IsPathFullyQualified(target)) kind = NativeImportTarget.Path;
         else if (target.StartsWith("::", StringComparison.Ordinal) || target.StartsWith("shell:", StringComparison.OrdinalIgnoreCase)) kind = NativeImportTarget.Shell;
-        else if (Uri.TryCreate(target, UriKind.Absolute, out var uri) && uri.Scheme.Length > 1) kind = NativeImportTarget.Uri;
-        else { target = "shell:AppsFolder\\" + target; kind = NativeImportTarget.Shell; }
-        var entry = new NativeImportEntry(Key("app|" + parsing), item.Name, target, kind, "", false, item.IsFolder);
+        // A URI exposed by AppsFolder is still this registered Shell item. Its
+        // parent supplies instance icon/activation facts which a bare URI loses.
+        else { target = "shell:AppsFolder\\" + parsing; kind = NativeImportTarget.Shell; }
+        var entry = new NativeImportEntry(Key("app|" + parsing), item.Name, target, kind, "", false, item.IsFolder)
+            { AppSource = item };
         try
         {
-            var identity = kind switch
+            token.ThrowIfCancellationRequested();
+            if (kind == NativeImportTarget.Path)
             {
-                NativeImportTarget.Path => LaunchIdentityService.ForPath(target),
-                NativeImportTarget.Uri => LaunchIdentityService.ForUrl(target),
-                _ => LaunchIdentityService.ForShell(parsing),
-            };
-            return entry with { Identity = identity };
+                ValidateAppPath(target, item);
+                var directory = (File.GetAttributes(target) & FileAttributes.Directory) != 0;
+                var stamp = Stamp(target);
+                var shortcut = !directory && EntryNames.KindOfRelativePath(target) != EntryKind.None;
+                entry = entry with { Directory = directory, Stamp = stamp,
+                    Kind = shortcut ? NativeImportTarget.Shortcut : NativeImportTarget.Path, SourcePath = shortcut ? target : null };
+                if (shortcut)
+                {
+                    var observed = ObserveShortcut(target, token, prior, path => ValidateAppPath(path, item));
+                    entry = entry with { Identity = observed.Identity, Sha256 = observed.Hash };
+                }
+                else entry = entry with { Identity = LaunchIdentityService.ForPath(target) };
+                if (Stamp(target) != stamp) throw new IOException("The app source changed while reading.");
+                token.ThrowIfCancellationRequested(); ValidateAppPath(target, item);
+                return entry;
+            }
+            var identity = LaunchIdentityService.ForShell(parsing);
+            token.ThrowIfCancellationRequested();
+            return entry with { Identity = identity, LinkedTargetPath = ShellItemCatalog.LinkedTargetPath(target) };
+        }
+        catch (Exception ex) when ((ex is FileNotFoundException or DirectoryNotFoundException) &&
+            kind == NativeImportTarget.Path && EntryNames.KindOfRelativePath(target) == EntryKind.None)
+        {
+            try
+            {
+                // A registered direct target may be provably missing. Keep its path
+                // identity for the common missing-target filter; a missing shortcut
+                // cannot supply its launch identity and remains an invalid source.
+                ValidateDirectoryRoot(Path.GetDirectoryName(Path.GetFullPath(target))!);
+                var identity = LaunchIdentityService.ForPath(target);
+                token.ThrowIfCancellationRequested();
+                if (StartMenuImportProjection.ObserveTarget(identity).Availability == ImportTargetAvailability.Missing)
+                    return entry with { Identity = identity, Stamp = null };
+            }
+            catch (Exception missingError) when (SourceReadError(missingError)) { }
+            return entry with { Error = "InvalidTarget" };
         }
         catch (Exception ex) when (SourceReadError(ex)) { return entry with { Error = "InvalidTarget" }; }
     }
@@ -414,7 +505,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                 token.ThrowIfCancellationRequested(); stream.Write(bytes); stream.Flush(true);
             }
             token.ThrowIfCancellationRequested();
-            if (UnsafeCache(path) || UnsafeCache(temporary) || CacheScope() != scope) return;
+            if (UnsafeCache(path) || UnsafeCache(temporary) || CacheScope(kind) != scope) return;
             File.Move(temporary, path, true);
         }
         catch (Exception ex) when (SourceReadError(ex)) { }
@@ -448,22 +539,24 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         var info = new FileInfo(path); return $"file:{info.Length}:{info.CreationTimeUtc.Ticks}:{info.LastWriteTimeUtc.Ticks}";
     }
 
-    private (string Hash, LaunchIdentity? Identity) ObserveShortcut(string path, CancellationToken token, NativeImportEntry? prior = null)
+    private (string Hash, LaunchIdentity? Identity) ObserveShortcut(string path, CancellationToken token, NativeImportEntry? prior = null,
+        Action<string>? validatePath = null)
     {
-        ValidateDesktopPath(path);
+        validatePath ??= ValidateDesktopPath;
+        validatePath(path);
         if ((File.GetAttributes(path) & FileAttributes.Directory) != 0) throw new IOException("The shortcut became a directory.");
         // The COM reader opens the same path while this handle denies replacement.
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         if (stream.Length is < 1 or > StartMenuSourceCache.MaximumSourceBytes) throw new IOException("Invalid shortcut size.");
         var bytes = new byte[checked((int)stream.Length)];
         token.ThrowIfCancellationRequested(); stream.ReadExactly(bytes);
-        ValidateDesktopPath(path);
+        validatePath(path);
         var hash = Hash(bytes);
         var identity = prior is { Error: null, Identity: not null, Kind: NativeImportTarget.Shortcut } &&
             prior.Sha256 == hash && string.Equals(prior.SourcePath, path, StringComparison.OrdinalIgnoreCase)
             ? prior.Identity : ShellItemCatalog.InApartment(() => EntryObservation.Observe(new LaunchIdentityService(new LocalFileStore(), links),
                 EntryNames.KindOfRelativePath(path) == EntryKind.Url ? ManagedEntryKind.Url : ManagedEntryKind.Lnk, path, bytes));
-        token.ThrowIfCancellationRequested(); ValidateDesktopPath(path);
+        token.ThrowIfCancellationRequested(); validatePath(path);
         return (hash, identity);
     }
 
@@ -479,7 +572,14 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         }
         var availability = ImportTargetAvailability.Unknown;
         var directory = false;
-        if (entry.Error is null && identity is not null && !identity.IsUrl && !identity.Key.StartsWith("opaque", StringComparison.Ordinal) && Path.IsPathFullyQualified(identity.Target))
+        if (entry.Error is null && kind == ImportPageSourceKind.InstalledApplications &&
+            entry.Kind == NativeImportTarget.Shell && entry.LinkedTargetPath is { } linked)
+        {
+            if (!observations.TryGetValue(linked, out var observation))
+            { observation = ObserveLinkedTarget(linked); observations.Add(linked, observation); }
+            directory = observation.IsDirectory == true; availability = observation.Availability;
+        }
+        else if (entry.Error is null && identity is not null && !identity.IsUrl && !identity.Key.StartsWith("opaque", StringComparison.Ordinal) && Path.IsPathFullyQualified(identity.Target))
         {
             if (entry.Kind == NativeImportTarget.Path && entry.Stamp is not null)
             { directory = entry.Directory; availability = ImportTargetAvailability.Available; }
@@ -498,6 +598,100 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         token.ThrowIfCancellationRequested();
         return entry with { Identity = identity, Availability = availability, TargetIsDirectory = directory,
             Error = error, Exclusion = exclusion };
+    }
+
+    private static StartMenuImportProjection.TargetObservation ObserveLinkedTarget(string path)
+    {
+        var unknown = new StartMenuImportProjection.TargetObservation(ImportTargetAvailability.Unknown, null);
+        try
+        {
+            var parent = Path.GetDirectoryName(path);
+            if (parent is null) return unknown;
+            ValidateDirectoryRoot(parent);
+            var attributes = File.GetAttributes(path);
+            return (attributes & FileAttributes.ReparsePoint) != 0 ? unknown :
+                new(ImportTargetAvailability.Available, (attributes & FileAttributes.Directory) != 0);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            // A missing intermediate directory can still be proved absent from
+            // its nearest readable, non-redirected ancestor. No path/name guess
+            // is involved: every component comes from the Shell's link metadata.
+            var absent = path;
+            for (var parent = Path.GetDirectoryName(path); parent is not null; parent = Path.GetDirectoryName(parent))
+            {
+                try
+                {
+                    ValidateDirectoryRoot(parent);
+                    var attributes = File.GetAttributes(parent);
+                    if ((attributes & FileAttributes.Directory) == 0) return unknown;
+                    try { _ = File.GetAttributes(absent); return unknown; }
+                    catch (Exception missing) when (missing is FileNotFoundException or DirectoryNotFoundException)
+                    { return new(ImportTargetAvailability.Missing, null); }
+                }
+                catch (Exception missing) when (missing is FileNotFoundException or DirectoryNotFoundException)
+                { absent = parent; }
+                catch (Exception uncertain) when (SourceReadError(uncertain)) { return unknown; }
+            }
+        }
+        catch (Exception ex) when (SourceReadError(ex)) { }
+        return unknown;
+    }
+
+    private static NativeImportEntry ObserveCompany(NativeImportEntry entry, CancellationToken token,
+        IDictionary<string, (string? Company, string? Stamp)> observations)
+    {
+        token.ThrowIfCancellationRequested();
+        var identity = entry.Identity;
+        if (entry.Error is not null || identity is null || identity.IsUrl || identity.Key.StartsWith("opaque", StringComparison.Ordinal) ||
+            !Path.IsPathFullyQualified(identity.Target) || !Path.GetExtension(identity.Target).Equals(".exe", StringComparison.OrdinalIgnoreCase))
+            return entry with { Company = null, CompanyStamp = null };
+        if (!observations.TryGetValue(identity.Target, out var fact))
+        {
+            fact = ReadCompany(identity.Target, token);
+            observations.Add(identity.Target, fact);
+        }
+        token.ThrowIfCancellationRequested();
+        return entry with { Company = fact.Company, CompanyStamp = fact.Stamp };
+    }
+
+    private static (string? Company, string? Stamp) ReadCompany(string path, CancellationToken token)
+    {
+        try
+        {
+            ValidateFilePath(path);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var stamp = Stamp(path);
+            token.ThrowIfCancellationRequested();
+            var company = FileVersionInfo.GetVersionInfo(path).CompanyName?.Trim();
+            token.ThrowIfCancellationRequested();
+            ValidateFilePath(path);
+            if (Stamp(path) != stamp) throw new IOException("The executable changed while reading its company.");
+            return (string.IsNullOrEmpty(company) ? null : company, stamp);
+        }
+        catch (Exception ex) when (SourceReadError(ex) || ex is System.ComponentModel.Win32Exception)
+        { return default; }
+    }
+
+    private static string? AppSourcePath(ShellItemCatalog.Item item) =>
+        item.Path is { } path && Path.IsPathFullyQualified(path) ? path :
+        Path.IsPathFullyQualified(item.ParsingName) ? item.ParsingName : null;
+
+    private static void ValidateAppPath(string path, ShellItemCatalog.Item item)
+    {
+        if (AppSourcePath(item) is not { } source || !Path.IsPathFullyQualified(path) ||
+            !Path.GetFullPath(path).Equals(Path.GetFullPath(source), StringComparison.OrdinalIgnoreCase))
+            throw new IOException("The app source path changed.");
+        ValidateDirectoryRoot(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new IOException("Reparse source is unavailable.");
+    }
+
+    private static void ValidateFilePath(string path)
+    {
+        if (!Path.IsPathFullyQualified(path)) throw new IOException("The file path is unavailable.");
+        ValidateDirectoryRoot(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        if ((File.GetAttributes(path) & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
+            throw new IOException("The file is unavailable or redirected through a reparse point.");
     }
 
     private static void ValidateDesktopPath(string path)
@@ -519,13 +713,15 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                 throw new IOException("The source root is unavailable or redirected through a reparse point.");
     }
 
-    private string CacheScope()
+    private string CacheScope(ImportPageSourceKind kind)
     {
         using var account = System.Security.Principal.WindowsIdentity.GetCurrent();
         return JsonSerializer.Serialize(new { Account = account.User?.Value, Root = _dataRoot,
             Desktop = KnownFolderPaths.Desktop, PublicDesktop = KnownFolderPaths.PublicDesktop,
             OS = Environment.OSVersion.VersionString, Architecture = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString(),
-            Language = ProductStrings.Language.ToString(), UICulture = CultureInfo.CurrentUICulture.Name, SystemCatalogVersion });
+            Language = ProductStrings.Language.ToString(), UICulture = CultureInfo.CurrentUICulture.Name,
+            SystemCatalogVersion = kind == ImportPageSourceKind.SystemFeatures ? SystemCatalogVersion :
+                kind == ImportPageSourceKind.InstalledApplications ? AppsCatalogVersion : OtherNativeCatalogVersion });
     }
 
     private string LegacyCacheScope()
@@ -543,6 +739,13 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         (entry.Stamp is null || entry.Stamp.Length <= 32768) &&
         (entry.Sha256 is null || entry.Sha256.Length == 64 && entry.Sha256.All(Uri.IsHexDigit)) &&
         (entry.Error is null || entry.Error.Length <= 1024) &&
+        (entry.Company is null || entry.Company.Length <= 32768) &&
+        (entry.CompanyStamp is null || entry.CompanyStamp.Length <= 32768) &&
+        (entry.LinkedTargetPath is null || entry.LinkedTargetPath.Length is > 0 and < 32768 && Path.IsPathFullyQualified(entry.LinkedTargetPath)) &&
+        (entry.AppSource is null || entry.AppSource.Name is { Length: > 0 and <= 32768 } &&
+            entry.AppSource.ParsingName is { Length: > 0 and <= 32768 } &&
+            (entry.AppSource.Path is null || entry.AppSource.Path.Length <= 32768) &&
+            entry.Key == Key("app|" + entry.AppSource.ParsingName)) &&
         (entry.Identity is null || entry.Identity.Key is { Length: > 0 and <= 131072 } &&
             entry.Identity.Target is { Length: > 0 and <= 32768 } && entry.Identity.Arguments is { Length: <= 32768 } &&
             entry.Identity.WorkingDirectory is { Length: <= 32768 });

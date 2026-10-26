@@ -283,6 +283,12 @@ public sealed class ImportSourcePlannerTests
         Assert.Equal(3, projection.InvalidCount); Assert.All(projection.Candidates, candidate => Assert.False(candidate.CanAdd));
         Assert.Equal(ImportPlanStatus.Rejected, Plan(wall, projection, [invalid.SourceKey]).Status);
         Assert.Equal("MEMBER_SIZE_LIMIT", Plan(wall, projection, [invalid.SourceKey]).Detail);
+        var filtered = ImportSourcePlanner.Project(wall, [invalid, unreadable, unresolved]);
+        Assert.All(filtered.Candidates, candidate => Assert.False(candidate.Visible));
+        Assert.Equal(3, filtered.FilteredCount);
+        Assert.Equal(3, filtered.FilterCounts[ImportFilterReason.NonPrimaryEntry]);
+        var attributed = ImportSourcePlanner.Project(wall, [unreadable with { Policy = ImportSourcePolicy.Attributed }]);
+        Assert.False(Assert.Single(attributed.Candidates).CanAdd);
     }
 
     [Fact]
@@ -293,7 +299,7 @@ public sealed class ImportSourcePlannerTests
             Member = new TileMember { Id = "stale", LocalBounds = new(0, 0, 1, 1), TargetInput = @"C:\Tools\Everything.lnk" },
             ErrorCode = "SourceChanged",
         };
-        var projection = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [source]);
+        var projection = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [source], autoFilter: false);
         var preview = ImportSourcePlanner.BuildSourcePreview(projection, new(1, 1), singleColumn: true);
         var member = Assert.Single(Assert.Single(Assert.Single(preview.Lanes).Groups).Members);
         Assert.Equal(source.Member.TargetInput, member.TargetInput);
@@ -576,9 +582,37 @@ public sealed class ImportSourcePlannerTests
         var invalid = direct with { SourceKey = "invalid", ErrorCode = "ReadFailed" };
         var result = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [direct, system, missing, duplicate, app, invalid]);
         Assert.Equal(2, result.Candidates.Count(candidate => candidate.CanAdd));
-        Assert.True(result.Candidates.Single(candidate => candidate.SelectionKey == "invalid").Visible);
+        Assert.False(result.Candidates.Single(candidate => candidate.SelectionKey == "invalid").Visible);
         Assert.Equal(1, result.InvalidCount);
-        Assert.All(result.FilterCounts.Values, count => Assert.Equal(1, count));
+        Assert.Equal(1, result.FilterCounts[ImportFilterReason.DuplicateTarget]);
+        Assert.Equal(1, result.FilterCounts[ImportFilterReason.MissingTarget]);
+        Assert.Equal(2, result.FilterCounts[ImportFilterReason.NonPrimaryEntry]);
+    }
+
+    [Fact]
+    public void SystemFeatureCatalogGroupsKeepStableKeysAndSingletonsWhenRecognitionIsEnabled()
+    {
+        var appsEnglish = new ImportSourceGroup("system:settings:apps-media-games", "Settings: Apps, media, and gaming", 6);
+        var appsChinese = appsEnglish with { Title = "设置：应用、媒体与游戏" };
+        var oneEnglish = Item("adobe-one", "Adobe Photoshop", appsEnglish, "photoshop") with
+            { Policy = ImportSourcePolicy.SystemFeature, SourceKind = ImportPageSourceKind.SystemFeatures };
+        var twoEnglish = Item("adobe-two", "Adobe Illustrator", appsEnglish, "illustrator", order: 1) with
+            { Policy = ImportSourcePolicy.SystemFeature, SourceKind = ImportPageSourceKind.SystemFeatures };
+        var singletonEnglish = Item("single", "A single system item", new("system:control-panel:apps", "Control Panel: Apps", 7), "system-item") with
+            { Policy = ImportSourcePolicy.SystemFeature, SourceKind = ImportPageSourceKind.SystemFeatures };
+
+        var english = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [oneEnglish, twoEnglish, singletonEnglish],
+            recognizeGroups: true);
+        var chinese = ImportSourcePlanner.Project(WallDocument.Empty(1, 8),
+            [oneEnglish with { SourceGroup = appsChinese }, twoEnglish with { SourceGroup = appsChinese }, singletonEnglish],
+            recognizeGroups: true);
+
+        Assert.Equal([appsEnglish.Key, "system:control-panel:apps"], english.Groups.Select(group => group.Key));
+        Assert.Equal([appsEnglish.Key, "system:control-panel:apps"], chinese.Groups.Select(group => group.Key));
+        Assert.Equal(appsEnglish.Title, english.Groups[0].Title);
+        Assert.Equal(appsChinese.Title, chinese.Groups[0].Title);
+        Assert.Equal(2, english.Groups[0].Candidates.Count);
+        Assert.Single(english.Groups[1].Candidates);
     }
 
     [Fact]
@@ -675,7 +709,7 @@ public sealed class ImportSourcePlannerTests
         Assert.Equal(1, result.Statistics.ContentCounts[ImportTargetKind.File]);
         Assert.Equal(2, result.Statistics.ContentCounts[ImportTargetKind.Component]);
         Assert.Equal(3, result.Statistics.ContentCounts.Values.Sum());
-        Assert.Equal(0, result.FilteredCount);
+        Assert.Equal(1, result.FilteredCount);
     }
 
     [Fact]

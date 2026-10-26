@@ -29,7 +29,7 @@ public sealed class WallPackageExportTests : IDisposable
         {
             Generation = 5, Columns = 2, Rows = 30,
             Settings = new() { ShowGrid = true, BackgroundMode = WallBackgroundMode.Custom,
-                BackgroundMedia = new(new string('B', 64), ".png", 1), BackgroundImagePath = Path.Combine(_directory, "background.twpack") },
+                BackgroundMedia = new(new string('B', 64), ".png", 1), BackgroundImagePath = Path.Combine(_directory, "background.zip") },
             RecycleBinEnabled = true,
             InactiveMembers = [new TileMember { Id = "inactive", LocalBounds = new(0, 0, 2, 2) }],
             Lanes =
@@ -37,14 +37,14 @@ public sealed class WallPackageExportTests : IDisposable
                 new() { Groups = [new() { Id = "omitted", Title = "Omitted", Members =
                     [new TileMember { Id = "unselected", LocalBounds = new(0, 0, 2, 2),
                         Entry = new("unselected", "Objects/unselected/entry.url", ManagedEntryKind.Url),
-                        TargetInput = Path.Combine(_directory, "unselected-source.twpack") }] }] },
+                        TargetInput = Path.Combine(_directory, "unselected-source.zip") }] }] },
                 new() { Groups = [new() { Id = "mixed", Title = "Mixed", UserClaimed = true,
                     ImportSource = new() { BatchId = "old", GroupBucketKey = "old", OriginGroupId = "old" }, Members =
                     [
                         new TileMember { Id = "tile", LocalBounds = new(0, 0, 2, 2),
                             Entry = new("tile", "Objects/tile/entry.url", ManagedEntryKind.Url), TargetInput = "https://example.com/export",
                             Visual = new() { TitleMode = MemberTitleMode.Manual, Title = "Selected", BackgroundMode = MemberBackgroundMode.Color, BackgroundColor = "#FF123456" },
-                            Images = new() { Kind = MemberImageSourceKind.Single, Media = media, Path = Path.Combine(_directory, "source.twpack") },
+                            Images = new() { Kind = MemberImageSourceKind.Single, Media = media, Path = Path.Combine(_directory, "source.zip") },
                             Carousel = new() { CurrentImageId = "must-not-leak", CandidateIds = ["must-not-leak"], Queue = ["must-not-leak"] } },
                         new PuzzleMember { Id = "puzzle", LocalBounds = new(3, 1, 3, 4),
                             Partitions = [new(0, 0, 1, 4), new(1, 0, 2, 4)], Images = new() { Kind = MemberImageSourceKind.Single, Media = media } },
@@ -63,12 +63,14 @@ public sealed class WallPackageExportTests : IDisposable
         return (store, document, root, reader);
     }
 
-    [Fact]
-    public async Task SelectedMixedContentKeepsOriginalLaneGroupGeometryAndOnlyItsFormalClosure()
+    [Theory]
+    [InlineData(".zip")]
+    [InlineData(".ZIP")]
+    public async Task SelectedMixedContentKeepsOriginalLaneGroupGeometryAndOnlyItsFormalClosure(string extension)
     {
         var (store, document, _, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile", "puzzle", "clock"]);
-        var path = Path.Combine(_directory, "selected.twpack");
+        var path = Path.Combine(_directory, "selected" + extension);
         var saved = await new WallPackageWriter(reader).WriteAsync(snapshot, path, "1.3.8");
         Assert.Equal(WallPackageWriteStatus.Saved, saved.Status);
         var read = await reader.ReadPreviewAsync(path);
@@ -103,7 +105,7 @@ public sealed class WallPackageExportTests : IDisposable
         SnapshotTestData.Install(new LocalFileStore(), root, document with { Generation = 6 });
         var original = store.ManagedMediaPath(document.Lanes[1].Groups[0].Members[0].Images.Media!);
         if (OperatingSystem.IsWindows()) Assert.Throws<IOException>(() => File.WriteAllBytes(original, [0]));
-        var path = Path.Combine(_directory, "frozen.twpack");
+        var path = Path.Combine(_directory, "frozen.zip");
         Assert.Equal(WallPackageWriteStatus.Saved, (await new WallPackageWriter(reader).WriteAsync(snapshot, path, "1.3.8")).Status);
         var preview = (await reader.ReadPreviewAsync(path)).Preview!;
         using var batch = await reader.OpenImportAsync(preview);
@@ -119,7 +121,7 @@ public sealed class WallPackageExportTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(entry)!); File.WriteAllBytes(entry, Shortcut);
         var ids = document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members).Select(member => member.Id);
         using var snapshot = store.CapturePackageSnapshot(document, 5, ids);
-        var path = Path.Combine(_directory, "all.twpack");
+        var path = Path.Combine(_directory, "all.zip");
         Assert.Equal(WallPackageWriteStatus.Saved, (await new WallPackageWriter(reader).WriteAsync(snapshot, path, "1.3.8")).Status);
         var preview = (await reader.ReadPreviewAsync(path)).Preview!;
         Assert.Equal(new[] { "omitted", "mixed" }, preview.Content.Groups.Select(group => group.Id));
@@ -170,7 +172,7 @@ public sealed class WallPackageExportTests : IDisposable
     [InlineData("changed-target")]
     public async Task CancellationValidationAndDestinationCompetitionPreserveExistingTarget(string failure)
     {
-        var path = Path.Combine(_directory, "protected.twpack"); File.WriteAllText(path, "original");
+        var path = Path.Combine(_directory, "protected.zip"); File.WriteAllText(path, "original");
         using var cancel = new CancellationTokenSource();
         var (store, document, _, reader) = Seed((_, _, _) =>
         {
@@ -190,7 +192,7 @@ public sealed class WallPackageExportTests : IDisposable
     {
         var (store, document, _, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
-        var path = Path.Combine(_directory, "budget.twpack"); File.WriteAllText(path, "keep");
+        var path = Path.Combine(_directory, "budget.zip"); File.WriteAllText(path, "keep");
         var result = await new WallPackageWriter(reader).WriteAsync(snapshot, path, "1.3.8", limits: new() { MaximumEntries = 2 });
         Assert.Equal(WallPackageWriteStatus.InvalidPackage, result.Status);
         Assert.Equal("keep", File.ReadAllText(path));
@@ -206,7 +208,7 @@ public sealed class WallPackageExportTests : IDisposable
     {
         var (store, document, _, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
-        var path = Path.Combine(_directory, "publish.twpack"); File.WriteAllText(path, "original");
+        var path = Path.Combine(_directory, "publish.zip"); File.WriteAllText(path, "original");
         using var cancel = new CancellationTokenSource();
         var writer = new WallPackageWriter(reader, (temporary, destination, overwrite) =>
         {
@@ -230,18 +232,20 @@ public sealed class WallPackageExportTests : IDisposable
     [InlineData("extra-source")]
     [InlineData("directory")]
     [InlineData("extension")]
+    [InlineData("legacy-extension")]
     public async Task OutputCannotOverwriteKnownSourcesOrManagedData(string failure)
     {
         var (store, document, root, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
         var path = failure switch
         {
-            "data" => Path.Combine(root, "inside.twpack"),
-            "selected-source" => Path.Combine(_directory, "source.twpack"),
-            "unselected-source" => Path.Combine(_directory, "unselected-source.twpack"),
-            "background-source" => Path.Combine(_directory, "background.twpack"),
-            "extra-source" => Path.Combine(_directory, "input.twpack"),
-            "directory" => Path.Combine(_directory, "folder.twpack"),
+            "data" => Path.Combine(root, "inside.zip"),
+            "selected-source" => Path.Combine(_directory, "source.zip"),
+            "unselected-source" => Path.Combine(_directory, "unselected-source.zip"),
+            "background-source" => Path.Combine(_directory, "background.zip"),
+            "extra-source" => Path.Combine(_directory, "input.zip"),
+            "directory" => Path.Combine(_directory, "folder.zip"),
+            "legacy-extension" => Path.Combine(_directory, "legacy.twpack"),
             _ => Path.Combine(_directory, "wrong.exe"),
         };
         if (failure == "directory") Directory.CreateDirectory(path); else File.WriteAllText(path, "keep");

@@ -35,7 +35,7 @@ public sealed partial class MainWindow
     {
         var document = proposal.Document;
         var pending = document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
-            .Concat(document.InactiveMembers).Where(member => member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is null).ToArray();
+            .Where(member => member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is null).ToArray();
         var background = document.Settings.BackgroundMode == WallBackgroundMode.Custom && document.Settings.BackgroundMedia is null;
         if (pending.Length == 0 && !background) return (proposal, []);
         var assets = new Dictionary<string, PreparedMediaAsset>(StringComparer.Ordinal);
@@ -56,8 +56,7 @@ public sealed partial class MainWindow
         }
         return (proposal with { Document = document with { Settings = settings,
             Lanes = document.Lanes.Select(lane => lane with { Groups = lane.Groups.Select(group => group with
-                { Members = group.Members.Select(Map).ToArray() }).ToArray() }).ToArray(),
-            InactiveMembers = document.InactiveMembers.Select(Map).ToArray() } }, assets.Values.ToArray());
+                { Members = group.Members.Select(Map).ToArray() }).ToArray() }).ToArray() } }, assets.Values.ToArray());
     }
 
     private void AttachGalleryEditor(SharedMemberEditorDialog dialog)
