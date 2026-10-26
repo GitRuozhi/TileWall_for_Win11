@@ -21,6 +21,7 @@ public sealed class JournalPathGuardTests
         public void Move(string src, string dst, bool overwrite) => Memory.Move(src, dst, overwrite);
         public void Copy(string src, string dst, bool overwrite) => Memory.Copy(src, dst, overwrite);
         public void Delete(string path) => Memory.Delete(path);
+        public void MoveDirectory(string source, string destination) => Memory.MoveDirectory(source, destination);
         public void CreateDirectory(string path) => Memory.CreateDirectory(path);
         public IReadOnlyList<string> ListDirectories(string path) => Memory.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => Memory.ListFiles(path);

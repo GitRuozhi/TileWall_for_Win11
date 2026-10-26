@@ -213,15 +213,18 @@ public sealed class PeIconResourceReader
         return output.ToArray();
     }
 
-    public static PeIconFrame? SelectFrame(PeIconGroup group, int targetPhysicalPixels)
+    public static PeIconFrame? SelectFrame(PeIconGroup group, int targetPhysicalPixels) =>
+        SelectFrame(group, targetPhysicalPixels, targetPhysicalPixels);
+
+    public static PeIconFrame? SelectFrame(PeIconGroup group, int requiredWidth, int requiredHeight)
     {
         ArgumentNullException.ThrowIfNull(group);
-        if (targetPhysicalPixels <= 0)
-            throw new ArgumentOutOfRangeException(nameof(targetPhysicalPixels));
+        if (requiredWidth <= 0 || requiredHeight <= 0)
+            throw new ArgumentOutOfRangeException(nameof(requiredWidth));
         return group.Frames
-            .OrderBy(frame => Math.Max(frame.Width, frame.Height) >= targetPhysicalPixels ? 0 : 1)
-            .ThenBy(frame => Math.Max(frame.Width, frame.Height) >= targetPhysicalPixels
-                ? Math.Max(frame.Width, frame.Height) : -Math.Max(frame.Width, frame.Height))
+            .OrderBy(frame => frame.Width >= requiredWidth && frame.Height >= requiredHeight ? 0 : 1)
+            .ThenBy(frame => frame.Width >= requiredWidth && frame.Height >= requiredHeight
+                ? (double)frame.Width * frame.Height : -(double)frame.Width * frame.Height)
             .ThenByDescending(frame => frame.BitsPerPixel)
             .ThenBy(frame => frame.ResourceId)
             .FirstOrDefault();

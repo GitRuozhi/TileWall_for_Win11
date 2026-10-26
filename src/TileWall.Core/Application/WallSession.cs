@@ -1,5 +1,6 @@
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
+using TileWall.Core.Exchange;
 using TileWall.Core.Shell;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
@@ -90,6 +91,57 @@ internal sealed class WallSession
     public string? ManagedMediaPath(ManagedMediaReference? media) =>
         media is null ? null : _store.ManagedMediaPath(media);
 
+    public string ManagedGalleryPath(ManagedGalleryReference gallery) => _store.ManagedGalleryPath(gallery);
+
+    public IDisposable AcquireResourceReadLease(ManagedGalleryReference? gallery = null, ManagedMediaReference? media = null) =>
+        _store.AcquireResourceReadLease(gallery, media);
+
+    public Task<WallPackageSnapshot> CapturePackageSnapshotAsync(long expectedGeneration,
+        IEnumerable<string> selectedMemberIds, CancellationToken token = default)
+    {
+        ArgumentNullException.ThrowIfNull(selectedMemberIds);
+        var selected = selectedMemberIds.ToArray();
+        token.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_writePending || ViewBlocked || RequiresReopen || _storeRecoveryBlocked || _resultUnknown)
+                throw new InvalidOperationException("Wall is unavailable for export.");
+            if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            var current = Current;
+            if (current.Generation != expectedGeneration) throw new IOException("Committed wall changed before export.");
+            _writePending = true;
+            return CapturePackageSnapshotReservedAsync(current, expectedGeneration, selected, _executor, token);
+        }
+    }
+
+    public Task<IReadOnlyList<ManagedMediaReference>> ReusablePackageMediaAsync(long expectedGeneration,
+        CancellationToken token = default)
+    {
+        token.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_writePending || ViewBlocked || RequiresReopen || _storeRecoveryBlocked || _resultUnknown || Current.Generation != expectedGeneration)
+                throw new InvalidOperationException("Wall is unavailable for original reuse observation.");
+            if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            _writePending = true;
+            return ReadReusablePackageMediaReservedAsync(Current, _executor, token);
+        }
+    }
+
+    private async Task<IReadOnlyList<ManagedMediaReference>> ReadReusablePackageMediaReservedAsync(WallDocument current,
+        IWallStorageExecutor executor, CancellationToken token)
+    {
+        try { return await executor.ExecuteAsync(() => { token.ThrowIfCancellationRequested(); return _store.ReusablePackageMedia(current); }).ConfigureAwait(false); }
+        finally { lock (_gate) _writePending = false; }
+    }
+
+    private async Task<WallPackageSnapshot> CapturePackageSnapshotReservedAsync(WallDocument current, long generation,
+        string[] selected, IWallStorageExecutor executor, CancellationToken token)
+    {
+        try { return await executor.ExecuteAsync(() => _store.CapturePackageSnapshot(current, generation, selected, token)).ConfigureAwait(false); }
+        finally { lock (_gate) _writePending = false; }
+    }
+
     public Task<LaunchIdentity> ObservePackageEntryAsync(ManagedEntryKind kind, ReadOnlyMemory<byte> bytes,
         CancellationToken token = default)
     {
@@ -158,7 +210,8 @@ internal sealed class WallSession
 
     public WallSessionResult Commit(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
         IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
-        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
     {
         var timings = CreateCommitTimings();
         var total = timings?.Measure("session.total");
@@ -179,7 +232,7 @@ internal sealed class WallSession
                 // The store plans and validates the same request inside Commit; planning here
                 // duplicated the full-wall traversal for every save.
                 var request = new WallCommitRequest(before.Generation, proposal.Document, changes ?? [], mediaAssets,
-                    expectedEntrySha256?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal));
+                    expectedEntrySha256?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal), managedGalleries?.ToArray());
                 WallCommitResult result;
                 try { result = _store.Commit(before, request, timings); }
                 catch (Exception)
@@ -223,7 +276,8 @@ internal sealed class WallSession
 
     public Task<WallSessionResult> CommitAsync(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
         IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
-        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
     {
         lock (_gate)
         {
@@ -239,13 +293,13 @@ internal sealed class WallSession
             var reservation = new UiCommitReservation();
             _writePending = true;
             _activeUiCommit = reservation;
-            return CommitReservedAsync(before, frozen, entryChanges, preparedMedia, preconditions, reservation, _executor, _acceptOnUi);
+            return CommitReservedAsync(before, frozen, entryChanges, preparedMedia, managedGalleries?.ToArray() ?? [], preconditions, reservation, _executor, _acceptOnUi);
         }
     }
 
     private async Task<WallSessionResult> CommitReservedAsync(WallDocument before, WallProposal proposal,
         IReadOnlyList<EntryChange> changes, IReadOnlyList<PreparedMediaAsset> mediaAssets,
-        IReadOnlyDictionary<string, string>? expectedEntrySha256, UiCommitReservation reservation,
+        IReadOnlyList<PreparedManagedGallery> managedGalleries, IReadOnlyDictionary<string, string>? expectedEntrySha256, UiCommitReservation reservation,
         IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
     {
         var timings = CreateCommitTimings();
@@ -262,7 +316,7 @@ internal sealed class WallSession
                 storageThread = Environment.CurrentManagedThreadId;
                 // Commit owns planning; a second PlanEntries here duplicated the full wall.
                 return _store.Commit(before,
-                    new WallCommitRequest(before.Generation, proposal.Document, changes, mediaAssets, expectedEntrySha256),
+                    new WallCommitRequest(before.Generation, proposal.Document, changes, mediaAssets, expectedEntrySha256, managedGalleries),
                     timings);
             }).ConfigureAwait(false);
             outcome = stored.Status.ToString();

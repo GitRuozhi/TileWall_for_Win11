@@ -30,6 +30,13 @@ public sealed class PreparedMediaAsset
 
     internal byte[] CopyBytes() => _bytes.ToArray();
 
+    /// <summary>Retain one immutable byte payload while preserving each gallery filename's suffix.</summary>
+    internal PreparedMediaAsset WithExtension(string extension)
+    {
+        var normalized = NormalizeExtension(extension);
+        return normalized == Reference.Extension ? this : new PreparedMediaAsset(_bytes, normalized);
+    }
+
     public static string NormalizeExtension(string extension)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(extension);

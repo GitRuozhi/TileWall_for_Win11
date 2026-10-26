@@ -5,7 +5,7 @@ using TileWall.Core.Imaging;
 
 namespace TileWall.Core.Wall;
 
-/// <summary>The sole persisted wall snapshot. Lane and group order, plus member-local cells, determine placement.</summary>
+/// <summary>The joint committed runtime view. Storage DTOs publish its settings, active wall and recycle bin together.</summary>
 public sealed record WallDocument
 {
     public const int CurrentSchemaVersion = 4;
@@ -15,6 +15,7 @@ public sealed record WallDocument
     public required int Rows { get; init; }
     public required IReadOnlyList<WallLane> Lanes { get; init; }
     public IReadOnlyList<WallMember> InactiveMembers { get; init; } = [];
+    public bool RecycleBinEnabled { get; init; } = true;
     public WallSettings Settings { get; init; } = new();
 
     /// <summary>All formally owned members, including retained unpinned content.</summary>
@@ -83,6 +84,9 @@ public sealed record ManagedEntryReference(string ObjectId, string RelativePath,
 /// <summary>An immutable original whose SHA-256 is also its asset directory identity.</summary>
 public sealed record ManagedMediaReference(string Sha256, string Extension, long Length);
 
+/// <summary>Content-addressed, immutable application-owned gallery. Its path is derived by storage.</summary>
+public sealed record ManagedGalleryReference(string ContentId, string ManifestSha256);
+
 public sealed record MemberVisual
 {
     public MemberTitleMode TitleMode { get; init; } = MemberTitleMode.Automatic;
@@ -105,6 +109,7 @@ public sealed record MemberImageSource
     public MemberImageSourceKind Kind { get; init; } = MemberImageSourceKind.Automatic;
     public string? Path { get; init; }
     public ManagedMediaReference? Media { get; init; }
+    public ManagedGalleryReference? ManagedGallery { get; init; }
 }
 
 /// <summary>Queue position is persisted only when the asynchronously prepared image is adopted.</summary>

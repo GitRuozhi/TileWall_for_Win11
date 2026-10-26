@@ -50,6 +50,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly TextBlock _backgroundPath = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     private readonly Button _reset = new();
     private readonly Button _initialize = new();
+    private readonly TextBlock _recycleRecoveryHint = new() { TextWrapping = TextWrapping.Wrap };
     private readonly ToggleSwitch _contextMenu = new();
     private readonly TextBlock _contextMenuTransfer = new() { TextWrapping = TextWrapping.Wrap };
     private readonly StackPanel _contextMenuConfirmation = new() { Spacing = 8, Visibility = Visibility.Collapsed };
@@ -151,6 +152,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         var initializationActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         initializationActions.Children.Add(_reset); initializationActions.Children.Add(_initialize);
         AddRow("Settings.Initialization", initializationActions);
+        AddRow("Recycle.Title", _recycleRecoveryHint);
         var contextMenuRow = new StackPanel { Spacing = 8 };
         contextMenuRow.Children.Add(_contextMenu);
         _contextMenuConfirmation.Children.Add(_contextMenuTransfer);
@@ -390,6 +392,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         }
         ActionIcon.Set(_reset, ProductStrings.Get("Settings.Reset"), ActionIcon.Reset);
         ActionIcon.Set(_initialize, ProductStrings.Get("Settings.InitializeWall"), ActionIcon.Reset);
+        _recycleRecoveryHint.Text = ProductStrings.Get("Settings.RecycleRecoveryHint");
         ActionIcon.SetIcon(_resetHotKey, ProductStrings.Get("Settings.ResetHotKey"), ActionIcon.Reset);
         foreach (var (key, control, helpKey) in new (string, FrameworkElement, string)[]
         {

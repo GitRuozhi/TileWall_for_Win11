@@ -12,7 +12,7 @@ public sealed partial class WallImageService
 {
     private ManagedImageCache? _disk;
     private Func<Action, Task>? _publishCache;
-    private Func<string, WallMember?>? _formalMember;
+    private Func<ManagedGalleryReference?, ManagedMediaReference?, IDisposable>? _formalResourceLease;
     private readonly CancellationTokenSource _cacheLifetime = new();
     private readonly object _workGate = new();
     private readonly HashSet<Task> _cacheWork = [];
@@ -20,12 +20,13 @@ public sealed partial class WallImageService
     private readonly Dictionary<string, string> _verifiedContentHashes = new(StringComparer.OrdinalIgnoreCase);
     private static readonly JsonSerializerOptions CacheJson = new() { PropertyNameCaseInsensitive = false };
 
-    public void ConfigureStorage(string dataRoot, Func<Action, Task> publishShortCacheAction, Func<string, WallMember?> formalMemberLookup)
+    public void ConfigureStorage(string dataRoot, Func<Action, Task> publishShortCacheAction,
+        Func<ManagedGalleryReference?, ManagedMediaReference?, IDisposable>? formalResourceLease = null)
     {
-        ArgumentNullException.ThrowIfNull(publishShortCacheAction); ArgumentNullException.ThrowIfNull(formalMemberLookup);
+        ArgumentNullException.ThrowIfNull(publishShortCacheAction);
         if (!Path.IsPathFullyQualified(dataRoot)) throw new ArgumentException("A full data root is required.", nameof(dataRoot));
         _disk = new ManagedImageCache(dataRoot); _disk.Guard(_disk.Root);
-        _publishCache = publishShortCacheAction; _formalMember = formalMemberLookup;
+        _publishCache = publishShortCacheAction; _formalResourceLease = formalResourceLease;
     }
 
     public Task<PreparedMediaAsset> PrepareMediaAsync(string path, CancellationToken ct = default)
@@ -116,6 +117,62 @@ public sealed partial class WallImageService
     {
         if (_disk is null || !PreparedMediaAsset.IsValidReference(media)) return null;
         return _disk.Under("Media", media!.Sha256, "original" + media.Extension);
+    }
+
+    private IDisposable? OpenManagedGalleryRead(MemberImageSource source, string? selected = null)
+    {
+        if (source.ManagedGallery is not { } reference) return null;
+        if (_disk is not { } disk || !PreparedManagedGallery.IsValidReference(reference))
+            throw new IOException("Invalid managed gallery reference.");
+        var directory = disk.Under("Sources", reference.ContentId);
+        if (!StringComparer.OrdinalIgnoreCase.Equals(directory, NormalizePath(source.Path)))
+            throw new IOException("Managed gallery path differs from its reference.");
+        var resources = new FormalImageRead();
+        try
+        {
+            if (_formalResourceLease is { } acquire) resources.Items.Add(acquire(reference, null));
+            FileStream Open(string path, long limit)
+            {
+                disk.Guard(path);
+                var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                resources.Items.Add(stream);
+                if (stream.Length is < 1 || stream.Length > limit) throw new IOException("Oversized managed gallery file.");
+                return stream;
+            }
+            var manifestRead = Open(Path.Combine(directory, "manifest.json"), 1024 * 1024);
+            var bytes = new byte[checked((int)manifestRead.Length)]; manifestRead.ReadExactly(bytes);
+            var manifest = PreparedManagedGallery.ReadManifest(bytes, reference);
+            if (selected is null)
+            {
+                disk.Guard(directory);
+                var actual = Directory.EnumerateFileSystemEntries(directory).ToArray();
+                var allowed = manifest.Files.Select(file => file.RelativePath).Append("manifest.json").ToHashSet(StringComparer.Ordinal);
+                if (actual.Length != allowed.Count || actual.Any(path => !allowed.Contains(Path.GetFileName(path))))
+                    throw new IOException("Managed gallery contains unexpected files.");
+            }
+            var candidates = selected is null ? manifest.Files : manifest.Files.Where(file =>
+                StringComparer.OrdinalIgnoreCase.Equals(Path.Combine(directory, file.RelativePath), selected)).ToArray();
+            if (selected is not null && !candidates.Any()) throw new IOException("Image is outside its managed gallery.");
+            foreach (var item in candidates)
+            {
+                var stream = Open(Path.Combine(directory, item.RelativePath), PreparedMediaAsset.MaximumBytes);
+                if (stream.Length != item.Media.Length || Convert.ToHexString(SHA256.HashData(stream)) != item.Media.Sha256)
+                    throw new IOException("Managed gallery original differs from its digest.");
+                stream.Position = 0;
+            }
+            return resources;
+        }
+        catch { resources.Dispose(); throw; }
+    }
+
+    private sealed class FormalImageRead : IDisposable
+    {
+        internal List<IDisposable> Items { get; } = [];
+        public void Dispose()
+        {
+            for (var index = Items.Count - 1; index >= 0; index--) Items[index].Dispose();
+            Items.Clear();
+        }
     }
     public Task<WallImageResult> LoadBackgroundAsync(ManagedMediaReference? media, string? sourcePath,
         int widthPixels, int heightPixels, CancellationToken ct = default) =>

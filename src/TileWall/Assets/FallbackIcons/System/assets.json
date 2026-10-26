@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "source": "Original first-party geometric system fallback pictograms created for TileWall. No third-party artwork, screenshots, operating-system icon resources or font glyphs are included.",
+  "rendering": "Pillow primitive geometry at 4x, downsampled with Lanczos to transparent 512x512 RGBA PNG; fixed light palette, no theme variants.",
+  "items": [
+    {
+      "id": "computer",
+      "file": "fea0b838b961884f2c11d63d74a2a03aedbea856095b6b4cbd1b2647e8127090.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 6101,
+      "sha256": "FEA0B838B961884F2C11D63D74A2A03AEDBEA856095B6B4CBD1B2647E8127090"
+    },
+    {
+      "id": "recycle",
+      "file": "93d6482cc2e7fc426e5b02e3ef54c7de486c9a929ce65011c5f3a4c508ebb43e.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 14198,
+      "sha256": "93D6482CC2E7FC426E5B02E3EF54C7DE486C9A929CE65011C5F3A4C508EBB43E"
+    },
+    {
+      "id": "settings",
+      "file": "fc6da1754259aa961ef055341cf0f5aa090311933b691cc1f7960436d316aa8c.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 19709,
+      "sha256": "FC6DA1754259AA961EF055341CF0F5AA090311933B691CC1F7960436D316AA8C"
+    },
+    {
+      "id": "control-panel",
+      "file": "bb5420d9b3a1ca9ccfc52e74e12c132535d1bda3ee6109607d1d16832ca636ee.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 9595,
+      "sha256": "BB5420D9B3A1CA9CCFC52E74E12C132535D1BDA3EE6109607D1D16832CA636EE"
+    },
+    {
+      "id": "search",
+      "file": "db842c2ff78b6b3f2c9869583a2a712e4a48c4ae9b59e308ae03c2d4a29a0688.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 19362,
+      "sha256": "DB842C2FF78B6B3F2C9869583A2A712E4A48C4AE9B59E308AE03C2D4A29A0688"
+    },
+    {
+      "id": "network",
+      "file": "9417b656b89ae5eb925991c5aee5e0241c41db48a2540d47be8ca40f8f44fbea.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 37698,
+      "sha256": "9417B656B89AE5EB925991C5AEE5E0241C41DB48A2540D47BE8CA40F8F44FBEA"
+    },
+    {
+      "id": "profile",
+      "file": "d451efb33ddf062d1d758c3297658959c6b8f5d6e963c076f13b2fa878cec297.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 25293,
+      "sha256": "D451EFB33DDF062D1D758C3297658959C6B8F5D6E963C076F13B2FA878CEC297"
+    },
+    {
+      "id": "desktop",
+      "file": "978b6e96a1ace8d1138f6b9ca46d6cf14934f86c4cef1544962cd7ab4d553ec4.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 8498,
+      "sha256": "978B6E96A1ACE8D1138F6B9CA46D6CF14934F86C4CEF1544962CD7AB4D553EC4"
+    },
+    {
+      "id": "documents",
+      "file": "f0ab6dee4945cdf91980ab9ff27c03ca8645be9a476fe95f12c3682452083b19.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 4858,
+      "sha256": "F0AB6DEE4945CDF91980AB9FF27C03CA8645BE9A476FE95F12C3682452083B19"
+    },
+    {
+      "id": "downloads",
+      "file": "10c5d0efa0cc87f34482b7409d7f086718184c376b12d98e65a3a91070e75443.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 6315,
+      "sha256": "10C5D0EFA0CC87F34482B7409D7F086718184C376B12D98E65A3A91070E75443"
+    },
+    {
+      "id": "pictures",
+      "file": "99e4ddc0920657473a40e46aa0cd9bda3af89f4bd6719213886a5d1445848570.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 11058,
+      "sha256": "99E4DDC0920657473A40E46AA0CD9BDA3AF89F4BD6719213886A5D1445848570"
+    },
+    {
+      "id": "music",
+      "file": "8ff596af264aa531fe3de792b5da91c3d93a3f99dfee2ad31ea9b67983bef511.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 12274,
+      "sha256": "8FF596AF264AA531FE3DE792B5DA91C3D93A3F99DFEE2AD31EA9B67983BEF511"
+    },
+    {
+      "id": "videos",
+      "file": "bd15450bd1f0599c95a7d988bc9711b099516246841ed0a0c71421e85937feb1.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 6544,
+      "sha256": "BD15450BD1F0599C95A7D988BC9711B099516246841ED0A0C71421E85937FEB1"
+    },
+    {
+      "id": "folder",
+      "file": "8559f2f009affb2c606bb09536572699017f6f542478e62118863efcf38b9f83.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 8427,
+      "sha256": "8559F2F009AFFB2C606BB09536572699017F6F542478E62118863EFCF38B9F83"
+    },
+    {
+      "id": "printers",
+      "file": "89647e46ddbf26673804f8a57a3fcf12d41c018ed4406cd975abdd07bab89059.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 8521,
+      "sha256": "89647E46DDBF26673804F8A57A3FCF12D41C018ED4406CD975ABDD07BAB89059"
+    },
+    {
+      "id": "libraries",
+      "file": "6e4018030d52484eee4aa9bd82d1d8325096b8503acd78958d61232282bce30f.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 18448,
+      "sha256": "6E4018030D52484EEE4AA9BD82D1D8325096B8503ACD78958D61232282BCE30F"
+    },
+    {
+      "id": "tools",
+      "file": "6509f8f7eb7a53cf3795b90e10b028743e4860bf197c3bfdb77dd6bf829b6005.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 13922,
+      "sha256": "6509F8F7EB7A53CF3795B90E10B028743E4860BF197C3BFDB77DD6BF829B6005"
+    },
+    {
+      "id": "fonts",
+      "file": "a181ab9e913027bfe69d0ff0641ef46fddf3687c7a569afd218593207380ca3d.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 25746,
+      "sha256": "A181AB9E913027BFE69D0FF0641EF46FDDF3687C7A569AFD218593207380CA3D"
+    },
+    {
+      "id": "startup",
+      "file": "5707621076a87e8eabd2ea357e3acc1f40d50dc2146baf38b51a35cfbd7ffddd.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 21596,
+      "sha256": "5707621076A87E8EABD2EA357E3ACC1F40D50DC2146BAF38B51A35CFBD7FFDDD"
+    },
+    {
+      "id": "run",
+      "file": "4fa47a85afa2037382416f9c2214f033f5b8ee6ebd26a1b77b1b383d9ff189a9.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 15445,
+      "sha256": "4FA47A85AFA2037382416F9C2214F033F5B8EE6EBD26A1B77B1B383D9FF189A9"
+    },
+    {
+      "id": "calculator",
+      "file": "0002099a3271e294e12d6e04825d871a83fa5f1fc798830d1a9ad9fb17b46536.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 10006,
+      "sha256": "0002099A3271E294E12D6E04825D871A83FA5F1FC798830D1A9AD9FB17B46536"
+    },
+    {
+      "id": "notepad",
+      "file": "bdf966bb474bec9584ba204bf98be4090d5a0362abdebf8352bc278edf1af892.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 5456,
+      "sha256": "BDF966BB474BEC9584BA204BF98BE4090D5A0362ABDEBF8352BC278EDF1AF892"
+    },
+    {
+      "id": "terminal",
+      "file": "562335ce32e68b2e30bafbfadd09d8761ba92d771e7a5f8dfdd7029792d1a99f.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 11958,
+      "sha256": "562335CE32E68B2E30BAFBFADD09D8761BA92D771E7A5F8DFDD7029792D1A99F"
+    },
+    {
+      "id": "security",
+      "file": "897d3b6ede69ee17c16ad14ab8206cafe59b581b082f84da84ca48f1f78e3065.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 17310,
+      "sha256": "897D3B6EDE69EE17C16AD14AB8206CAFE59B581B082F84DA84CA48F1F78E3065"
+    },
+    {
+      "id": "storage",
+      "file": "ed2b902efdaf38d768f8d44ca83ac9998c72476361ad5a0427021be041fdb5f1.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 7612,
+      "sha256": "ED2B902EFDAF38D768F8D44CA83AC9998C72476361AD5A0427021BE041FDB5F1"
+    },
+    {
+      "id": "display",
+      "file": "ac8539e5c67367598833824788fa85044ffd5011b45a4bbdf97d301bd3dc740e.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 11815,
+      "sha256": "AC8539E5C67367598833824788FA85044FFD5011B45A4BBDF97D301BD3DC740E"
+    },
+    {
+      "id": "sound",
+      "file": "e39ad74bf0911f9ca1ef5d30855fce7be2c5e95349e3a010264b65af25b2e744.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 19414,
+      "sha256": "E39AD74BF0911F9CA1EF5D30855FCE7BE2C5E95349E3A010264B65AF25B2E744"
+    },
+    {
+      "id": "power",
+      "file": "7b97cf47effa2dc7c555371d02b0b11318606c82b3928e149d6373c7f3403eef.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 19847,
+      "sha256": "7B97CF47EFFA2DC7C555371D02B0B11318606C82B3928E149D6373C7F3403EEF"
+    }
+  ]
+}

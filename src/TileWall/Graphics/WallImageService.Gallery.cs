@@ -13,9 +13,10 @@ public sealed partial class WallImageService
     private const long GalleryLimit = 1024L * 1024 * 1024;
     private static readonly TimeSpan GalleryCheckInterval = TimeSpan.FromSeconds(60);
     private readonly Dictionary<string, GallerySourceState> _gallerySources = new(StringComparer.OrdinalIgnoreCase);
-    private sealed class GallerySourceState(string source)
+    private sealed class GallerySourceState(string source, ManagedGalleryReference? managedGallery)
     {
         internal string Source = source;
+        internal ManagedGalleryReference? ManagedGallery = managedGallery;
         internal GalleryIndex? Index;
         internal PuzzleCandidateResult? Snapshot;
         internal DateTimeOffset Due = DateTimeOffset.MinValue;
@@ -44,7 +45,7 @@ public sealed partial class WallImageService
         lock (_workGate)
         {
             if (_cacheStopping || _disposed) return new([], WallImageStatus.Cancelled);
-            if (!_gallerySources.TryGetValue(folder, out var state)) _gallerySources.Add(folder, state = new(folder));
+            if (!_gallerySources.TryGetValue(folder, out var state)) _gallerySources.Add(folder, state = new(folder, source.ManagedGallery));
             if (state.InFlight is { } active) task = active;
             else if (state.Snapshot is { } snapshot && state.Due > DateTimeOffset.UtcNow) return snapshot;
             else
@@ -65,6 +66,8 @@ public sealed partial class WallImageService
         var entered = false;
         try
         {
+            using var formalRead = OpenManagedGalleryRead(new() { Kind = MemberImageSourceKind.Folder,
+                Path = state.Source, ManagedGallery = state.ManagedGallery });
             await _slots.WaitAsync(ct).ConfigureAwait(false); entered = true;
             if (!state.IndexLoaded)
             {
@@ -129,6 +132,8 @@ public sealed partial class WallImageService
         catch (OperationCanceledException) { return new([], WallImageStatus.Cancelled); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
         {
+            if (state.ManagedGallery is not null)
+                return new([], WallImageStatus.Invalid, "ManagedGalleryReadFailed") { IsComplete = false, DiagnosticDetail = ex.Message };
             var fallback = state.Index;
             var result = fallback is null ? new PuzzleCandidateResult([], WallImageStatus.Missing, "Gallery.SourceUnavailableNoCache") { IsComplete = false }
                 : GalleryResult(state, fallback, WallImageStatus.Fallback, "Gallery.SourceUnavailable", false, new HashSet<string>(StringComparer.OrdinalIgnoreCase));

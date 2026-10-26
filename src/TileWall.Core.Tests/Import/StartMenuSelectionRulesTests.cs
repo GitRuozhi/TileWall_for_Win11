@@ -63,4 +63,12 @@ public sealed class StartMenuSelectionRulesTests
     public void KnownWindowsApplicationProtocolsRemainExcluded(string uri) =>
         Assert.Equal(StartMenuExclusion.WindowsBuiltIn,
             StartMenuSelectionRules.Classify("任意标题", LaunchIdentityService.ForUrl(uri)));
+
+    [Fact]
+    public void RealDirectoryWithDocumentSuffixIsNotAHelpOrDocumentEntry()
+    {
+        var identity = LaunchIdentityService.ForPath(@"C:\Data\README.txt");
+        Assert.Equal(StartMenuExclusion.DocumentOrWeb, StartMenuSelectionRules.Classify("Readme", identity, targetIsDirectory: false));
+        Assert.Equal(StartMenuExclusion.None, StartMenuSelectionRules.Classify("Readme", identity, targetIsDirectory: true));
+    }
 }

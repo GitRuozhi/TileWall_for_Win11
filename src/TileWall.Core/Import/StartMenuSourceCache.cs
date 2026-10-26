@@ -17,6 +17,8 @@ public sealed record StartMenuCachedSource
     public string? FileVersion { get; init; }
     public IReadOnlyList<StartMenuDependencyStamp> Dependencies { get; init; } = [];
     public string? IconKey { get; init; }
+    public ImportTargetAvailability TargetAvailability { get; init; }
+    public bool TargetIsDirectory { get; init; }
     public string? ErrorCode { get; init; }
     public bool Stale { get; init; }
 }
@@ -31,6 +33,7 @@ public sealed record StartMenuCatalogSnapshot
     public int ScannedCount { get; init; }
     public int SkippedDirectories { get; init; }
     public bool Refreshing { get; init; }
+    public bool IconPreparing { get; init; }
     public string? ErrorCode { get; init; }
 }
 
@@ -50,7 +53,7 @@ public static class StartMenuSourceCache
 
     /// <summary>A failed root never becomes an authoritative empty root. A changed root has another key space.</summary>
     public static StartMenuCatalogSnapshot Merge(StartMenuCatalogSnapshot previous, StartMenuScanResult scan,
-        IReadOnlyList<StartMenuCachedSource> observed, bool refreshing = false)
+        IReadOnlyList<StartMenuCachedSource> observed, bool refreshing = false, bool iconPreparing = false)
     {
         var sources = observed.ToDictionary(source => source.Candidate.SourceKey, StringComparer.Ordinal);
         var roots = scan.Roots;
@@ -72,7 +75,7 @@ public static class StartMenuSourceCache
             Sources = sources.Values.OrderBy(source => source.Candidate.Source)
                 .ThenBy(source => source.Candidate.FullPath, StringComparer.OrdinalIgnoreCase).ToArray(),
             Roots = roots.ToArray(), ScannedCount = scan.Candidates.Count,
-            SkippedDirectories = scan.SkippedDirectories, Refreshing = refreshing,
+            SkippedDirectories = scan.SkippedDirectories, Refreshing = refreshing, IconPreparing = iconPreparing,
         };
     }
 

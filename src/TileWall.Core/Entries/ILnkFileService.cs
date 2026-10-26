@@ -23,6 +23,9 @@ public interface ILnkFileService
     /// <summary>新建 .lnk（程序/文件/文件夹目标）；不设 IconLocation → 系统按目标解析。</summary>
     void Create(string path, string target, string arguments, string workingDirectory);
 
+    /// <summary>Create a native Shell PIDL link without launching its target.</summary>
+    void CreateShell(string path, string parsingName) => throw new NotSupportedException("Shell targets are unavailable.");
+
     /// <summary>属性窗显示 + 启动预检 + 编辑基线读取。</summary>
     LinkFields Read(string path);
 

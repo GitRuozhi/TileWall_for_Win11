@@ -35,6 +35,8 @@ public sealed class LocalFileStore : IFileStore
 
     public void Move(string src, string dst, bool overwrite) => File.Move(src, dst, overwrite);
 
+    public void MoveDirectory(string source, string destination) => Directory.Move(source, destination);
+
     public void Copy(string src, string dst, bool overwrite) => File.Copy(src, dst, overwrite);
 
     public void Delete(string path) => File.Delete(path);

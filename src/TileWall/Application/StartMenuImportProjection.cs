@@ -13,19 +13,15 @@ internal sealed class StartMenuImportProjection
 {
     private const int MaximumAvailabilityEntries = 50000;
     private readonly object _availabilitySync = new();
-    private readonly Dictionary<string, (string Fact, ImportTargetAvailability Availability)> _availability = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string Fact, TargetObservation Observation)> _availability = new(StringComparer.Ordinal);
     private readonly object _projectionSync = new();
     private IReadOnlyList<ImportSourceCandidate> _startCandidates = [], _packageCandidates = [];
     private string? _packageSha256;
 
     internal void BeginPage()
     {
-        // Missing was confirmed against an accessible parent. Do not carry that
-        // negative conclusion into another page after a location goes offline.
-        lock (_availabilitySync)
-            foreach (var key in _availability.Where(pair => pair.Value.Availability == ImportTargetAvailability.Missing)
-                         .Select(pair => pair.Key).ToArray())
-                _availability.Remove(key);
+        // Source bytes are reusable; external target availability is an observation of this page.
+        lock (_availabilitySync) _availability.Clear();
     }
 
     internal ImportPageSource FromStartMenu(StartMenuCatalogSnapshot snapshot,
@@ -40,11 +36,11 @@ internal sealed class StartMenuImportProjection
         {
             token.ThrowIfCancellationRequested();
             var candidate = source.Candidate;
-            var error = source.ErrorCode ?? (!candidate.IsImportable ? "InvalidTarget" :
-                !StartMenuSourceCache.IsHash(source.SourceSha256) ? "SourceChanged" :
-                source.Identity?.IsUrl == true && !RegisteredUrlProtocols.IsSupported(source.Identity.Target) ? "UnsupportedProtocol" : null);
-            var exclusion = source.Identity is null ? StartMenuExclusion.None : StartMenuSelectionRules.Classify(candidate.DisplayName, source.Identity);
-            var fact = source.SourceSha256 + "|" + source.Identity?.Key + "|" +
+            var error = source.ErrorCode ?? (source.Stale ? "SourceChanged" : !candidate.IsImportable ? "InvalidTarget" :
+                !StartMenuSourceCache.IsHash(source.SourceSha256) ? "SourceChanged" : null);
+            var exclusion = source.Identity is null ? StartMenuExclusion.None : StartMenuSelectionRules.Classify(candidate.DisplayName, source.Identity,
+                targetIsDirectory: source.TargetIsDirectory);
+            var fact = source.SourceSha256 + "|" + source.Identity?.Key + "|" + source.TargetAvailability + "|" + source.TargetIsDirectory + "|" +
                 string.Join("|", source.Dependencies.Select(dependency => FormattableString.Invariant(
                     $"{dependency.Path}:{dependency.Length}:{dependency.LastWriteUtcTicks}:{dependency.Available}")));
             facts.Add(candidate.SourceKey, fact);
@@ -62,16 +58,18 @@ internal sealed class StartMenuImportProjection
                     SourceRoot = candidate.RootPath, RelativePath = candidate.RelativePath },
             })
             {
+                SourceKind = ImportPageSourceKind.StartMenu, Policy = ImportSourcePolicy.Shortcut, HasLaunchTarget = true,
+                SourcePriority = (int)candidate.Source, TargetKind = ContentKind(source.Identity, true, source.TargetAvailability == ImportTargetAvailability.Available ? source.TargetIsDirectory : null),
                 SourceGroup = string.IsNullOrWhiteSpace(folder) ? null : new("folder:" + folder.ToUpperInvariant(), folder, 100),
                 SourceOrder = index, Identity = source.Identity, RequiresIdentity = true,
                 HasRecordedPosition = false, HasRecordedSize = false, ErrorCode = error,
-                TargetAvailability = CachedAvailability(candidate.SourceKey, fact), Exclusion = exclusion,
+                TargetAvailability = source.TargetAvailability, Exclusion = exclusion,
                 RelativeDirectory = candidate.RelativeDir, Company = source.Company,
             });
         }
         return new(ReuseCandidates(candidates), originals, Scanned: snapshot.ScannedCount, Skipped: snapshot.SkippedDirectories,
             ReadErrors: candidates.Count(candidate => candidate.ErrorCode is not null), Refreshing: snapshot.Refreshing, ErrorCode: snapshot.ErrorCode)
-            { AvailabilityFacts = facts };
+            { AvailabilityFacts = facts, AvailabilityPrepared = true, IconPreparing = snapshot.IconPreparing };
     }
 
     internal ImportPageSource FromPackage(WallPackagePreview preview, CancellationToken token)
@@ -80,7 +78,8 @@ internal sealed class StartMenuImportProjection
         var groups = preview.Content.Groups.ToDictionary(group => group.Id, StringComparer.Ordinal);
         var candidates = new List<ImportSourceCandidate>();
         var facts = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (group, order) in preview.Content.Lanes.SelectMany(lane => lane.GroupIds).Select(id => groups[id]).Select((group, order) => (group, order)))
+        foreach (var (lane, laneIndex) in preview.Content.Lanes.Select((lane, index) => (lane, index)))
+        foreach (var (group, order) in lane.GroupIds.Select(id => groups[id]).Select((group, order) => (group, order)))
         foreach (var (id, index) in group.MemberIds.Select((id, index) => (id, index)))
         {
             token.ThrowIfCancellationRequested();
@@ -92,13 +91,28 @@ internal sealed class StartMenuImportProjection
             facts.Add(id, fact);
             candidates.Add(new(id, member.Visual.Title ?? id, member)
             {
-                SourceGroup = new(group.Id, group.Title, order), SourceOrder = index, Identity = identity,
+                SourceKind = ImportPageSourceKind.WallPackage, Policy = ImportSourcePolicy.Attributed,
+                HasLaunchTarget = member.Entry is not null, TargetKind = ContentKind(identity, member.Entry is not null),
+                SourceGroup = new(group.Id, group.Title, order) { LaneIndex = laneIndex }, SourceOrder = index, Identity = identity,
                 RequiresIdentity = member.Entry is not null, HasRecordedPosition = true, HasRecordedSize = true,
-                ErrorCode = error, TargetAvailability = CachedAvailability(id, fact),
+                ErrorCode = error, TargetAvailability = ImportTargetAvailability.Unknown,
             });
         }
         return new(ReuseCandidates(candidates, preview.PackageSha256), new Dictionary<string, StartMenuImportCandidate>(), preview, candidates.Count)
             { AvailabilityFacts = facts };
+    }
+
+    internal static ImportTargetKind ContentKind(LaunchIdentity? identity, bool hasTarget, bool? targetIsDirectory = null)
+    {
+        if (!hasTarget) return ImportTargetKind.Component;
+        if (identity is null || identity.Key.StartsWith("opaque", StringComparison.Ordinal)) return ImportTargetKind.Unknown;
+        if (StartMenuSelectionRules.Classify("", identity) == StartMenuExclusion.WindowsBuiltIn) return ImportTargetKind.SystemFeature;
+        if (identity.IsUrl) return identity.Target.StartsWith("http:", StringComparison.OrdinalIgnoreCase) || identity.Target.StartsWith("https:", StringComparison.OrdinalIgnoreCase)
+            ? ImportTargetKind.WebLink : ImportTargetKind.ProtocolLink;
+        if (!Path.IsPathFullyQualified(identity.Target)) return identity.Key.StartsWith("shell:", StringComparison.Ordinal) ? ImportTargetKind.Program : ImportTargetKind.Unknown;
+        if (targetIsDirectory == true) return ImportTargetKind.Folder;
+        if (targetIsDirectory is null) return ImportTargetKind.Unknown;
+        return Path.GetExtension(identity.Target).ToLowerInvariant() is ".exe" or ".com" ? ImportTargetKind.Program : ImportTargetKind.File;
     }
 
     private IReadOnlyList<ImportSourceCandidate> ReuseCandidates(List<ImportSourceCandidate> candidates, string? packageSha256 = null)
@@ -126,13 +140,6 @@ internal sealed class StartMenuImportProjection
         }
     }
 
-    private ImportTargetAvailability CachedAvailability(string key, string fact)
-    {
-        lock (_availabilitySync)
-            return _availability.TryGetValue(key, out var cached) && cached.Fact == fact
-                ? cached.Availability : ImportTargetAvailability.Unknown;
-    }
-
     internal async Task<ImportPageSource> PrepareAvailabilityAsync(ImportPageSource source, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
@@ -140,29 +147,29 @@ internal sealed class StartMenuImportProjection
         // The main window retains bounded source facts across pages. Progress-only
         // catalog publications reuse observations; changed entry/dependency facts
         // require IO. Uncertain locations never become confirmed missing by cache.
-        var observed = new Dictionary<string, ImportTargetAvailability>(StringComparer.Ordinal);
+        var observed = new Dictionary<string, TargetObservation>(StringComparer.Ordinal);
         var pending = new List<ImportSourceCandidate>();
         lock (_availabilitySync)
         {
             foreach (var candidate in source.Candidates)
                 if (_availability.TryGetValue(candidate.SourceKey, out var cached) &&
                     cached.Fact == source.AvailabilityFacts[candidate.SourceKey])
-                    observed.Add(candidate.SourceKey, cached.Availability);
+                    observed.Add(candidate.SourceKey, cached.Observation);
                 else pending.Add(candidate);
         }
         await Parallel.ForEachAsync(pending, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = token },
             (candidate, cancellation) =>
             {
                 cancellation.ThrowIfCancellationRequested();
-                var availability = TargetAvailability(candidate.Identity);
+                var observation = ObserveTarget(candidate.Identity);
                 cancellation.ThrowIfCancellationRequested();
                 lock (_availabilitySync)
                 {
                     cancellation.ThrowIfCancellationRequested();
                     if (_availability.Count >= MaximumAvailabilityEntries && !_availability.ContainsKey(candidate.SourceKey))
                         _availability.Remove(_availability.Keys.First());
-                    _availability[candidate.SourceKey] = (source.AvailabilityFacts[candidate.SourceKey], availability);
-                    observed.Add(candidate.SourceKey, availability);
+                    _availability[candidate.SourceKey] = (source.AvailabilityFacts[candidate.SourceKey], observation);
+                    observed.Add(candidate.SourceKey, observation);
                 }
                 return ValueTask.CompletedTask;
             }).ConfigureAwait(false);
@@ -172,10 +179,11 @@ internal sealed class StartMenuImportProjection
         {
             // Another canceled page read can finish with an older fact. Keep this
             // result tied to the observations made for this exact source snapshot.
-            var availability = observed[candidate.SourceKey];
-            if (availability == candidate.TargetAvailability) return candidate;
+            var observation = observed[candidate.SourceKey];
+            var kind = ContentKind(candidate.Identity, candidate.HasLaunchTarget == true, observation.IsDirectory);
+            if (observation.Availability == candidate.TargetAvailability && kind == candidate.TargetKind) return candidate;
             changed = true;
-            return candidate with { TargetAvailability = availability };
+            return candidate with { TargetAvailability = observation.Availability, TargetKind = kind };
         }).ToArray();
         var result = source with { Candidates = changed ? candidates : source.Candidates, AvailabilityPrepared = true };
         if (changed)
@@ -187,23 +195,32 @@ internal sealed class StartMenuImportProjection
         return result;
     }
 
-    internal static ImportTargetAvailability TargetAvailability(LaunchIdentity? identity)
+    internal readonly record struct TargetObservation(ImportTargetAvailability Availability, bool? IsDirectory);
+
+    internal static ImportTargetAvailability TargetAvailability(LaunchIdentity? identity) => ObserveTarget(identity).Availability;
+
+    internal static TargetObservation ObserveTarget(LaunchIdentity? identity)
     {
-        // Exists conflates missing, denied and offline locations. A missing item
-        // is confirmed only when its parent can actually be read. Never launch it.
-        if (identity is null || identity.IsUrl || identity.Key.StartsWith("opaque:", StringComparison.Ordinal) ||
-            !Path.IsPathFullyQualified(identity.Target)) return ImportTargetAvailability.Unknown;
-        try { _ = File.GetAttributes(identity.Target); return ImportTargetAvailability.Available; }
+        // One attributes read supplies availability and type; unknown is never guessed from a source folder/name.
+        if (identity is null || identity.IsUrl || identity.Key.StartsWith("opaque", StringComparison.Ordinal) ||
+            !Path.IsPathFullyQualified(identity.Target)) return new(ImportTargetAvailability.Unknown, null);
+        try
+        {
+            var attributes = File.GetAttributes(identity.Target);
+            return new(ImportTargetAvailability.Available, (attributes & FileAttributes.Directory) != 0);
+        }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             try
             {
                 var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(identity.Target));
-                if (parent is not null && (File.GetAttributes(parent) & FileAttributes.Directory) != 0) return ImportTargetAvailability.Missing;
+                if (parent is not null && (File.GetAttributes(parent) & FileAttributes.Directory) != 0)
+                    return new(ImportTargetAvailability.Missing, null);
             }
             catch (Exception parentError) when (parentError is IOException or UnauthorizedAccessException or ArgumentException) { }
-            return ImportTargetAvailability.Unknown;
+            return new(ImportTargetAvailability.Unknown, null);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return ImportTargetAvailability.Unknown; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        { return new(ImportTargetAvailability.Unknown, null); }
     }
 }

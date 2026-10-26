@@ -16,7 +16,7 @@ public sealed partial class WallStoreTests
         var b = Tile("b", "B", new("b", "Objects/b/B.url", ManagedEntryKind.Url)) with { LocalBounds = new GridRect(1, 0, 1, 1) };
         var document = new WallDocument { Columns = 1, Rows = 6, Generation = 1,
             Lanes = [new WallLane { Groups = [new StartGroup { Id = "g", Title = "Group", Members = [a, b] }] }] };
-        files.WriteAllBytes(Path.Combine(root, "config.json"), WallJson.Serialize(document));
+        SnapshotTestData.Install(files, root, document);
         files.WriteAllBytes(EntryPath(root, a.Entry!), UrlShortcut.CreateContent("https://a.example/"));
         files.WriteAllBytes(EntryPath(root, b.Entry!), UrlShortcut.CreateContent("https://b.example/"));
         return document;
@@ -67,11 +67,11 @@ public sealed partial class WallStoreTests
         var expected = EntryPreconditions(inner, root, current);
         var target = EntryPath(root, current.EnumerateAllMembers().Single(member => member.Id == (replaced ? "a" : "b")).Entry!);
         var external = UrlShortcut.CreateContent("https://changed-during-stage.example/");
-        var config = inner.ReadAllBytes(Path.Combine(root, "config.json"));
+        var config = inner.ReadAllBytes(Path.Combine(root, "state.json"));
         var changed = false;
         files.Rules.Add((kind, _, destination) =>
         {
-            if (!changed && kind == "write" && destination!.EndsWith("config.tmp", StringComparison.Ordinal))
+            if (!changed && kind == "write" && destination!.EndsWith("state.tmp", StringComparison.Ordinal))
             { changed = true; inner.WriteAllBytes(target, external); }
             return false;
         });
@@ -82,7 +82,7 @@ public sealed partial class WallStoreTests
         Assert.True(changed);
         Assert.Equal(WallCommitStatus.Rejected, result.Status);
         Assert.Contains(WallStore.ImportDestinationChanged, result.Diagnostics);
-        Assert.Equal(config, inner.ReadAllBytes(Path.Combine(root, "config.json")));
+        Assert.Equal(config, inner.ReadAllBytes(Path.Combine(root, "state.json")));
         Assert.Equal(external, inner.ReadAllBytes(target));
         Assert.DoesNotContain(inner.FilePaths, path => path.Contains(Path.DirectorySeparatorChar + "Staging" + Path.DirectorySeparatorChar, StringComparison.Ordinal));
         Assert.DoesNotContain(inner.FilePaths, path => path.Contains(Path.DirectorySeparatorChar + "Recovery" + Path.DirectorySeparatorChar, StringComparison.Ordinal));

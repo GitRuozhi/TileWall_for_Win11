@@ -195,6 +195,19 @@ internal static class WallMemberVisualFactory
 
 internal static class WallGroupVisualFactory
 {
+    internal static Grid TitleContent(string? title, double width)
+    {
+        var content = new Grid { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        content.Children.Add(Label(title, width));
+        return content;
+    }
+
+    internal static DipRect TitleControlBounds(DipRect row, double interactionHeight)
+    {
+        var height = Math.Min(interactionHeight, row.Height);
+        return new(row.X, row.Y + row.Height - height, row.Width, height);
+    }
+
     internal static TextBlock Label(string? title, double width) => new()
     {
         Text = title ?? string.Empty, Width = Math.Max(0, width - 5), FontSize = 14,

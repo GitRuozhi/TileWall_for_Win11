@@ -19,6 +19,8 @@ public sealed partial class MainWindow
     private readonly Image _snapshotImage = new() { Stretch = Stretch.Fill, Visibility = Visibility.Collapsed };
     private readonly SemaphoreSlim _snapshotSlot = new(1, 1);
     private CancellationTokenSource? _snapshotRequest;
+    // This window's UI thread retains the true original policy through restore failures.
+    private uint? _snapshotAffinityToRestore;
     private (int X, int Y, int W, int H, double Scale, bool Dark)? _snapshotKey;
     private (int X, int Y, int W, int H, double Scale, bool Dark)? _snapshotRequestKey;
     private long _snapshotGeneration, _snapshotFocusCycle, _snapshotRequestedFocusCycle = -1;
@@ -288,7 +290,8 @@ public sealed partial class MainWindow
         BeginSnapshotRequest(key, focusLoss: true);
         TraceInput($"BackdropSnapshot capture focusCycle={_snapshotFocusCycle} generation={_snapshotGeneration}");
         var capture = DesktopBackdropSnapshot.CaptureExcludingWindow(
-            new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H), WinRT.Interop.WindowNative.GetWindowHandle(this));
+            new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H), WinRT.Interop.WindowNative.GetWindowHandle(this),
+            ref _snapshotAffinityToRestore);
         if (capture is not null)
             TrackAppearanceWork(PrepareSnapshotAsync(capture, key, _snapshotGeneration, _snapshotFocusCycle, _snapshotRequest!.Token));
     }
@@ -361,6 +364,8 @@ public sealed partial class MainWindow
     private async Task ShutdownAppearanceAsync()
     {
         _appearanceStopping = true;
+        DesktopBackdropSnapshot.TryRestoreWindowAffinity(WinRT.Interop.WindowNative.GetWindowHandle(this),
+            ref _snapshotAffinityToRestore);
         CancelBackgroundCommit();
         _backgroundRequest?.Cancel();
         _snapshotRequest?.Cancel();

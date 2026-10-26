@@ -15,6 +15,35 @@ public sealed record WallPackageContent
     public required IReadOnlyList<WallPackageLane> Lanes { get; init; }
     public required IReadOnlyList<WallPackageGroup> Groups { get; init; }
     public required IReadOnlyList<WallPackageMember> Members { get; init; }
+    public IReadOnlyList<WallPackageGalleryReference> Galleries { get; init; } = [];
+
+    /// <summary>Project only selected active members; source lanes and local geometry stay intact.</summary>
+    public static WallPackageContent FromSelection(WallDocument document, IEnumerable<string> selectedMemberIds)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(selectedMemberIds);
+        var selected = selectedMemberIds.ToHashSet(StringComparer.Ordinal);
+        if (selected.Count == 0 || selected.Any(string.IsNullOrWhiteSpace))
+            throw new InvalidDataException("Select at least one active wall member.");
+        var active = document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
+            .ToDictionary(member => member.Id, StringComparer.Ordinal);
+        if (selected.Any(id => !active.ContainsKey(id)))
+            throw new InvalidDataException("Selected member no longer belongs to the active wall.");
+        var lanes = document.Lanes.Select(lane => new WallPackageLane(lane.Groups
+            .Where(group => group.Members.Any(member => selected.Contains(member.Id))).Select(group => group.Id).ToArray())).ToArray();
+        var groups = document.Lanes.SelectMany(lane => lane.Groups).Where(group => group.Members.Any(member => selected.Contains(member.Id)))
+            .Select(group => new WallPackageGroup(group.Id, group.Title, group.Members.Where(member => selected.Contains(member.Id)).Select(member => member.Id).ToArray())).ToArray();
+        return WallPackageJson.Freeze(new()
+        {
+            Columns = document.Columns, Rows = document.Rows, Lanes = lanes, Groups = groups,
+            Members = document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
+                .Where(member => selected.Contains(member.Id)).Select(WallPackageMember.FromMember).ToArray(),
+            Galleries = document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
+                .Where(member => selected.Contains(member.Id)).Select(member => member.Images.ManagedGallery)
+                .OfType<ManagedGalleryReference>().Distinct().OrderBy(gallery => gallery.ContentId, StringComparer.Ordinal)
+                .Select(gallery => new WallPackageGalleryReference(gallery.ContentId, gallery.ManifestSha256)).ToArray(),
+        });
+    }
 
     public WallDocument ToDocument()
     {
@@ -33,6 +62,27 @@ public sealed record WallPackageContent
 
 public sealed record WallPackageLane(IReadOnlyList<string> GroupIds);
 public sealed record WallPackageGroup(string Id, string? Title, IReadOnlyList<string> MemberIds);
+public sealed record WallPackageGalleryReference(string Id, string ManifestSha256);
+
+/// <summary>Exchange projection: a managed folder is a logical package ID, never a sender path.</summary>
+public sealed record WallPackageImageSource
+{
+    public MemberImageSourceKind Kind { get; init; } = MemberImageSourceKind.Automatic;
+    public string? Path { get; init; }
+    public ManagedMediaReference? Media { get; init; }
+    public string? GalleryId { get; init; }
+    internal static WallPackageImageSource From(MemberImageSource source) => new()
+    {
+        Kind = source.Kind, Media = source.Media,
+        Path = source.ManagedGallery is null ? source.Path : null,
+        GalleryId = source.ManagedGallery?.ContentId,
+    };
+    internal MemberImageSource ToSource() => new()
+    {
+        Kind = Kind, Path = GalleryId is null ? Path : null, Media = Media,
+        ManagedGallery = GalleryId is { } id ? new(id, id) : null,
+    };
+}
 public readonly record struct WallPackageBounds(int Column, int Row, int Width, int Height)
 {
     public static implicit operator GridRect(WallPackageBounds value) => new(value.Column, value.Row, value.Width, value.Height);
@@ -47,12 +97,24 @@ public sealed record WallPackageMember
     public MemberVisual Visual { get; init; } = new();
     public ManagedEntryKind? EntryKind { get; init; }
     public string? TargetInput { get; init; }
-    public MemberImageSource Images { get; init; } = new();
+    public WallPackageImageSource Images { get; init; } = new();
     public MemberImageDisplay ImageDisplay { get; init; } = new();
     public ImageRotationInterval RotationInterval { get; init; } = ImageRotationInterval.Minute1;
     public IReadOnlyList<WallPackageBounds>? Partitions { get; init; }
     public string? TimeFormat { get; init; }
     public string? DateFormat { get; init; }
+
+    internal static WallPackageMember FromMember(WallMember member) => new()
+    {
+        Id = member.Id,
+        Kind = member switch { TileMember => "tile", PuzzleMember => "puzzle", ClockMember => "clock", _ => throw new InvalidDataException("Unknown member kind.") },
+        LocalBounds = member.LocalBounds, Visual = member.Visual, EntryKind = member.Entry?.Kind,
+        TargetInput = member.TargetInput, Images = WallPackageImageSource.From(member.Images), ImageDisplay = member.ImageDisplay,
+        RotationInterval = member.RotationInterval,
+        Partitions = member is PuzzleMember puzzle ? puzzle.Partitions.Select(part => (WallPackageBounds)part).ToArray() : null,
+        TimeFormat = member is ClockMember clock ? clock.TimeFormat : null,
+        DateFormat = member is ClockMember clock2 ? clock2.DateFormat : null,
+    };
 
     public WallMember ToMember(string? remappedId = null)
     {
@@ -67,7 +129,7 @@ public sealed record WallPackageMember
         return member with
         {
             Visual = Visual, Entry = EntryKind is { } kind ? new(id, $"Objects/{id}/entry.{(kind == ManagedEntryKind.Lnk ? "lnk" : "url")}", kind) : null,
-            TargetInput = TargetInput, Images = Images, ImageDisplay = ImageDisplay, RotationInterval = RotationInterval,
+            TargetInput = TargetInput, Images = Images.ToSource(), ImageDisplay = ImageDisplay, RotationInterval = RotationInterval,
         };
     }
 }

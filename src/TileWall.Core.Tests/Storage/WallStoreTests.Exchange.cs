@@ -1,4 +1,5 @@
 using System.Text;
+using System.IO.Compression;
 using System.Text.Json.Nodes;
 using System.Security.Cryptography;
 using TileWall.Core.Exchange;
@@ -22,7 +23,8 @@ public sealed partial class WallStoreTests
         json["lanes"]![0]!["groups"]![0]!["members"]![0]!["entry"] = JsonNode.Parse("""
             {"objectId":"tile-035","relativePath":"Objects/tile-035/Saved tile.url","kind":1}
             """);
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes(json.ToJsonString()));
+        var document = WallJson.Deserialize(Encoding.UTF8.GetBytes(json.ToJsonString())) with { RecycleBinEnabled = true };
+        SnapshotTestData.Install(files, root, document);
         byte[] bytes = [0xEF, 0xBB, 0xBF, .. Encoding.Latin1.GetBytes("[InternetShortcut]\r\nIconFile=C:\\Samples\\caf\u00E9.ico\r\n" +
             (invalidUrl ? "URL=file:///C:/blocked\r\n" : ""))];
         var entryPath = Path.Combine(root, "Objects", "tile-035", "Saved tile.url");
@@ -46,7 +48,10 @@ public sealed partial class WallStoreTests
     {
         var (store, files, _, root) = Harness();
         var initial = Wall(); store.InitializeFresh(initial);
-        var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Compatibility", "wall-package-v1.twpack");
+        var fixture = Path.Combine(Path.GetTempPath(), "current-opaque-" + Guid.NewGuid().ToString("N") + ".twpack");
+        CreateCurrentOpaquePackage(fixture);
+        try
+        {
         var reader = new WallPackageReader((kind, bytes, token) => Task.FromResult(store.ObservePackageEntry(kind, bytes, token)),
             (_, _, _) => Task.FromResult(true));
         var preview = (await reader.ReadPreviewAsync(fixture)).Preview!;
@@ -65,6 +70,29 @@ public sealed partial class WallStoreTests
         Assert.Equal("[InternetShortcut]\r\nIconFile=C:\\Samples\\icon.ico\r\n",
             Encoding.UTF8.GetString(files.ReadAllBytes(EntryPath(root, member.Entry))));
         Assert.Equal(1, store.Open().Document!.Generation);
+        }
+        finally { File.Delete(fixture); }
+    }
+
+    private static void CreateCurrentOpaquePackage(string path)
+    {
+        var content = new WallPackageContent
+        {
+            Columns = 1, Rows = 6, Lanes = [new(["group"])], Groups = [new("group", null, ["tile-v1"])],
+            Members = [new() { Id = "tile-v1", Kind = "tile", LocalBounds = new(0, 0, 2, 2), EntryKind = ManagedEntryKind.Url }],
+        };
+        var wall = WallPackageJson.Serialize(content);
+        var entry = Encoding.UTF8.GetBytes("[InternetShortcut]\r\nIconFile=C:\\Samples\\icon.ico\r\n");
+        var files = new WallPackageFile[]
+        {
+            new("wall.json", wall.Length, WallPackageJson.Hash(wall), "wall"),
+            new("objects/tile-v1/entry.url", entry.Length, WallPackageJson.Hash(entry), "entry"),
+        };
+        var manifest = new WallPackageManifest { AppVersion = "test", CreatedUtc = DateTimeOffset.UtcNow,
+            Files = files, ContentFingerprint = WallPackageJson.Fingerprint(content, files) };
+        using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
+        void Write(string name, byte[] bytes) { using var target = zip.CreateEntry(name).Open(); target.Write(bytes); }
+        Write("manifest.json", WallPackageJson.Serialize(manifest)); Write("wall.json", wall); Write("objects/tile-v1/entry.url", entry);
     }
 
     [Fact]

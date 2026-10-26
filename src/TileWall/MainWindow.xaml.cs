@@ -188,6 +188,9 @@ public sealed partial class MainWindow : Window
 
     private void SetBackdropActive(bool active)
     {
+        if (active)
+            DesktopBackdropSnapshot.TryRestoreWindowAffinity(WinRT.Interop.WindowNative.GetWindowHandle(this),
+                ref _snapshotAffinityToRestore);
         if (active || _backdropActive != active) CancelFocusLossSnapshot();
         _backdropActive = active;
         if (_backdropUpdateQueued || _windowClosing) return;
@@ -225,6 +228,28 @@ public sealed partial class MainWindow : Window
             return;
         }
         _hasDocument = true;
+        if (!result.Document.RecycleBinEnabled)
+        {
+            try
+            {
+                // Preserve the verified legacy snapshot until the normal joint transaction enables retention.
+                var enabled = WallLayoutEngine.NormalizeExpanded(result.Document with
+                {
+                    Generation = result.Document.Generation + 1, RecycleBinEnabled = true,
+                }, _metrics);
+                if (enabled.Proposal is null || !_session.Commit(enabled.Proposal).Committed)
+                {
+                    BlockView(ProductStrings.Get("Wall.SettingsBlocked"));
+                    return;
+                }
+                result = result with { Document = _session.Current };
+            }
+            catch (Exception ex)
+            {
+                BlockView(string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message));
+                return;
+            }
+        }
         BeginFreshWelcomeInitialization(result);
         if (!_session.RefreshViewFromCurrent())
             BlockView(ProductStrings.Get("Wall.ViewFailed"), retry: true);
@@ -255,7 +280,6 @@ public sealed partial class MainWindow : Window
     private void RenderCommitted(WallDocument document)
     {
         var scrollAnchor = CaptureCommittedScrollAnchor(document);
-        PrepareCommittedImportIcons(document);
         RefreshAppearance();
         _puzzles.Sync(document);
         if (_carouselCommit) Surface.RefreshPuzzlePresentation(document);
@@ -424,7 +448,8 @@ public sealed partial class MainWindow : Window
         return null;
     }
 
-    private string? Apply(WallAction action, IReadOnlyList<EntryChange>? changes = null)
+    private string? Apply(WallAction action, IReadOnlyList<EntryChange>? changes = null,
+        IReadOnlyList<PreparedMediaAsset>? preparedMedia = null)
     {
         var result = _session.Propose(action, WorkWidthDip, WorkHeightDip, _metrics);
         if (result.Proposal is null)
@@ -434,7 +459,7 @@ public sealed partial class MainWindow : Window
             return string.Format(ProductStrings.Get("Wall.LocationUnavailable"),
                 ProductStrings.WallRejectionReason(result.Rejection), string.Empty).TrimEnd();
         }
-        return CommitProposal(result.Proposal, changes);
+        return CommitProposal(result.Proposal, changes, preparedMedia);
     }
 
     private async Task<string?> PersistPuzzleCarousel(string id, ImageCarouselState carousel, Func<bool> stillCurrent)
@@ -536,8 +561,8 @@ public sealed partial class MainWindow : Window
             }
             var dialog = new SharedMemberEditorDialog(DialogOwner, member, _images,
                 _session.ManagedEntryPath(member), _session.LinkFiles, MaxMemberRows(),
-                (replacement, changes) => SaveSharedMember(replacement, changes, isNewPlaceholder,
-                    existing => duplicateToFocus = existing), Settings.VisualStyle);
+                (replacement, changes, assets) => SaveSharedMember(replacement, changes, isNewPlaceholder,
+                    existing => duplicateToFocus = existing, assets), Settings.VisualStyle);
             ActiveDialog = dialog;
             AttachGalleryEditor(dialog);
             await dialog.ShowAsync();
@@ -555,7 +580,7 @@ public sealed partial class MainWindow : Window
     }
 
     private string? SaveSharedMember(WallMember replacement, IReadOnlyList<EntryChange> changes,
-        bool isNewPlaceholder, Action<string> locateDuplicate)
+        bool isNewPlaceholder, Action<string> locateDuplicate, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null)
     {
         if (FindMember(replacement.Id) is not { } current) return ProductStrings.Get("Wall.PuzzleMissing");
         try
@@ -587,7 +612,7 @@ public sealed partial class MainWindow : Window
                 }
             }
             if (changes.Count == 0 && !MemberPresentationRules.HasUserPropertyChanges(current, replacement)) return null;
-            return Apply(new ReplaceMemberAction(Document.Generation, replacement.Id, replacement), changes);
+            return Apply(new ReplaceMemberAction(Document.Generation, replacement.Id, replacement), changes, preparedMedia);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
             System.Runtime.InteropServices.COMException)
@@ -621,9 +646,7 @@ public sealed partial class MainWindow : Window
         Math.Min(WallViewportPolicy.MaximumMemberRows, CurrentViewportBudget.MaxRows - 1));
     private void RemoveMember(string id)
     {
-        if (PersistenceInteractionBlocked || _modal || _viewBlocked || FindMember(id) is not { } member) return;
-        var error = Apply(new UnpinMemberAction(Document.Generation, id));
-        if (error is not null) Status(error);
+        BeginUnpinMembers([id]);
     }
 
     private string? RenameGroup(string id, string? title)

@@ -78,27 +78,10 @@ public static class StartMenuImportPlanner
     private static bool TryPack(IReadOnlyList<StartGroup> groups, int laneCount, int rows,
         WallMetrics metrics, out IReadOnlyList<IReadOnlyList<StartGroup>> lanes)
     {
-        var output = Enumerable.Range(0, laneCount).Select(_ => new List<StartGroup>()).ToArray();
-        var laneIndex = 0;
-        var usedHeight = metrics.TopMargin + metrics.Margin;
-        var availableHeight = metrics.WallHeight(rows);
-        foreach (var group in groups)
-        {
-            var groupHeight = metrics.TitleHeight + metrics.TitleToMembersGap +
-                metrics.HeightOf(group.Members.Max(member => member.LocalBounds.Bottom));
-            var gap = output[laneIndex].Count == 0 ? 0 : metrics.GroupGap;
-            if (usedHeight + gap + groupHeight > availableHeight + 1e-9)
-            {
-                if (++laneIndex >= laneCount) { lanes = []; return false; }
-                usedHeight = metrics.TopMargin + metrics.Margin;
-                gap = 0;
-            }
-            if (usedHeight + gap + groupHeight > availableHeight + 1e-9) { lanes = []; return false; }
-            output[laneIndex].Add(group);
-            usedHeight += gap + groupHeight;
-        }
-        lanes = output.Select(lane => (IReadOnlyList<StartGroup>)lane.ToArray()).ToArray();
-        return true;
+        var packed = WallLayoutEngine.ArrangeSourceLanes(groups, metrics.WallHeight(rows), metrics,
+            maximumLanes: laneCount, allowOversizedGroups: false);
+        lanes = packed?.Select(lane => lane.Groups).ToArray() ?? [];
+        return packed is not null;
     }
 
     private static string? CommonImportBatchId(IReadOnlyList<StartGroup> groups)

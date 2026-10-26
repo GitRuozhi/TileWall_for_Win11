@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using TileWall.Core.Entries;
 using TileWall.Core.Grid;
 using TileWall.Core.Storage;
+using TileWall.Core.Tests.Fixtures;
 using TileWall.Core.Wall;
 using Xunit;
 
@@ -34,7 +35,7 @@ public sealed partial class WallStoreTests
         var entryBytes = files.ReadAllBytes(EntryPath(root, member.Entry!));
         var unpinned = store.Commit(before, new(1, before with
         {
-            Generation = 2, Lanes = [new WallLane { Groups = [] }], InactiveMembers = [member]
+            Generation = 2, Lanes = [new WallLane { Groups = [] }], RecycleBinEnabled = true, InactiveMembers = [member]
         }, []));
         Assert.Equal(WallCommitStatus.Committed, unpinned.Status);
         Assert.Equal(member, Assert.Single(unpinned.CommittedDocument!.InactiveMembers));
@@ -67,13 +68,13 @@ public sealed partial class WallStoreTests
         var removed = store.Commit(before, new(1, initial with { Generation = 2 }, []));
         Assert.Equal(WallCommitStatus.Committed, removed.Status);
         Assert.Empty(removed.CommittedDocument!.EnumerateAllMembers());
-        var previous = WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "Recovery", "config.prev.json")));
+        var previous = SnapshotTestData.Read(files, root, files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json")));
         Assert.Equal(asset.Reference, Assert.Single(previous.EnumerateAllMembers()).Images.Media);
         Assert.Single(files.ListDirectories(Path.Combine(root, "Recovery", "Entries")));
         Assert.Equal(bytes, files.ReadAllBytes(mediaPath));
 
-        files.WriteAllBytes(Path.Combine(root, "config.json"), System.Text.Encoding.UTF8.GetBytes(
-            $"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), System.Text.Encoding.UTF8.GetBytes(
+            $"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var reopened = new WallStore(files, links, root);
         var recovered = reopened.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
@@ -95,7 +96,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         store.InitializeFresh(initial);
         var asset = OriginalImage();
-        files.Rules.Add((kind, _, destination) => kind == "move" && destination == Path.Combine(root, "config.json"));
+        files.Rules.Add((kind, _, destination) => kind == "move" && destination == Path.Combine(root, "state.json"));
         var rejected = store.Commit(initial, new(0, Wall(SingleImage("a", asset)) with { Generation = 1 }, [], [asset]));
         Assert.Equal(WallCommitStatus.Rejected, rejected.Status);
         Assert.False(files.Exists(store.ManagedMediaPath(asset.Reference)));
@@ -119,7 +120,7 @@ public sealed partial class WallStoreTests
             Generation = 2,
             Settings = before.Settings with { BackgroundMode = WallBackgroundMode.Custom, BackgroundMedia = asset.Reference }
         };
-        files.Rules.Add((kind, _, destination) => kind == "move" && destination == Path.Combine(root, "config.json"));
+        files.Rules.Add((kind, _, destination) => kind == "move" && destination == Path.Combine(root, "state.json"));
         var rejected = store.Commit(before, new(1, candidate, [], [asset]));
         Assert.Equal(WallCommitStatus.Rejected, rejected.Status);
         Assert.Equal(bytes, files.ReadAllBytes(path));
@@ -153,13 +154,13 @@ public sealed partial class WallStoreTests
         store.InitializeFresh(initial);
         var asset = OriginalImage();
         var path = store.ManagedMediaPath(asset.Reference);
-        files.Rules.Add((kind, _, destination) => kind == "move" && destination == Path.Combine(root, "config.json"));
+        files.Rules.Add((kind, _, destination) => kind == "move" && destination == Path.Combine(root, "state.json"));
         files.Sticky.Add((kind, source, _) => kind == "delete" && source == path);
         var blocked = store.Commit(initial, new(0, Wall(SingleImage("a", asset)) with { Generation = 1 }, [], [asset]));
         Assert.Equal(WallCommitStatus.RecoveryBlocked, blocked.Status);
         Assert.True(files.Exists(path));
         Assert.NotEmpty(files.ListDirectories(Path.Combine(root, "Staging")));
-        Assert.Equal(0, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(0, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
 
         files.Sticky.Clear();
         var opened = store.Open();
@@ -197,12 +198,12 @@ public sealed partial class WallStoreTests
         store.InitializeFresh(initial);
         var asset = OriginalImage();
         var committed = store.Commit(initial, new(0, initial with
-        { Generation = 1, InactiveMembers = [SingleImage("a", asset)] }, [], [asset]));
+        { Generation = 1, RecycleBinEnabled = true, InactiveMembers = [SingleImage("a", asset)] }, [], [asset]));
         Assert.Equal(WallCommitStatus.Committed, committed.Status);
         files.WriteAllBytes(store.ManagedMediaPath(asset.Reference), [5]);
-        var config = files.ReadAllBytes(Path.Combine(root, "config.json"));
+        var config = files.ReadAllBytes(Path.Combine(root, "state.json"));
         Assert.Equal(WallOpenStatus.RecoveryBlocked, store.Open().Status);
-        Assert.Equal(config, files.ReadAllBytes(Path.Combine(root, "config.json")));
+        Assert.Equal(config, files.ReadAllBytes(Path.Combine(root, "state.json")));
     }
 
     [Fact]
@@ -215,7 +216,7 @@ public sealed partial class WallStoreTests
         files.ReparsePaths.Add(Path.Combine(root, "Media"));
         var result = store.Commit(initial, new(0, Wall(SingleImage("a", asset)) with { Generation = 1 }, [], [asset]));
         Assert.False(result.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup);
-        Assert.Equal(0, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(0, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
         Assert.Throws<IOException>(() => store.ManagedMediaPath(asset.Reference with { Extension = "/outside.png" }));
     }
 
@@ -259,7 +260,7 @@ public sealed partial class WallStoreTests
         var unpinned = before.Lanes[0].Groups[0].Members[0];
         var retained = before with
         {
-            Generation = 2, Lanes = [new WallLane { Groups = [before.Lanes[0].Groups[1]] }], InactiveMembers = [unpinned]
+            Generation = 2, Lanes = [new WallLane { Groups = [before.Lanes[0].Groups[1]] }], RecycleBinEnabled = true, InactiveMembers = [unpinned]
         };
         Assert.Equal(WallCommitStatus.Committed, store.Commit(before, new(1, retained, [])).Status);
     }

@@ -63,4 +63,25 @@ public sealed class StartMenuSourceCacheTests
         Assert.NotEqual(old.Candidate.SourceKey, Source("app", root: Path.Combine(Path.GetTempPath(), "another-programs")).Candidate.SourceKey);
         Assert.True(StartMenuSourceCache.IsHash(old.Candidate.SourceKey));
     }
+    [Fact]
+    public void IconPreparationDoesNotKeepVerifiedFactsInRefreshingState()
+    {
+        var observed = Source("ready") with { TargetAvailability = ImportTargetAvailability.Available, TargetIsDirectory = true };
+        var result = StartMenuSourceCache.Merge(new(), Scan(new StartMenuRootScan(SourceKind.User, Root(SourceKind.User), true)),
+            [observed], iconPreparing: true);
+        Assert.False(result.Refreshing); Assert.True(result.IconPreparing);
+        var ready = Assert.Single(result.Sources);
+        Assert.False(ready.Stale); Assert.Equal(ImportTargetAvailability.Available, ready.TargetAvailability); Assert.True(ready.TargetIsDirectory);
+    }
+
+    [Fact]
+    public void IncompleteFactRefreshRetainsUnseenRowsAsStaleIndependentlyOfIconState()
+    {
+        var old = Source("cached"); var observed = Source("verified");
+        var result = StartMenuSourceCache.Merge(new() { Sources = [old] },
+            Scan(new StartMenuRootScan(SourceKind.User, Root(SourceKind.User), false)), [observed], refreshing: true);
+        Assert.True(result.Refreshing); Assert.False(result.IconPreparing);
+        Assert.True(result.Sources.Single(source => source.Candidate.DisplayName == "cached").Stale);
+        Assert.False(result.Sources.Single(source => source.Candidate.DisplayName == "verified").Stale);
+    }
 }

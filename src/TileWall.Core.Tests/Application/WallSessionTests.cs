@@ -35,6 +35,7 @@ public sealed class WallSessionTests
         public void Copy(string source, string destination, bool overwrite)
         { Trip("copy", source, destination); inner.Copy(source, destination, overwrite); }
         public void Delete(string path) { Trip("delete", path, null); inner.Delete(path); }
+        public void MoveDirectory(string source, string destination) => inner.MoveDirectory(source, destination);
         public void CreateDirectory(string path) { Trip("mkdir", null, path); inner.CreateDirectory(path); }
         public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);
@@ -97,7 +98,7 @@ public sealed class WallSessionTests
     public void FutureDataBlocksWithoutCreatingEmptyWall()
     {
         var (session, files, root) = Harness();
-        files.WriteAllBytes(Path.Combine(root, "config.json"),
+        files.WriteAllBytes(Path.Combine(root, "state.json"),
             Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion + 1}}}"));
         var result = session.Open(1, 6);
         Assert.Equal(WallOpenStatus.UnsupportedFormatBlocked, result.Status);
@@ -117,7 +118,7 @@ public sealed class WallSessionTests
         Assert.True(session.ViewBlocked);
         Assert.False(session.RequiresReopen);
         Assert.Equal(1, session.Current.Generation);
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
         Assert.False(session.Commit(added.Proposal!).Committed);
 
         WallDocument? rendered = null;
@@ -177,7 +178,7 @@ public sealed class WallSessionTests
         Assert.True(session.RefreshViewFromCurrent());
         Assert.Equal(1, refreshCount);
         Assert.NotNull(session.Propose(new RemoveMemberAction(session.Current.Generation, "tile1"), 500, 500).Proposal);
-        Assert.Equal(before.Generation, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(before.Generation, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 
     [Fact]
@@ -195,7 +196,8 @@ public sealed class WallSessionTests
         files.InjectedFault = FaultPoint.None;
         Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
         var current = session.Current;
-        files.Delete(Path.Combine(root, "config.json"));
+        files.Delete(Path.Combine(root, "state.json"));
+        files.DeleteDirectory(Path.Combine(root, "Snapshots")); // Recreate a genuinely fresh root, including the new immutable data.
         files.InjectedFault = FaultPoint.BeforeMove;
         var again = session.Open(1, 6);
         Assert.Equal(WallOpenStatus.OpenFailed, again.Status);
@@ -205,10 +207,10 @@ public sealed class WallSessionTests
         Assert.Null(session.Propose(new RemoveMemberAction(current.Generation, "missing"), 500, 500).Proposal);
 
         var blocked = new WallSession(root + "-blocked", files, new FakeLinkFileService(files));
-        files.WriteAllBytes(Path.Combine(root + "-blocked", "config.init.tmp"), Encoding.UTF8.GetBytes("{}"));
+        files.WriteAllBytes(Path.Combine(root + "-blocked", "state.init.tmp"), Encoding.UTF8.GetBytes("{}"));
         Assert.Equal(WallOpenStatus.RecoveryBlocked, blocked.Open(1, 6).Status);
         Assert.True(blocked.RecoveryBlocked);
-        files.Delete(Path.Combine(root + "-blocked", "config.init.tmp"));
+        files.Delete(Path.Combine(root + "-blocked", "state.init.tmp"));
         files.InjectedFault = FaultPoint.BeforeMove;
         Assert.Equal(WallOpenStatus.OpenFailed, blocked.Open(1, 6).Status);
         Assert.True(blocked.RecoveryBlocked);
@@ -259,6 +261,7 @@ public sealed class WallSessionTests
         public void Move(string source, string destination, bool overwrite) => inner.Move(source, destination, overwrite);
         public void Copy(string source, string destination, bool overwrite) => inner.Copy(source, destination, overwrite);
         public void Delete(string path) => inner.Delete(path);
+        public void MoveDirectory(string source, string destination) => inner.MoveDirectory(source, destination);
         public void CreateDirectory(string path) => inner.CreateDirectory(path);
         public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);

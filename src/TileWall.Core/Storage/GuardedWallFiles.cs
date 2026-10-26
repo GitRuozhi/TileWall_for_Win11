@@ -52,6 +52,15 @@ internal sealed class GuardedWallFiles(IFileStore inner, WallStoragePaths paths)
         _inner.Copy(src, dst, overwrite);
     }
 
+    public void MoveDirectory(string source, string destination)
+    {
+        _paths.GuardTree(source);
+        _paths.Guard(destination);
+        if (_inner.GetPathInfo(destination).Exists) throw new IOException("Immutable directory already exists.");
+        _inner.MoveDirectory(source, destination);
+        _paths.GuardTree(destination);
+    }
+
     public void Delete(string path)
     {
         _paths.Guard(path);

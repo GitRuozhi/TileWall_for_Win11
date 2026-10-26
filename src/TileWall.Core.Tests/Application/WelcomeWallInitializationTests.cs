@@ -25,7 +25,7 @@ public sealed class WelcomeWallInitializationTests
         Assert.Equal(WallOpenStatus.Loaded, first.Status);
         Assert.True(first.InitializedFresh);
         Assert.Same(session.Current, first.Document);
-        var persisted = Encoding.UTF8.GetString(files.ReadAllBytes(Path.Combine(root, "config.json")));
+        var persisted = Encoding.UTF8.GetString(files.ReadAllBytes(Path.Combine(root, "state.json")));
         Assert.DoesNotContain("initializedFresh", persisted, StringComparison.OrdinalIgnoreCase);
         var reopened = session.Open(1, 8);
         Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
@@ -42,7 +42,7 @@ public sealed class WelcomeWallInitializationTests
         Assert.Equal(WallOpenStatus.OpenFailed, failed.Status);
         Assert.False(failed.InitializedFresh);
         files.InjectedFault = FaultPoint.None;
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes("{\"schemaVersion\":999}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes("{\"schemaVersion\":999}"));
         var unsupported = session.Open(1, 8);
         Assert.Equal(WallOpenStatus.UnsupportedFormatBlocked, unsupported.Status);
         Assert.False(unsupported.InitializedFresh);
@@ -54,18 +54,18 @@ public sealed class WelcomeWallInitializationTests
         var (session, files, root) = Harness();
         session.Open(1, 8);
         var retained = new TileMember { Id = "retained", LocalBounds = new(0, 0, 2, 2) };
-        var candidate = session.Current with { Generation = 1, InactiveMembers = [retained] };
+        var candidate = session.Current with { Generation = 1, RecycleBinEnabled = true, InactiveMembers = [retained] };
         Assert.True(session.Commit(new(candidate, WallLayoutEngine.Measure(candidate))).Committed);
         Assert.False(session.Open(1, 8).InitializedFresh);
         var second = session.Current with { Generation = 2 };
         Assert.True(session.Commit(new(second, WallLayoutEngine.Measure(second))).Committed);
-        files.WriteAllBytes(Path.Combine(root, "config.json"),
-            Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"),
+            Encoding.UTF8.GetBytes("{\"schemaVersion\":1,\"generation\":2}"));
         var recovered = session.Open(1, 8);
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
         Assert.False(recovered.InitializedFresh);
         Assert.Equal("retained", Assert.Single(session.Current.InactiveMembers).Id);
         Assert.Equal(session.Current.Generation,
-            WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+            UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 }

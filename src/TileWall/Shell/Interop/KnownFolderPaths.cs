@@ -25,6 +25,7 @@ public sealed class KnownFolderPaths : IKnownFolderPaths
     public string? CommonPrograms => Query(FolderIdCommonPrograms);
 
     internal static string? Desktop => Query(FolderIdDesktop);
+    internal static string? PublicDesktop => Query(new Guid("C4AA340D-F20F-4863-AFEF-F87EF2E6BA25"));
     internal static string? Downloads => Query(FolderIdDownloads);
     internal static string? Documents => Query(FolderIdDocuments);
 

@@ -68,7 +68,7 @@ public static partial class StartMenuSelectionRules
         return '#';
     }
 
-    public static StartMenuExclusion Classify(string displayName, LaunchIdentity identity)
+    public static StartMenuExclusion Classify(string displayName, LaunchIdentity identity, bool? targetIsDirectory = null)
     {
         if (identity.IsUrl && Uri.TryCreate(identity.Target, UriKind.Absolute, out var uri) &&
             (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
@@ -119,7 +119,7 @@ public static partial class StartMenuSelectionRules
             (fileName.Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase) && MsiMaintenance().IsMatch(args)))
             return StartMenuExclusion.Maintenance;
         var extension = Path.GetExtension(fileName);
-        if (new[] { ".pdf", ".txt", ".rtf", ".doc", ".docx", ".htm", ".html", ".chm", ".hlp", ".md" }
+        if (targetIsDirectory != true && new[] { ".pdf", ".txt", ".rtf", ".doc", ".docx", ".htm", ".html", ".chm", ".hlp", ".md" }
             .Contains(extension, StringComparer.OrdinalIgnoreCase)) return StartMenuExclusion.DocumentOrWeb;
         if (fileName.Equals("hh.exe", StringComparison.OrdinalIgnoreCase) && args.Contains(".chm", StringComparison.OrdinalIgnoreCase))
             return StartMenuExclusion.DocumentOrWeb;

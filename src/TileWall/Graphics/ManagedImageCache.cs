@@ -72,7 +72,11 @@ internal sealed class ManagedImageCache(string root)
         lock (_gate)
         {
             Guard(path); _leases[path] = _leases.GetValueOrDefault(path) + 1;
-            try { if (File.Exists(path)) File.SetLastAccessTimeUtc(path, DateTime.UtcNow); }
+            try
+            {
+                if (File.Exists(path)) File.SetLastAccessTimeUtc(path, DateTime.UtcNow);
+                else if (Directory.Exists(path)) Directory.SetLastAccessTimeUtc(path, DateTime.UtcNow);
+            }
             catch (IOException) { }
         }
         return new ReadLease(this, path);
@@ -105,6 +109,153 @@ internal sealed class ManagedImageCache(string root)
             }
         }
     }
+
+    // Native icon frames and their manifest are one eviction/publication unit.
+    // The single writer reserves the complete package (including its mapping)
+    // before staging, while readers lease the package directory.
+    internal bool PublishIconPackage(string key, IReadOnlyDictionary<string, byte[]> payload,
+        string mappingKey, byte[] mapping, long limit, CancellationToken token)
+    {
+        if (!IsKey(key) || !IsKey(mappingKey) || payload.Count is < 2 or > 65 ||
+            !payload.ContainsKey("manifest.json") || payload.Any(pair =>
+                pair.Value.Length == 0 || pair.Key != "manifest.json" &&
+                !(pair.Key.EndsWith(".ico", StringComparison.Ordinal) && IsKey(pair.Key[..^4]) ||
+                  pair.Key.EndsWith(".pixels", StringComparison.Ordinal) && IsKey(pair.Key[..^7]))))
+            throw new IOException("Invalid native icon package.");
+        var required = checked(payload.Sum(pair => (long)pair.Value.Length) + mapping.LongLength);
+        if (required > limit || required > 33L * 1024 * 1024) return false;
+        lock (_gate)
+        {
+            token.ThrowIfCancellationRequested();
+            var root = Under("Cache", "Images", "Icons");
+            var packages = Path.Combine(root, "Packages");
+            var mappings = Path.Combine(root, "Mappings");
+            var destination = Path.Combine(packages, key);
+            var mappingPath = Path.Combine(mappings, mappingKey + ".json");
+            Guard(destination); Guard(mappingPath);
+            var exists = Directory.Exists(destination);
+            // An immutable key is reusable only after its whole payload matches.
+            // Otherwise repeatedly publishing the same key would preserve a bad
+            // plane forever even after the producer successfully rebuilt it.
+            if (exists && !IconPackageMatches(destination, payload, token))
+            {
+                if (IsLeased(destination)) return false;
+                DeleteIconTree(destination); exists = false;
+            }
+            var previousMappingBytes = File.Exists(mappingPath) ? new FileInfo(mappingPath).Length : 0;
+            var additional = checked((exists ? 0 : payload.Sum(pair => (long)pair.Value.Length)) + mapping.LongLength - previousMappingBytes);
+            if (!MakeIconSpace(root, packages, mappings, additional, limit, destination, mappingPath)) return false;
+            var staging = Path.Combine(root, "Staging", Guid.NewGuid().ToString("N"));
+            try
+            {
+                CreateDirectory(staging);
+                if (!exists)
+                {
+                    var packageStage = Path.Combine(staging, "package"); CreateDirectory(packageStage);
+                    foreach (var pair in payload)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var path = Path.Combine(packageStage, pair.Key); Guard(path);
+                        using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                        output.Write(pair.Value);
+                    }
+                    token.ThrowIfCancellationRequested();
+                    CreateDirectory(packages); Guard(packageStage); Guard(destination);
+                    Directory.Move(packageStage, destination);
+                }
+                token.ThrowIfCancellationRequested();
+                var mapStage = Path.Combine(staging, "mapping.json"); Guard(mapStage);
+                File.WriteAllBytes(mapStage, mapping); Publish(mapStage, mappingPath);
+                Guard(destination); Directory.SetLastAccessTimeUtc(destination, DateTime.UtcNow);
+                return true;
+            }
+            finally { DeleteIconTree(staging); }
+        }
+    }
+
+    private bool IconPackageMatches(string directory, IReadOnlyDictionary<string, byte[]> payload, CancellationToken token)
+    {
+        try
+        {
+            if (Directory.EnumerateDirectories(directory).Any() || SafeFiles(directory).Count() != payload.Count) return false;
+            foreach (var (name, expected) in payload)
+            {
+                token.ThrowIfCancellationRequested();
+                if (!Read(Path.Combine(directory, name), expected.Length).AsSpan().SequenceEqual(expected)) return false;
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+    }
+
+    internal void DiscardIconPackage(string key)
+    {
+        if (!IsKey(key)) return;
+        lock (_gate)
+        {
+            var directory = Under("Cache", "Images", "Icons", "Packages", key);
+            if (!IsLeased(directory)) DeleteIconTree(directory);
+        }
+    }
+
+    private bool MakeIconSpace(string root, string packages, string mappings, long additional, long limit, string keep, string keepMapping)
+    {
+        var files = SafeFiles(root).Select(path => new FileInfo(path)).ToArray();
+        var bytes = files.Sum(file => file.Length);
+        if (bytes + additional <= limit) return true;
+        var candidates = new List<(string Path, DateTime Used, bool Directory)>();
+        Guard(mappings);
+        if (Directory.Exists(mappings))
+            foreach (var path in Directory.EnumerateFiles(mappings, "*.json"))
+            {
+                Guard(path);
+                if (!path.Equals(keepMapping, StringComparison.OrdinalIgnoreCase) && IsKey(Path.GetFileNameWithoutExtension(path)))
+                    candidates.Add((path, File.GetLastAccessTimeUtc(path), false));
+            }
+        Guard(packages);
+        if (Directory.Exists(packages))
+            foreach (var path in Directory.EnumerateDirectories(packages))
+            {
+                Guard(path);
+                if (path != keep && IsKey(Path.GetFileName(path))) candidates.Add((path, Directory.GetLastAccessTimeUtc(path), true));
+            }
+        var stages = Path.Combine(root, "Staging"); Guard(stages);
+        if (Directory.Exists(stages))
+            foreach (var path in Directory.EnumerateDirectories(stages))
+            {
+                Guard(path);
+                if (Guid.TryParseExact(Path.GetFileName(path), "N", out _)) candidates.Add((path, DateTime.MinValue, true));
+            }
+        foreach (var candidate in candidates.OrderBy(item => item.Used))
+        {
+            if (bytes + additional <= limit) return true;
+            if (IsLeased(candidate.Path)) continue;
+            try
+            {
+                Guard(candidate.Path);
+                var length = candidate.Directory ? SafeFiles(candidate.Path).Sum(path => new FileInfo(path).Length) : new FileInfo(candidate.Path).Length;
+                if (candidate.Directory) DeleteIconTree(candidate.Path); else Delete(candidate.Path);
+                bytes -= length;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        return bytes + additional <= limit;
+    }
+
+    private bool IsLeased(string path) => _leases.Keys.Any(lease =>
+        lease.Equals(path, StringComparison.OrdinalIgnoreCase) ||
+        lease.StartsWith(path + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith(lease + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+
+    private void DeleteIconTree(string path)
+    {
+        Guard(path); if (!Directory.Exists(path)) return;
+        foreach (var file in SafeFiles(path).ToArray()) { Guard(file); File.Delete(file); }
+        foreach (var child in Directory.EnumerateDirectories(path).ToArray()) DeleteIconTree(child);
+        Guard(path); Directory.Delete(path, recursive: false);
+    }
+
+    private static bool IsKey(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
     private IEnumerable<string> SafeFiles(string directory)
     {
         Guard(directory); if (!Directory.Exists(directory)) yield break;

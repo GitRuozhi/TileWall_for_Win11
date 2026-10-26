@@ -21,25 +21,13 @@ public sealed class WallPackageTests : IDisposable
     public void Dispose() => Directory.Delete(_directory, recursive: true);
 
     [Fact]
-    public async Task IndependentVersionOneFixtureHasKnownContentAndOpaqueUrlIdentity()
+    public async Task LegacyDevelopmentPackageRequiresASupportedVersionWithoutMigration()
     {
         var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Compatibility");
-        var expected = JsonNode.Parse(File.ReadAllBytes(Path.Combine(fixture, "wall-package-v1.expected.json")))!;
         var reader = Harness();
         var result = await reader.ReadPreviewAsync(Path.Combine(fixture, "wall-package-v1.twpack"));
-        Assert.Equal(WallPackageReadStatus.Valid, result.Status);
-        var preview = result.Preview!;
-        Assert.Equal(1, preview.Content.Columns);
-        Assert.Equal(6, preview.Content.Rows);
-        Assert.Equal(new[] { "unnamed-v1", "clock-group-v1" }, preview.Content.Groups.Select(g => g.Id));
-        Assert.Null(preview.Content.Groups[0].Title);
-        Assert.Equal(new[] { "tile-v1", "clock-v1" }, preview.Content.Members.Select(m => m.Id));
-        Assert.Equal(expected["contentFingerprint"]!.GetValue<string>(), preview.Manifest.ContentFingerprint);
-        Assert.Equal("opaque-url:" + expected["opaqueUrlSha256"]!.GetValue<string>(), preview.Identities["tile-v1"].Key);
-        using var batch = await reader.OpenImportAsync(preview);
-        var entry = await batch.ReadEntryAsync("tile-v1");
-        Assert.Equal(ManagedEntryKind.Url, entry.Kind);
-        Assert.Equal(expected["opaqueUrlSha256"]!.GetValue<string>(), entry.Sha256);
+        Assert.Equal(WallPackageReadStatus.UnsupportedFormat, result.Status);
+        Assert.Null(result.Preview);
     }
 
     [Theory]
@@ -47,11 +35,10 @@ public sealed class WallPackageTests : IDisposable
     [InlineData(true)]
     public async Task ReaderPreservesBomOpaqueUrlButStillRejectsInvalidUrl(bool invalidUrl)
     {
-        var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Compatibility", "wall-package-v1.twpack");
-        var path = Path.Combine(_directory, "bom-opaque.twpack"); File.Copy(fixture, path);
+        var path = Path.Combine(_directory, "bom-opaque.twpack"); CreatePackage(path);
         byte[] bytes = [0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes("[InternetShortcut]\r\nIconFile=C:\\Samples\\icon.ico\r\n" +
             (invalidUrl ? "URL=file:///C:/blocked\r\n" : ""))];
-        Mutate(path, payloads => { payloads["objects/tile-v1/entry.url"] = bytes; RebuildManifest(payloads); });
+        Mutate(path, payloads => { payloads["objects/tile/entry.url"] = bytes; RebuildManifest(payloads); });
         var reader = Harness();
         var result = await reader.ReadPreviewAsync(path);
         Assert.Equal(invalidUrl ? WallPackageReadStatus.InvalidPackage : WallPackageReadStatus.Valid, result.Status);
@@ -60,18 +47,18 @@ public sealed class WallPackageTests : IDisposable
         {
             var preview = result.Preview!;
             var hash = Convert.ToHexString(SHA256.HashData(bytes));
-            Assert.Equal("opaque-url:" + hash, preview.Identities["tile-v1"].Key);
+            Assert.Equal("opaque-url:" + hash, preview.Identities["tile"].Key);
             using var batch = await reader.OpenImportAsync(preview);
-            Assert.Equal(hash, (await batch.ReadEntryAsync("tile-v1")).Sha256);
+            Assert.Equal(hash, (await batch.ReadEntryAsync("tile")).Sha256);
         }
     }
 
     [Fact]
-    public void Version035Schema4FixturePreservesSettingsAndInactiveContentOnRead()
+    public void LegacyDevelopmentDocumentDoesNotSilentlyEnableRetention()
     {
         var bytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Compatibility", "wall-schema4-v035.json"));
         var document = WallJson.Deserialize(bytes);
-        Assert.Empty(WallLayoutEngine.ValidateGeometry(document));
+        Assert.Contains("RECYCLE_DISABLED_CONTENT", WallLayoutEngine.ValidateGeometry(document));
         Assert.Equal(35, document.Generation);
         Assert.Equal("tile-035", document.Lanes[0].Groups[0].Members[0].Id);
         Assert.Equal(new GridRect(1, 1, 2, 2), document.Lanes[0].Groups[0].Members[0].LocalBounds);
@@ -157,7 +144,7 @@ public sealed class WallPackageTests : IDisposable
     public async Task FutureVersionIsDistinctFromCorruptionAndCancellationIsNotAnError()
     {
         var (path, reader) = await TestPackageAsync();
-        Mutate(path, p => { var json = JsonNode.Parse(p["manifest.json"])!; json["formatVersion"] = 2; p["manifest.json"] = Encoding.UTF8.GetBytes(json.ToJsonString()); });
+        Mutate(path, p => { var json = JsonNode.Parse(p["manifest.json"])!; json["formatVersion"] = WallPackageManifest.CurrentFormatVersion + 1; p["manifest.json"] = Encoding.UTF8.GetBytes(json.ToJsonString()); });
         Assert.Equal(WallPackageReadStatus.UnsupportedFormat, (await reader.ReadPreviewAsync(path)).Status);
         using var cancel = new CancellationTokenSource(); cancel.Cancel();
         Assert.Equal(WallPackageReadStatus.Cancelled, (await reader.ReadPreviewAsync(path, token: cancel.Token)).Status);

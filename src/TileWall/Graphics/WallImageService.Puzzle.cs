@@ -19,7 +19,10 @@ public sealed record PuzzleCandidateResult(IReadOnlyList<string> Paths,
 }
 
 public sealed record PuzzleFrameResult(PuzzleFrame? Frame,
-    WallImageStatus Status, string? Diagnostic = null);
+    WallImageStatus Status, string? Diagnostic = null)
+{
+    public bool CacheAllowed { get; init; } = true;
+}
 
 public sealed record PuzzleFrame(string CanonicalPath, long SourceBytes, DateTime LastWriteUtc,
     PixelSize SourcePixels, PixelSize SharpDecodedPixels, PixelSize BlurDecodedPixels,
@@ -31,6 +34,7 @@ public sealed record TargetImageSourceResult(MemberImageSource Source, PuzzleCan
 {
     internal string? TargetPath { get; init; }
     internal string? SourceFingerprint { get; init; }
+    internal bool? TargetIsDirectory { get; init; }
 
     public WallMember ApplyTo(WallMember member) => member with
     {
@@ -77,7 +81,7 @@ public sealed partial class WallImageService
         var after = await Task.Run(() => ReadTargetFingerprint(target, ct), ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         if (before != after) throw new IOException("Target changed while its image source was being read.");
-        return new(source, candidates) { TargetPath = target, SourceFingerprint = before.Fingerprint };
+        return new(source, candidates) { TargetPath = target, SourceFingerprint = before.Fingerprint, TargetIsDirectory = before.Directory };
     }
 
     public Task<bool> IsTargetSourceCurrentAsync(TargetImageSourceResult result, CancellationToken ct = default) =>
@@ -241,47 +245,32 @@ public sealed partial class WallImageService
                 budget, ct, member.Images.Path, member.Images.Media?.Sha256, member.Images.Media);
         if (member.Images.Kind == MemberImageSourceKind.Folder)
         {
-            var selected = previewImagePath;
-            if (selected is null)
+            IDisposable? sourceRead = null;
+            try
             {
-                var candidates = await EnumerateCandidatesCoreAsync(member.Images, ct);
-                selected = candidates.Paths.FirstOrDefault(path =>
-                    StringComparer.OrdinalIgnoreCase.Equals(path, member.Carousel?.CurrentImageId)) ?? candidates.Paths.FirstOrDefault();
+                var selected = previewImagePath;
+                if (selected is null)
+                {
+                    var candidates = await EnumerateCandidatesCoreAsync(member.Images, ct);
+                    selected = candidates.Paths.FirstOrDefault(path =>
+                        StringComparer.OrdinalIgnoreCase.Equals(path, member.Carousel?.CurrentImageId)) ?? candidates.Paths.FirstOrDefault();
+                }
+                var selectedPath = selected;
+                sourceRead = await Task.Run(() => OpenManagedGalleryRead(member.Images, selectedPath), ct);
+                var cached = GalleryReadPath(member.Images, selected);
+                if (cached.Path is not null && !File.Exists(cached.Path))
+                    await EnsureGalleryOriginalAsync(member.Images, selected, ct);
+                return await LoadImageFileFrameAsync(cached.Path, budget, ct, selected, cached.Hash);
             }
-            var cached = GalleryReadPath(member.Images, selected);
-            if (cached.Path is not null && !File.Exists(cached.Path))
-                await EnsureGalleryOriginalAsync(member.Images, selected, ct);
-            return await LoadImageFileFrameAsync(cached.Path, budget, ct, selected, cached.Hash);
+            finally
+            {
+                if (sourceRead is not null) await Task.Run(sourceRead.Dispose);
+            }
         }
         if (previewImagePath is not null) return await LoadImageFileFrameAsync(previewImagePath, budget, ct);
         if (widthPixels is < 1 or > 4096 || heightPixels is < 1 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(widthPixels));
-        try
-        {
-            var icon = await TryLoadMemberIconAsync(member, entryOrTarget, widthPixels, ct);
-            if (icon is { Frame: not null }) return icon;
-            await _automaticSlots.WaitAsync(ct);
-            Prepared prepared;
-            try { prepared = await Task.Run(() => PrepareAutoAsync(entryOrTarget, widthPixels, heightPixels, ct,
-                skipNative: icon?.Diagnostic == "NoNativeIcon"), ct); }
-            finally { _automaticSlots.Release(); }
-            ct.ThrowIfCancellationRequested();
-            if (prepared.Pixels is null) return new(null, prepared.Status, prepared.Diagnostic);
-            var sharp = new DecodedImageFrame(entryOrTarget ?? $"automatic:{member.Id}", 0, DateTime.MinValue,
-                prepared.Width, prepared.Height, prepared.Width, prepared.Height, prepared.Pixels);
-            if (member.Visual.BackgroundMode != MemberBackgroundMode.Blur)
-                return new(new PuzzleFrame(sharp.SourcePath, 0, DateTime.MinValue,
-                    new PixelSize(sharp.SourceWidth, sharp.SourceHeight), new PixelSize(sharp.Width, sharp.Height),
-                    default, MakeBitmap(sharp), null), prepared.Status);
-            var blurred = LowResolutionBlur.Apply(sharp);
-            return new(new PuzzleFrame(sharp.SourcePath, 0, DateTime.MinValue,
-                new PixelSize(sharp.SourceWidth, sharp.SourceHeight), new PixelSize(sharp.Width, sharp.Height),
-                new PixelSize(blurred.Width, blurred.Height), MakeBitmap(sharp), MakeBitmap(blurred)), prepared.Status);
-        }
-        catch (OperationCanceledException) { return new(null, WallImageStatus.Cancelled); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or
-            ArgumentException or InvalidOperationException or OverflowException)
-        { return new(null, WallImageStatus.Invalid, ex.GetType().Name); }
+        return await LoadAutomaticFrameCoreAsync(entryOrTarget, widthPixels, heightPixels, needsBlur, ct, member);
     }
 
     private async Task<PuzzleFrameResult> LoadImageFileFrameAsync(
@@ -337,6 +326,7 @@ public sealed partial class WallImageService
         var canonicalPath = NormalizeImageFilePath(path);
         if (canonicalPath is null)
             return new(WallImageStatus.Invalid, null, "InvalidPath");
+        using var ownership = media is null ? null : _formalResourceLease?.Invoke(null, media);
         var verified = media is null ? default : OpenVerifiedMedia(canonicalPath, media);
         using var mediaRead = verified.Lease;
         if (verified.Diagnostic is { } diagnostic)

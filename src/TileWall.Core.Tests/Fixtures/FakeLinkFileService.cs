@@ -47,6 +47,13 @@ public sealed class FakeLinkFileService(IFileStore files) : ILnkFileService
         Write(path, new FakeLinkState(target, arguments, workingDirectory, HasIdList: false));
     }
 
+    public void CreateShell(string path, string parsingName)
+    {
+        Fire(LnkFaultPoint.BeforeCreate, path);
+        if (_files.Exists(path)) throw new IOException($"[伪链服务] 入口已存在：{path}");
+        Write(path, new FakeLinkState(null, "", "", HasIdList: true, ShellParsingName: parsingName));
+    }
+
     public LinkFields Read(string path)
     {
         Fire(LnkFaultPoint.BeforeRead, path);

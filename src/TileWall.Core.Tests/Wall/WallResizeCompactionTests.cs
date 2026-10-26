@@ -327,19 +327,20 @@ public sealed class WallResizeCompactionTests
         Assert.True(add.Success, add.Detail);
         Assert.True(session.Commit(add.Proposal!).Committed);
         var before = WallJson.Serialize(session.Current);
+        var beforeState = files.ReadAllBytes(Path.Combine(root, "state.json"));
         var resize = session.Propose(new ResizeWallAction(session.Current.Generation, 1, 2), 3000, 3000);
         Assert.True(resize.Success, resize.Detail);
 
         files.InjectedFault = FaultPoint.BeforeMove;
         Assert.False(session.Commit(resize.Proposal!).Committed);
         Assert.Equal(before, WallJson.Serialize(session.Current));
-        Assert.Equal(before, files.ReadAllBytes(Path.Combine(root, "config.json")));
+        Assert.Equal(beforeState, files.ReadAllBytes(Path.Combine(root, "state.json")));
 
         files.InjectedFault = FaultPoint.None;
         Assert.True(session.Commit(resize.Proposal!).Committed);
         Assert.Equal(1, session.Current.Columns);
         Assert.Equal(0, session.Current.Lanes[0].Groups[0].Members[0].LocalBounds.Row);
         Assert.Equal(session.Current.Generation,
-            WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+            UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 }

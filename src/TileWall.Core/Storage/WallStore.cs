@@ -6,7 +6,7 @@ using TileWall.Core.Wall;
 
 namespace TileWall.Core.Storage;
 
-/// <summary>Wall and managed entries, committed at one config replacement point.</summary>
+/// <summary>Joint wall/settings/retention and owned assets, committed at one manifest replacement point.</summary>
 public sealed partial class WallStore
 {
     public const string ImportDestinationChanged = "IMPORT_DESTINATION_CHANGED";
@@ -36,14 +36,14 @@ public sealed partial class WallStore
             _paths.Guard(_paths.Previous);
             var primary = Classify(_paths.Config);
             var previous = Classify(_paths.Previous);
-            if (primary.Schema is { } primarySchema && primarySchema != WallDocument.CurrentSchemaVersion ||
-                previous.Schema is { } previousSchema && previousSchema != WallDocument.CurrentSchemaVersion)
+            if (primary.Schema is { } primarySchema && primarySchema != UserDataManifest.CurrentFormatVersion ||
+                previous.Schema is { } previousSchema && previousSchema != UserDataManifest.CurrentFormatVersion)
                 return OpenResult(WallOpenStatus.UnsupportedFormatBlocked, null, "Only the current wall format is supported; data remains untouched.");
-            if (primary.Present && primary.Schema != WallDocument.CurrentSchemaVersion)
+            if (primary.Present && primary.Schema != UserDataManifest.CurrentFormatVersion)
                 return OpenResult(WallOpenStatus.CorruptBlocked, null, "Primary schema is missing or ambiguous.");
-            if (previous.Present && previous.Schema != WallDocument.CurrentSchemaVersion)
+            if (previous.Present && previous.Schema != UserDataManifest.CurrentFormatVersion)
                 return OpenResult(WallOpenStatus.CorruptBlocked, null, "Previous schema is missing or ambiguous.");
-            var initTemp = _paths.Under("config.init.tmp");
+            var initTemp = _paths.Under("state.init.tmp");
             _paths.Guard(initTemp);
             if (_files.Exists(initTemp))
                 return OpenResult(WallOpenStatus.RecoveryBlocked, null,
@@ -51,7 +51,6 @@ public sealed partial class WallStore
 
             var recover = Sweep(primary, previous);
             if (recover is not null) return recover;
-            AuditRecoveryMaterials();
             primary = Classify(_paths.Config);
             previous = Classify(_paths.Previous);
             if (!primary.Present && !previous.Present)
@@ -64,14 +63,16 @@ public sealed partial class WallStore
             {
                 if (TryReadDocument(_paths.Config, out var document, out var error))
                 {
+                    AuditRecoveryMaterials();
                     CheckActiveEntries(document!);
+                    TryReclaimUnreferencedResources();
                     return OpenResult(WallOpenStatus.Loaded, document);
                 }
-                if (previous.Schema != WallDocument.CurrentSchemaVersion || !TryReadDocument(_paths.Previous, out var prior, out _))
+                if (previous.Schema != UserDataManifest.CurrentFormatVersion || !TryReadDocument(_paths.Previous, out var prior, out _))
                     return OpenResult(WallOpenStatus.CorruptBlocked, null, $"Invalid primary: {error}");
                 return RecoverPrevious(prior!);
             }
-            if (previous.Schema == WallDocument.CurrentSchemaVersion && TryReadDocument(_paths.Previous, out var backup, out _))
+            if (previous.Schema == UserDataManifest.CurrentFormatVersion && TryReadDocument(_paths.Previous, out var backup, out _))
                 return RecoverPrevious(backup!);
             return OpenResult(WallOpenStatus.CorruptBlocked, null, "No valid primary or previous document.");
         }
@@ -83,7 +84,9 @@ public sealed partial class WallStore
 
     public WallOpenResult InitializeFresh(WallDocument initial)
     {
-        string? temp = null;
+        string? temp = null, stage = null;
+        PreparedUserDataSnapshot? snapshot = null;
+        var ownsSnapshot = false;
         try
         {
             if (initial.Generation != 0 || Validate(initial).Count > 0)
@@ -91,30 +94,53 @@ public sealed partial class WallStore
             var status = Open();
             if (status.Status != WallOpenStatus.Fresh) return status;
             CheckActiveEntries(initial);
-            _paths.Guard(_paths.Root);
             _files.CreateDirectory(_paths.Root);
-            temp = _paths.Under("config.init.tmp");
-            _paths.Guard(temp);
-            _files.WriteAllBytes(temp, WallJson.Serialize(initial));
+            temp = _paths.Under("state.init.tmp");
+            snapshot = UserDataSnapshotJson.Prepare(initial);
+            stage = _paths.Under("Staging", Guid.NewGuid().ToString("N"));
+            _files.CreateDirectory(_paths.Staging);
+            _files.CreateDirectory(stage);
+            StageSnapshot(snapshot, stage);
+            // This marker precedes directory publication, so an interrupted first publication cannot look Fresh.
+            _files.WriteAllBytes(temp, snapshot.ManifestBytes);
+            ownsSnapshot = !_files.GetPathInfo(_paths.Under("Snapshots", snapshot.Manifest.SnapshotId)).Exists;
+            InstallSnapshot(snapshot.Manifest, stage);
             _files.Move(temp, _paths.Config, overwrite: false);
-            return OpenResult(WallOpenStatus.Loaded, WallJson.Freeze(initial));
+            try { _files.DeleteDirectory(stage); }
+            catch (Exception cleanup) when (IsStorageError(cleanup))
+            { return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; staging cleanup remains: " + cleanup.Message); }
+            return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes));
         }
         catch (Exception ex) when (IsStorageError(ex))
         {
-            if (temp is not null && _files.Exists(temp))
-                try { _paths.Guard(temp); _files.Delete(temp); }
-                catch (Exception cleanup) when (IsStorageError(cleanup))
-                { return OpenResult(WallOpenStatus.RecoveryBlocked, null, $"{ex.Message}; cleanup: {cleanup.Message}"); }
-            // Open already returned Fresh before this write. A second Open would only guess.
-            if (_files.Exists(_paths.Config) || temp is not null && _files.Exists(temp))
-                return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message);
+            // A replace implementation may report failure after having installed the new manifest.
+            if (snapshot is not null && TryConfigHash() == Hash(snapshot.ManifestBytes))
+                return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; cleanup remains: " + ex.Message);
+            try
+            {
+                if (_files.Exists(_paths.Config)) return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message);
+                if (stage is not null) _files.DeleteDirectory(stage);
+                if (ownsSnapshot && snapshot is not null)
+                {
+                    var directory = _paths.Under("Snapshots", snapshot.Manifest.SnapshotId);
+                    if (_files.GetPathInfo(directory).Exists)
+                    {
+                        _ = ReadSnapshotAt(snapshot.Manifest, directory);
+                        _files.DeleteDirectory(directory);
+                    }
+                }
+                if (temp is not null) _files.Delete(temp);
+            }
+            catch (Exception cleanup) when (IsStorageError(cleanup))
+            { return OpenResult(WallOpenStatus.RecoveryBlocked, null, $"{ex.Message}; cleanup: {cleanup.Message}"); }
             return OpenResult(WallOpenStatus.OpenFailed, null, ex.GetType().Name + ": " + ex.Message);
         }
     }
 
     public WallPlanResult PlanEntries(WallDocument current, WallDocument candidate,
         IReadOnlyList<EntryChange> changes, IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
-        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
     {
         try
         {
@@ -157,7 +183,7 @@ public sealed partial class WallStore
                 if (before is null && after is null) throw new InvalidDataException($"Unknown member: {id}");
                 if (ops.Count(o => o is EntryChange.Keep) > 0 && ops.Length != 1)
                     throw new InvalidDataException($"Keep cannot be combined: {id}");
-                if (ops.Count(o => o is EntryChange.CopyShortcut or EntryChange.FromPackage or EntryChange.CreateLink or EntryChange.CreateUrl or EntryChange.Remove) > 1 ||
+                if (ops.Count(o => o is EntryChange.CopyShortcut or EntryChange.FromPackage or EntryChange.CreateLink or EntryChange.CreateShellLink or EntryChange.CreateUrl or EntryChange.Remove) > 1 ||
                     ops.Count(o => o is EntryChange.ChangeTarget) > 1 || ops.Count(o => o is EntryChange.Rename) > 1)
                     throw new InvalidDataException($"Conflicting entry changes: {id}");
                 if (ops.Any(o => o is EntryChange.Keep))
@@ -175,7 +201,7 @@ public sealed partial class WallStore
                 if (after is null || after is ClockMember)
                     throw new InvalidDataException($"Entry operation has no eligible member: {id}");
                 var entry = before?.Entry;
-                var replacement = ops.SingleOrDefault(o => o is EntryChange.CopyShortcut or EntryChange.FromPackage or EntryChange.CreateLink or EntryChange.CreateUrl);
+                var replacement = ops.SingleOrDefault(o => o is EntryChange.CopyShortcut or EntryChange.FromPackage or EntryChange.CreateLink or EntryChange.CreateShellLink or EntryChange.CreateUrl);
                 if (replacement is not null)
                 {
                     var kind = replacement switch
@@ -183,6 +209,7 @@ public sealed partial class WallStore
                         EntryChange.CopyShortcut copy => SourceKind(copy.SourcePath),
                         EntryChange.FromPackage copy => copy.Source.Kind,
                         EntryChange.CreateLink link when Path.IsPathFullyQualified(link.TargetPath) => ManagedEntryKind.Lnk,
+                        EntryChange.CreateShellLink shell when !string.IsNullOrWhiteSpace(shell.ParsingName) && !string.IsNullOrWhiteSpace(shell.ExpectedIdentityKey) => ManagedEntryKind.Lnk,
                         EntryChange.CreateUrl url when UrlShortcut.ValidateUrl(url.Url).Count == 0 => ManagedEntryKind.Url,
                         _ => throw new InvalidDataException($"Invalid entry source: {id}")
                     };
@@ -238,10 +265,10 @@ public sealed partial class WallStore
                     throw new InvalidDataException($"Title differs from managed entry filename: {id}");
                 planned[id] = desired;
             }
-            var normalized = ReplaceEntries(candidate, planned);
+            var normalized = UserDataSnapshotJson.MapGalleryPaths(ReplaceEntries(candidate, planned), _paths.Gallery);
             errors = Validate(normalized).ToList();
             return errors.Count == 0
-                ? new WallPlanResult(new WallCommitRequest(current.Generation, WallJson.Freeze(normalized), changes.ToArray(), mediaAssets?.ToArray(), frozenPreconditions), [])
+                ? new WallPlanResult(new WallCommitRequest(current.Generation, WallJson.Freeze(normalized), changes.ToArray(), mediaAssets?.ToArray(), frozenPreconditions, managedGalleries?.ToArray()), [])
                 : new WallPlanResult(null, errors);
         }
         catch (Exception ex) when (IsStorageError(ex))
@@ -264,7 +291,7 @@ public sealed partial class WallStore
                     return CommitResult(WallCommitStatus.Rejected, null, "Current generation or config bytes differ from disk.");
             WallPlanResult plan;
             using (timings?.Measure("store.planning"))
-                plan = PlanEntries(current, request.Proposed, request.EntryChanges, request.MediaAssets, request.ExpectedEntrySha256);
+                plan = PlanEntries(current, request.Proposed, request.EntryChanges, request.MediaAssets, request.ExpectedEntrySha256, request.ManagedGalleries);
             using (timings?.Measure("store.canonicalValidation"))
             {
                 // Commit owns one planning pass. Use the canonical request it produced;
@@ -280,7 +307,7 @@ public sealed partial class WallStore
                 if (blocked is not null) return blocked;
             }
             return CommitCore(current, plan.Request.Proposed, plan.Request.EntryChanges,
-                expectedHash, timings, plan.Request.MediaAssets, plan.Request.ExpectedEntrySha256);
+                expectedHash, timings, plan.Request.MediaAssets, plan.Request.ExpectedEntrySha256, plan.Request.ManagedGalleries);
         }
         catch (EntryPreconditionChangedException)
         {
@@ -303,18 +330,18 @@ public sealed partial class WallStore
         _paths.Guard(_paths.Config);
         _paths.Guard(_paths.Previous);
         var previous = Classify(_paths.Previous);
-        if (previous.Present && previous.Schema != WallDocument.CurrentSchemaVersion)
+        if (previous.Present && previous.Schema != UserDataManifest.CurrentFormatVersion)
             return CommitResult(WallCommitStatus.RecoveryBlocked, null, "Previous format is unsupported, missing or ambiguous.");
-        var initTemp = _paths.Under("config.init.tmp");
+        var initTemp = _paths.Under("state.init.tmp");
         _paths.Guard(initTemp);
         if (_files.Exists(initTemp))
             return CommitResult(WallCommitStatus.RecoveryBlocked, null,
                 $"Unjournaled initialization file requires inspection: {initTemp}");
-        var recover = Sweep(new FileClass(true, WallDocument.CurrentSchemaVersion), previous);
+        var recover = Sweep(new FileClass(true, UserDataManifest.CurrentFormatVersion), previous);
         if (recover is not null)
             return CommitResult(WallCommitStatus.RecoveryBlocked, null,
                 $"Store is {recover.Status}: {string.Join("; ", recover.Diagnostics)}");
-        AuditRecoveryMaterials(timings);
+        AuditRecoveryMaterials(timings, expectedHash);
         if (Hash(_files.ReadAllBytes(_paths.Config)) != expectedHash)
             return CommitResult(WallCommitStatus.Rejected, null, "Config changed during commit preflight.");
         CheckActiveEntries(current, verifyMediaContents: false, observeIdentities: false, expectedEntrySha256);
@@ -325,29 +352,35 @@ public sealed partial class WallStore
         IReadOnlyList<EntryChange> changes,
         string expectedDiskHash, WallCommitTimings? timings = null,
         IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
-        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
     {
         using var total = timings?.Measure("store.transactionTotal");
         var commitId = Guid.NewGuid().ToString("N");
         var stageDir = _paths.Under("Staging", commitId);
         var materialDir = _paths.Under("Recovery", "Entries", commitId);
         List<WallJournalMedia> media;
+        List<WallJournalGallery> galleries;
         try
         {
             using (timings?.Measure("store.media.plan"))
                 media = PlanMedia(commitId, current, proposed, mediaAssets ?? []);
+            galleries = PlanGalleries(commitId, current, proposed, managedGalleries ?? []);
+            ValidatePreparedResourceBudget(current, mediaAssets ?? [], managedGalleries ?? []);
         }
         catch (CurrentMediaInvalidException ex)
         { return CommitResult(WallCommitStatus.RecoveryBlocked, null, ex.Message); }
         catch (Exception ex) when (IsStorageError(ex))
         { return CommitResult(WallCommitStatus.Rejected, null, ex.Message); }
         byte[] oldBytes, newBytes;
+        PreparedUserDataSnapshot snapshot;
         using (timings?.Measure("store.prepareConfig"))
         {
             oldBytes = _files.ReadAllBytes(_paths.Config);
             if (Hash(oldBytes) != expectedDiskHash)
                 return CommitResult(WallCommitStatus.Rejected, null, "Config changed during commit preflight.");
-            newBytes = WallJson.Serialize(proposed);
+            snapshot = UserDataSnapshotJson.Prepare(proposed);
+            newBytes = snapshot.ManifestBytes;
         }
         var old = Members(current);
         var next = Members(proposed);
@@ -375,7 +408,7 @@ public sealed partial class WallStore
         List<WallObservedEntry> observed;
         using (timings?.Measure("store.entryObservation")) observed = ObserveUnchanged(current, ops, ActiveMemberIds(proposed), expectedEntrySha256);
         var journal = new WallJournal(WallDocument.CurrentSchemaVersion, commitId, current.Generation, proposed.Generation,
-            Hash(oldBytes), Hash(newBytes), false, ops, observed, media);
+            Hash(oldBytes), Hash(newBytes), false, ops, observed, media, galleries);
         using (timings?.Measure("store.guardCommitPaths"))
         {
             GuardCommitPaths(journal);
@@ -384,7 +417,7 @@ public sealed partial class WallStore
         }
         InstallTransactionResult installed;
         using (timings?.Measure("store.transactionWrite"))
-            installed = ExecuteInstallTransaction(journal, newBytes, oldBytes, null, () =>
+            installed = ExecuteInstallTransaction(journal, snapshot, oldBytes, null, () =>
             {
                 for (var i = 0; i < ops.Count; i++)
                 {
@@ -400,6 +433,7 @@ public sealed partial class WallStore
                 }
                 using (timings?.Measure("store.media.stage"))
                     StageMedia(journal, mediaAssets ?? []);
+                StageGalleries(journal, managedGalleries ?? []);
                 ValidateGroupIdentities(proposed, journal);
             }, () =>
             {
@@ -434,7 +468,7 @@ public sealed partial class WallStore
     /// Shared staging, intent, install and config replacement. Callers supply entry bytes and which
     /// previous document to publish. The config Move is the commit point.
     /// </summary>
-    private InstallTransactionResult ExecuteInstallTransaction(WallJournal journal, byte[] newConfig,
+    private InstallTransactionResult ExecuteInstallTransaction(WallJournal journal, PreparedUserDataSnapshot snapshot,
         byte[] previousBytes, byte[]? corruptDiagnostic, Action stageEntries, Action backupEntries,
         WallCommitTimings? timings = null, Action? beforeIntent = null)
     {
@@ -451,8 +485,9 @@ public sealed partial class WallStore
             _files.CreateDirectory(_paths.Under("Recovery"));
             _files.CreateDirectory(_paths.RecoveryEntries);
             _files.CreateDirectory(materialDir);
-            var configTemp = _paths.Under("Staging", journal.CommitId, "config.tmp");
-            _files.WriteAllBytes(configTemp, newConfig);
+            var configTemp = _paths.Under("Staging", journal.CommitId, "state.tmp");
+            _files.WriteAllBytes(configTemp, snapshot.ManifestBytes);
+            StageSnapshot(snapshot, stageDir);
             stageEntries();
             var journalTemp = _paths.Under("Staging", journal.CommitId, "commit.tmp");
             _files.WriteAllBytes(journalTemp, JsonSerializer.SerializeToUtf8Bytes(journal, JournalJson));
@@ -463,6 +498,8 @@ public sealed partial class WallStore
             _files.WriteAllBytes(markerTemp, []);
             _files.Move(markerTemp, _paths.Under("Staging", journal.CommitId, IntentName), false);
             intentPublished = true;
+            InstallSnapshot(snapshot.Manifest, stageDir);
+            InstallGalleries(journal);
             InstallMedia(journal, timings);
             Install(journal);
             if (journal.OldHash is not null && Hash(_files.ReadAllBytes(_paths.Config)) != journal.OldHash)
@@ -474,7 +511,7 @@ public sealed partial class WallStore
                 _files.WriteAllBytes(corrupt, corruptDiagnostic);
             }
             _paths.Guard(_paths.Previous);
-            var prevTemp = _paths.Under("Recovery", "config.prev.tmp");
+            var prevTemp = _paths.Under("Recovery", "state.prev.tmp");
             _files.WriteAllBytes(prevTemp, previousBytes);
             _files.Move(prevTemp, _paths.Previous, true);
             _files.Move(configTemp, _paths.Config, true);
@@ -532,7 +569,7 @@ public sealed partial class WallStore
     private byte[] ProduceEntry(string id, ManagedEntryReference? oldEntry, ManagedEntryReference newEntry,
         EntryChange[] changes, string staged)
     {
-        var replacement = changes.FirstOrDefault(c => c is EntryChange.CopyShortcut or EntryChange.FromPackage or EntryChange.CreateLink or EntryChange.CreateUrl);
+        var replacement = changes.FirstOrDefault(c => c is EntryChange.CopyShortcut or EntryChange.FromPackage or EntryChange.CreateLink or EntryChange.CreateShellLink or EntryChange.CreateUrl);
         switch (replacement)
         {
             case EntryChange.FromPackage package:
@@ -546,6 +583,9 @@ public sealed partial class WallStore
                 break;
             case EntryChange.CreateLink link:
                 _links.Create(staged, link.TargetPath, "", "");
+                break;
+            case EntryChange.CreateShellLink shell:
+                _links.CreateShell(staged, shell.ParsingName);
                 break;
             case EntryChange.CreateUrl url:
                 _files.WriteAllBytes(staged, UrlShortcut.CreateContent(url.Url));
@@ -575,6 +615,9 @@ public sealed partial class WallStore
             (stagedBytes.Length != packageSource.Source.Length || Hash(stagedBytes) != packageSource.Source.Sha256 ||
              EntryObservation.Observe(_identities, newEntry.Kind, staged, stagedBytes).Key != packageSource.Source.Identity.Key))
             throw new IOException("Package shortcut differs from verified entry bytes or identity.");
+        if (replacement is EntryChange.CreateShellLink shellSource &&
+            EntryObservation.Observe(_identities, newEntry.Kind, staged, stagedBytes).Key != shellSource.ExpectedIdentityKey)
+            throw new IOException("The native Shell identity changed during preparation.");
         return stagedBytes;
     }
 
@@ -615,6 +658,7 @@ public sealed partial class WallStore
             }
         }
         RollbackMedia(journal);
+        RollbackGalleries(journal);
         var stage = _paths.Under("Staging", journal.CommitId);
         var material = _paths.Under("Recovery", "Entries", journal.CommitId);
         _paths.GuardTree(stage);
@@ -633,6 +677,7 @@ public sealed partial class WallStore
             PruneMaterials(journal, keepMaterialId);
             PruneCorruptDiagnostics(journal);
             _files.DeleteDirectory(stage);
+            TryReclaimUnreferencedResources(journal.NewHash);
             return WallCommitStatus.Committed;
         }
         catch (Exception ex) when (IsStorageError(ex))
@@ -642,7 +687,7 @@ public sealed partial class WallStore
     }
 
     /// <summary>
-    /// Recovery publishes trusted previous bytes into config.prev.
+    /// Recovery publishes trusted previous bytes into Recovery/state.prev.json.
     /// The source journal is the one whose hash matches that previous, not the corrupt OldHash.
     /// </summary>
     private string? RecoverySourceToKeep(WallJournal journal)
@@ -712,8 +757,11 @@ public sealed partial class WallStore
         _ = ReadJournal(dest, journal.CommitId);
         var snapshot = _paths.Under("Recovery", "Entries", journal.CommitId, "new.snapshot.json");
         if (!_files.Exists(snapshot)) _files.Copy(_paths.Config, snapshot, false);
-        if (Hash(_files.ReadAllBytes(snapshot)) != journal.NewHash)
-            throw new IOException("Committed snapshot verification failed.");
+        var committedManifest = _files.ReadAllBytes(snapshot);
+        if (Hash(committedManifest) != journal.NewHash || !TryReadDocument(committedManifest, out var committed, out _))
+            throw new IOException("Committed complete snapshot verification failed.");
+        VerifyMediaCoverage(journal, committed!);
+        VerifyGalleryCoverage(journal, committed!);
         var oldSnapshot = _paths.Under("Recovery", "Entries", journal.CommitId, "old.snapshot.json");
         if (journal.OldHash is not null)
         {
@@ -726,6 +774,9 @@ public sealed partial class WallStore
                 _files.Copy(corruptSource, oldSnapshot, false);
             if (!_files.Exists(oldSnapshot) || Hash(_files.ReadAllBytes(oldSnapshot)) != journal.OldHash)
                 throw new IOException("Previous snapshot verification failed.");
+            // Recovery deliberately preserves the damaged former primary as an exact diagnostic.
+            if (!journal.RecoveryPublish && !TryReadDocument(oldSnapshot, out _, out _))
+                throw new IOException("Previous complete snapshot verification failed.");
         }
     }
 
@@ -762,11 +813,27 @@ public sealed partial class WallStore
         }
     }
 
-    private void AuditRecoveryMaterials(WallCommitTimings? timings = null)
+    private void AuditRecoveryMaterials(WallCommitTimings? timings = null, string? expectedCurrentHash = null)
     {
         _paths.GuardTree(_paths.RecoveryEntries);
-        // This set belongs only to this audit pass; commits, opens, and recovery stages re-read media.
+        // A recovery transaction may retain a source journal solely to prove its old side.
+        // The other side can be the damaged snapshot that caused recovery; never make that
+        // diagnostic side a requirement for opening the now healthy current/previous pair.
+        var requiredHashes = new HashSet<string>(StringComparer.Ordinal);
+        if (expectedCurrentHash is not null) requiredHashes.Add(expectedCurrentHash);
+        else if (_files.Exists(_paths.Config)) requiredHashes.Add(Hash(_files.ReadAllBytes(_paths.Config)));
+        if (_files.Exists(_paths.Previous)) requiredHashes.Add(Hash(_files.ReadAllBytes(_paths.Previous)));
+        foreach (var directory in _files.ListDirectories(_paths.Staging))
+        {
+            var id = Path.GetFileName(directory);
+            var path = Path.Combine(directory, JournalName);
+            if (!_files.Exists(path)) continue;
+            var pending = ReadJournal(path, id);
+            requiredHashes.Add(pending.NewHash);
+            if (pending.OldHash is not null) requiredHashes.Add(pending.OldHash);
+        }
         var auditedMedia = new HashSet<ManagedMediaReference>();
+        var auditedGalleries = new HashSet<ManagedGalleryReference>();
         foreach (var directory in _files.ListDirectories(_paths.RecoveryEntries))
         {
             var id = Path.GetFileName(directory);
@@ -774,20 +841,27 @@ public sealed partial class WallStore
             var journalPath = _paths.Under("Recovery", "Entries", id, "journal.json");
             if (!_files.Exists(journalPath)) throw new InvalidDataException($"Recovery material lacks journal: {id}");
             var journal = ReadJournal(journalPath, id);
-            using (timings?.Measure("store.media.audit"))
-                VerifyJournalMedia(journal, auditedMedia);
-            var newSnapshot = _paths.Under("Recovery", "Entries", id, "new.snapshot.json");
-            var newSnapshotBytes = _files.Exists(newSnapshot) ? _files.ReadAllBytes(newSnapshot) : null;
-            if (newSnapshotBytes is null || Hash(newSnapshotBytes) != journal.NewHash)
-                throw new InvalidDataException($"Recovery material lacks committed snapshot: {id}");
-            if (!TryReadDocument(newSnapshotBytes, out var mediaSnapshot, out _))
-                throw new InvalidDataException($"Recovery snapshot cannot be read: {id}");
-            VerifyMediaCoverage(journal, mediaSnapshot!);
-            if (journal.OldHash is not null)
+            void AuditSnapshot(string name, string expectedHash)
             {
-                var oldSnapshot = _paths.Under("Recovery", "Entries", id, "old.snapshot.json");
-                if (!_files.Exists(oldSnapshot) || Hash(_files.ReadAllBytes(oldSnapshot)) != journal.OldHash)
-                    throw new InvalidDataException($"Recovery material lacks previous snapshot: {id}");
+                var path = Path.Combine(directory, name);
+                var bytes = _files.Exists(path) ? _files.ReadAllBytes(path) : null;
+                if (bytes is null || Hash(bytes) != expectedHash)
+                    throw new InvalidDataException($"Recovery material lacks its exact manifest: {id}/{name}");
+                if (!requiredHashes.Contains(expectedHash)) return;
+                if (!TryReadDocument(bytes, out var document, out _))
+                    throw new InvalidDataException($"Necessary recovery snapshot cannot be read: {id}/{name}");
+                VerifyMediaCoverage(journal, document!);
+                VerifyGalleryCoverage(journal, document!);
+                foreach (var media in MediaById(document!).Values)
+                    if (auditedMedia.Add(media) && !Verify(_paths.Media(media), media.Sha256, media.Length))
+                        throw new IOException("Necessary recovery original is missing or changed.");
+                foreach (var gallery in GalleryReferences(document!))
+                    if (auditedGalleries.Add(gallery)) _ = CheckGallery(gallery);
+            }
+            using (timings?.Measure("store.media.audit"))
+            {
+                AuditSnapshot("new.snapshot.json", journal.NewHash);
+                if (journal.OldHash is not null) AuditSnapshot("old.snapshot.json", journal.OldHash);
             }
             foreach (var op in journal.Ops.Where(o => o.OldPath is not null))
                 if (!Verify(BackupPath(id, op.MemberId), op.OldHash, op.OldLength))
@@ -918,6 +992,8 @@ public sealed partial class WallStore
     private void VerifyOldStateCoverage(WallJournal journal, WallDocument previous)
     {
         VerifyMediaCoverage(journal, previous);
+        VerifyGalleryCoverage(journal, previous);
+        CheckGalleryReferences(previous);
         CheckMediaReferences(previous);
         var snapshot = _paths.Under("Recovery", "Entries", journal.CommitId, "old.snapshot.json");
         if (!TryReadDocument(snapshot, out var oldDocument, out _) || !DocumentEqual(oldDocument!, previous))
@@ -944,6 +1020,8 @@ public sealed partial class WallStore
     private void VerifyNewStateCoverage(WallJournal journal, WallDocument previous)
     {
         VerifyMediaCoverage(journal, previous);
+        VerifyGalleryCoverage(journal, previous);
+        CheckGalleryReferences(previous);
         CheckMediaReferences(previous);
         var snapshot = _paths.Under("Recovery", "Entries", journal.CommitId, "new.snapshot.json");
         if (!TryReadDocument(snapshot, out var newDocument, out _) || !DocumentEqual(newDocument!, previous))
@@ -981,7 +1059,8 @@ public sealed partial class WallStore
     {
         if (previous.Generation == long.MaxValue) throw new InvalidDataException("Recovery generation overflow.");
         var recovered = previous with { Generation = previous.Generation + 1 };
-        var newBytes = WallJson.Serialize(recovered);
+        var snapshot = UserDataSnapshotJson.Prepare(recovered);
+        var newBytes = snapshot.ManifestBytes;
         var oldBytes = _files.Exists(_paths.Config) ? _files.ReadAllBytes(_paths.Config) : null;
         var commitId = Guid.NewGuid().ToString("N");
         var operations = entries.Select(e => new WallJournalOp(e.MemberId,
@@ -991,10 +1070,10 @@ public sealed partial class WallStore
         var observed = ObserveUnchanged(previous, operations);
         var journal = new WallJournal(WallDocument.CurrentSchemaVersion, commitId, previous.Generation, recovered.Generation,
             oldBytes is null ? null : Hash(oldBytes), Hash(newBytes), true, operations, observed,
-            PlanMedia(commitId, previous, recovered, []));
+            PlanMedia(commitId, previous, recovered, []), PlanGalleries(commitId, previous, recovered, []));
         var stageDir = _paths.Under("Staging", commitId);
         var materialDir = _paths.Under("Recovery", "Entries", commitId);
-        var installed = ExecuteInstallTransaction(journal, newBytes, previousBytes, oldBytes, () =>
+        var installed = ExecuteInstallTransaction(journal, snapshot, previousBytes, oldBytes, () =>
         {
             foreach (var entry in entries.Where(e => e.PreviousBytes is not null))
                 _files.WriteAllBytes(StageEntryPath(commitId, entry.MemberId), entry.PreviousBytes!);
@@ -1068,6 +1147,7 @@ public sealed partial class WallStore
             }
         }
         if (observeIdentities) ValidateGroupIdentities(document, identityHashes);
+        CheckGalleryReferences(document);
         CheckMediaReferences(document, verifyMediaContents);
     }
 
@@ -1138,7 +1218,7 @@ public sealed partial class WallStore
 
     private bool HasAnyManagedResidue()
     {
-        foreach (var directory in new[] { _paths.Objects, _paths.Staging, _paths.MediaRoot })
+        foreach (var directory in new[] { _paths.Objects, _paths.Staging, _paths.MediaRoot, _paths.Snapshots, _paths.Sources })
             if (_files.ListDirectories(directory).Count > 0 || _files.ListFiles(directory).Count > 0)
                 return true;
         var recovery = _paths.Under("Recovery");
@@ -1150,7 +1230,7 @@ public sealed partial class WallStore
         foreach (var directory in _files.ListDirectories(_paths.Root))
         {
             _paths.GuardTree(directory);
-            if (!new[] { _paths.Objects, _paths.Staging, _paths.MediaRoot, _paths.Under("Recovery"),
+            if (!new[] { _paths.Objects, _paths.Staging, _paths.MediaRoot, _paths.Snapshots, _paths.Sources, _paths.Under("Recovery"),
                 _paths.Under("Cache"), _paths.Under("logs") }.Contains(directory, StringComparer.OrdinalIgnoreCase))
                 return true;
         }
@@ -1192,11 +1272,11 @@ public sealed partial class WallStore
         }
     }
 
-    private static bool TryReadDocument(byte[] bytes, out WallDocument? document, out string error)
+    private bool TryReadDocument(byte[] bytes, out WallDocument? document, out string error)
     {
         try
         {
-            document = WallJson.Deserialize(bytes);
+            document = ReadSnapshotDocument(bytes);
             var issues = Validate(document);
             if (issues.Count == 0) { error = ""; return true; }
             error = string.Join("; ", issues);
@@ -1240,6 +1320,7 @@ public sealed partial class WallStore
             if (member.Entry is not null && !WallStoragePaths.ValidEntry(member.Entry)) errors.Add("ENTRY_PATH");
         }
         errors.AddRange(ValidateMediaReferences(document));
+        errors.AddRange(ValidateGalleryReferences(document));
         if (document.Settings.ExpandColumns &&
             (document.Lanes[^1].Groups.Count != 0 || document.Lanes.Take(document.Lanes.Count - 1).Any(lane => lane.Groups.Count == 0)))
             errors.Add("EXPANDED_TAIL_LANE");
@@ -1334,11 +1415,15 @@ public sealed partial class WallStore
     private WallJournal ReadJournal(string path, string id)
     {
         _paths.Guard(path);
-        var bytes = _files.ReadAllBytes(path);
+        return ReadJournal(_files.ReadAllBytes(path), id);
+    }
+
+    private WallJournal ReadJournal(byte[] bytes, string id)
+    {
         using var document = JsonDocument.Parse(bytes);
         RequireFields(document.RootElement,
             ["schemaVersion", "commitId", "oldGeneration", "newGeneration", "oldHash", "newHash",
-                "recoveryPublish", "ops", "observed", "media"]);
+                "recoveryPublish", "ops", "observed", "media", "galleries"]);
         var rawOps = document.RootElement.GetProperty("ops");
         if (rawOps.ValueKind != JsonValueKind.Array) throw new InvalidDataException($"Malformed journal ops: {id}");
         foreach (var rawOp in rawOps.EnumerateArray())
@@ -1355,6 +1440,13 @@ public sealed partial class WallStore
         {
             RequireFields(raw, ["asset", "newlyInstalled", "stagedPath"]);
             RequireFields(raw.GetProperty("asset"), ["sha256", "extension", "length"]);
+        }
+        var rawGalleries = document.RootElement.GetProperty("galleries");
+        if (rawGalleries.ValueKind != JsonValueKind.Array) throw new InvalidDataException("Malformed journal galleries.");
+        foreach (var raw in rawGalleries.EnumerateArray())
+        {
+            RequireFields(raw, ["reference", "newlyInstalled"]);
+            RequireFields(raw.GetProperty("reference"), ["contentId", "manifestSha256"]);
         }
         var journal = JsonSerializer.Deserialize<WallJournal>(bytes, JournalJson)
             ?? throw new InvalidDataException($"Empty journal: {id}");
@@ -1381,7 +1473,7 @@ public sealed partial class WallStore
         if (journal.SchemaVersion != WallDocument.CurrentSchemaVersion || !ValidCommitId(journal.CommitId) ||
             journal.OldGeneration < 0 || journal.NewGeneration != journal.OldGeneration + 1 ||
             journal.OldHash is not null && !ValidHash(journal.OldHash) ||
-            !ValidHash(journal.NewHash) || journal.Ops is null || journal.Observed is null || journal.Media is null)
+            !ValidHash(journal.NewHash) || journal.Ops is null || journal.Observed is null || journal.Media is null || journal.Galleries is null)
             throw new InvalidDataException($"Malformed journal: {journal.CommitId}");
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var op in journal.Ops)
@@ -1402,6 +1494,14 @@ public sealed partial class WallStore
                 !ValidHash(observed.Hash) || observed.Length < 0)
                 throw new InvalidDataException($"Malformed observed entry: {journal.CommitId}");
             guardPath(EntryPath(observed.MemberId, observed.RelativePath));
+        }
+        var galleryIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var gallery in journal.Galleries)
+        {
+            if (gallery is null || !PreparedManagedGallery.IsValidReference(gallery.Reference) || !galleryIds.Add(gallery.Reference.ContentId))
+                throw new InvalidDataException("Malformed gallery journal operation.");
+            guardPath(_paths.Gallery(gallery.Reference));
+            if (gallery.NewlyInstalled) guardPath(GalleryStagePath(journal.CommitId, gallery.Reference.ContentId));
         }
         var mediaIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var media in journal.Media)
@@ -1437,7 +1537,7 @@ public sealed partial class WallStore
     private sealed record FileClass(bool Present, int? Schema);
     private sealed record WallJournal(int SchemaVersion, string CommitId, long OldGeneration,
         long NewGeneration, string? OldHash, string NewHash, bool RecoveryPublish,
-        List<WallJournalOp> Ops, List<WallObservedEntry> Observed, List<WallJournalMedia> Media);
+        List<WallJournalOp> Ops, List<WallObservedEntry> Observed, List<WallJournalMedia> Media, List<WallJournalGallery> Galleries);
     private sealed record WallJournalOp(string MemberId, string? OldPath, string? NewPath,
         string? OldHash, long OldLength, string? NewHash, long NewLength);
     private sealed record WallObservedEntry(string MemberId, string RelativePath, string Hash, long Length);

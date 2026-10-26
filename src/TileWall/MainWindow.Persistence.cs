@@ -40,8 +40,7 @@ public sealed partial class MainWindow
         _session.ConfigureAsyncExecution(_storageExecutor, AcceptStorageOnUiAsync);
         _images.ConfigureStorage(_session.DataRoot,
             action => _storageExecutor.ExecuteAsync(() => { action(); return true; }),
-            id => !_hasDocument || _windowClosing ? null : _session.Current.Lanes.SelectMany(lane => lane.Groups)
-                .SelectMany(group => group.Members).Concat(_session.Current.InactiveMembers).FirstOrDefault(member => member.Id == id));
+            _session.AcquireResourceReadLease);
     }
 
     private Task AcceptStorageOnUiAsync(Action accept)
@@ -66,7 +65,8 @@ public sealed partial class MainWindow
     private Task<string?> CommitProposalAsync(WallProposal proposal,
         IReadOnlyList<EntryChange>? changes = null, bool carousel = false,
         Action<string?>? settle = null, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
-        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
     {
         Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
         if (PersistenceInteractionBlocked) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
@@ -79,14 +79,14 @@ public sealed partial class MainWindow
         UpdateWallHitTesting();
         Surface.IsHitTestVisible = false;
         UpdateResizeZones();
-        var operation = CommitProposalAsyncCore(proposal, changes, settle, preparedMedia, expectedEntrySha256);
+        var operation = CommitProposalAsyncCore(proposal, changes, settle, preparedMedia, expectedEntrySha256, managedGalleries);
         _pendingPersistence = operation.IsCompleted ? null : operation;
         return operation;
     }
 
     private async Task<string?> CommitProposalAsyncCore(WallProposal proposal,
         IReadOnlyList<EntryChange>? changes, Action<string?>? settle, IReadOnlyList<PreparedMediaAsset>? preparedMedia,
-        IReadOnlyDictionary<string, string>? expectedEntrySha256)
+        IReadOnlyDictionary<string, string>? expectedEntrySha256, IReadOnlyList<PreparedManagedGallery>? managedGalleries)
     {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         string? error = null;
@@ -94,7 +94,7 @@ public sealed partial class MainWindow
         {
             var media = await PrepareFormalMediaAsync(proposal);
             var result = await _session.CommitAsync(media.Proposal, changes,
-                AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia), expectedEntrySha256);
+                AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia), expectedEntrySha256, managedGalleries);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);
             error = DescribeCommit(result);
         }

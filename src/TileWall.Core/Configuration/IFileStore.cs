@@ -21,6 +21,9 @@ public interface IFileStore
     /// <summary>同卷原子替换（唯一提交点）。</summary>
     void Move(string src, string dst, bool overwrite);
 
+    /// <summary>Publish a complete immutable directory on the same volume; destination must not exist.</summary>
+    void MoveDirectory(string source, string destination) => throw new NotSupportedException("Directory publication is unsupported by this file store.");
+
     void Copy(string src, string dst, bool overwrite);
 
     /// <summary>尽力删除；目标不存在时静默（File.Delete 语义）。</summary>

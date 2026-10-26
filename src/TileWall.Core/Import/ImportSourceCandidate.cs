@@ -6,15 +6,27 @@ namespace TileWall.Core.Import;
 
 public enum ImportTargetAvailability { Unknown, Available, Missing }
 public enum ImportInsertionPosition { Head, Tail }
-public enum ImportFilterReason { None, AlreadyInGroup, MissingTarget, WindowsBuiltIn, Uninstall, Maintenance, DocumentOrWeb }
+public enum ImportPageSourceKind { StartMenu, Desktop, InstalledApplications, SystemFeatures, WallPackage, CurrentWall, RecycleBin }
+public enum ImportSourcePolicy { Shortcut, DirectTarget, SystemFeature, Attributed, Application }
+public enum ImportTargetKind { Unknown, SystemFeature, Program, File, Folder, WebLink, ProtocolLink, Component }
+public enum ImportFilterReason { None, DuplicateTarget, MissingTarget, NonPrimaryEntry }
 public enum ImportPlanStatus { NoChange, Ready, Rejected }
 
 /// <summary>A real source group, including an unnamed group. Null SourceGroup alone means ungrouped.</summary>
-public sealed record ImportSourceGroup(string Key, string? Title, int Order);
+public sealed record ImportSourceGroup(string Key, string? Title, int Order)
+{
+    public int LaneIndex { get; init; }
+}
 
 /// <summary>Read-only source facts. Geometry flags describe actual records, never placeholder values.</summary>
 public sealed record ImportSourceCandidate(string SourceKey, string DisplayName, WallMember Member)
 {
+    public ImportPageSourceKind SourceKind { get; init; }
+    public ImportSourcePolicy Policy { get; init; }
+    public ImportTargetKind TargetKind { get; init; }
+    /// <summary>False is an explicit no-target fact; null means not determined, never an inferred component.</summary>
+    public bool? HasLaunchTarget { get; init; }
+    public int SourcePriority { get; init; }
     public ImportSourceGroup? SourceGroup { get; init; }
     public int SourceOrder { get; init; }
     public LaunchIdentity? Identity { get; init; }
@@ -38,17 +50,34 @@ public sealed record ImportProjectedCandidate(ImportSourceCandidate Source, stri
 }
 
 public sealed record ImportProjectedGroup(string Key, string? Title, int Order,
-    IReadOnlyList<ImportProjectedCandidate> Candidates, string? DestinationGroupId);
+    IReadOnlyList<ImportProjectedCandidate> Candidates, string? DestinationGroupId)
+{
+    public bool PreserveSourceGroup { get; init; }
+    public string? SourceGroupId { get; init; }
+    public int SourceLaneIndex { get; init; }
+}
 
-/// <summary>Grouping is fixed before filtering; counts and selection use these same representative rows.</summary>
+public sealed record ImportSourceStatistics(int AcquiredCount, int FilteredCount, int CandidateCount,
+    IReadOnlyDictionary<ImportTargetKind, int> ContentCounts,
+    IReadOnlyDictionary<ImportFilterReason, int> PrimaryFilterCounts);
+
+public sealed record ImportSourcePreview(IReadOnlyList<WallLane> Lanes, WallGeometry Geometry,
+    IReadOnlyDictionary<string, ImportProjectedCandidate> CandidatesByMemberId, string? ErrorCode = null);
+
+/// <summary>Filters precede grouping; attributed sources retain their original groups and geometry.</summary>
 public sealed record ImportSourceProjection(long Generation, IReadOnlyList<ImportProjectedGroup> Groups,
     IReadOnlyList<ImportProjectedCandidate> Candidates, bool AutoFilter, bool RecognizeGroups)
 {
-    public int FilteredCount => Candidates.Count(candidate => !candidate.Visible);
+    public ImportSourceStatistics Statistics { get; init; } = new(0, 0, 0,
+        new Dictionary<ImportTargetKind, int>(), new Dictionary<ImportFilterReason, int>());
+    public int FilteredCount => Statistics.FilteredCount;
     public int InvalidCount => Candidates.Count(candidate => candidate.ErrorCode is not null);
-    public IReadOnlyDictionary<ImportFilterReason, int> FilterCounts => Candidates
-        .Where(candidate => !candidate.Visible).GroupBy(candidate => candidate.FilterReason)
-        .ToDictionary(group => group.Key, group => group.Count());
+    public IReadOnlyDictionary<ImportFilterReason, int> FilterCounts => Statistics.PrimaryFilterCounts;
+    public int CountSelected(IEnumerable<string> selectedSourceKeys)
+    {
+        var selected = selectedSourceKeys.ToHashSet(StringComparer.Ordinal);
+        return Candidates.Count(candidate => candidate.CanAdd && candidate.SourceKeys.Any(selected.Contains));
+    }
 }
 
 public sealed record ImportAcceptedCandidate(string SourceKey, string MemberId, string GroupId, string? ReplacedMemberId);

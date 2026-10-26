@@ -29,7 +29,28 @@ public sealed class ImportSourcePlannerTests
         .SelectMany(lane => lane.Groups).Single(group => title is null || group.Title == title);
 
     [Fact]
-    public void ExistingMultiMemberGroupsArePreservedBeforeRecognizingOnlyUngroupedItems()
+    public void RecycledSourceKeepsMembersSeparateAndDoesNotMatchAnActiveGroup()
+    {
+        var wall = WallDocument.Empty(1, 8) with
+        {
+            Lanes = [new() { Groups = [Group("active", "Recycle bin", Tile("active-member"))] }],
+        };
+        var first = Item("first", "First", new("recycle", "Recycle bin", 0), bounds: new(0, 0, 2, 2), size: true) with
+        {
+            SourceKind = ImportPageSourceKind.RecycleBin, Policy = ImportSourcePolicy.Attributed,
+        };
+        var second = first with { SourceKey = "second", Member = Tile("second"), SourceOrder = 1 };
+        var projection = ImportSourcePlanner.Project(wall, [first, second]);
+        var group = Assert.Single(projection.Groups);
+        Assert.Null(group.DestinationGroupId);
+        Assert.Equal(2, group.Candidates.Count);
+        Assert.Same(first.Member, group.Candidates[0].Source.Member);
+        Assert.Same(second.Member, group.Candidates[1].Source.Member);
+        Assert.All(group.Candidates, candidate => Assert.True(candidate.CanAdd));
+    }
+
+    [Fact]
+    public void FamilyRecognitionPrecedesExistingMultiMemberGroups()
     {
         var original = new ImportSourceGroup("creative", "My tools", 0);
         var candidates = new[]
@@ -39,9 +60,8 @@ public sealed class ImportSourcePlannerTests
             Item("four", "Adobe Premiere Pro", new("single-two", "Old two", 2), "premiere"),
         };
         var projected = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), candidates);
-        Assert.Equal(["My tools", "Adobe"], projected.Groups.Select(group => group.Title));
-        Assert.Equal(["one", "two"], projected.Groups[0].Candidates.Select(candidate => candidate.SelectionKey));
-        Assert.Equal(["three", "four"], projected.Groups[1].Candidates.Select(candidate => candidate.SelectionKey));
+        Assert.Equal("Adobe", Assert.Single(projected.Groups).Title);
+        Assert.Equal(4, projected.Groups[0].Candidates.Count);
     }
 
     [Fact]
@@ -50,7 +70,7 @@ public sealed class ImportSourcePlannerTests
         var source = new ImportSourceGroup("one", "Original", 0);
         var projected = ImportSourcePlanner.Project(WallDocument.Empty(1, 8),
             [Item("user", "Alpha", source, "same", order: 0), Item("common", "Alpha", source, "same", order: 1)]);
-        var candidate = Assert.Single(projected.Candidates);
+        var candidate = Assert.Single(projected.Candidates, candidate => candidate.Visible);
         Assert.Equal("A", Assert.Single(projected.Groups).Title);
         Assert.Equal("user", candidate.SelectionKey);
         Assert.Equal(["user", "common"], candidate.SourceKeys);
@@ -63,7 +83,7 @@ public sealed class ImportSourcePlannerTests
         var user = Item("user", "User name", shared, "same", order: 0);
         var common = Item("common", "Common name", shared, "same", order: 1);
         var elsewhere = Item("elsewhere", "Another", new("other", "Other", 1), "same");
-        var projected = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [common, elsewhere, user], recognizeGroups: false);
+        var projected = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [common, elsewhere, user], recognizeGroups: false, autoFilter: false);
         Assert.Equal(2, projected.Candidates.Count);
         var tools = Assert.Single(projected.Groups, group => group.Title == "Tools");
         Assert.Equal("user", Assert.Single(tools.Candidates).SelectionKey);
@@ -80,7 +100,7 @@ public sealed class ImportSourcePlannerTests
         var projected = ImportSourcePlanner.Project(wall, [letter, folder], recognizeGroups: false);
         var group = Assert.Single(projected.Groups);
         Assert.Equal("A", group.Title);
-        Assert.Equal(["folder", "letter"], group.Candidates.Select(candidate => candidate.SelectionKey));
+        Assert.Equal(["letter", "folder"], group.Candidates.Select(candidate => candidate.SelectionKey));
         var plan = Plan(wall, projected, ["folder", "letter"]);
         Assert.Equal(ImportPlanStatus.Ready, plan.Status);
         Assert.Equal(2, Destination(plan).Members.Count);
@@ -95,9 +115,9 @@ public sealed class ImportSourcePlannerTests
         var chinese = Item("chinese", "中文", new("singleton", "Single", 101), "chinese");
         var root = Item("root", "7-Zip", identity: "root");
         var projected = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [root, chinese, common, user]);
-        Assert.Equal(["Tools", "#", "Z"], projected.Groups.Select(group => group.Title));
-        Assert.Equal(["user", "common"], projected.Groups[0].Candidates.Select(candidate => candidate.SelectionKey));
-        Assert.Equal("chinese", projected.Groups[2].Candidates[0].SelectionKey);
+        Assert.Equal(["#", "Z", "Tools"], projected.Groups.Select(group => group.Title));
+        Assert.Equal(["user", "common"], projected.Groups[2].Candidates.Select(candidate => candidate.SelectionKey));
+        Assert.Equal("chinese", projected.Groups[1].Candidates[0].SelectionKey);
     }
 
     [Fact]
@@ -121,11 +141,11 @@ public sealed class ImportSourcePlannerTests
         var projected = ImportSourcePlanner.Project(WallDocument.Empty(1, 8),
             [Item("named", "Adobe Photoshop", new("named", "Creative", 0), "photoshop"),
              Item("unnamed", "Only", new("unnamed", "", 1)), Item("root", "Beta")], recognizeGroups: false);
-        Assert.Equal(["Creative", "", "B"], projected.Groups.Select(group => group.Title));
+        Assert.Equal(["B", "Creative", ""], projected.Groups.Select(group => group.Title));
     }
 
     [Fact]
-    public void FilteringNeverChangesOriginalGroupCountAndEachRepresentativeHasOnePrimaryReason()
+    public void FilteringPrecedesGroupCountsAndMissingHasPriorityOverPurpose()
     {
         var old = Tile("old"); var current = WallDocument.Empty(1, 8) with { Lanes = [new() { Groups = [Group("tools", "Tools", old)] }] };
         var source = new ImportSourceGroup("source", "Tools", 0);
@@ -134,19 +154,19 @@ public sealed class ImportSourcePlannerTests
         var unknown = Item("unknown", "Gamma", source, "unknown") with { TargetAvailability = ImportTargetAvailability.Unknown };
         var identities = new Dictionary<string, string> { [old.Id] = duplicate.Identity!.Key };
         var filtered = ImportSourcePlanner.Project(current, [duplicate, missing, unknown], existingIdentityKeys: identities);
-        Assert.Equal("Tools", Assert.Single(filtered.Groups).Title);
+        Assert.Equal("G", Assert.Single(filtered.Groups).Title);
         Assert.Equal(2, filtered.FilteredCount);
-        Assert.Equal(1, filtered.FilterCounts[ImportFilterReason.AlreadyInGroup]);
-        Assert.Equal(1, filtered.FilterCounts[ImportFilterReason.MissingTarget]);
+        Assert.Equal(0, filtered.FilterCounts[ImportFilterReason.NonPrimaryEntry]);
+        Assert.Equal(2, filtered.FilterCounts[ImportFilterReason.MissingTarget]);
         Assert.Equal("unknown", Assert.Single(filtered.Candidates, candidate => candidate.CanAdd).SelectionKey);
         var shown = ImportSourcePlanner.Project(current, [duplicate, missing, unknown], autoFilter: false, existingIdentityKeys: identities);
-        Assert.Equal(filtered.Groups.Select(group => group.Key), shown.Groups.Select(group => group.Key));
-        Assert.Equal(0, shown.FilteredCount); Assert.Empty(shown.FilterCounts);
+        Assert.Equal("Tools", Assert.Single(shown.Groups).Title);
+        Assert.Equal(0, shown.FilteredCount); Assert.All(shown.FilterCounts.Values, count => Assert.Equal(0, count));
         Assert.All(shown.Candidates, candidate => Assert.True(candidate.CanAdd));
     }
 
     [Fact]
-    public void DestinationObservationUpdatesFilteringWithoutChangingGroupsOrExpandingSelection()
+    public void DestinationObservationMarksOverwriteWithoutFilteringOrChangingSelection()
     {
         var existing = Tile("existing");
         var wall = WallDocument.Empty(1, 8) with
@@ -158,26 +178,27 @@ public sealed class ImportSourcePlannerTests
         var fresh = Item("fresh", "Beta", tools, "new", order: 1);
         var elsewhere = Item("elsewhere", "Gamma", new("incoming-other", "Other", 1), "same");
         var candidates = new[] { duplicate, fresh, elsewhere };
-        var initial = ImportSourcePlanner.Project(wall, candidates, recognizeGroups: false);
+        var initial = ImportSourcePlanner.Project(wall, candidates, recognizeGroups: false, autoFilter: false);
         var selected = new Dictionary<string, string>
         {
             [duplicate.SourceKey] = duplicate.SelectionIdentity,
             [fresh.SourceKey] = fresh.SelectionIdentity,
         };
 
-        var observed = ImportSourcePlanner.Project(wall, candidates, recognizeGroups: false,
+        var observed = ImportSourcePlanner.Project(wall, candidates, recognizeGroups: false, autoFilter: false,
             existingIdentityKeys: new Dictionary<string, string> { [existing.Id] = duplicate.Identity!.Key });
         Assert.Equal(initial.Groups.Select(group => group.Key), observed.Groups.Select(group => group.Key));
         Assert.Equal(["tools", "other"], observed.Groups.Select(group => group.DestinationGroupId));
-        Assert.Equal(ImportFilterReason.AlreadyInGroup,
+        Assert.Equal(ImportFilterReason.None,
             observed.Candidates.Single(candidate => candidate.SelectionKey == duplicate.SourceKey).FilterReason);
+        Assert.Equal(existing.Id, observed.Candidates.Single(candidate => candidate.SelectionKey == duplicate.SourceKey).ReplacedMemberId);
         Assert.True(observed.Candidates.Single(candidate => candidate.SelectionKey == elsewhere.SourceKey).CanAdd);
         var migrated = ImportSourcePlanner.MigrateSelection(selected, observed);
-        Assert.Equal("fresh", Assert.Single(migrated.Selected).Key);
-        Assert.Equal(1, migrated.RemovedCount);
+        Assert.Equal(2, migrated.Selected.Count);
+        Assert.Equal(0, migrated.RemovedCount);
         var plan = Plan(wall, observed, migrated.Selected.Keys);
-        Assert.Equal("fresh", Assert.Single(plan.Accepted).SourceKey);
-        Assert.Equal("tools", plan.Accepted[0].GroupId);
+        Assert.Equal(2, plan.Accepted.Count);
+        Assert.All(plan.Accepted, candidate => Assert.Equal("tools", candidate.GroupId));
     }
 
     [Fact]
@@ -186,7 +207,7 @@ public sealed class ImportSourcePlannerTests
         var first = new ImportSourceGroup("first", "First", 0); var second = new ImportSourceGroup("second", "Second", 1);
         var projected = ImportSourcePlanner.Project(WallDocument.Empty(1, 8),
             [Item("a", "App", first, "same"), Item("b", "App", second, "same"), Item("decor-one", "Same", first), Item("decor-two", "Same", first)],
-            recognizeGroups: false);
+            recognizeGroups: false, autoFilter: false);
         Assert.Equal(4, projected.Candidates.Count);
         var plan = Plan(WallDocument.Empty(1, 8), projected, projected.Candidates.Select(candidate => candidate.SelectionKey));
         Assert.Equal(4, plan.AddedCount); Assert.Equal(0, plan.OverwrittenCount);
@@ -214,8 +235,8 @@ public sealed class ImportSourcePlannerTests
         var wall = WallDocument.Empty(1, 8);
         var one = Item("one", "Alpha", new("source-one", "One", 0), "same");
         var two = Item("two", "Alpha", new("source-two", "Two", 1), "same");
-        var separate = ImportSourcePlanner.Project(wall, [one, two], recognizeGroups: false);
-        var merged = ImportSourcePlanner.Project(wall, [one, two], recognizeGroups: true);
+        var separate = ImportSourcePlanner.Project(wall, [one, two], recognizeGroups: false, autoFilter: false);
+        var merged = ImportSourcePlanner.Project(wall, [one, two], recognizeGroups: true, autoFilter: false);
         Assert.Single(merged.Candidates);
         Assert.Equal("one", merged.Candidates[0].SelectionKey);
         var selected = new Dictionary<string, string> { ["two"] = two.SelectionIdentity };
@@ -262,6 +283,22 @@ public sealed class ImportSourcePlannerTests
         Assert.Equal(3, projection.InvalidCount); Assert.All(projection.Candidates, candidate => Assert.False(candidate.CanAdd));
         Assert.Equal(ImportPlanStatus.Rejected, Plan(wall, projection, [invalid.SourceKey]).Status);
         Assert.Equal("MEMBER_SIZE_LIMIT", Plan(wall, projection, [invalid.SourceKey]).Detail);
+    }
+
+    [Fact]
+    public void UnavailablePreviewRetainsAutomaticCaptionWithoutAcceptingTheSource()
+    {
+        var source = Item("stale", "Everything") with
+        {
+            Member = new TileMember { Id = "stale", LocalBounds = new(0, 0, 1, 1), TargetInput = @"C:\Tools\Everything.lnk" },
+            ErrorCode = "SourceChanged",
+        };
+        var projection = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [source]);
+        var preview = ImportSourcePlanner.BuildSourcePreview(projection, new(1, 1), singleColumn: true);
+        var member = Assert.Single(Assert.Single(Assert.Single(preview.Lanes).Groups).Members);
+        Assert.Equal(source.Member.TargetInput, member.TargetInput);
+        Assert.Equal("Everything", MemberPresentationRules.ResolveTitle(member));
+        Assert.False(Assert.Single(projection.Candidates).CanAdd);
     }
 
     [Fact]
@@ -355,7 +392,7 @@ public sealed class ImportSourcePlannerTests
             OriginGroupId = "old-b", SourceRoot = @"C:\Programs", RelativePath = "B.lnk" } };
         var renamed = Group("old-b", "Bb", old) with { UserClaimed = true };
         var inactive = Tile("inactive");
-        var wall = WallDocument.Empty(1, 8) with { Lanes = [new() { Groups = [renamed] }], InactiveMembers = [inactive] };
+        var wall = WallDocument.Empty(1, 8) with { Lanes = [new() { Groups = [renamed] }], RecycleBinEnabled = true, InactiveMembers = [inactive] };
         var candidate = Item("new", "Beta", identity: "same");
         var projected = ImportSourcePlanner.Project(wall, [candidate], existingIdentityKeys: new Dictionary<string, string>
             { [old.Id] = candidate.Identity!.Key, [inactive.Id] = candidate.Identity!.Key });
@@ -401,18 +438,54 @@ public sealed class ImportSourcePlannerTests
     }
 
     [Fact]
-    public void UnrecordedItemsUseStableSequentialLayoutFromExistingBottom()
+    public void UnrecordedItemsUseDisplayNameOrderAndSequentialLayoutFromExistingBottom()
     {
         var wall = WallDocument.Empty(1, 8) with { Lanes = [new() { Groups = [Group("tools", "Tools", Tile("old", new(7, 2, 1, 1)))] }] };
         var group = new ImportSourceGroup("source", "Tools", 0);
         var items = new[] { Item("three", "Three", group, order: 2), Item("one", "One", group, order: 0), Item("two", "Two", group, order: 1) };
         var projection = ImportSourcePlanner.Project(wall, items, recognizeGroups: false);
+        Assert.Equal(["One", "Three", "Two"], Assert.Single(projection.Groups).Candidates.Select(candidate => candidate.Source.DisplayName));
         var plan = Plan(wall, projection, ["one", "two", "three"], new(4, 2));
         var ids = plan.Accepted.ToDictionary(item => item.SourceKey, item => item.MemberId);
         var members = Destination(plan).Members.ToDictionary(member => member.Id);
         Assert.Equal(new GridRect(0, 3, 4, 2), members[ids["one"]].LocalBounds);
-        Assert.Equal(new GridRect(4, 3, 4, 2), members[ids["two"]].LocalBounds);
-        Assert.Equal(new GridRect(0, 5, 4, 2), members[ids["three"]].LocalBounds);
+        Assert.Equal(new GridRect(4, 3, 4, 2), members[ids["three"]].LocalBounds);
+        Assert.Equal(new GridRect(0, 5, 4, 2), members[ids["two"]].LocalBounds);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void UnrecordedItemsFromDifferentFoldersFillFinalLetterGroupContinuouslyInPreviewAndPlan(int size)
+    {
+        var wall = WallDocument.Empty(1, 8) with
+            { Lanes = [new() { Groups = [Group("existing-b", "B", Tile("old", new(7, 2, 1, 1)))] }] };
+        var items = Enumerable.Range(0, 10).Reverse().Select(index => Item("item" + index, $"B entry {index:D2}",
+            new("folder" + index, "Original folder " + index, index), "app" + index, order: 9 - index)).ToArray();
+        var projection = ImportSourcePlanner.Project(wall, items);
+        var group = Assert.Single(projection.Groups);
+        Assert.Equal("B", group.Title);
+        Assert.Equal(Enumerable.Range(0, 10).Select(index => "item" + index), group.Candidates.Select(candidate => candidate.Source.SourceKey));
+
+        var preview = ImportSourcePlanner.BuildSourcePreview(projection, new(size, size));
+        Assert.Null(preview.ErrorCode);
+        var previewGroup = Assert.Single(preview.Lanes.SelectMany(lane => lane.Groups));
+        var plan = Plan(wall, projection, items.Select(item => item.SourceKey), new(size, size));
+        Assert.Equal(ImportPlanStatus.Ready, plan.Status);
+        Assert.Equal(10, plan.AddedCount);
+        var destination = Destination(plan, "B");
+        Assert.Equal(new GridRect(7, 2, 1, 1), destination.Members.Single(member => member.Id == "old").LocalBounds);
+        var acceptedIds = plan.Accepted.ToDictionary(item => item.SourceKey, item => item.MemberId);
+        var perRow = 8 / size;
+        for (var index = 0; index < 10; index++)
+        {
+            var expected = new GridRect(index % perRow * size, index / perRow * size, size, size);
+            var key = "item" + index;
+            var previewMember = Assert.Single(previewGroup.Members,
+                member => preview.CandidatesByMemberId[member.Id].Source.SourceKey == key);
+            Assert.Equal(expected, previewMember.LocalBounds);
+            Assert.Equal(expected.Translate(0, 3), destination.Members.Single(member => member.Id == acceptedIds[key]).LocalBounds);
+        }
     }
 
     [Fact]
@@ -423,7 +496,7 @@ public sealed class ImportSourcePlannerTests
         var empty = WallDocument.Empty(1, 8);
         var initial = Plan(empty, ImportSourcePlanner.Project(empty, [item], recognizeGroups: false), ["source"]);
         var collision = Assert.Single(initial.Accepted).MemberId;
-        var wall = empty with { InactiveMembers = [Tile(collision)] };
+        var wall = empty with { RecycleBinEnabled = true, InactiveMembers = [Tile(collision)] };
         var plan = Plan(wall, ImportSourcePlanner.Project(wall, [item], recognizeGroups: false), ["source"]);
         var member = Assert.Single(Destination(plan).Members);
         Assert.NotEqual(collision, member.Id); Assert.NotEqual("source-id", member.Id);
@@ -454,5 +527,172 @@ public sealed class ImportSourcePlannerTests
         var tall = one with { Member = one.Member with { LocalBounds = new(0, 30, 2, 2) } };
         var capacity = Plan(wall, ImportSourcePlanner.Project(wall, [tall], recognizeGroups: false), ["one"]);
         Assert.Equal(ImportPlanStatus.Rejected, capacity.Status); Assert.StartsWith("GROUP_TOO_TALL:", capacity.Detail); Assert.Null(capacity.Proposal);
+    }
+
+    [Fact]
+    public void PurposeFilteringPrecedesFolderAndFamilyCounts()
+    {
+        var folder = new ImportSourceGroup("tools", "Tools", 0);
+        var alpha = Item("alpha", "Alpha", folder, "alpha");
+        var uninstall = Item("uninstall", "Uninstall", folder, "remove") with { Exclusion = StartMenuExclusion.Uninstall };
+        var result = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [alpha, uninstall]);
+        Assert.Equal("A", Assert.Single(result.Groups).Title);
+        Assert.Equal(1, result.FilterCounts[ImportFilterReason.NonPrimaryEntry]);
+        var adobe = Item("photoshop", "Adobe Photoshop", new("creative", "Creative", 0), "photoshop");
+        var updater = Item("update", "Adobe Creative Cloud", new("creative", "Creative", 0), "updater") with
+            { Exclusion = StartMenuExclusion.Maintenance };
+        Assert.Equal("A", Assert.Single(ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [adobe, updater]).Groups).Title);
+    }
+
+    [Fact]
+    public void SourceDuplicateFilteringIsGlobalButExistingWallOnlyMarksAnOverwrite()
+    {
+        var user = Item("user", "Alpha", new("one", "One", 0), "same") with { SourcePriority = 0 };
+        var common = Item("common", "Beta", new("two", "Two", 1), "same") with { SourcePriority = 1 };
+        var old = Tile("old");
+        var wall = WallDocument.Empty(1, 8) with { Lanes = [new() { Groups = [Group("one", "One", old)] }] };
+        var result = ImportSourcePlanner.Project(wall, [common, user], recognizeGroups: false,
+            existingIdentityKeys: new Dictionary<string, string> { [old.Id] = user.Identity!.Key });
+        var row = Assert.Single(result.Candidates, candidate => candidate.CanAdd);
+        Assert.Equal("user", row.SelectionKey); Assert.Equal("old", row.ReplacedMemberId);
+        Assert.Equal(["user", "common"], row.SourceKeys);
+        Assert.Equal(1, result.FilterCounts[ImportFilterReason.DuplicateTarget]);
+        var migrated = ImportSourcePlanner.MigrateSelection(new Dictionary<string, string> { ["common"] = common.SelectionIdentity }, result);
+        Assert.Equal("common", Assert.Single(migrated.Selected).Key);
+        Assert.Equal(1, Plan(wall, result, migrated.Selected.Keys).OverwrittenCount);
+    }
+
+    [Fact]
+    public void DirectFilesAndSystemEntriesSkipPurposeButNotMissingOrDuplicateChecks()
+    {
+        var direct = Item("file", "Readme", identity: "readme") with
+            { Policy = ImportSourcePolicy.DirectTarget, Exclusion = StartMenuExclusion.DocumentOrWeb };
+        var system = Item("system", "Settings", identity: "settings") with
+            { Policy = ImportSourcePolicy.SystemFeature, Exclusion = StartMenuExclusion.WindowsBuiltIn };
+        var missing = direct with { SourceKey = "missing", Identity = LaunchIdentityService.ForPath(@"C:\missing.txt"), TargetAvailability = ImportTargetAvailability.Missing };
+        var duplicate = system with { SourceKey = "duplicate", SourceOrder = 1 };
+        var app = Item("app", "System app", identity: "app") with
+            { Policy = ImportSourcePolicy.Application, Exclusion = StartMenuExclusion.WindowsBuiltIn };
+        var invalid = direct with { SourceKey = "invalid", ErrorCode = "ReadFailed" };
+        var result = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [direct, system, missing, duplicate, app, invalid]);
+        Assert.Equal(2, result.Candidates.Count(candidate => candidate.CanAdd));
+        Assert.True(result.Candidates.Single(candidate => candidate.SelectionKey == "invalid").Visible);
+        Assert.Equal(1, result.InvalidCount);
+        Assert.All(result.FilterCounts.Values, count => Assert.Equal(1, count));
+    }
+
+    [Fact]
+    public void AttributedMembersIgnoreFiltersAndRecognitionAndRetainSourceLaneAndGeometry()
+    {
+        var first = Item("one", "Adobe Photoshop", new("original", "Original", 0) { LaneIndex = 1 }, "same",
+            new(3, 5, 2, 2), position: true, size: true) with
+            { Policy = ImportSourcePolicy.Attributed, TargetAvailability = ImportTargetAvailability.Missing, Exclusion = StartMenuExclusion.WindowsBuiltIn };
+        var second = Item("two", "Adobe Illustrator", new("other", "Other", 1) { LaneIndex = 2 }, "same",
+            new(6, 2, 1, 3), position: true, size: true) with { Policy = ImportSourcePolicy.Attributed };
+        var projection = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [first, second]);
+        Assert.Equal(0, projection.FilteredCount);
+        Assert.Equal(["Original", "Other"], projection.Groups.Select(group => group.Title));
+        var preview = ImportSourcePlanner.BuildSourcePreview(projection, new(1, 1));
+        Assert.Null(preview.ErrorCode); Assert.Equal(3, preview.Lanes.Count); Assert.Empty(preview.Lanes[0].Groups);
+        Assert.Equal("original", Assert.Single(preview.Lanes[1].Groups).Id);
+        Assert.Equal(first.Member.LocalBounds, preview.Lanes[1].Groups[0].Members[0].LocalBounds);
+        Assert.Equal(second.Member.LocalBounds, preview.Lanes[2].Groups[0].Members[0].LocalBounds);
+    }
+
+    [Fact]
+    public void SingleColumnSourcePreviewStacksAttributedLanesWithoutChangingGroupGeometry()
+    {
+        var laneOne = new ImportSourceGroup("lane-one", "Lane One", 0) { LaneIndex = 1 };
+        var laneZero = new ImportSourceGroup("lane-zero", "Lane Zero", 1) { LaneIndex = 0 };
+        var items = new[]
+        {
+            Item("one-wide", "One wide", laneOne, bounds: new(3, 5, 2, 2), position: true, size: true, order: 0)
+                with { Policy = ImportSourcePolicy.Attributed },
+            Item("one-tall", "One tall", laneOne, bounds: new(0, 0, 1, 3), position: true, size: true, order: 1)
+                with { Policy = ImportSourcePolicy.Attributed },
+            Item("zero-wide", "Zero wide", laneZero, bounds: new(1, 2, 2, 1), position: true, size: true, order: 0)
+                with { Policy = ImportSourcePolicy.Attributed },
+            Item("zero-tall", "Zero tall", laneZero, bounds: new(5, 1, 1, 2), position: true, size: true, order: 1)
+                with { Policy = ImportSourcePolicy.Attributed },
+        };
+        var projection = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), items);
+        Assert.Equal(["lane-one", "lane-zero"], projection.Groups.Select(group => group.SourceGroupId));
+
+        var metrics = new WallMetrics();
+        var normal = ImportSourcePlanner.BuildSourcePreview(projection, new(1, 1), metrics);
+        var singleColumn = ImportSourcePlanner.BuildSourcePreview(projection, new(1, 1), metrics, singleColumn: true);
+
+        Assert.Equal(2, normal.Lanes.Count);
+        Assert.Single(singleColumn.Lanes);
+        Assert.Equal(metrics.WallWidth(2), normal.Geometry.WallWidth);
+        Assert.Equal(metrics.WallWidth(1), singleColumn.Geometry.WallWidth);
+        Assert.Equal(["lane-zero", "lane-one"], singleColumn.Lanes[0].Groups.Select(group => group.Id));
+        Assert.Equal(["lane-zero", "lane-one"], singleColumn.Geometry.Groups.Select(group => group.GroupId));
+        Assert.All(singleColumn.Geometry.Groups, group => Assert.Equal(0, group.LaneIndex));
+        Assert.Equal(singleColumn.Geometry.Groups[0].Bounds.Y + singleColumn.Geometry.Groups[0].Bounds.Height + metrics.GroupGap,
+            singleColumn.Geometry.Groups[1].TitleBounds.Y, 6);
+
+        var normalGeometry = normal.Geometry.Groups.ToDictionary(group => group.GroupId);
+        var singleGeometry = singleColumn.Geometry.Groups.ToDictionary(group => group.GroupId);
+        foreach (var groupId in new[] { "lane-zero", "lane-one" })
+        {
+            var original = normalGeometry[groupId];
+            var stacked = singleGeometry[groupId];
+            Assert.Equal(original.TitleBounds.Width, stacked.TitleBounds.Width);
+            Assert.Equal(original.TitleBounds.Height, stacked.TitleBounds.Height);
+            Assert.Equal(original.Bounds.Width, stacked.Bounds.Width);
+            Assert.Equal(original.Bounds.Height, stacked.Bounds.Height);
+            var originalMembers = original.Members.ToDictionary(member => member.MemberId);
+            foreach (var member in stacked.Members)
+            {
+                var originalMember = originalMembers[member.MemberId];
+                Assert.Equal(new DipRect(originalMember.Bounds.X - original.TitleBounds.X,
+                        originalMember.Bounds.Y - original.TitleBounds.Y, originalMember.Bounds.Width, originalMember.Bounds.Height),
+                    new DipRect(member.Bounds.X - stacked.TitleBounds.X, member.Bounds.Y - stacked.TitleBounds.Y,
+                        member.Bounds.Width, member.Bounds.Height));
+            }
+
+            var originalGroup = normal.Lanes.SelectMany(lane => lane.Groups).Single(group => group.Id == groupId);
+            var stackedGroup = singleColumn.Lanes[0].Groups.Single(group => group.Id == groupId);
+            var originalBounds = originalGroup.Members.ToDictionary(member => member.Id, member => member.LocalBounds);
+            Assert.Equal(originalBounds.Count, stackedGroup.Members.Count);
+            foreach (var member in stackedGroup.Members)
+                Assert.Equal(originalBounds[member.Id], member.LocalBounds);
+        }
+    }
+
+    [Fact]
+    public void StatisticsCountRawObjectsAndRequireExplicitNoTargetForComponents()
+    {
+        var file = Item("file", "Text") with { Policy = ImportSourcePolicy.DirectTarget, TargetKind = ImportTargetKind.File, HasLaunchTarget = true };
+        var clock = Item("clock", "Clock") with { HasLaunchTarget = false,
+            Member = new ClockMember { Id = "clock", LocalBounds = new(0, 0, 2, 2) } };
+        var puzzle = Item("puzzle", "Puzzle") with { HasLaunchTarget = false,
+            Member = new PuzzleMember { Id = "puzzle", LocalBounds = new(0, 0, 2, 2), Partitions = [new(0, 0, 1, 2), new(1, 0, 1, 2)] } };
+        var invalid = Item("unknown", "Unknown") with { ErrorCode = "ReadFailed", TargetKind = ImportTargetKind.Component };
+        var result = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [file, clock, puzzle, invalid]);
+        Assert.Equal(4, result.Statistics.AcquiredCount);
+        Assert.Equal(1, result.Statistics.ContentCounts[ImportTargetKind.File]);
+        Assert.Equal(2, result.Statistics.ContentCounts[ImportTargetKind.Component]);
+        Assert.Equal(3, result.Statistics.ContentCounts.Values.Sum());
+        Assert.Equal(0, result.FilteredCount);
+    }
+
+    [Fact]
+    public void PreviewAndFormalPlanSharePlacementButOnlyFormalPlanAppliesCapacity()
+    {
+        var source = new ImportSourceGroup("tools", "Tools", 0);
+        var items = Enumerable.Range(0, 1100).Select(index => Item("key" + index, "Tool " + index, source, order: index)).ToArray();
+        var wall = WallDocument.Empty(1, 8);
+        var projection = ImportSourcePlanner.Project(wall, items, recognizeGroups: false);
+        var preview = ImportSourcePlanner.BuildSourcePreview(projection, new(2, 2));
+        Assert.Null(preview.ErrorCode); Assert.Equal(items.Length, preview.CandidatesByMemberId.Count);
+        Assert.True(preview.Lanes[0].Groups[0].Members.Max(member => member.LocalBounds.Bottom) > 256);
+        Assert.Equal(ImportPlanStatus.Rejected, Plan(wall, projection, items.Select(item => item.SourceKey), new(2, 2)).Status);
+
+        var small = ImportSourcePlanner.Project(wall, items.Take(3).ToArray(), recognizeGroups: false);
+        var smallPreview = ImportSourcePlanner.BuildSourcePreview(small, new(2, 2));
+        var plan = Plan(wall, small, items.Take(3).Select(item => item.SourceKey), new(2, 2));
+        Assert.Equal(smallPreview.Lanes[0].Groups[0].Members.Select(member => member.LocalBounds), Destination(plan).Members.Select(member => member.LocalBounds));
     }
 }

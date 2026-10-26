@@ -28,7 +28,7 @@ public sealed class WallStoreMediaAuditTests
         {
             var initial = WallDocument.Empty(1, 4);
             Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
-            var firstDocument = initial with { Generation = 1, InactiveMembers = MediaMembers(assets) };
+            var firstDocument = initial with { Generation = 1, RecycleBinEnabled = true, InactiveMembers = MediaMembers(assets) };
             var first = store.Commit(initial, new(0, firstDocument, [], assets));
             Assert.Equal(WallCommitStatus.Committed, first.Status);
 
@@ -108,11 +108,11 @@ public sealed class WallStoreMediaAuditTests
         {
             var initial = WallDocument.Empty(1, 4);
             Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
-            var withMedia = initial with { Generation = 1, InactiveMembers = MediaMembers([asset]) };
+            var withMedia = initial with { Generation = 1, RecycleBinEnabled = true, InactiveMembers = MediaMembers([asset]) };
             var added = store.Commit(initial, new(0, withMedia, [], [asset]));
             Assert.Equal(WallCommitStatus.Committed, added.Status);
             var current = added.CommittedDocument!;
-            var configPath = Path.Combine(dataRoot, "config.json");
+            var configPath = Path.Combine(dataRoot, "state.json");
             var configBefore = local.ReadAllBytes(configPath);
             var mediaPath = store.ManagedMediaPath(asset.Reference);
             var mediaBefore = local.ReadAllBytes(mediaPath);
@@ -211,6 +211,7 @@ public sealed class WallStoreMediaAuditTests
         public void Move(string src, string dst, bool overwrite) => inner.Move(src, dst, overwrite);
         public void Copy(string src, string dst, bool overwrite) => inner.Copy(src, dst, overwrite);
         public void Delete(string path) => inner.Delete(path);
+        public void MoveDirectory(string source, string destination) => inner.MoveDirectory(source, destination);
         public void CreateDirectory(string path) => inner.CreateDirectory(path);
         public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);
@@ -255,13 +256,14 @@ public sealed class WallStoreMediaAuditTests
         public void WriteAllBytes(string path, byte[] bytes)
         {
             inner.WriteAllBytes(path, bytes);
-            if (!_armed || TamperApplied || !path.EndsWith(Path.DirectorySeparatorChar + "config.tmp", StringComparison.OrdinalIgnoreCase)) return;
+            if (!_armed || TamperApplied || !path.EndsWith(Path.DirectorySeparatorChar + "state.tmp", StringComparison.OrdinalIgnoreCase)) return;
             inner.WriteAllBytes(_mediaPath!, _tamperedBytes!);
             TamperApplied = true;
         }
         public void Move(string src, string dst, bool overwrite) => inner.Move(src, dst, overwrite);
         public void Copy(string src, string dst, bool overwrite) => inner.Copy(src, dst, overwrite);
         public void Delete(string path) => inner.Delete(path);
+        public void MoveDirectory(string source, string destination) => inner.MoveDirectory(source, destination);
         public void CreateDirectory(string path) => inner.CreateDirectory(path);
         public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);

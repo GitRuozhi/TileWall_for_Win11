@@ -14,7 +14,7 @@ public static class MemberPresentationRules
         if (visual.BackgroundMode == MemberBackgroundMode.Color && !IsColor(visual.BackgroundColor))
             return "VISUAL_COLOR";
         if (member.Images is not { } images || !Enum.IsDefined(images.Kind)) return "IMAGE_SOURCE";
-        if ((images.Kind == MemberImageSourceKind.Folder ||
+        if ((images.Kind == MemberImageSourceKind.Folder && images.ManagedGallery is null ||
             images.Kind == MemberImageSourceKind.Single && images.Media is null) && string.IsNullOrWhiteSpace(images.Path))
             return "IMAGE_SOURCE_PATH";
         if (images.Media is not null && images.Kind != MemberImageSourceKind.Single) return "IMAGE_SOURCE_MEDIA";

@@ -8,12 +8,20 @@ internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
 {
     private readonly IFileStore _files = files;
     public string Root { get; } = RequireRoot(dataRoot);
-    public string Config => Under("config.json");
-    public string Previous => Under("Recovery", "config.prev.json");
+    public string Config => Under("state.json");
+    public string Previous => Under("Recovery", "state.prev.json");
     public string Staging => Under("Staging");
     public string RecoveryEntries => Under("Recovery", "Entries");
     public string Objects => Under("Objects");
     public string MediaRoot => Under("Media");
+    public string Snapshots => Under("Snapshots");
+    public string Sources => Under("Sources");
+
+    public string Gallery(ManagedGalleryReference gallery)
+    {
+        if (!PreparedManagedGallery.IsValidReference(gallery)) throw new IOException("Unsafe managed gallery reference.");
+        return Under("Sources", gallery.ContentId);
+    }
 
     private static string RequireRoot(string path)
     {

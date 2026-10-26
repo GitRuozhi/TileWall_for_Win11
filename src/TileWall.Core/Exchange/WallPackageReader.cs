@@ -50,7 +50,7 @@ public sealed class WallPackageReader(
             foreach (var file in manifest.Files)
             {
                 if (file is null || !WallPackageJson.ValidHash(file.Sha256) || file.Length < 0 ||
-                    file.Length > limits.MaximumFileBytes || file.Purpose is not ("wall" or "entry" or "media"))
+                    file.Length > limits.MaximumFileBytes || file.Purpose is not ("wall" or "entry" or "media" or "gallery"))
                     throw new InvalidDataException("Invalid file declaration.");
                 var path = WallPackageZip.NormalizePath(file.Path);
                 if (path != file.Path || path.Equals("manifest.json", StringComparison.OrdinalIgnoreCase) ||
@@ -66,8 +66,20 @@ public sealed class WallPackageReader(
             var expected = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["wall.json"] = "wall" };
             foreach (var member in content.Members.Where(m => m.EntryKind is not null))
                 expected.Add(WallPackageJson.EntryPath(member), "entry");
-            var media = content.Members.Select(m => m.Images.Media).OfType<ManagedMediaReference>()
-                .Distinct().ToDictionary(WallPackageJson.MediaPath, StringComparer.OrdinalIgnoreCase);
+            var galleries = new Dictionary<string, ManagedGalleryManifest>(StringComparer.Ordinal);
+            foreach (var gallery in content.Galleries)
+            {
+                var path = WallPackageJson.GalleryPath(gallery.Id);
+                if (!files.TryGetValue(path, out var declared) || declared.Purpose != "gallery" || declared.Sha256 != gallery.ManifestSha256)
+                    throw new InvalidDataException("Managed gallery manifest is missing or differs.");
+                var bytes = await ReadDeclaredAsync(entries[path], declared, 1024 * 1024, token).ConfigureAwait(false);
+                _ = WallPackageJson.Deserialize<ManagedGalleryManifest>(bytes);
+                galleries.Add(gallery.Id, PreparedManagedGallery.ReadManifest(bytes, new(gallery.Id, gallery.ManifestSha256)));
+                expected.Add(path, "gallery");
+            }
+            WallPackageJson.ValidateGalleryExpansion(content, galleries.Values, limits);
+            var media = WallPackageJson.AllMedia(content, galleries.Values).GroupBy(WallPackageJson.MediaPath, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.OrdinalIgnoreCase);
             foreach (var path in media.Keys) expected.Add(path, "media");
             if (files.Count != expected.Count || files.Any(pair => !expected.TryGetValue(pair.Key, out var purpose) || pair.Value.Purpose != purpose ||
                 !expected.Keys.Contains(pair.Key, StringComparer.Ordinal)))
@@ -83,15 +95,18 @@ public sealed class WallPackageReader(
                 if (identity is null) throw new InvalidDataException("Shortcut identity is unavailable.");
                 identities.Add(member.Id, identity);
             }
-            foreach (var (path, reference) in media)
+            foreach (var (path, references) in media)
             {
+                var reference = references[0];
                 if (files[path].Length != reference.Length || files[path].Sha256 != reference.Sha256)
                     throw new InvalidDataException("Media reference differs from its declaration.");
                 var bytes = await ReadDeclaredAsync(entries[path], files[path], PreparedMediaAsset.MaximumBytes, token).ConfigureAwait(false);
-                var valid = await verifyImageAsync(bytes, reference.Extension, token).ConfigureAwait(false);
-                token.ThrowIfCancellationRequested();
-                if (!valid)
-                    throw new InvalidDataException("Original image is invalid or exceeds image budgets.");
+                foreach (var extension in references.Select(item => item.Extension).Distinct(StringComparer.Ordinal))
+                {
+                    var valid = await verifyImageAsync(bytes, extension, token).ConfigureAwait(false);
+                    token.ThrowIfCancellationRequested();
+                    if (!valid) throw new InvalidDataException("Original image is invalid or exceeds image budgets.");
+                }
             }
             foreach (var group in content.Groups)
             {
@@ -104,7 +119,7 @@ public sealed class WallPackageReader(
             token.ThrowIfCancellationRequested();
             return new(WallPackageReadStatus.Valid, new WallPackagePreview(Path.GetFullPath(packagePath), content,
                 manifest with { Files = Array.AsReadOnly(manifest.Files.ToArray()) }, fingerprint,
-                new ReadOnlyDictionary<string, LaunchIdentity>(identities)));
+                new ReadOnlyDictionary<string, LaunchIdentity>(identities), new ReadOnlyDictionary<string, ManagedGalleryManifest>(galleries)));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return new(WallPackageReadStatus.Cancelled, null); }
         catch (Exception ex) when (ex is InvalidDataException or JsonException or ArgumentException or OverflowException or KeyNotFoundException)
@@ -181,6 +196,70 @@ public sealed class WallPackageReader(
         return result.AsReadOnly();
     }
 
+    internal async Task<WallPackagePreparedResources> PrepareResourcesConfirmedAsync(WallPackagePreview preview,
+        ZipArchive zip, IEnumerable<ManagedMediaReference> requiredMedia, IEnumerable<ManagedGalleryReference> requiredGalleries,
+        IEnumerable<ManagedMediaReference> reusableMedia, IEnumerable<ManagedGalleryReference> reusableGalleries,
+        WallPackageLimits limits, CancellationToken token)
+    {
+        var singles = requiredMedia.Distinct().ToArray();
+        var existingGalleries = reusableGalleries.ToHashSet();
+        var galleryReferences = requiredGalleries.Distinct().ToArray();
+        foreach (var gallery in galleryReferences)
+            if (!PreparedManagedGallery.IsValidReference(gallery) || !preview.Galleries.ContainsKey(gallery.ContentId) ||
+                !preview.Content.Galleries.Any(item => item.Id == gallery.ContentId && item.ManifestSha256 == gallery.ManifestSha256))
+                throw new InvalidDataException("Accepted gallery is outside the verified package.");
+        var newGalleries = galleryReferences.Where(gallery => !existingGalleries.Contains(gallery)).ToArray();
+        var required = singles.Concat(newGalleries.SelectMany(gallery => preview.Galleries[gallery.ContentId].Files.Select(file => file.Media))).Distinct().ToArray();
+        var known = WallPackageJson.AllMedia(preview.Content, preview.Galleries.Values).ToHashSet();
+        if (required.Any(reference => !known.Contains(reference))) throw new InvalidDataException("Accepted original is outside the verified package.");
+        var reusable = reusableMedia.ToArray();
+        // Gallery and Single preparation share one digest budget. Do this before reading any original.
+        var existing = reusable.Select(reference => reference.Sha256).ToHashSet(StringComparer.Ordinal);
+        var all = required.Concat(reusable).ToArray();
+        if (all.Any(reference => !PreparedMediaAsset.IsValidReference(reference)) || all.GroupBy(reference => reference.Sha256, StringComparer.Ordinal)
+            .Any(group => group.Select(reference => reference.Length).Distinct().Count() != 1))
+            throw new InvalidDataException("Invalid or conflicting original-image digest references.");
+        var newBytes = required.DistinctBy(reference => reference.Sha256, StringComparer.Ordinal)
+            .Where(reference => !existing.Contains(reference.Sha256)).Sum(reference => reference.Length);
+        if (newBytes > limits.MaximumPreparedMediaBytes) throw new InvalidDataException("Selected original images exceed the combined preparation budget.");
+        var prepared = new Dictionary<string, PreparedMediaAsset>(StringComparer.Ordinal);
+        async Task<PreparedMediaAsset> Get(ManagedMediaReference reference)
+        {
+            token.ThrowIfCancellationRequested();
+            if (prepared.TryGetValue(reference.Sha256, out var cached)) return cached.WithExtension(reference.Extension);
+            var path = WallPackageJson.MediaPath(reference);
+            var file = preview.Manifest.Files.SingleOrDefault(file => file.Path == path && file.Length == reference.Length && file.Sha256 == reference.Sha256)
+                ?? throw new InvalidDataException("Accepted original is missing from the verified package.");
+            var bytes = await ReadDeclaredAsync(zip.GetEntry(path)!, file, PreparedMediaAsset.MaximumBytes, token).ConfigureAwait(false);
+            if (!await verifyImageAsync(bytes, reference.Extension, token).ConfigureAwait(false)) throw new InvalidDataException("Invalid original image.");
+            token.ThrowIfCancellationRequested();
+            var asset = PreparedMediaAsset.FromVerifiedImage(bytes, reference.Extension);
+            prepared.Add(reference.Sha256, asset); return asset;
+        }
+        var media = new List<PreparedMediaAsset>();
+        foreach (var reference in singles.Where(reference => !existing.Contains(reference.Sha256))) media.Add(await Get(reference).ConfigureAwait(false));
+        var galleries = new List<PreparedManagedGallery>();
+        foreach (var reference in newGalleries)
+        {
+            var files = new List<PreparedManagedGalleryFile>();
+            foreach (var file in preview.Galleries[reference.ContentId].Files)
+                files.Add(new(file.RelativePath, await Get(file.Media).ConfigureAwait(false)));
+            var gallery = PreparedManagedGallery.FromVerifiedFiles(files);
+            if (gallery.Reference != reference) throw new InvalidDataException("Prepared gallery differs from its verified content ID.");
+            galleries.Add(gallery);
+        }
+        token.ThrowIfCancellationRequested();
+        return new(media.AsReadOnly(), galleries.AsReadOnly());
+    }
+
+    internal async Task<PreparedMediaAsset> ReadGalleryImageConfirmedAsync(WallPackagePreview preview,
+        ZipArchive zip, string galleryId, CancellationToken token)
+    {
+        if (!preview.Galleries.TryGetValue(galleryId, out var gallery)) throw new InvalidDataException("Unknown package gallery.");
+        var reference = gallery.Files[0].Media;
+        return (await PrepareMediaConfirmedAsync(preview, zip, [reference], [], new(), token).ConfigureAwait(false)).Single();
+    }
+
     private async Task<LaunchIdentity> ObserveEntryAsync(ManagedEntryKind kind, byte[] bytes, CancellationToken token)
     {
         try { return await observeEntryAsync(kind, bytes, token).ConfigureAwait(false); }
@@ -238,6 +317,21 @@ public sealed class WallPackageImport : IDisposable
         limits ??= new(); limits.Validate();
         return _reader.PrepareMediaConfirmedAsync(_preview, _zip, required, reusable ?? [], limits, token);
     }
+    public Task<WallPackagePreparedResources> PrepareResourcesAsync(IEnumerable<ManagedMediaReference> requiredMedia,
+        IEnumerable<ManagedGalleryReference> requiredGalleries, IEnumerable<ManagedMediaReference>? reusableMedia = null,
+        IEnumerable<ManagedGalleryReference>? reusableGalleries = null, WallPackageLimits? limits = null,
+        CancellationToken token = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        limits ??= new(); limits.Validate();
+        return _reader.PrepareResourcesConfirmedAsync(_preview, _zip, requiredMedia, requiredGalleries,
+            reusableMedia ?? [], reusableGalleries ?? [], limits, token);
+    }
+    public Task<PreparedMediaAsset> ReadGalleryImageAsync(string galleryId, CancellationToken token = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _reader.ReadGalleryImageConfirmedAsync(_preview, _zip, galleryId, token);
+    }
     public void Dispose()
     {
         if (_disposed) return;
@@ -245,16 +339,21 @@ public sealed class WallPackageImport : IDisposable
     }
 }
 
+public sealed record WallPackagePreparedResources(IReadOnlyList<PreparedMediaAsset> MediaAssets,
+    IReadOnlyList<PreparedManagedGallery> ManagedGalleries);
+
 public sealed class WallPackagePreview
 {
     internal WallPackagePreview(string path, WallPackageContent content, WallPackageManifest manifest, string hash,
-        IReadOnlyDictionary<string, LaunchIdentity> identities)
-    { PackagePath = path; Content = content; Manifest = manifest; PackageSha256 = hash; Identities = identities; }
+        IReadOnlyDictionary<string, LaunchIdentity> identities, IReadOnlyDictionary<string, ManagedGalleryManifest>? galleries = null)
+    { PackagePath = path; Content = content; Manifest = manifest; PackageSha256 = hash; Identities = identities;
+        Galleries = galleries ?? new ReadOnlyDictionary<string, ManagedGalleryManifest>(new Dictionary<string, ManagedGalleryManifest>(StringComparer.Ordinal)); }
     public string PackagePath { get; }
     public WallPackageContent Content { get; }
     public WallPackageManifest Manifest { get; }
     public string PackageSha256 { get; }
     public IReadOnlyDictionary<string, LaunchIdentity> Identities { get; }
+    public IReadOnlyDictionary<string, ManagedGalleryManifest> Galleries { get; }
 }
 
 public static class WallPackageMediaBudget

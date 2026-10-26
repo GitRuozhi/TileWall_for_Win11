@@ -10,35 +10,71 @@ namespace TileWall.Graphics;
 /// <summary>One bounded desktop capture; pixels never leave process memory.</summary>
 internal static class DesktopBackdropSnapshot
 {
-    internal static DecodedImageFrame? CaptureExcludingWindow(RectInt32 region, IntPtr window)
+    internal static DecodedImageFrame? CaptureExcludingWindow(RectInt32 region, IntPtr window, ref uint? affinityToRestore)
     {
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041) || window == IntPtr.Zero ||
-            Win32Api.GetWindowThreadProcessId(window, out var owner) == 0 || owner != (uint)Environment.ProcessId ||
-            (Win32Api.GetWindowLongPtrW(window, -16).ToInt64() & 0x40000000) != 0) // GWL_STYLE / WS_CHILD
-            return null;
+        // A failed earlier restore owns the original value until read-back confirms
+        // it. Never reinterpret our remaining exclusion flag as the original policy.
+        if (!TryRestoreWindowAffinity(window, ref affinityToRestore) || !IsOwnedCaptureWindow(window)) return null;
         if (!Win32Api.GetWindowDisplayAffinity(window, out var original))
         {
             AppLog.Warn("BackdropSnapshot", $"Read display affinity failed: {Marshal.GetLastWin32Error()}");
             return null;
         }
-        if (!Win32Api.SetWindowDisplayAffinity(window, Win32Api.WdaExcludeFromCapture))
-        {
-            AppLog.Warn("BackdropSnapshot", $"Exclude window from capture failed: {Marshal.GetLastWin32Error()}");
-            return null;
-        }
-        DecodedImageFrame? captured;
+        // Register before changing policy. Even a failed Set must pass through
+        // restoration, because accepting another baseline would lose ownership.
+        affinityToRestore = original;
+        DecodedImageFrame? captured = null;
         bool restored;
-        try { captured = Capture(region); }
+        try
+        {
+            if (!Win32Api.SetWindowDisplayAffinity(window, Win32Api.WdaExcludeFromCapture))
+            {
+                AppLog.Warn("BackdropSnapshot", $"Exclude window from capture failed: {Marshal.GetLastWin32Error()}");
+                return null;
+            }
+            captured = Capture(region);
+            if (captured is null) AppLog.Warn("BackdropSnapshot", "Desktop capture returned no frame.");
+        }
         finally
         {
             // Keep this scope synchronous and short. Blur/bitmap preparation happens
             // only after the original screenshot/recording policy has been restored.
-            restored = Win32Api.SetWindowDisplayAffinity(window, original) &&
-                Win32Api.GetWindowDisplayAffinity(window, out var actual) && actual == original;
-            if (!restored) AppLog.Warn("BackdropSnapshot", $"Restore display affinity failed: {Marshal.GetLastWin32Error()}");
+            restored = TryRestoreWindowAffinity(window, ref affinityToRestore);
         }
         return restored ? captured : null;
     }
+
+    internal static bool TryRestoreWindowAffinity(IntPtr window, ref uint? affinityToRestore)
+    {
+        if (affinityToRestore is not { } original) return true;
+        if (!IsOwnedCaptureWindow(window))
+        {
+            AppLog.Warn("BackdropSnapshot", "Restore display affinity deferred: owned top-level window is unavailable.");
+            return false;
+        }
+        if (!Win32Api.SetWindowDisplayAffinity(window, original))
+        {
+            AppLog.Warn("BackdropSnapshot", $"Restore display affinity Set failed: {Marshal.GetLastWin32Error()}, expected={original}.");
+            return false;
+        }
+        if (!Win32Api.GetWindowDisplayAffinity(window, out var actual))
+        {
+            AppLog.Warn("BackdropSnapshot", $"Restore display affinity read-back failed: {Marshal.GetLastWin32Error()}, expected={original}.");
+            return false;
+        }
+        if (actual != original)
+        {
+            AppLog.Warn("BackdropSnapshot", $"Restore display affinity mismatch: expected={original}, actual={actual}.");
+            return false;
+        }
+        affinityToRestore = null;
+        return true;
+    }
+
+    private static bool IsOwnedCaptureWindow(IntPtr window) =>
+        OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041) && window != IntPtr.Zero &&
+        Win32Api.GetWindowThreadProcessId(window, out var owner) != 0 && owner == (uint)Environment.ProcessId &&
+        (Win32Api.GetWindowLongPtrW(window, -16).ToInt64() & 0x40000000) == 0; // GWL_STYLE / WS_CHILD
 
     internal static DecodedImageFrame? Capture(RectInt32 region)
     {

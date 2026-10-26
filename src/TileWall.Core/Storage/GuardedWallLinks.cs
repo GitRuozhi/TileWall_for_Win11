@@ -10,6 +10,12 @@ internal sealed class GuardedWallLinks(ILnkFileService inner, WallStoragePaths p
         inner.Create(path, target, arguments, workingDirectory);
     }
 
+    public void CreateShell(string path, string parsingName)
+    {
+        paths.Guard(path);
+        inner.CreateShell(path, parsingName);
+    }
+
     public LinkFields Read(string path)
     {
         paths.Guard(path);

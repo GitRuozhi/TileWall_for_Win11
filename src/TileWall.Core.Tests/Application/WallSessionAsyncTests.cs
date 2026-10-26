@@ -61,7 +61,7 @@ public sealed class WallSessionAsyncTests
         Assert.False(session.RefreshViewFromCurrent());
         Assert.Equal(0, refreshes);
         Assert.True(session.ViewBlocked);
-        var config = Path.Combine(root, "config.json");
+        var config = Path.Combine(root, "state.json");
         var bytes = files.ReadAllBytes(config);
         files.WriteAllBytes(config, Encoding.UTF8.GetBytes("{"));
         Assert.Equal(WallOpenStatus.CorruptBlocked, session.Open(1, 6).Status);
@@ -97,6 +97,7 @@ public sealed class WallSessionAsyncTests
         public void Copy(string source, string destination, bool overwrite)
         { Trip("copy", source, destination); inner.Copy(source, destination, overwrite); }
         public void Delete(string path) { Trip("delete", path, null); inner.Delete(path); }
+        public void MoveDirectory(string source, string destination) => inner.MoveDirectory(source, destination);
         public void CreateDirectory(string path) { Trip("mkdir", null, path); inner.CreateDirectory(path); }
         public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);
@@ -195,7 +196,7 @@ public sealed class WallSessionAsyncTests
 
         await executor.RunNextAsync();
         var apply = await acceptance.TakeAsync();
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
         Assert.Same(before, session.Current);
         Assert.Null(refreshed);
         Assert.True(session.WritePending);
@@ -226,7 +227,7 @@ public sealed class WallSessionAsyncTests
         Assert.False(result.Committed);
         Assert.False(session.WritePending);
         Assert.Same(before, session.Current);
-        Assert.Equal(before.Generation, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(before.Generation, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
         files.InjectedFault = FaultPoint.None;
     }
 
@@ -244,7 +245,7 @@ public sealed class WallSessionAsyncTests
         Assert.True(session.ViewBlocked);
         Assert.False(session.RequiresReopen);
         Assert.Equal(1, session.Current.Generation);
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
         Assert.False((await session.CommitAsync(Add(session))).Committed);
         session.SetViewRefresh(_ => { });
         Assert.True(session.RefreshViewFromCurrent());
@@ -300,7 +301,7 @@ public sealed class WallSessionAsyncTests
         Assert.True(session.RefreshViewFromCurrent());
         Assert.Equal(1, refreshCount);
         Assert.NotNull(session.Propose(new RemoveMemberAction(session.Current.Generation, "tile1"), 500, 500).Proposal);
-        Assert.Equal(before.Generation, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(before.Generation, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 
     [Fact]
@@ -337,7 +338,7 @@ public sealed class WallSessionAsyncTests
         Assert.True(session.RequiresReopen);
         Assert.False(session.RefreshViewFromCurrent());
         Assert.False(session.WritePending);
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 
     [Fact]
@@ -383,9 +384,9 @@ public sealed class WallSessionAsyncTests
         await executor.RunNextAsync();
         await Assert.ThrowsAsync<InvalidOperationException>(async () => await operation);
 
-        var configPath = Path.Combine(root, "config.json");
+        var configPath = Path.Combine(root, "state.json");
         var committedBytes = files.ReadAllBytes(configPath);
-        Assert.Equal(2, WallJson.Deserialize(committedBytes).Generation);
+        Assert.Equal(2, UserDataSnapshotJson.ReadManifest(committedBytes).Generation);
         Assert.Same(before, session.Current);
         Assert.True(session.RequiresReopen);
         Assert.True(session.ViewBlocked);
@@ -401,9 +402,9 @@ public sealed class WallSessionAsyncTests
         Assert.False(rejectedCommit.Committed);
         Assert.Contains("reopen", string.Join(" ", rejectedCommit.Diagnostics), StringComparison.OrdinalIgnoreCase);
         Assert.False((await session.CommitAsync(proposal)).Committed);
-        Assert.Equal(2, WallJson.Deserialize(files.ReadAllBytes(configPath)).Generation);
+        Assert.Equal(2, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(configPath)).Generation);
 
-        var previousPath = Path.Combine(root, "Recovery", "config.prev.json");
+        var previousPath = Path.Combine(root, "Recovery", "state.prev.json");
         Assert.True(files.Exists(previousPath));
         var previousBytes = files.ReadAllBytes(previousPath);
         files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes("{"));
@@ -448,6 +449,6 @@ public sealed class WallSessionAsyncTests
         Assert.False(session.ViewBlocked);
         Assert.False(session.WritePending);
         Assert.Equal(1, session.Current.Generation);
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 }

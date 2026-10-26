@@ -55,7 +55,7 @@ public sealed class LaunchIdentityService(IFileStore files, ILnkFileService link
             normalized, arguments, work, false);
     }
 
-    private static LaunchIdentity ForShell(string shell, string arguments, string workingDirectory) =>
+    public static LaunchIdentity ForShell(string shell, string arguments = "", string workingDirectory = "") =>
         new(Key("shell", shell.ToUpperInvariant(), arguments, workingDirectory.ToUpperInvariant()),
             shell, arguments, workingDirectory, false);
 

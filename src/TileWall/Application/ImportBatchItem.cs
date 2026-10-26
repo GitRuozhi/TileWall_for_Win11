@@ -5,6 +5,7 @@ using TileWall.Core.Grid;
 using TileWall.Core.Import;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
+using TileWall.Graphics;
 
 namespace TileWall.ApplicationModel;
 
@@ -60,11 +61,35 @@ internal sealed record ImportPageSource(IReadOnlyList<ImportSourceCandidate> Can
 {
     public IReadOnlyDictionary<string, string> AvailabilityFacts { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public bool AvailabilityPrepared { get; init; }
+    public bool IconPreparing { get; init; }
 }
 
 internal sealed record ImportPagePreparation(ImportPageContext Context, ImportPageSource Source);
 
 internal sealed record ImportPageRequest(ImportPageContext Context, ImportPageSource Source,
-    ImportSourceProjection Projection, ImportSourcePlan Plan, Func<bool> IsCurrent);
+    ImportSourceProjection Projection, ImportSourcePlan Plan, Func<bool> IsCurrent)
+{
+    public IReadOnlyDictionary<string, ImportTargetRecognition> RecognizedTargets { get; init; } =
+        new Dictionary<string, ImportTargetRecognition>(StringComparer.Ordinal);
+}
+
+/// <summary>A page-local inference is reusable only for the same original input and observed source facts.</summary>
+internal sealed record ImportTargetRecognition(string SourceFact, TargetImageSourceResult Result)
+{
+    internal static bool AppliesTo(ImportSourceCandidate candidate) =>
+        candidate.Policy != ImportSourcePolicy.Attributed && candidate.Member.Images.Kind == MemberImageSourceKind.Automatic;
+
+    internal static string FactFor(ImportPageSource source, ImportSourceCandidate candidate) =>
+        System.Text.Json.JsonSerializer.Serialize(new { candidate.SourceKind, candidate.SourceKey, candidate.Member.TargetInput,
+            Identity = candidate.SelectionIdentity, Fact = source.AvailabilityFacts.GetValueOrDefault(candidate.SourceKey) });
+
+    internal bool Matches(ImportPageSource source, ImportSourceCandidate candidate) =>
+        AppliesTo(candidate) && SourceFact == FactFor(source, candidate);
+}
 
 internal sealed record ImportPageResult(string? Error = null, bool RefreshRequired = false);
+
+internal enum ImportPageMode { Import, Export }
+
+internal sealed record ImportPageExportRequest(ImportPageContext Context, ImportPageSource Source,
+    IReadOnlyList<string> SelectedMemberIds, string OutputPath, Func<bool> IsCurrent);

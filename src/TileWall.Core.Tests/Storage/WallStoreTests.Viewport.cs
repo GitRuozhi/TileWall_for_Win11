@@ -18,7 +18,7 @@ public sealed partial class WallStoreTests
             Settings = new() { FullScreen = fullScreen, ExpandColumns = true },
         };
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
-        var saved = files.ReadAllBytes(Path.Combine(root, "config.json"));
+        var saved = files.ReadAllBytes(Path.Combine(root, "state.json"));
         var invalid = initial with
         {
             Generation = 1,
@@ -27,7 +27,7 @@ public sealed partial class WallStoreTests
         var planned = store.PlanEntries(initial, invalid, []);
         Assert.Null(planned.Request);
         Assert.Contains("EXPANDED_TAIL_LANE", planned.Diagnostics);
-        Assert.Equal(saved, files.ReadAllBytes(Path.Combine(root, "config.json")));
+        Assert.Equal(saved, files.ReadAllBytes(Path.Combine(root, "state.json")));
     }
 
     [Theory]
@@ -66,7 +66,7 @@ public sealed partial class WallStoreTests
         var (store, files, links, root) = Harness();
         var initial = Wall(Tile("one"));
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
-        var saved = files.ReadAllBytes(Path.Combine(root, "config.json"));
+        var saved = files.ReadAllBytes(Path.Combine(root, "state.json"));
         var candidate = WallViewportPolicy.AdaptToEnvironment(initial,
             WallViewportPolicy.Create(500, 1080, false, expandColumns: false));
         Assert.True(candidate.Success, candidate.Detail);
@@ -82,7 +82,7 @@ public sealed partial class WallStoreTests
         Assert.Equal(!fail, reopened.Document!.Settings.ExpandColumns);
         Assert.Equal(fail ? 0 : 1, reopened.Document.Generation);
         Assert.Equal("one", Assert.Single(reopened.Document.EnumerateAllMembers()).Id);
-        if (fail) Assert.Equal(saved, files.ReadAllBytes(Path.Combine(root, "config.json")));
+        if (fail) Assert.Equal(saved, files.ReadAllBytes(Path.Combine(root, "state.json")));
         else Assert.Empty(reopened.Document.Lanes[^1].Groups);
     }
 }

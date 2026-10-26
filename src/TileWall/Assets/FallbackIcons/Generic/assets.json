@@ -1,0 +1,35 @@
+{
+  "format": 1,
+  "source": "Original first-party geometric placeholders created for TileWall; no third-party image, font, logo, or material was used.",
+  "rendering": "Pillow primitive geometry rendered at 4x and downsampled with Lanczos to 512x512 RGBA PNG.",
+  "items": [
+    {
+      "file": "file.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 4529,
+      "sha256": "0B366279FA3DBCEA09E6444E33110BB8F2AE5037CDF293ABD533145418412EAB"
+    },
+    {
+      "file": "folder.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 11210,
+      "sha256": "21139101E15ED2A87DAD01E25F4186E64B9CBD471F842131BAF4180FC998BCDE"
+    },
+    {
+      "file": "website.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 34385,
+      "sha256": "2192C1E7251597CC7308B26A03430380A0C6EE8B239FD6D28433FE566FEBE1BF"
+    },
+    {
+      "file": "unknown.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 15488,
+      "sha256": "D87C8050F7F1A1B9CF9B706577BB198EC67369241767D6BF0EDD7C8B6BC5B109"
+    }
+  ]
+}

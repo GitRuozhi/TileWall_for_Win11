@@ -30,6 +30,17 @@ Microsoft Edge WebView2 1.0.3719.77
 License and third-party notices: Licenses\WebView2License.txt and Licenses\WebView2ThirdPartyNotices.txt.
 Source package: Microsoft.Web.WebView2 1.0.3719.77.
 
+TileWall generic fallback artwork
+Assets\FallbackIcons\Generic\file.png, folder.png, website.png, and unknown.png are original geometric placeholders created for TileWall at 512×512 RGBA. No third-party image, logo, font, or other artwork is included; no third-party asset license applies.
+Per-file dimensions and SHA-256 provenance are recorded in Assets\FallbackIcons\Generic\assets.json.
+
+Bundled website icons
+The local images identify the websites linked from TileWall. File-level source URLs, pinned revisions, hashes, and recorded usage terms are listed in Assets\FallbackIcons\Websites\catalog.json. Collection notes are in Assets\FallbackIcons\Websites\NOTICE.txt; source originals and supporting records are retained in the source repository at Showcase\website-icons.
+
+TileWall system fallback artwork
+Assets\FallbackIcons\System contains original geometric system-function illustrations created for TileWall. They supplement unavailable native images and do not include Windows DLL exports, third-party logos, fonts, or traced artwork. No third-party asset license applies.
+Per-file dimensions and SHA-256 digests are recorded in Assets\FallbackIcons\System\assets.json. The source generator is tools\GenerateSystemFallbackIcons.py.
+
 Retained historical license material
 The following files are retained from earlier dependency sets. Their presence does not mean that Windows ML or System.Numerics.Tensors is a runtime dependency of the current build.
 Microsoft.WindowsAppSDK.ML 2.1.94: Licenses\WindowsAppSdkMlLicense.txt.

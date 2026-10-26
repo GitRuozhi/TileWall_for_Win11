@@ -35,7 +35,7 @@ internal sealed class StartMenuImportCoordinator
     public Func<StartMenuCachedSource, string, CancellationToken, Task<string?>>? IconPrepare { get; set; }
     public StartMenuCatalogSnapshot Snapshot { get { lock (_sync) return _snapshot; } }
 
-    public string IconsDirectory(StartMenuCandidate candidate) => CachePath("Sources", candidate.SourceKey, "Icons");
+    public string IconsDirectory(StartMenuCandidate candidate) => Path.Combine(_dataRoot, "Cache", "Images", "Icons", "Packages");
 
     public void ScheduleStartupRefresh()
     {
@@ -133,7 +133,10 @@ internal sealed class StartMenuImportCoordinator
             CheckCachePath(path, createDirectories: false);
             if (!File.Exists(path)) return;
             if (new FileInfo(path).Length > 16 * 1024 * 1024) throw new IOException("CacheTooLarge");
-            var snapshot = JsonSerializer.Deserialize<StartMenuCatalogSnapshot>(File.ReadAllBytes(path));
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length is < 1 or > 16 * 1024 * 1024) throw new IOException("CacheTooLarge");
+            var snapshot = JsonSerializer.Deserialize<StartMenuCatalogSnapshot>(stream);
+            CheckCachePath(path, createDirectories: false);
             var known = new TileWall.Shell.Interop.KnownFolderPaths();
             var roots = new Dictionary<SourceKind, string?> { [SourceKind.User] = known.UserPrograms, [SourceKind.Common] = known.CommonPrograms };
             if (snapshot is null || snapshot.FormatVersion != StartMenuSourceCache.FormatVersion ||
@@ -150,7 +153,7 @@ internal sealed class StartMenuImportCoordinator
                     Path.TrimEndingDirectorySeparator(Path.GetFullPath(current)).Equals(
                         Path.TrimEndingDirectorySeparator(Path.GetFullPath(source.Candidate.RootPath!)), StringComparison.OrdinalIgnoreCase))
                     .Select(source => source with { Stale = true }).ToArray(),
-                Refreshing = false, ErrorCode = null,
+                Refreshing = false, IconPreparing = false, ErrorCode = null,
             });
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or JsonException or NotSupportedException)
@@ -169,7 +172,7 @@ internal sealed class StartMenuImportCoordinator
             !Enum.IsDefined(source.Candidate.Source) || source.Candidate.Kind is not (EntryKind.Lnk or EntryKind.Url) ||
             EntryNames.KindOfRelativePath(source.Candidate.FullPath) != source.Candidate.Kind ||
             source.Candidate.RelativePath.Split('\\', '/').Any(segment => segment is "" or "." or ".." || segment.Contains(':')) ||
-            source.Dependencies is null || source.Dependencies.Any(dependency => !IsCachedDependencyValid(dependency)) ||
+            !Enum.IsDefined(source.TargetAvailability) || source.Dependencies is null || source.Dependencies.Any(dependency => !IsCachedDependencyValid(dependency)) ||
             source.Candidate.NotImportableReasons is null || source.Candidate.NotImportableReasons.Any(string.IsNullOrWhiteSpace) ||
             source.LinkFields is { } fields && (fields.Arguments is null || fields.WorkingDirectory is null) ||
             source.Identity is { } identity && (string.IsNullOrEmpty(identity.Key) || identity.Target is null ||
@@ -202,18 +205,23 @@ internal sealed class StartMenuImportCoordinator
     private async Task RefreshAsync()
     {
         var token = _lifetime.Token;
+        var elapsed = Stopwatch.StartNew();
+        double? firstFactsMs = null;
+        var targetReads = 0;
         try
         {
             await ReadCachedAsync().ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
             var previous = Snapshot;
-            Publish(previous with { Refreshing = true, ErrorCode = null });
+            Publish(previous with { Refreshing = true, IconPreparing = false, ErrorCode = null });
             var scan = await StartMenuImportScan.RunAsync(token).ConfigureAwait(false);
             var old = previous.Sources.ToDictionary(source => source.Candidate.SourceKey, StringComparer.Ordinal);
             var versions = new Dictionary<StartMenuDependencyStamp, (string? Company, string? Version)>();
             foreach (var cached in previous.Sources.Where(source => source.ErrorCode is null))
                 if (VersionStamp(cached, cached.Dependencies) is { } stamp)
                     versions.TryAdd(stamp, (cached.Company, cached.FileVersion));
+            var protocols = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            var targetObservations = new Dictionary<string, StartMenuImportProjection.TargetObservation>(StringComparer.OrdinalIgnoreCase);
             var observed = new List<StartMenuCachedSource>(scan.Candidates.Count);
             var icons = new List<(int Index, StartMenuCachedSource Source)>();
             var progress = Stopwatch.StartNew();
@@ -234,7 +242,7 @@ internal sealed class StartMenuImportCoordinator
                         var bytes = StartMenuImportScan.ReadSource(candidate, token);
                         old.TryGetValue(candidate.SourceKey, out var cached);
                         var sameContent = cached is not null && cached.SourceSha256.Equals(bytes.Sha256, StringComparison.OrdinalIgnoreCase) &&
-                            cached.ErrorCode is null or "InvalidTarget";
+                            cached.ErrorCode is null or "InvalidTarget" or "UnsupportedProtocol";
                         source = sameContent ? cached! with { Candidate = candidate, Stale = false, SourceSha256 = bytes.Sha256 } :
                             await StartMenuImportPreparation.PrepareSourceAsync(_executor, candidate, bytes.Bytes,
                                 bytes.Sha256, _identities, _links, token).ConfigureAwait(false);
@@ -254,6 +262,24 @@ internal sealed class StartMenuImportCoordinator
                         var after = StartMenuImportScan.ReadSource(candidate, token);
                         if (!bytes.Sha256.Equals(after.Sha256, StringComparison.OrdinalIgnoreCase) ||
                             !before.SequenceEqual(DependencyStamps(source))) throw new IOException("SourceChanged");
+                        var target = source.Identity;
+                        if (target is { IsUrl: true } && !target.Key.StartsWith("opaque", StringComparison.Ordinal))
+                        {
+                            var scheme = target.Target[..target.Target.IndexOf(':')];
+                            if (!protocols.TryGetValue(scheme, out var supported))
+                                protocols.Add(scheme, supported = TileWall.Shell.Interop.RegisteredUrlProtocols.IsSupported(target.Target));
+                            source = source with { ErrorCode = supported ? source.ErrorCode == "UnsupportedProtocol" ? null : source.ErrorCode : "UnsupportedProtocol" };
+                        }
+                        var observation = new StartMenuImportProjection.TargetObservation(ImportTargetAvailability.Unknown, null);
+                        if (target is not null && !target.IsUrl && Path.IsPathFullyQualified(target.Target) && !target.Key.StartsWith("opaque", StringComparison.Ordinal))
+                        {
+                            if (!targetObservations.TryGetValue(target.Target, out observation))
+                            {
+                                observation = StartMenuImportProjection.ObserveTarget(target);
+                                targetObservations.Add(target.Target, observation); targetReads++;
+                            }
+                        }
+                        source = source with { TargetAvailability = observation.Availability, TargetIsDirectory = observation.IsDirectory == true };
                         token.ThrowIfCancellationRequested();
                         try { WriteShortcutCopy(source, bytes.Bytes); }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -270,16 +296,18 @@ internal sealed class StartMenuImportCoordinator
                 }
                 token.ThrowIfCancellationRequested();
                 observed.Add(source);
-                if (source.Identity is not null && source.ErrorCode is null)
+                if (source.Identity is not null && source.ErrorCode is null && source.IconKey is null)
                     icons.Add((observed.Count - 1, source));
                 if (observed.Count == 1 || progress.ElapsedMilliseconds >= 150)
                 {
                     PublishProgress(previous, scan, observed);
+                    firstFactsMs ??= elapsed.Elapsed.TotalMilliseconds;
                     progress.Restart();
                 }
             }
             token.ThrowIfCancellationRequested();
-            var facts = StartMenuSourceCache.Merge(previous, scan, observed, refreshing: IconPrepare is not null && icons.Count != 0);
+            var facts = StartMenuSourceCache.Merge(previous, scan, observed, iconPreparing: IconPrepare is not null && icons.Count != 0);
+            var factsReadyMs = elapsed.Elapsed.TotalMilliseconds;
             Publish(facts);
             TryWriteIndex(facts);
             // The whole candidate list is already usable. Native icon preparation may complete progressively.
@@ -291,7 +319,6 @@ internal sealed class StartMenuImportCoordinator
                     try
                     {
                         var directory = IconsDirectory(source.Candidate);
-                        CheckCachePath(Path.Combine(directory, "package.json"), createDirectories: true);
                         var key = await prepareIcon(source, directory, token).ConfigureAwait(false);
                         token.ThrowIfCancellationRequested();
                         // An icon descriptor can never outlive its shortcut/dependencies.
@@ -303,27 +330,28 @@ internal sealed class StartMenuImportCoordinator
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or
                         System.Runtime.InteropServices.COMException)
                     { AppLog.Warn("StartMenuCache", $"Icon preparation deferred: {ex.GetType().Name}"); }
-                    if (progress.ElapsedMilliseconds >= 150) { PublishProgress(previous, scan, observed); progress.Restart(); }
+                    if (progress.ElapsedMilliseconds >= 150) { PublishProgress(previous, scan, observed, iconPreparing: true); progress.Restart(); }
                 }
             }
             token.ThrowIfCancellationRequested();
             var complete = StartMenuSourceCache.Merge(previous, scan, observed);
             Publish(complete);
             TryWriteIndex(complete);
+            AppLog.Warn("ImportSources", JsonSerializer.Serialize(new { source = "StartMenu", firstFactsMs, factsReadyMs, completeMs = elapsed.Elapsed.TotalMilliseconds,
+                count = complete.Sources.Count, targetReads, iconsPrepared = icons.Count }));
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or JsonException)
         {
             AppLog.Warn("StartMenuCache", $"Refresh failed: {ex.GetType().Name}");
-            Publish(Snapshot with { Refreshing = false, ErrorCode = "RefreshFailed" });
+            Publish(Snapshot with { Refreshing = false, IconPreparing = false, ErrorCode = "RefreshFailed" });
         }
     }
 
-    private void PublishProgress(StartMenuCatalogSnapshot previous, StartMenuScanResult scan, List<StartMenuCachedSource> observed) =>
-        Publish(StartMenuSourceCache.Merge(previous, scan with
-        {
-            Roots = scan.Roots.Select(root => root with { Complete = false }).ToArray(),
-        }, observed, refreshing: true));
+    private void PublishProgress(StartMenuCatalogSnapshot previous, StartMenuScanResult scan, List<StartMenuCachedSource> observed,
+        bool iconPreparing = false) => Publish(StartMenuSourceCache.Merge(previous, iconPreparing ? scan : scan with
+        { Roots = scan.Roots.Select(root => root with { Complete = false }).ToArray() }, observed,
+            refreshing: !iconPreparing, iconPreparing: iconPreparing));
 
     private static IReadOnlyList<StartMenuDependencyStamp> DependencyStamps(StartMenuCachedSource source)
     {
@@ -382,7 +410,7 @@ internal sealed class StartMenuImportCoordinator
             _lifetime.Token.ThrowIfCancellationRequested();
             var path = CachePath("index.json");
             CheckCachePath(path, createDirectories: true);
-            WriteAtomic(path, JsonSerializer.SerializeToUtf8Bytes(snapshot with { Refreshing = false }));
+            WriteAtomic(path, JsonSerializer.SerializeToUtf8Bytes(snapshot with { Refreshing = false, IconPreparing = false }));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

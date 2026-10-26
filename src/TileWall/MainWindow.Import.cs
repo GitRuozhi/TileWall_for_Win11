@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text.Json;
 using System.Security.Cryptography;
 using TileWall.ApplicationModel;
 using TileWall.Core.Application;
@@ -25,24 +27,34 @@ public sealed partial class MainWindow
         _session.ObservePackageEntryAsync, _images.VerifyPackageImageAsync);
     private StartMenuImportCoordinator? _startMenuImports;
     private readonly StartMenuImportProjection _importSourceProjection = new();
-    private sealed record ImportedIconCopy(string MemberId, string Sha256, string? TargetPath,
-        string? IconPath, int? IconIndex, string Directory, string Key);
-    private (long Generation, ImportedIconCopy[] Copies)? _pendingImportIconCopies;
-
-    private void PrepareCommittedImportIcons(WallDocument document)
+    private NativeImportCatalog? _nativeImports;
+    private NativeImportCatalog NativeImports => _nativeImports ??= new(_session.DataRoot, _session.LinkFiles);
+    private readonly Dictionary<ImportPageSourceKind, Task<IReadOnlyList<NativeImportEntry>>> _nativeRefreshes = [];
+    private readonly Dictionary<ImportPageSourceKind, Task<IReadOnlyList<NativeImportEntry>>> _nativeCacheReads = [];
+    private readonly IWallStorageExecutor _importSourceExecutor = new ImportSourceExecutor();
+    private sealed class ImportSourceExecutor : IWallStorageExecutor
     {
-        if (_pendingImportIconCopies is not { } pending || pending.Generation != document.Generation) return;
-        _pendingImportIconCopies = null;
-        var members = document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
-            .ToDictionary(member => member.Id, StringComparer.Ordinal);
-        foreach (var copy in pending.Copies)
-            if (members.TryGetValue(copy.MemberId, out var member) && _session.ManagedEntryPath(member) is { } path)
-                _ = _images.CopyCachedIconsToMemberAsync(copy.MemberId, path, copy.Sha256,
-                    copy.TargetPath, copy.IconPath, copy.IconIndex, copy.Directory, copy.Key);
+        private int _stopped;
+        // Short native descriptions own their own MTA; no COM object or long source scan occupies formal persistence.
+        public Task<T> ExecuteAsync<T>(Func<T> work)
+        {
+            ArgumentNullException.ThrowIfNull(work);
+            if (Volatile.Read(ref _stopped) != 0) throw new ObjectDisposedException(nameof(ImportSourceExecutor));
+            return Task.Run(() => ShellItemCatalog.InApartment(work));
+        }
+        public Task ShutdownAsync()
+        {
+            // StopStartMenuRefreshAsync first drains the coordinator, which awaits every returned job.
+            // This adapter has no thread/message loop or independent producer to drain a second time.
+            Interlocked.Exchange(ref _stopped, 1);
+            return Task.CompletedTask;
+        }
     }
-
+    private readonly CancellationTokenSource _nativeImportLifetime = new();
+    private ImportPageSourceKind? _lastImportSource;
+    private readonly HashSet<string> _knownImportPackages = new(StringComparer.OrdinalIgnoreCase);
     private StartMenuImportCoordinator StartMenuImports => _startMenuImports ??= new(_session.DataRoot,
-        _storageExecutor ?? throw new InvalidOperationException("Storage worker is unavailable."), ImportIdentities, _session.LinkFiles)
+        _importSourceExecutor, ImportIdentities, _session.LinkFiles)
     {
         IconPrepare = (source, directory, token) => _images.PrewarmPeIconsAsync(source.Candidate.FullPath,
             source.Identity?.IsUrl == false ? source.Identity.Target : null, source.LinkFields?.IconPath ?? source.UrlIconPath,
@@ -54,7 +66,14 @@ public sealed partial class MainWindow
         if (_hasDocument && !_viewBlocked && !PersistenceInteractionBlocked) StartMenuImports.ScheduleStartupRefresh();
     }
 
-    internal Task StopStartMenuRefreshAsync() => _startMenuImports?.StopAsync() ?? Task.CompletedTask;
+    internal async Task StopStartMenuRefreshAsync()
+    {
+        _nativeImportLifetime.Cancel();
+        await (_startMenuImports?.StopAsync() ?? Task.CompletedTask);
+        await _importSourceExecutor.ShutdownAsync();
+        try { await Task.WhenAll(_nativeRefreshes.Values.Concat(_nativeCacheReads.Values)); }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or System.Runtime.InteropServices.COMException) { }
+    }
 
     private async Task OpenImportAsync(string? groupId, int lane)
     {
@@ -63,10 +82,12 @@ public sealed partial class MainWindow
         {
             if (!await BeginModalAsync()) return;
             _importSourceProjection.BeginPage();
+            _lastImportSource = null;
             var dialog = new ImportDialog(DialogOwner, _images, StartMenuImports, CreateWallPackageReader(),
                 ReadImportContextAsync, (source, path, token) => ReadImportSourceAsync(_importSourceProjection, source, path, token),
                 (context, source, projection, token) => PrepareImportPageAsync(_importSourceProjection, context, source, projection, token),
-                SaveImportAsync, IsImportContextCurrent, Document.Settings.VisualStyle, LoadStartMenuIconAsync);
+                SaveImportAsync, SaveExportAsync, IsImportContextCurrent, Document.Settings.VisualStyle, LoadImportIconAsync,
+                KnownFolderPaths.Desktop, RestoreRecycledMembersAsync);
             ActiveDialog = dialog;
             await dialog.ShowAsync();
         }
@@ -74,10 +95,12 @@ public sealed partial class MainWindow
         finally { EndModal(); }
     }
 
-    private Task<PuzzleFrameResult> LoadStartMenuIconAsync(StartMenuImportCandidate candidate, int edge, CancellationToken token) =>
-        candidate.IconDirectory is { } directory && candidate.IconKey is { } key
-            ? _images.LoadCachedIconFrameAsync(directory, key, edge, token)
-            : Task.FromResult(new PuzzleFrameResult(null, WallImageStatus.None));
+    private Task<PuzzleFrameResult> LoadImportIconAsync(ImportSourceCandidate candidate, int width, int height, CancellationToken token) =>
+        _images.LoadAutomaticFrameAsync(candidate.SourceKind is ImportPageSourceKind.CurrentWall or ImportPageSourceKind.RecycleBin
+                ? _session.ManagedEntryPath(candidate.Member) ?? candidate.Member.TargetInput
+                : candidate.SourceKind == ImportPageSourceKind.WallPackage ? candidate.Identity?.Target : candidate.Member.TargetInput ?? candidate.Identity?.Target,
+            width, height,
+            candidate.Member.Visual.BackgroundMode == MemberBackgroundMode.Blur, token);
 
     private bool IsImportContextCurrent(ImportPageContext context) => _hasDocument && !_viewBlocked &&
         !_session.ResultUnknown && !_session.RequiresReopen && !_session.RecoveryBlocked &&
@@ -90,7 +113,7 @@ public sealed partial class MainWindow
         var budget = CurrentViewportBudget;
         var context = new ImportPageContext(current, budget, new Dictionary<string, string>(StringComparer.Ordinal),
             new Dictionary<string, string>(StringComparer.Ordinal));
-        if (!IsImportContextCurrent(context)) throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+        if (!IsImportContextCurrent(context)) throw new ImportSourceChangedException("The import source changed.");
         return Task.FromResult(context);
     }
 
@@ -99,7 +122,11 @@ public sealed partial class MainWindow
     {
         token.ThrowIfCancellationRequested();
         if (!IsImportContextCurrent(context) || projection.Generation != context.Document.Generation)
-            throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+            throw new ImportSourceChangedException("The import source changed.");
+        // Availability filtering can move surviving candidates to different groups.
+        source = await sourceProjection.PrepareAvailabilityAsync(source, token);
+        projection = ImportSourcePlanner.Project(context.Document, source.Candidates, projection.RecognizeGroups,
+            projection.AutoFilter, context.ExistingIdentities);
         var current = context.Document;
         var destinationIds = projection.Groups.Select(group => group.DestinationGroupId).OfType<string>()
             .Where(id => !context.ObservedDestinationGroups.Contains(id)).ToHashSet(StringComparer.Ordinal);
@@ -134,21 +161,70 @@ public sealed partial class MainWindow
             context = context with { ExistingIdentities = observations.Identities, ExistingEntrySha256 = observations.Hashes,
                 ObservedDestinationGroups = observedGroups };
         }
-        source = await sourceProjection.PrepareAvailabilityAsync(source, token);
         token.ThrowIfCancellationRequested();
-        if (!IsImportContextCurrent(context)) throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+        if (!IsImportContextCurrent(context)) throw new ImportSourceChangedException("The import source changed.");
         return new(context, source);
     }
 
-    private async Task<ImportPageSource> ReadImportSourceAsync(StartMenuImportProjection projection, int source, string? path, CancellationToken token)
+    private async Task<ImportPageSource> ReadImportSourceAsync(StartMenuImportProjection projection, ImportPageSourceKind source, string? path, CancellationToken token)
     {
-        if (source == 0)
+        var switched = _lastImportSource != source;
+        _lastImportSource = source;
+        if (source == ImportPageSourceKind.StartMenu)
         {
-            await StartMenuImports.ReadCachedAsync().WaitAsync(token);
+            var clock = Stopwatch.StartNew();
+            var cacheRead = StartMenuImports.ReadCachedAsync();
+            var memoryReady = cacheRead.IsCompletedSuccessfully;
+            await cacheRead.WaitAsync(token);
             var snapshot = StartMenuImports.Snapshot;
+            if (switched) AppLog.Warn("ImportSources", JsonSerializer.Serialize(new { source = "StartMenu", stage = "cache",
+                cacheMs = clock.Elapsed.TotalMilliseconds, memoryReady, count = snapshot.Sources.Count, refreshing = snapshot.Refreshing }));
             return await Task.Run(() => projection.FromStartMenu(snapshot, StartMenuImports.IconsDirectory, token), token);
         }
-        if (source != 3 || path is null) return new([], new Dictionary<string, StartMenuImportCandidate>());
+        if (source is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or ImportPageSourceKind.SystemFeatures)
+        {
+            var clock = Stopwatch.StartNew();
+            var native = NativeImports;
+            var memoryHit = native.TryMemory(source, out var cached);
+            if (!memoryHit)
+            {
+                if (!_nativeCacheReads.TryGetValue(source, out var cacheRead))
+                    _nativeCacheReads[source] = cacheRead = native.CachedAsync(source, _nativeImportLifetime.Token);
+                cached = await cacheRead.WaitAsync(token);
+            }
+            token.ThrowIfCancellationRequested();
+            var cacheMs = clock.Elapsed.TotalMilliseconds;
+            if (!_nativeRefreshes.TryGetValue(source, out var refresh) || switched && refresh.IsCompleted)
+            {
+                refresh = RefreshNativeSourceAsync(source);
+                _nativeRefreshes[source] = refresh;
+            }
+            if (refresh.IsFaulted) throw refresh.Exception!.GetBaseException();
+            if (refresh.IsCanceled) throw new ImportSourceChangedException("The native source scope changed.");
+            var visible = native.Snapshot(source);
+            var projected = native.Project(source, visible.Count != 0 || refresh.IsCompleted ? visible : cached);
+            if (switched) AppLog.Warn("ImportSources", JsonSerializer.Serialize(new { source = source.ToString(),
+                stage = "cache", cacheMs, memoryHit, count = projected.Candidates.Count, refreshing = projected.Refreshing }));
+            return projected;
+        }
+        if (source == ImportPageSourceKind.CurrentWall) return await ReadCurrentWallSourceAsync(token);
+        if (source == ImportPageSourceKind.RecycleBin)
+        {
+            var rows = Document.InactiveMembers.Select((member, index) =>
+            {
+                token.ThrowIfCancellationRequested();
+                return new ImportSourceCandidate("recycle:" + member.Id, RecycleBinPresentation.Title(member), member)
+                {
+                    SourceKind = source, Policy = ImportSourcePolicy.Attributed,
+                    SourceGroup = new("recycle", ProductStrings.Get("Recycle.Title"), 0), SourceOrder = index,
+                    HasRecordedSize = true, HasLaunchTarget = member.Entry is not null,
+                    TargetKind = member.Entry is null ? ImportTargetKind.Component : ImportTargetKind.Unknown,
+                };
+            }).ToArray();
+            return new(rows, new Dictionary<string, StartMenuImportCandidate>(), Scanned: rows.Length) { AvailabilityPrepared = true };
+        }
+        if (source != ImportPageSourceKind.WallPackage || path is null) return new([], new Dictionary<string, StartMenuImportCandidate>());
+        _knownImportPackages.Add(Path.GetFullPath(path));
         var read = await CreateWallPackageReader().ReadPreviewAsync(path, token: token);
         token.ThrowIfCancellationRequested();
         if (read.Preview is null) throw new IOException(read.Status == WallPackageReadStatus.UnsupportedFormat
@@ -156,16 +232,76 @@ public sealed partial class MainWindow
         return await Task.Run(() => projection.FromPackage(read.Preview, token), token);
     }
 
+    private async Task<IReadOnlyList<NativeImportEntry>> RefreshNativeSourceAsync(ImportPageSourceKind kind)
+    {
+        void Changed()
+        {
+            if (!_nativeImportLifetime.IsCancellationRequested)
+                DispatcherQueue.TryEnqueue(() => { if (ActiveDialog is ImportDialog dialog) dialog.SourceChanged(kind); });
+        }
+        try { return await NativeImports.ReadAsync(kind, _nativeImportLifetime.Token, Changed); }
+        finally { Changed(); }
+    }
+
+    private async Task<ImportPageSource> ReadCurrentWallSourceAsync(CancellationToken token)
+    {
+        var document = Document;
+        return await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
+        {
+            var rows = new List<ImportSourceCandidate>();
+            foreach (var (lane, laneIndex) in document.Lanes.Select((lane, index) => (lane, index)))
+            foreach (var (group, groupIndex) in lane.Groups.Select((group, index) => (group, index)))
+            foreach (var (member, memberIndex) in group.Members.Select((member, index) => (member, index)))
+            {
+                token.ThrowIfCancellationRequested();
+                LaunchIdentity? identity = null;
+                if (member.Entry is not null)
+                {
+                    try { identity = ImportIdentities.ResolveMember(member, _session.ManagedEntryPath(member)); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException) { }
+                }
+                var target = StartMenuImportProjection.ObserveTarget(identity);
+                rows.Add(new(member.Id, member.Visual.Title ?? member.Id, member)
+                {
+                    SourceKind = ImportPageSourceKind.CurrentWall, Policy = ImportSourcePolicy.Attributed,
+                    SourceGroup = new(group.Id, group.Title, groupIndex) { LaneIndex = laneIndex }, SourceOrder = memberIndex,
+                    HasRecordedPosition = true, HasRecordedSize = true, Identity = identity,
+                    HasLaunchTarget = member.Entry is not null, TargetKind = StartMenuImportProjection.ContentKind(identity, member.Entry is not null, target.IsDirectory),
+                    TargetAvailability = target.Availability,
+                });
+            }
+            return new ImportPageSource(rows, new Dictionary<string, StartMenuImportCandidate>(), Scanned: rows.Count) { AvailabilityPrepared = true };
+        });
+    }
+
+    private async Task<ImportPageResult> SaveExportAsync(ImportPageExportRequest request)
+    {
+        if (!request.IsCurrent() || !IsImportContextCurrent(request.Context) || PersistenceInteractionBlocked)
+            return new(ProductStrings.Get("Import.SourceChanged"), true);
+        try
+        {
+            using var snapshot = await _session.CapturePackageSnapshotAsync(request.Context.Document.Generation,
+                request.SelectedMemberIds, CancellationToken.None);
+            var result = await new WallPackageWriter(CreateWallPackageReader()).WriteAsync(snapshot, request.OutputPath,
+                typeof(ProductVersion).Assembly.GetName().Version!.ToString(), additionalProtectedPaths: _knownImportPackages,
+                token: CancellationToken.None);
+            if (result.Status == WallPackageWriteStatus.Saved)
+            { TransientStatus(string.Format(ProductStrings.Get("Import.ExportSaved"), request.OutputPath)); return new(); }
+            return new(result.Status == WallPackageWriteStatus.ResultUnknown ? ProductStrings.Get("Import.ExportUnknown") :
+                string.Format(ProductStrings.Get("Import.ExportFailed"), result.Diagnostic ?? result.Status.ToString()));
+        }
+        catch (Exception ex) { return new(string.Format(ProductStrings.Get("Import.ExportFailed"), ex.Message)); }
+    }
+
     private async Task<ImportPageResult> SaveImportAsync(ImportPageRequest request)
     {
         var plan = request.Plan;
         bool Current() => request.IsCurrent() && IsImportContextCurrent(request.Context) && !PersistenceInteractionBlocked;
-        if (!Current() || !request.Source.AvailabilityPrepared || !request.Context.Covers(request.Projection))
+        if (!Current() || request.Source.Refreshing || !request.Source.AvailabilityPrepared || !request.Context.Covers(request.Projection))
             return new(ProductStrings.Get("Import.SourceChanged"), true);
         if (plan.Status == ImportPlanStatus.NoChange) return new();
         if (plan.Status != ImportPlanStatus.Ready || plan.Proposal is null) return new(ProductStrings.Get("Import.LayoutRejected"));
         var changes = new List<EntryChange>();
-        var icons = new List<ImportedIconCopy>();
         var destinationIds = plan.Accepted.Select(accepted => accepted.GroupId).ToHashSet(StringComparer.Ordinal);
         var expectedEntrySha256 = new Dictionary<string, string>(StringComparer.Ordinal);
         // Matching and append placement used every member in these destination
@@ -180,6 +316,8 @@ public sealed partial class MainWindow
             expectedEntrySha256.Add(member.Id, hash);
         }
         IReadOnlyList<PreparedMediaAsset> media = [];
+        IReadOnlyList<PreparedManagedGallery> galleries = [];
+        var proposal = plan.Proposal;
         try
         {
             if (request.Source.Package is { } package)
@@ -195,9 +333,43 @@ public sealed partial class MainWindow
                     if (entry.Identity.Key != source.Identity?.Key) return new(ProductStrings.Get("Import.SourceChanged"), true);
                     changes.Add(new EntryChange.FromPackage(accepted.MemberId, entry));
                 }
-                var reusable = request.Context.Document.EnumerateAllMembers().Select(member => member.Images.Media)
-                    .Append(request.Context.Document.Settings.BackgroundMedia).OfType<ManagedMediaReference>();
-                media = await batch.PrepareMediaAsync(plan.ReferencedMedia, reusable);
+                var reusable = await _session.ReusablePackageMediaAsync(request.Context.Document.Generation);
+                var acceptedIds = plan.Accepted.Select(accepted => accepted.SourceKey).ToHashSet(StringComparer.Ordinal);
+                var requiredGalleries = request.Source.Candidates.Where(candidate => acceptedIds.Contains(candidate.SourceKey))
+                    .Select(candidate => candidate.Member.Images.ManagedGallery).OfType<ManagedGalleryReference>().Distinct();
+                var reusableGalleries = request.Context.Document.EnumerateAllMembers()
+                    .Select(member => member.Images.ManagedGallery).OfType<ManagedGalleryReference>().Distinct();
+                var resources = await batch.PrepareResourcesAsync(plan.ReferencedMedia, requiredGalleries, reusable, reusableGalleries);
+                media = resources.MediaAssets;
+                galleries = resources.ManagedGalleries;
+            }
+            else if (request.Source.Candidates.FirstOrDefault()?.SourceKind is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or ImportPageSourceKind.SystemFeatures)
+            {
+                var kind = request.Source.Candidates[0].SourceKind;
+                try { await NativeImports.ReadAsync(kind, CancellationToken.None); }
+                catch (Exception sourceError) when (sourceError is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+                { throw new ImportSourceChangedException("The native source changed.", sourceError); }
+                var prepared = await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
+                {
+                    var result = new List<EntryChange>();
+                    foreach (var accepted in plan.Accepted)
+                    {
+                        var source = NativeImports.Confirm(kind, accepted.SourceKey);
+                        if (request.Source.AvailabilityFacts.GetValueOrDefault(source.Key) != NativeImportCatalog.Facts(source))
+                            throw new ImportSourceChangedException("The import source changed.");
+                        result.Add(source.Kind switch
+                        {
+                            NativeImportTarget.Shortcut => new EntryChange.CopyShortcut(accepted.MemberId, source.SourcePath!, source.Sha256),
+                            NativeImportTarget.Path => new EntryChange.CreateLink(accepted.MemberId, source.Target),
+                            NativeImportTarget.Shell => new EntryChange.CreateShellLink(accepted.MemberId, source.Target,
+                                (source.Identity ?? LaunchIdentityService.ForShell(source.Target)).Key),
+                            NativeImportTarget.Uri => new EntryChange.CreateUrl(accepted.MemberId, source.Target),
+                            _ => throw new IOException("Unsupported native source."),
+                        });
+                    }
+                    return result;
+                });
+                changes.AddRange(prepared);
             }
             else
             {
@@ -208,7 +380,7 @@ public sealed partial class MainWindow
                     var observed = await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
                     {
                         if (!StartMenuImportCoordinator.SnapshotRootMatches(candidate, requireAvailable: true) ||
-                            !source.CanAdd) throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+                            !source.CanAdd) throw new ImportSourceChangedException("The import source changed.");
                         var before = StartMenuImportScan.ReadSource(candidate, CancellationToken.None);
                         var fields = candidate.Kind == EntryKind.Lnk ? _session.LinkFiles.Read(candidate.FullPath) : null;
                         var identity = EntryObservation.Observe(ImportIdentities,
@@ -216,20 +388,51 @@ public sealed partial class MainWindow
                         var after = StartMenuImportScan.ReadSource(candidate, CancellationToken.None);
                         if (identity.Key != source.Identity?.Key || before.Sha256 != after.Sha256 ||
                             !before.Sha256.Equals(source.SourceSha256, StringComparison.OrdinalIgnoreCase))
-                            throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+                            throw new ImportSourceChangedException("The import source changed.");
                         if (identity.IsUrl && !identity.Key.StartsWith("opaque-url:", StringComparison.Ordinal) && !RegisteredUrlProtocols.IsSupported(identity.Target))
                             throw new IOException(ProductStrings.Get("Import.UnsupportedProtocol"));
                         return (Identity: identity, Sha256: before.Sha256, Fields: fields);
                     });
                     changes.Add(new EntryChange.CopyShortcut(accepted.MemberId, candidate.FullPath, observed.Sha256));
-                    if (source.IconDirectory is { } directory && source.IconKey is { } key)
-                        icons.Add(new(accepted.MemberId, observed.Sha256, observed.Identity.IsUrl ? null : observed.Identity.Target,
-                            observed.Fields?.IconPath, observed.Fields?.IconIndex, directory, key));
                 }
             }
+            if (request.Source.Package is null)
+            {
+                void RequireCurrent()
+                {
+                    if (!Current()) throw new ImportSourceChangedException("The import source changed.");
+                }
+                var sourceByKey = request.Source.Candidates.ToDictionary(candidate => candidate.SourceKey, StringComparer.Ordinal);
+                var placed = proposal.Document.EnumerateAllMembers().ToDictionary(member => member.Id, StringComparer.Ordinal);
+                var inputs = plan.Accepted.Where(accepted => ImportTargetRecognition.AppliesTo(sourceByKey[accepted.SourceKey]))
+                    .Select(accepted =>
+                    {
+                        var source = sourceByKey[accepted.SourceKey];
+                        var known = request.RecognizedTargets.GetValueOrDefault(accepted.SourceKey);
+                        return (Member: placed[accepted.MemberId], Input: source.Member.TargetInput,
+                            Inference: known?.Matches(request.Source, source) == true ? known.Result : null);
+                    }).ToArray();
+                var prepared = await PrepareAcceptedTargetImagesAsync(inputs, request.Context.Document.Generation, RequireCurrent, CancellationToken.None);
+                proposal = WithPreparedTargetImages(proposal, prepared.Members);
+                media = prepared.Assets;
+                // Native direct paths have no copied shortcut bytes for Store to compare.
+                // Reconfirm their source stamp after image preparation as well as before it.
+                if (request.Source.Candidates.FirstOrDefault()?.SourceKind is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or ImportPageSourceKind.SystemFeatures)
+                    await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
+                    {
+                        foreach (var accepted in plan.Accepted)
+                        {
+                            var source = NativeImports.Confirm(sourceByKey[accepted.SourceKey].SourceKind, accepted.SourceKey);
+                            if (request.Source.AvailabilityFacts.GetValueOrDefault(source.Key) != NativeImportCatalog.Facts(source))
+                                throw new ImportSourceChangedException("The import source changed.");
+                        }
+                        return true;
+                    });
+                await RequireTargetSourcesCurrentAsync(prepared.Sources, RequireCurrent, CancellationToken.None);
+            }
             if (!Current()) return new(ProductStrings.Get("Import.SourceChanged"), true);
-            _pendingImportIconCopies = (plan.Proposal.Document.Generation, icons.ToArray());
-            var error = await CommitProposalAsync(plan.Proposal, changes, preparedMedia: media, expectedEntrySha256: expectedEntrySha256);
+            var error = await CommitProposalAsync(proposal, changes, preparedMedia: media,
+                expectedEntrySha256: expectedEntrySha256, managedGalleries: galleries);
             if (error?.Contains(WallStore.ImportDestinationChanged, StringComparison.Ordinal) == true)
                 return new(ProductStrings.Get("Import.SourceChanged"), true);
             if (error is null) TransientStatus(string.Format(ProductStrings.Get("Import.PlannedChanges"), plan.AddedCount, plan.OverwrittenCount));
@@ -241,12 +444,14 @@ public sealed partial class MainWindow
                 return new(ProductStrings.Get("Import.SourceChanged"), true);
             foreach (var accepted in plan.Accepted)
                 if (request.Source.StartMenuSources.TryGetValue(accepted.SourceKey, out var source)) StartMenuImports.InvalidateSource(source.Candidate);
-            var changed = ex.Message == ProductStrings.Get("Import.SourceChanged") ||
+            var changed = ex is ImportSourceChangedException || ex.Message == ProductStrings.Get("Import.SourceChanged") ||
                 ex.Message == "Wall file changed after preview." || ex is FileNotFoundException or DirectoryNotFoundException;
-            return new(string.Format(ProductStrings.Get("Import.Failed"), ex.Message), changed &&
+            if (changed && request.Source.Candidates.FirstOrDefault()?.SourceKind is { } sourceKind &&
+                sourceKind is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or ImportPageSourceKind.SystemFeatures)
+                _nativeRefreshes.Remove(sourceKind);
+            return new(changed ? ProductStrings.Get("Import.SourceChanged") : string.Format(ProductStrings.Get("Import.Failed"), ex.Message), changed &&
                 !_session.ResultUnknown && !_session.RequiresReopen && !_session.RecoveryBlocked);
         }
-        finally { _pendingImportIconCopies = null; }
     }
 
     internal async Task<ExternalImportResult> ImportExternalBatchAsync(ExplorerAddMessage message, CancellationToken token)
@@ -267,7 +472,7 @@ public sealed partial class MainWindow
                 if (!CanProcessExternalImport || _windowClosing || ShutdownStarted || !ReferenceEquals(Document, current) ||
                     Document.Generation != current.Generation || CurrentViewportBudget != budget ||
                     _session.ResultUnknown || _session.RequiresReopen || _session.RecoveryBlocked)
-                    throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+                    throw new ImportSourceChangedException("The import source changed.");
             }
             RequireCurrent();
             var observed = await executor.ExecuteAsync(() =>
@@ -309,38 +514,12 @@ public sealed partial class MainWindow
             string? error = null;
             if (accepted.Length != 0)
             {
-                var preparedSources = new Dictionary<string, TargetImageSourceResult>(StringComparer.Ordinal);
-                var assets = new Dictionary<string, PreparedMediaAsset>(StringComparer.Ordinal);
-                var preparedMembers = new Dictionary<string, WallMember>(StringComparer.Ordinal);
-                async Task RequireSourcesCurrentAsync()
-                {
-                    RequireCurrent();
-                    var valid = await Task.WhenAll(preparedSources.Values.Select(source => _images.IsTargetSourceCurrentAsync(source, token)));
-                    RequireCurrent();
-                    if (valid.Any(value => !value)) throw new IOException(ProductStrings.Get("Import.SourceChanged"));
-                }
                 // Placement and destination-scoped duplicate elimination precede
                 // every image read, media preparation and formal entry change.
-                foreach (var item in accepted)
-                {
-                    var source = await _images.ResolveTargetSourceAsync(item.SourcePath, token)
-                        ?? throw new OperationCanceledException(token);
-                    RequireCurrent();
-                    preparedSources.Add(item.Member.Id, source);
-                    var placed = plan.Proposal.Document.EnumerateAllMembers().Single(member => member.Id == item.Member.Id);
-                    var prepared = source.ApplyTo(placed);
-                    if (source.Source.Kind == MemberImageSourceKind.Single)
-                    {
-                        var asset = await _images.PrepareMediaAsync(item.SourcePath, token);
-                        RequireCurrent();
-                        var sourceCurrent = await _images.IsTargetSourceCurrentAsync(source, token);
-                        RequireCurrent();
-                        if (!sourceCurrent) throw new IOException(ProductStrings.Get("Import.SourceChanged"));
-                        assets.TryAdd(asset.Reference.Sha256, asset);
-                        prepared = prepared with { Images = prepared.Images with { Media = asset.Reference } };
-                    }
-                    preparedMembers.Add(item.Member.Id, prepared);
-                }
+                var placed = plan.Proposal.Document.EnumerateAllMembers().ToDictionary(member => member.Id, StringComparer.Ordinal);
+                var prepared = await PrepareAcceptedTargetImagesAsync(accepted.Select(item =>
+                    (Member: placed[item.Member.Id], Input: (string?)item.SourcePath, Inference: (TargetImageSourceResult?)null)).ToArray(),
+                    current.Generation, RequireCurrent, token);
                 await executor.ExecuteAsync(() =>
                 {
                     foreach (var item in accepted)
@@ -348,27 +527,20 @@ public sealed partial class MainWindow
                         var latest = ObserveExternalItem(item, identities, token);
                         if (latest.ExpectedIdentityKey != item.ExpectedIdentityKey || latest.ExpectedSourceSha256 != item.ExpectedSourceSha256 ||
                             latest.ExpectedSourceStamp != item.ExpectedSourceStamp)
-                            throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+                            throw new ImportSourceChangedException("The import source changed.");
                     }
                     return true;
                 });
                 RequireCurrent();
-                await RequireSourcesCurrentAsync();
+                await RequireTargetSourcesCurrentAsync(prepared.Sources, RequireCurrent, token);
                 RequireCurrent();
-                var proposal = plan.Proposal with { Document = plan.Proposal.Document with
-                {
-                    Lanes = plan.Proposal.Document.Lanes.Select(lane => lane with
-                    {
-                        Groups = lane.Groups.Select(group => group with
-                        { Members = group.Members.Select(member => preparedMembers.GetValueOrDefault(member.Id) ?? member).ToArray() }).ToArray(),
-                    }).ToArray(),
-                } };
+                var proposal = WithPreparedTargetImages(plan.Proposal, prepared.Members);
                 var changes = accepted.Select(item => item.Kind == ExplorerAddKind.CopyShortcut
                     ? (EntryChange)new EntryChange.CopyShortcut(item.Member.Id, item.SourcePath, item.ExpectedSourceSha256)
                     : new EntryChange.CreateLink(item.Member.Id, item.SourcePath)).ToArray();
                 // Admission is the last cancellation boundary. Accepted persistence
                 // drains through its own task even if exit cancels further preparation.
-                error = await CommitProposalAsync(proposal, changes, preparedMedia: assets.Values.ToArray(), expectedEntrySha256: observed.Hashes);
+                error = await CommitProposalAsync(proposal, changes, preparedMedia: prepared.Assets, expectedEntrySha256: observed.Hashes);
             }
             var text = error is null ? string.Format(ProductStrings.Get("Import.Added"), accepted.Length)
                 : string.Format(ProductStrings.Get("Import.Failed"), error);
@@ -386,6 +558,72 @@ public sealed partial class MainWindow
                 + (message.Truncated ? " " + ProductStrings.Get("Import.Truncated") : string.Empty), false, 0);
         }
     }
+
+    private async Task<(IReadOnlyDictionary<string, WallMember> Members, IReadOnlyList<PreparedMediaAsset> Assets,
+        IReadOnlyList<TargetImageSourceResult> Sources)> PrepareAcceptedTargetImagesAsync(
+        IReadOnlyList<(WallMember Member, string? Input, TargetImageSourceResult? Inference)> inputs,
+        long generation, Action requireCurrent, CancellationToken token)
+    {
+        var members = new Dictionary<string, WallMember>(StringComparer.Ordinal);
+        var assets = new Dictionary<string, PreparedMediaAsset>(StringComparer.Ordinal);
+        var sources = new List<TargetImageSourceResult>();
+        IReadOnlySet<string>? reusable = null;
+        long newBytes = 0;
+        foreach (var input in inputs)
+        {
+            requireCurrent(); token.ThrowIfCancellationRequested();
+            var source = input.Inference ?? await _images.ResolveTargetSourceAsync(input.Input, token)
+                ?? throw new OperationCanceledException(token);
+            requireCurrent();
+            if (input.Inference is not null && !await _images.IsTargetSourceCurrentAsync(source, token))
+                throw new ImportSourceChangedException("The import source changed.");
+            requireCurrent(); sources.Add(source);
+            var member = source.ApplyTo(input.Member);
+            if (source.Source.Kind == MemberImageSourceKind.Single)
+            {
+                var asset = await _images.PrepareMediaAsync(source.Source.Path ?? throw new IOException("Missing image source."), token);
+                requireCurrent();
+                if (!await _images.IsTargetSourceCurrentAsync(source, token))
+                    throw new ImportSourceChangedException("The import source changed.");
+                requireCurrent();
+                // Reuse the Store's verified resource closure for the batch budget.
+                // Keep only one frozen copy per digest; the transaction still checks its own budget.
+                reusable ??= (await _session.ReusablePackageMediaAsync(generation)).Select(media => media.Sha256).ToHashSet(StringComparer.Ordinal);
+                requireCurrent();
+                if (assets.TryAdd(asset.Reference.Sha256, asset) && !reusable.Contains(asset.Reference.Sha256))
+                {
+                    newBytes += asset.Reference.Length;
+                    if (newBytes > PreparedManagedGallery.MaximumTotalBytes)
+                        throw new IOException("Selected original images exceed the combined preparation budget.");
+                }
+                member = member with { Images = member.Images with { Media = asset.Reference } };
+            }
+            members.Add(member.Id, member);
+        }
+        return (members, assets.Values.ToArray(), sources);
+    }
+
+    private async Task RequireTargetSourcesCurrentAsync(IReadOnlyList<TargetImageSourceResult> sources,
+        Action requireCurrent, CancellationToken token)
+    {
+        foreach (var source in sources)
+        {
+            requireCurrent(); token.ThrowIfCancellationRequested();
+            if (!await _images.IsTargetSourceCurrentAsync(source, token))
+                throw new ImportSourceChangedException("The import source changed.");
+        }
+        requireCurrent();
+    }
+
+    private static WallProposal WithPreparedTargetImages(WallProposal proposal, IReadOnlyDictionary<string, WallMember> members) =>
+        proposal with { Document = proposal.Document with
+        {
+            Lanes = proposal.Document.Lanes.Select(lane => lane with
+            {
+                Groups = lane.Groups.Select(group => group with
+                { Members = group.Members.Select(member => members.GetValueOrDefault(member.Id) ?? member).ToArray() }).ToArray(),
+            }).ToArray(),
+        } };
 
     private ImportBatchItem ObserveExternalItem(ImportBatchItem item, LaunchIdentityService identities, CancellationToken token)
     {

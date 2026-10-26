@@ -3,7 +3,7 @@ namespace TileWall.Core.Exchange;
 public sealed record WallPackageManifest
 {
     public const string CurrentFormatId = "TileWall.WallPackage";
-    public const int CurrentFormatVersion = 1;
+    public const int CurrentFormatVersion = 2;
     public string FormatId { get; init; } = CurrentFormatId;
     public int FormatVersion { get; init; } = CurrentFormatVersion;
     public int WallSchemaVersion { get; init; } = 4;
@@ -33,3 +33,6 @@ public sealed record WallPackageLimits
 
 public enum WallPackageReadStatus { Valid, UnsupportedFormat, InvalidPackage, IoFailure, Cancelled }
 public sealed record WallPackageReadResult(WallPackageReadStatus Status, WallPackagePreview? Preview, string? Diagnostic = null);
+
+public enum WallPackageWriteStatus { Saved, InvalidPackage, IoFailure, Cancelled, ResultUnknown }
+public sealed record WallPackageWriteResult(WallPackageWriteStatus Status, string? ContentFingerprint = null, string? Diagnostic = null);

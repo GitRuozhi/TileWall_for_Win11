@@ -44,6 +44,7 @@ internal static class WallPackageJson
         Groups = Array.AsReadOnly(content.Groups.Select(g => g with { MemberIds = Array.AsReadOnly(g.MemberIds.ToArray()) }).ToArray()),
         Members = Array.AsReadOnly(content.Members.Select(m => m with
         { Partitions = m.Partitions is null ? null : Array.AsReadOnly(m.Partitions.ToArray()) }).ToArray()),
+        Galleries = Array.AsReadOnly(content.Galleries.ToArray()),
     };
 
     internal static string Fingerprint(WallPackageContent content, IEnumerable<WallPackageFile> files) =>
@@ -52,14 +53,48 @@ internal static class WallPackageJson
 
     internal static string EntryPath(WallPackageMember member) =>
         $"objects/{member.Id}/entry.{(member.EntryKind == ManagedEntryKind.Lnk ? "lnk" : "url")}";
-    internal static string MediaPath(ManagedMediaReference media) => $"media/{media.Sha256}/original{media.Extension}";
+    internal static string MediaPath(ManagedMediaReference media) => $"media/{media.Sha256}/original";
+    internal static string GalleryPath(string id) => $"galleries/{id}/manifest.json";
+
+    internal static void ValidateGalleryExpansion(WallPackageContent content, IEnumerable<ManagedGalleryManifest> source,
+        WallPackageLimits limits)
+    {
+        var singles = content.Members.Select(member => member.Images.Media).OfType<ManagedMediaReference>()
+            .DistinctBy(reference => reference.Sha256, StringComparer.Ordinal).ToArray();
+        long count = content.Members.Count(member => member.EntryKind is not null) + singles.Length + content.Galleries.Count + 2L;
+        long bytes = singles.Sum(reference => reference.Length);
+        foreach (var gallery in source)
+        {
+            count = checked(count + gallery.Files.Count);
+            bytes = checked(bytes + gallery.Files.Sum(file => file.Media.Length));
+            if (count > limits.MaximumEntries || bytes > limits.MaximumExpandedBytes)
+                throw new InvalidDataException("Managed gallery file expansion exceeds the package budget.");
+        }
+    }
+
+    internal static IReadOnlyList<ManagedMediaReference> AllMedia(WallPackageContent content,
+        IEnumerable<ManagedGalleryManifest> galleries)
+    {
+        var references = content.Members.Select(member => member.Images.Media).OfType<ManagedMediaReference>()
+            .Concat(galleries.SelectMany(gallery => gallery.Files.Select(file => file.Media))).Distinct().ToArray();
+        if (references.Any(reference => !PreparedMediaAsset.IsValidReference(reference)) ||
+            references.GroupBy(reference => reference.Sha256, StringComparer.Ordinal).Any(group => group.Select(reference => reference.Length).Distinct().Count() != 1))
+            throw new InvalidDataException("Conflicting original-image digest references.");
+        return references;
+    }
 
     internal static void ValidateContent(WallPackageContent content)
     {
-        if (content.Lanes is null || content.Groups is null || content.Members is null ||
+        if (content.Lanes is null || content.Groups is null || content.Members is null || content.Galleries is null ||
             content.Lanes.Any(l => l?.GroupIds is null) || content.Groups.Any(g => g?.MemberIds is null) ||
             content.Members.Any(m => m is null || m.Visual is null || m.Images is null || m.ImageDisplay is null))
             throw new InvalidDataException("Malformed content collections.");
+        if (content.Galleries.Any(gallery => gallery is null || !WallPackageJson.ValidHash(gallery.Id) || gallery.ManifestSha256 != gallery.Id) ||
+            content.Galleries.Select(gallery => gallery.Id).Distinct(StringComparer.Ordinal).Count() != content.Galleries.Count)
+            throw new InvalidDataException("Malformed managed-gallery declarations.");
+        var referencedGalleries = content.Members.Select(member => member.Images.GalleryId).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        if (!referencedGalleries.SetEquals(content.Galleries.Select(gallery => gallery.Id)))
+            throw new InvalidDataException("Managed-gallery reference closure differs.");
         var groupIds = content.Groups.Select(g => g.Id).ToArray();
         var memberIds = content.Members.Select(m => m.Id).ToArray();
         var laneGroups = content.Lanes.SelectMany(l => l.GroupIds).ToArray();
@@ -81,6 +116,9 @@ internal static class WallPackageJson
             if (member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is null ||
                 member.Images.Media is { } media && !PreparedMediaAsset.IsValidReference(media))
                 throw new InvalidDataException("Invalid formal image reference.");
+            if (member.Images.GalleryId is { } galleryId && (!ValidHash(galleryId) || member.Images.Kind != MemberImageSourceKind.Folder ||
+                member.Images.Path is not null || member.Images.Media is not null))
+                throw new InvalidDataException("A package gallery must use only a logical source ID.");
         }
         var conflicts = content.Members.Select(m => m.Images.Media).OfType<ManagedMediaReference>()
             .GroupBy(m => m.Sha256, StringComparer.Ordinal).Any(g => g.Distinct().Count() != 1);

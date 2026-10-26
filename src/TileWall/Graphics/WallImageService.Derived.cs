@@ -7,8 +7,8 @@ public sealed partial class WallImageService
     private const long DerivedLimit = 128L * 1024 * 1024;
     private const int MaximumDerivedBytes = 2 * 1024 * 1024;
     private string DerivedPath(string hash, PuzzleDecodeBudget budget) => _disk!.Under("Cache", "Images", "Derived",
-        ManagedImageCache.Key($"derived-v2|{hash}|{budget.Purpose}|" +
-            $"{(budget.Purpose == MemberImagePurpose.Thumbnail ? budget.Width : 0)}x{(budget.Purpose == MemberImagePurpose.Thumbnail ? budget.Height : 0)}|{budget.BlurMaxEdge}|{budget.NeedsBlur}") + ".pixels");
+        ManagedImageCache.Key($"derived-v3|{hash}|{budget.Purpose}|{budget.Width}x{budget.Height}|" +
+            $"{budget.PreserveSourceResolution}|{budget.SharpMaxEdge}|{budget.BlurMaxEdge}|{budget.NeedsBlur}|BGRA8-premultiplied") + ".pixels");
 
     private PuzzleDecodedPair? ReadDerived(string hash, PuzzleDecodeBudget budget, string identity)
     {

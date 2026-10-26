@@ -471,10 +471,12 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 if (!Current(state, generation)) return;
                 if (staticFrame.Frame is { } loaded) state.Frame = loaded;
                 else if (staticFrame.Status == WallImageStatus.None) state.Frame = null;
-                state.NeedsInitial = false;
+                var available = staticFrame.Frame is not null || staticFrame.Status == WallImageStatus.None;
+                state.NeedsInitial = !available;
+                state.FrameLoadUnavailable = !available;
                 state.RestoreEvictedFrame = false;
                 state.Progress = 1;
-                state.Runtime = new(false, 0, [], null);
+                state.Runtime = new(!available, 0, [], null);
                 Publish(state);
                 return;
             }
@@ -491,7 +493,9 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             if (candidates.Count == 0)
             {
                 if (candidateSnapshot?.IsComplete != false) { state.Frame = null; Publish(state); }
-                state.NeedsInitial = false; state.RestoreEvictedFrame = false;
+                state.NeedsInitial = candidateSnapshot?.IsComplete == false;
+                state.FrameLoadUnavailable = state.NeedsInitial;
+                state.RestoreEvictedFrame = false;
                 state.Runtime = new(true, 0, [], null); return;
             }
             var current = state.Member.Carousel?.CurrentImageId;
@@ -621,7 +625,6 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         state.PreviousFrame = state.Frame;
         state.Capture = captureSwitch ? MemberCarouselRules.EnterFlip(state.Member.Carousel, state.Runtime,
             frame.CanonicalPath, DateTimeOffset.UtcNow) : null;
-        if (state.Capture is { } capture) state.Runtime = capture.Runtime;
         if (!await PersistCaptureAsync(state) || !Current(state, generation)) return;
         state.NextFrame = frame;
         _animationsEnabled = ReadAnimationsEnabled();
@@ -689,6 +692,10 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             return false;
         }
         state.Member = state.Member with { Carousel = capture.NextPersistedState };
+        // Both direct initial presentation and animated switches finish their pending
+        // queue operation here. Keeping PendingImageId after the save suppresses every
+        // later deadline in Evaluate, even though the captured image is already committed.
+        state.Runtime = capture.Runtime;
         state.Capture = null;
         Trace($"Persisted member={state.Member.Id} image={capture.NextPersistedState.CurrentImageId} utc={capture.EnteredFlipUtc:O}");
         return true;
@@ -752,7 +759,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     private static TimeSpan Earlier(TimeSpan? first, TimeSpan second) => first is { } value && value < second ? value : second;
     private static uint RandomIndex() => (uint)Random.Shared.Next();
     private static bool SameSource(MemberImageSource left, MemberImageSource right) => left.Kind == right.Kind &&
-        StringComparer.OrdinalIgnoreCase.Equals(left.Path, right.Path) && left.Media == right.Media;
+        StringComparer.OrdinalIgnoreCase.Equals(left.Path, right.Path) && left.Media == right.Media && left.ManagedGallery == right.ManagedGallery;
     private void Trace(string message)
     {
         if (!_trace) return;

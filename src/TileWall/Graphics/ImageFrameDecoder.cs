@@ -157,11 +157,21 @@ public sealed class ImageFrameDecoder
     }
 
     /// <summary>Bounded thumbnail decode of a verified package original, without writing a temporary file.</summary>
-    internal async Task<ImageDecodeResult> DecodePackageThumbnailAsync(byte[] bytes, string identity,
-        int edge, CancellationToken token)
+    internal Task<ImageDecodeResult> DecodePackageThumbnailAsync(byte[] bytes, string identity,
+        int edge, CancellationToken token) => DecodePackageFrameCoreAsync(bytes, identity,
+            Math.Clamp(edge, 64, 256), Math.Clamp(edge, 64, 256), Math.Clamp(edge, 64, 256), token);
+
+    internal Task<ImageDecodeResult> DecodePackageFrameAsync(byte[] bytes, string identity,
+        int width, int height, CancellationToken token, int maximumEdge = MaxDecodedEdge) => DecodePackageFrameCoreAsync(bytes, identity,
+            width, height, maximumEdge, token);
+
+    private static async Task<ImageDecodeResult> DecodePackageFrameCoreAsync(byte[] bytes, string identity,
+        int requiredWidth, int requiredHeight, int maximumEdge, CancellationToken token)
     {
         if (bytes.LongLength is < 1 or > MaxSourceBytes) return new(ImageDecodeStatus.SourceTooLarge, null);
-        edge = Math.Clamp(edge, 64, 256);
+        if (requiredWidth is < 1 or > MaxDecodedEdge || requiredHeight is < 1 or > MaxDecodedEdge)
+            throw new ArgumentOutOfRangeException(nameof(requiredWidth));
+        if (maximumEdge is < 1 or > MaxDecodedEdge) throw new ArgumentOutOfRangeException(nameof(maximumEdge));
         token.ThrowIfCancellationRequested();
         using var file = new MemoryStream(bytes, writable: false);
         using var stream = file.AsRandomAccessStream();
@@ -171,7 +181,7 @@ public sealed class ImageFrameDecoder
         if (rawWidth <= 0 || rawHeight <= 0 || (long)rawWidth * rawHeight > MaxSourcePixels ||
             (long)width * height != (long)rawWidth * rawHeight) return new(ImageDecodeStatus.SourceTooLarge, null);
         var frame = await DecodePlaneAsync(decoder, identity, bytes.Length, DateTime.MinValue,
-            rawWidth, rawHeight, width, height, edge, edge, token, edge).ConfigureAwait(false);
+            rawWidth, rawHeight, width, height, requiredWidth, requiredHeight, token, maximumEdge).ConfigureAwait(false);
         return new(frame is null ? ImageDecodeStatus.InvalidImage : ImageDecodeStatus.Success, frame);
     }
 

@@ -149,7 +149,7 @@ public sealed partial class WallStore
     {
         var installed = journal.Media.Where(media => media.NewlyInstalled).ToArray();
         if (installed.Length == 0) return;
-        var proposedPath = _paths.Under("Staging", journal.CommitId, "config.tmp");
+        var proposedPath = _paths.Under("Staging", journal.CommitId, "state.tmp");
         if (!_files.Exists(proposedPath))
             proposedPath = _paths.Under("Recovery", "Entries", journal.CommitId, "new.snapshot.json");
         if (!_files.Exists(proposedPath) || Hash(_files.ReadAllBytes(proposedPath)) != journal.NewHash ||

@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using TileWall.Core.Wall;
+using TileWall.Shell.Interop;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
 
@@ -10,334 +11,167 @@ namespace TileWall.Graphics;
 
 public sealed partial class WallImageService
 {
+    private const long NativeIconLimit = 128L * 1024 * 1024;
     private readonly Dictionary<string, Task<NativeIconPackage>> _nativePackages = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _nativeSlots = new(2, 2);
-    private readonly Dictionary<string, Task<ManagedIconDescriptor>> _iconDescriptors = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Task<AdoptedIconPackage?>> _memberIconCopies = new(StringComparer.Ordinal);
-    private sealed record ManagedIconDescriptor(string Sha, string? Target, string? Icon, int? Index);
-    private sealed record AdoptedIconPackage(string EntryPath, string EntrySha256, string Directory, string Key,
-        string TargetPath, string? IconPath, int? IconIndex, string Language, string Dependency);
     private sealed record NativeIconFrame(PeIconFrame Native, byte[] Ico, Prepared Decoded);
-    private sealed record NativeIconPackage(PeIconGroup? Group, IReadOnlyList<NativeIconFrame> Frames, bool CacheEmpty);
+    private sealed record NativeIconPackage(PeIconGroup? Group, IReadOnlyList<NativeIconFrame> Frames,
+        bool CacheEmpty, string? ResourcePath = null, string? Key = null, bool Complete = true);
     private sealed record DiskIconFrame(uint ResourceId, uint LanguageId, int Width, int Height, int BitsPerPixel,
         int ColorCount, int Planes, string NativeSha256, string File, string FileSha256);
     private sealed record DiskIconManifest(int Format, string Key, uint GroupId, string? GroupName, uint LanguageId,
         bool Empty, IReadOnlyList<DiskIconFrame> Frames);
-    private sealed record CachedIconSelection(DiskIconFrame? Descriptor, string? Path, WallImageStatus Status,
-        string? Diagnostic = null);
+    private sealed record DiskIconMapping(int Format, string Dependency, string PackageKey);
+    public string? SharedIconDirectory => _disk?.Under("Cache", "Images", "Icons", "Packages");
 
-    public Task<string?> PrewarmPeIconsAsync(string sourcePath, string? targetPath, string? iconPath,
-        int? iconIndex, string sourceSha256, string iconsDirectory, CancellationToken ct = default)
-        => StartImageRequest(token => PrewarmImportIconAsync(sourcePath, targetPath, iconPath,
-            iconIndex, sourceSha256, iconsDirectory, token), ct, (string?)null);
-
-    private async Task<string?> PrewarmImportIconAsync(string sourcePath, string? targetPath, string? iconPath,
-        int? iconIndex, string sourceSha256, string iconsDirectory, CancellationToken ct)
-    {
-        try
-        {
-            var key = await PrewarmPeIconsCoreAsync(sourcePath, targetPath, iconPath, iconIndex,
-                sourceSha256, iconsDirectory, ct).ConfigureAwait(false);
-            if (key is null) return null;
-            var prepared = await Task.Run(async () =>
-            {
-                ct.ThrowIfCancellationRequested();
-                var selection = SelectCachedIcon(iconsDirectory, key, 96);
-                if (selection.Descriptor is not { } descriptor || selection.Path is not { } path)
-                    return selection.Diagnostic == "NoNativeIcon";
-                await _slots.WaitAsync(ct).ConfigureAwait(false);
-                try
-                {
-                    // PreparePuzzle creates CPU pixels and the existing Derived/LRU entries only.
-                    // The display request creates its XAML Bitmap later on its caller's UI thread.
-                    var result = await PreparePuzzleAsync(path, CachedIconBudget(96, false, MemberImagePurpose.Thumbnail), ct,
-                        "automatic:cached-icon:" + key, descriptor.FileSha256).ConfigureAwait(false);
-                    return result.Pair is { } pair && CachedIconDimensionsMatch(iconsDirectory, key, descriptor,
-                        pair.Sharp.SourceWidth, pair.Sharp.SourceHeight);
-                }
-                finally { _slots.Release(); }
-            }, ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-            // A completed disposable thumbnail cannot authorize a stale source or dependency.
-            var exe = NormalizePath(targetPath);
-            var dependency = exe is null ? null : NativeIconDependency(exe, iconPath, iconIndex);
-            return prepared && dependency is not null && ManagedImageCache.Key(sourceSha256 + "|" + dependency) == key &&
-                IconSourceStillCurrent(sourcePath, sourceSha256, iconsDirectory) ? key : null;
-        }
-        catch (OperationCanceledException) { return null; }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or COMException)
-        { return null; }
-    }
-
-    private async Task<string?> PrewarmPeIconsCoreAsync(string sourcePath, string? targetPath, string? iconPath,
-        int? iconIndex, string sourceSha256, string iconsDirectory, CancellationToken ct)
-    {
-        if (_disk is not { } disk) return null;
-        if (sourceSha256.Length != 64 || !sourceSha256.All(Uri.IsHexDigit)) return null;
-        var exe = NormalizePath(targetPath);
-        if (exe is null || !Path.GetExtension(exe).Equals(".exe", StringComparison.OrdinalIgnoreCase)) return null;
-        try
-        {
-            disk.Guard(iconsDirectory);
-            return await Task.Run(async () =>
-            {
-                var token = ct; token.ThrowIfCancellationRequested();
-                var language = CultureInfo.CurrentUICulture.Name;
-                var dependency = NativeIconDependency(exe, iconPath, iconIndex, language);
-                if (dependency is null) return null;
-                var key = ManagedImageCache.Key(sourceSha256 + "|" + dependency);
-                if (ReadIconManifest(iconsDirectory, key, verifyFrames: true) is not null)
-                    return IconSourceStillCurrent(sourcePath, sourceSha256, iconsDirectory) ? key : null;
-                // Native extraction has its own bounded budget. A slow/cold EXE
-                // must not occupy the slots used to read already verified frames.
-                var package = await NativePackageAsync(exe, iconPath, iconIndex, dependency).WaitAsync(token).ConfigureAwait(false);
-                if (package.Frames.Count == 0 && !package.CacheEmpty) return null;
-                var files = new List<(string Staged, string Destination)>();
-                var frames = new List<DiskIconFrame>();
-                try
-                {
-                    var directory = Path.Combine(iconsDirectory, key); disk.Guard(directory);
-                    foreach (var frame in package.Frames)
-                    {
-                        token.ThrowIfCancellationRequested();
-                        var file = frame.Native.Sha256 + ".ico";
-                        files.Add((await disk.StageAsync(frame.Ico, token).ConfigureAwait(false), Path.Combine(directory, file)));
-                        frames.Add(new(frame.Native.ResourceId, frame.Native.LanguageId, frame.Native.Width, frame.Native.Height,
-                            frame.Native.BitsPerPixel, frame.Native.ColorCount, frame.Native.Planes, frame.Native.Sha256, file,
-                            Convert.ToHexString(SHA256.HashData(frame.Ico))));
-                    }
-                    var manifest = new DiskIconManifest(1, key, package.Group?.ResourceId ?? 0, package.Group?.ResourceName,
-                        package.Group?.LanguageId ?? 0, frames.Count == 0, frames);
-                    var manifestStage = await disk.StageAsync(JsonSerializer.SerializeToUtf8Bytes(manifest, CacheJson), token).ConfigureAwait(false);
-                    files.Add((manifestStage, Path.Combine(directory, "manifest.json")));
-                    var accepted = false;
-                    await PublishCacheAsync(() =>
-                    {
-                        if (NativeIconDependency(exe, iconPath, iconIndex, language) != dependency ||
-                            !IconSourceStillCurrent(sourcePath, sourceSha256, iconsDirectory)) return;
-                        foreach (var file in files) disk.Publish(file.Staged, file.Destination);
-                        accepted = true;
-                    }, token).ConfigureAwait(false);
-                    return accepted ? key : null;
-                }
-                finally { foreach (var file in files) disk.Delete(file.Staged); }
-            }, ct);
-        }
-        catch (OperationCanceledException) { return null; }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or COMException)
-        { return null; }
-    }
-
-    /// <summary>After commit, adopt a verified source package without parsing its EXE again.</summary>
-    public Task<bool> CopyCachedIconsToMemberAsync(string memberId, string managedEntryPath, string sourceSha256,
-        string? targetPath, string? iconPath, int? iconIndex, string sourceIconsDirectory, string iconKey,
-        CancellationToken ct = default) =>
-        StartImageRequest(token => CopyCachedIconsRequestAsync(memberId, managedEntryPath, sourceSha256,
-            targetPath, iconPath, iconIndex, sourceIconsDirectory, iconKey, token), ct, false);
-
-    private Task<bool> CopyCachedIconsRequestAsync(string memberId, string managedEntryPath, string sourceSha256,
-        string? targetPath, string? iconPath, int? iconIndex, string sourceIconsDirectory, string iconKey,
-        CancellationToken ct)
-    {
-        Task<AdoptedIconPackage?> copy;
-        lock (_workGate)
-        {
-            if (_disk is null || _cacheStopping || _disposed) return Task.FromResult(false);
-            // Register synchronously before the first await. The view refresh
-            // queued by the successful commit then observes this exact transfer.
-            copy = TrackCacheWork(Task.Run(() => CopyCachedIconsCoreAsync(memberId, managedEntryPath, sourceSha256,
-                targetPath, iconPath, iconIndex, sourceIconsDirectory, iconKey, _cacheLifetime.Token), _cacheLifetime.Token));
-            _memberIconCopies[memberId] = copy;
-        }
-        return CopyAcceptedAsync(copy, ct);
-    }
-
-    private static async Task<bool> CopyAcceptedAsync(Task<AdoptedIconPackage?> copy, CancellationToken ct)
-    {
-        try { return await copy.WaitAsync(ct).ConfigureAwait(false) is not null; }
-        catch (OperationCanceledException) { return false; }
-    }
-
-    private async Task<AdoptedIconPackage?> CopyCachedIconsCoreAsync(string memberId, string entryPath, string expectedSha,
-        string? targetPath, string? iconPath, int? iconIndex, string sourceDirectory, string iconKey, CancellationToken ct)
-    {
-        if (_disk is not { } disk || expectedSha.Length != 64 || !expectedSha.All(Uri.IsHexDigit)) return null;
-        var staged = new List<(string Source, string Destination)>();
-        var token = ct;
-        try
-        {
-            token.ThrowIfCancellationRequested();
-            var exe = NormalizePath(targetPath);
-            if (exe is null || !Path.GetExtension(exe).Equals(".exe", StringComparison.OrdinalIgnoreCase)) return null;
-            var language = CultureInfo.CurrentUICulture.Name;
-            var dependency = NativeIconDependency(exe, iconPath, iconIndex, language);
-            if (dependency is null || ManagedImageCache.Key(expectedSha + "|" + dependency) != iconKey) return null;
-            var manifest = ReadIconManifest(sourceDirectory, iconKey, verifyFrames: true);
-            if (manifest is null) return null;
-            var destinationDirectory = disk.Under("Objects", memberId, "IconCache");
-            disk.Guard(entryPath);
-            foreach (var frame in manifest.Frames)
-            {
-                token.ThrowIfCancellationRequested();
-                var source = Path.Combine(sourceDirectory, iconKey, frame.File);
-                using var lease = disk.Lease(source);
-                var bytes = disk.Read(source, 4 * 1024 * 1024 + 22);
-                if (Convert.ToHexString(SHA256.HashData(bytes)) != frame.FileSha256) return null;
-                staged.Add((await disk.StageAsync(bytes, token).ConfigureAwait(false),
-                    Path.Combine(destinationDirectory, iconKey, frame.File)));
-            }
-            staged.Add((await disk.StageAsync(JsonSerializer.SerializeToUtf8Bytes(manifest, CacheJson), token).ConfigureAwait(false),
-                Path.Combine(destinationDirectory, iconKey, "manifest.json")));
-            var accepted = false;
-            await PublishCacheAsync(() =>
-            {
-                if (NativeIconDependency(exe, iconPath, iconIndex, language) != dependency ||
-                    !IconSourceStillCurrent(entryPath, expectedSha, destinationDirectory)) return;
-                foreach (var file in staged) disk.Publish(file.Source, file.Destination);
-                accepted = true;
-            }, token).ConfigureAwait(false);
-            return accepted ? new(entryPath, expectedSha, destinationDirectory, iconKey, exe, iconPath, iconIndex, language, dependency) : null;
-        }
-        catch (OperationCanceledException) { return null; }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or COMException)
-        { return null; }
-        finally { foreach (var file in staged) disk.Delete(file.Source); }
-    }
-
-    private bool IconSourceStillCurrent(string sourcePath, string expectedSha, string iconsDirectory)
-    {
-        if (_disk is not { } disk || _cacheStopping) return false;
-        disk.Guard(iconsDirectory);
-        var objects = disk.Under("Objects") + Path.DirectorySeparatorChar;
-        if (iconsDirectory.StartsWith(objects, StringComparison.OrdinalIgnoreCase))
-        {
-            var relative = Path.GetRelativePath(objects, iconsDirectory).Split(Path.DirectorySeparatorChar);
-            if (relative.Length != 2 || relative[1] != "IconCache" || _formalMember?.Invoke(relative[0]) is not { Entry: { } entry } member || member.Id != relative[0]) return false;
-            var currentEntry = Path.GetFullPath(Path.Combine(disk.Root, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar)));
-            disk.Guard(currentEntry);
-            if (!StringComparer.OrdinalIgnoreCase.Equals(currentEntry, sourcePath)) return false;
-        }
-        return FileContentHash(sourcePath) == expectedSha;
-    }
-
-    public Task<PuzzleFrameResult> LoadCachedIconFrameAsync(string iconsDirectory, string iconKey, int edge, CancellationToken ct = default)
-        => StartImageRequest(token => LoadCachedIconFrameCoreAsync(iconsDirectory, iconKey, edge, false, token, MemberImagePurpose.Thumbnail), ct,
-            new PuzzleFrameResult(null, WallImageStatus.Cancelled));
-
-    private static PuzzleDecodeBudget CachedIconBudget(int edge, bool needsBlur, MemberImagePurpose purpose)
+    private static PuzzleDecodeBudget CachedIconBudget(int width, bool needsBlur, MemberImagePurpose purpose, int? height = null)
     {
         var thumbnail = purpose == MemberImagePurpose.Thumbnail;
-        // Import's 48 DIP cards share one prewarmed 96px plane through 200% scaling.
-        // Both selection and the cache key use this same width/height, not just a maximum edge.
-        var size = Math.Clamp(edge, thumbnail ? 96 : 1, thumbnail ? 256 : 4096);
-        return new(purpose, size, size, !thumbnail, thumbnail ? size : 4096, thumbnail ? size : 512, needsBlur);
+        var physicalWidth = Math.Clamp(width, 1, thumbnail ? 256 : 4096);
+        var physicalHeight = Math.Clamp(height ?? width, 1, thumbnail ? 256 : 4096);
+        var edge = Math.Max(physicalWidth, physicalHeight);
+        return new(purpose, physicalWidth, physicalHeight, !thumbnail, thumbnail ? edge : 4096, thumbnail ? edge : 512, needsBlur);
     }
 
-    private CachedIconSelection SelectCachedIcon(string iconsDirectory, string iconKey, int edge)
-    {
-        var manifest = ReadIconManifest(iconsDirectory, iconKey, verifyFrames: false);
-        if (manifest is null) return new(null, null, WallImageStatus.Fallback, "IconCacheMissing");
-        if (manifest.Empty || manifest.Frames.Count == 0) return new(null, null, WallImageStatus.Fallback, "NoNativeIcon");
-        var group = new PeIconGroup(manifest.GroupId, manifest.GroupName, manifest.LanguageId,
-            manifest.Frames.Select(frame => new PeIconFrame(frame.ResourceId, frame.LanguageId, frame.Width, frame.Height, frame.BitsPerPixel,
-                frame.ColorCount, frame.Planes, PeIconFrameFormat.Unknown, ReadOnlyMemory<byte>.Empty, frame.NativeSha256)).ToArray());
-        var chosen = PeIconResourceReader.SelectFrame(group, Math.Max(1, edge));
-        var descriptor = manifest.Frames.First(frame => frame.ResourceId == chosen!.ResourceId && frame.Width == chosen.Width && frame.Height == chosen.Height && frame.BitsPerPixel == chosen.BitsPerPixel);
-        var path = Path.Combine(iconsDirectory, iconKey, descriptor.File);
-        if (FileContentHash(path) != descriptor.FileSha256)
-        {
-            _disk!.Delete(Path.Combine(iconsDirectory, iconKey, "manifest.json"));
-            return new(null, null, WallImageStatus.Invalid, "IconCacheHashMismatch");
-        }
-        return new(descriptor, path, WallImageStatus.Loaded);
-    }
+    public Task<string?> PrewarmPeIconsAsync(string sourcePath, string? targetPath, string? iconPath,
+        int? iconIndex, string sourceSha256, string iconsDirectory, CancellationToken ct = default) =>
+        StartImageRequest(token => PrewarmImportIconAsync(sourcePath, targetPath, iconPath, iconIndex,
+            sourceSha256, token), ct, (string?)null);
 
-    private bool CachedIconDimensionsMatch(string directory, string key, DiskIconFrame descriptor, double width, double height)
-    {
-        if (width == descriptor.Width && height == descriptor.Height) return true;
-        _disk!.Delete(Path.Combine(directory, key, "manifest.json"));
-        return false;
-    }
-
-    private async Task<PuzzleFrameResult> LoadCachedIconFrameCoreAsync(string iconsDirectory, string iconKey, int edge, bool needsBlur,
-        CancellationToken ct, MemberImagePurpose purpose = MemberImagePurpose.Content)
+    private async Task<string?> PrewarmImportIconAsync(string sourcePath, string? targetPath, string? iconPath,
+        int? iconIndex, string sourceSha256, CancellationToken ct)
     {
         try
         {
-            var budget = CachedIconBudget(edge, needsBlur, purpose);
-            var selection = await Task.Run(() => SelectCachedIcon(iconsDirectory, iconKey, budget.Width), ct);
-            if (selection.Descriptor is not { } descriptor || selection.Path is not { } path)
-                return new(null, selection.Status, selection.Diagnostic);
-            var result = await LoadImageFileFrameAsync(path, budget, ct,
-                "automatic:cached-icon:" + iconKey, descriptor.FileSha256);
-            if (result.Frame is { } frame && !CachedIconDimensionsMatch(iconsDirectory, iconKey, descriptor,
-                    frame.SourcePixels.Width, frame.SourcePixels.Height))
-                return new(null, WallImageStatus.Invalid, "IconCacheDimensionsMismatch");
-            return result;
+            if (_disk is null || FileContentHash(sourcePath) != sourceSha256) return null;
+            var policy = await Task.Run(() => ShellItemCatalog.IconLocation(sourcePath, 96), ct).ConfigureAwait(false);
+            if (policy is { CanCache: false } or { CanReadResource: false }) return null;
+            if (string.IsNullOrWhiteSpace(iconPath) && policy is { CanReadResource: true, Path: not null })
+            { iconPath = policy.Path; iconIndex = policy.Index; }
+            var target = NormalizePath(targetPath) ?? NormalizePath(iconPath);
+            if (target is null) return null;
+            var dependency = NativeIconDependency(target, iconPath, iconIndex);
+            if (dependency is null) return null;
+            var package = await NativePackageAsync(target, iconPath, iconIndex, dependency).WaitAsync(ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            return FileContentHash(sourcePath) == sourceSha256 &&
+                dependency == NativeIconDependency(target, iconPath, iconIndex) ? package.Key : null;
         }
-        catch (OperationCanceledException) { return new(null, WallImageStatus.Cancelled); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return new(null, WallImageStatus.Invalid, ex.GetType().Name); }
+        catch (OperationCanceledException) { return null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or COMException)
+        { return null; }
     }
 
-    private DiskIconManifest? ReadIconManifest(string iconsDirectory, string key, bool verifyFrames)
+    public Task<PuzzleFrameResult> LoadCachedIconFrameAsync(string iconsDirectory, string iconKey, int edge,
+        CancellationToken ct = default) => LoadCachedIconFrameAsync(iconsDirectory, iconKey, edge, edge, ct);
+
+    public Task<PuzzleFrameResult> LoadCachedIconFrameAsync(string iconsDirectory, string iconKey, int width, int height,
+        CancellationToken ct = default) => StartImageRequest(token => LoadCachedIconFrameCoreAsync(iconsDirectory,
+            iconKey, width, height, token), ct, new PuzzleFrameResult(null, WallImageStatus.Cancelled));
+
+    private async Task<PuzzleFrameResult> LoadCachedIconFrameCoreAsync(string iconsDirectory, string key,
+        int width, int height, CancellationToken ct)
+    {
+        if (_disk is not { } disk || SharedIconDirectory is not { } root ||
+            !string.Equals(Path.GetFullPath(iconsDirectory), root, StringComparison.OrdinalIgnoreCase))
+            return new(null, WallImageStatus.Fallback, "IconCacheMissing");
+        try
+        {
+            using var lease = disk.Lease(Path.Combine(root, key));
+            var manifest = ReadIconManifest(key);
+            if (manifest is null) return new(null, WallImageStatus.Fallback, "IconCacheMissing");
+            var group = new PeIconGroup(manifest.GroupId, manifest.GroupName, manifest.LanguageId,
+                manifest.Frames.Select(frame => new PeIconFrame(frame.ResourceId, frame.LanguageId, frame.Width,
+                    frame.Height, frame.BitsPerPixel, frame.ColorCount, frame.Planes, PeIconFrameFormat.Unknown,
+                    ReadOnlyMemory<byte>.Empty, frame.NativeSha256)).ToArray());
+            var chosen = PeIconResourceReader.SelectFrame(group, width, height);
+            var frame = manifest.Frames.First(item => item.ResourceId == chosen!.ResourceId && item.NativeSha256 == chosen.Sha256);
+            var path = Path.Combine(root, key, frame.File);
+            var budget = new PuzzleDecodeBudget(MemberImagePurpose.Content, width, height, true, 4096, 512, false);
+            var result = await LoadImageFileFrameAsync(path, budget, ct, "automatic:shared-icon:" + key, frame.FileSha256);
+            return result.Frame is { } loaded && (loaded.SourcePixels.Width != frame.Width || loaded.SourcePixels.Height != frame.Height)
+                ? new(null, WallImageStatus.Invalid, "IconCacheDimensionsMismatch") : result;
+        }
+        catch (OperationCanceledException) { return new(null, WallImageStatus.Cancelled); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        { return new(null, WallImageStatus.Invalid, ex.GetType().Name); }
+    }
+
+    private DiskIconManifest? ReadIconManifest(string key)
     {
         if (_disk is not { } disk || key.Length != 64 || !key.All(Uri.IsHexDigit)) return null;
         try
         {
-            disk.Guard(iconsDirectory); var directory = Path.Combine(iconsDirectory, key);
+            var directory = disk.Under("Cache", "Images", "Icons", "Packages", key);
             var manifest = JsonSerializer.Deserialize<DiskIconManifest>(disk.Read(Path.Combine(directory, "manifest.json"), 128 * 1024), CacheJson);
-            if (manifest is null || manifest.Format != 1 || manifest.Key != key || manifest.Frames is null || manifest.Frames.Count > 64 ||
-                manifest.Empty != (manifest.Frames.Count == 0)) return null;
+            // Old Empty manifests have no proof of a stable absence. Never import them.
+            if (manifest is null || manifest.Format != 2 || manifest.Key != key || manifest.Empty ||
+                manifest.Frames is not { Count: > 0 and <= 64 }) return null;
             foreach (var frame in manifest.Frames)
             {
                 if (frame is null || frame.Width is < 1 or > 256 || frame.Height is < 1 or > 256 ||
-                    frame.NativeSha256 is not { Length: 64 } || !frame.NativeSha256.All(Uri.IsHexDigit) || frame.FileSha256 is not { Length: 64 } || !frame.FileSha256.All(Uri.IsHexDigit) ||
+                    frame.NativeSha256 is not { Length: 64 } || !frame.NativeSha256.All(Uri.IsHexDigit) ||
+                    frame.FileSha256 is not { Length: 64 } || !frame.FileSha256.All(Uri.IsHexDigit) ||
                     frame.File != frame.NativeSha256 + ".ico") return null;
-                var path = Path.Combine(directory, frame.File); disk.Guard(path);
-                if (!File.Exists(path) || verifyFrames && FileContentHash(path) != frame.FileSha256) return null;
+                var path = Path.Combine(directory, frame.File);
+                var bytes = disk.Read(path, 4 * 1024 * 1024 + 22);
+                if (Convert.ToHexString(SHA256.HashData(bytes)) != frame.FileSha256) return null;
             }
             return manifest;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or JsonException) { return null; }
     }
 
-    private async Task<PuzzleFrameResult?> TryLoadMemberIconAsync(WallMember member, string? entryPath, int edge, CancellationToken ct)
+    private async Task<NativeIconPackage?> ReadSharedNativePackageAsync(string dependency, CancellationToken token)
     {
-        if (_disk is not { } disk || member.Entry is null || entryPath is null || _cacheStopping) return null;
+        if (_disk is not { } disk) return null;
         try
         {
-            disk.Guard(entryPath);
-            var sha = await Task.Run(() => FileContentHash(entryPath), ct);
-            Task<AdoptedIconPackage?>? copy;
-            lock (_workGate) _memberIconCopies.TryGetValue(member.Id, out copy);
-            if (copy is not null && await copy.WaitAsync(ct) is { } adopted &&
-                adopted.EntrySha256 == sha && StringComparer.OrdinalIgnoreCase.Equals(adopted.EntryPath, entryPath) &&
-                adopted.Language == CultureInfo.CurrentUICulture.Name &&
-                NativeIconDependency(adopted.TargetPath, adopted.IconPath, adopted.IconIndex, adopted.Language) == adopted.Dependency)
-                return await LoadCachedIconFrameCoreAsync(adopted.Directory, adopted.Key, edge,
-                    member.Visual.BackgroundMode == MemberBackgroundMode.Blur, ct);
-            Task<ManagedIconDescriptor> descriptorTask;
-            lock (_workGate)
+            var mapping = JsonSerializer.Deserialize<DiskIconMapping>(disk.Read(disk.Under("Cache", "Images", "Icons", "Mappings",
+                ManagedImageCache.Key(dependency) + ".json"), 128 * 1024), CacheJson);
+            if (mapping is null || mapping.Format != 2 || mapping.Dependency != dependency ||
+                mapping.PackageKey is not { Length: 64 } || !mapping.PackageKey.All(Uri.IsHexDigit)) return null;
+            var directory = disk.Under("Cache", "Images", "Icons", "Packages", mapping.PackageKey);
+            using var lease = disk.Lease(directory);
+            var manifest = ReadIconManifest(mapping.PackageKey);
+            if (manifest is null) { disk.DiscardIconPackage(mapping.PackageKey); return null; }
+            var native = new List<PeIconFrame>();
+            foreach (var item in manifest.Frames)
             {
-                if (_cacheStopping || _disposed) return null;
-                if (!_iconDescriptors.TryGetValue(sha, out descriptorTask!))
-                {
-                    descriptorTask = TrackCacheWork(Task.Run(() =>
-                    {
-                        var fields = Path.GetExtension(entryPath).Equals(".lnk", StringComparison.OrdinalIgnoreCase) ? _links.Read(entryPath) : null;
-                        return new ManagedIconDescriptor(sha, fields?.TargetPath, fields?.IconPath, fields?.IconIndex);
-                    }, _cacheLifetime.Token));
-                    if (_iconDescriptors.Count >= 2048) _iconDescriptors.Clear();
-                    _iconDescriptors.Add(sha, descriptorTask);
-                }
+                token.ThrowIfCancellationRequested();
+                var single = ReadExplicitIco(Path.Combine(directory, item.File), 0)?.Frames.SingleOrDefault();
+                if (single is null || single.Width != item.Width || single.Height != item.Height || single.Sha256 != item.NativeSha256) return null;
+                native.Add(single with { ResourceId = item.ResourceId, LanguageId = item.LanguageId });
             }
-            var descriptor = await descriptorTask.WaitAsync(ct);
-            var directory = disk.Under("Objects", member.Id, "IconCache");
-            var key = await PrewarmPeIconsCoreAsync(entryPath, descriptor.Target, descriptor.Icon, descriptor.Index, descriptor.Sha, directory, ct);
-            if (key is null) return null;
-            return await LoadCachedIconFrameCoreAsync(directory, key, edge, member.Visual.BackgroundMode == MemberBackgroundMode.Blur, ct);
+            var group = new PeIconGroup(manifest.GroupId, manifest.GroupName, manifest.LanguageId, native);
+            var frames = await DecodeIconGroupAsync(group, token).ConfigureAwait(false);
+            return frames.Count == native.Count ? new(group, frames, false, Key: mapping.PackageKey) : null;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or COMException) { return null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or JsonException or InvalidOperationException) { return null; }
+    }
+
+    private string? PublishSharedNativePackage(NativeIconPackage package, string dependency, CancellationToken token)
+    {
+        if (_disk is not { } disk || package.Group is null || package.Frames.Count == 0 || !package.Complete) return null;
+        var group = package.Group;
+        var key = ManagedImageCache.Key("native-resource-v4|" + Fingerprint(package.ResourcePath, "resource") + "|" +
+            group.ResourceId + "|" + group.ResourceName + "|" + group.LanguageId + "|" +
+            string.Join("|", package.Frames.Select(frame => frame.Native.Sha256)));
+        var frames = package.Frames.Select(frame => new DiskIconFrame(frame.Native.ResourceId, frame.Native.LanguageId,
+            frame.Native.Width, frame.Native.Height, frame.Native.BitsPerPixel, frame.Native.ColorCount, frame.Native.Planes,
+            frame.Native.Sha256, frame.Native.Sha256 + ".ico", Convert.ToHexString(SHA256.HashData(frame.Ico)))).ToArray();
+        var manifest = new DiskIconManifest(2, key, group.ResourceId, group.ResourceName, group.LanguageId, false, frames);
+        var payload = package.Frames.GroupBy(frame => frame.Native.Sha256, StringComparer.Ordinal)
+            .ToDictionary(items => items.Key + ".ico", items => items.First().Ico, StringComparer.Ordinal);
+        payload.Add("manifest.json", JsonSerializer.SerializeToUtf8Bytes(manifest, CacheJson));
+        var mapping = JsonSerializer.SerializeToUtf8Bytes(new DiskIconMapping(2, dependency, key), CacheJson);
+        try
+        {
+            if (ReadIconManifest(key) is null) disk.DiscardIconPackage(key);
+            return disk.PublishIconPackage(key, payload, ManagedImageCache.Key(dependency), mapping, NativeIconLimit, token) ? key : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        { return null; }
     }
 
     private static string? NativeIconDependency(string exe, string? iconPath, int? iconIndex, string? language = null)
@@ -345,9 +179,10 @@ public sealed partial class WallImageService
         var icon = NormalizePath(iconPath);
         var iconDependency = icon is not null ? Fingerprint(icon, "explicit-icon") ?? "missing:" + icon
             : string.IsNullOrWhiteSpace(iconPath) ? "none" : "invalid:" + iconPath;
-        return Fingerprint(exe, "native-icon-v2:" + (language ?? CultureInfo.CurrentUICulture.Name) + ":" + iconIndex + ":" + iconDependency);
+        var target = Fingerprint(exe, "target") ?? "non-file:" + exe;
+        if (icon is null && !File.Exists(exe)) return null;
+        return "native-icon-v4:" + (language ?? CultureInfo.CurrentUICulture.Name) + ":" + iconIndex + ":" + iconDependency + "|" + target;
     }
-
     private static PeIconGroup? ReadExplicitIco(string path, int? index)
     {
         // An ICO is one icon group with multiple size/depth frames, not multiple indexed groups.
@@ -402,40 +237,70 @@ public sealed partial class WallImageService
         return frames;
     }
 
-    private Task<NativeIconPackage> NativePackageAsync(string exe, string? iconPath, int? iconIndex, string dependency)
+    private Task<NativeIconPackage> NativePackageAsync(string exe, string? iconPath, int? iconIndex, string dependency,
+        bool cacheAllowed = true)
     {
         lock (_workGate)
         {
             if (_cacheStopping || _disposed)
                 return Task.FromCanceled<NativeIconPackage>(new CancellationToken(true));
-            if (_nativePackages.TryGetValue(dependency, out var task)) return task;
-            task = Task.Run(async () =>
+            // DONTCACHE may still name an independently persisted explicit icon.
+            // Parse/decode it through the same bounded producer without touching
+            // any reusable native result, mapping, or package.
+            if (!cacheAllowed) return TrackCacheWork(ProduceNativePackageAsync(exe, iconPath, iconIndex, dependency, false));
+            if (_nativePackages.TryGetValue(dependency, out var task))
             {
-                await _nativeSlots.WaitAsync(_cacheLifetime.Token).ConfigureAwait(false);
-                try
-                {
-                var language = CultureInfo.CurrentUICulture.Name;
-                var explicitPath = NormalizePath(iconPath);
-                PeIconGroup? group = null;
-                if (explicitPath is not null)
-                    group = Path.GetExtension(explicitPath).Equals(".ico", StringComparison.OrdinalIgnoreCase)
-                        ? ReadExplicitIco(explicitPath, iconIndex)
-                        : _peReader.Read(explicitPath, allowResourceModule: true).Catalog?
-                            .SelectGroup(explicitPath, iconIndex ?? 0, fallbackToDefault: false);
-                var frames = await DecodeIconGroupAsync(group, _cacheLifetime.Token).ConfigureAwait(false);
-                PeIconReadResult? fallback = null;
-                if (frames.Count == 0)
-                {
-                    fallback = _peReader.Read(exe);
-                    group = fallback.Catalog?.SelectGroup();
-                    frames = await DecodeIconGroupAsync(group, _cacheLifetime.Token).ConfigureAwait(false);
-                }
-                _cacheLifetime.Token.ThrowIfCancellationRequested();
-                // The parsed resource and its cache identity must describe the same file generation.
-                if (NativeIconDependency(exe, iconPath, iconIndex, language) != dependency)
-                    return new NativeIconPackage(null, [], false);
-                var result = new NativeIconPackage(group, frames, group is not null ||
-                    fallback?.Status is PeIconReadStatus.NoIconGroups or PeIconReadStatus.NotExe or PeIconReadStatus.FileTooLarge);
+                // Share the current producer and retain verified native results.
+                // A transient read/decode failure is not a durable "no icon" fact;
+                // only a later real request retries it, without background polling.
+                if (!task.IsCompleted || task.IsCompletedSuccessfully &&
+                    task.Result.Complete && (task.Result.Frames.Count != 0 || task.Result.CacheEmpty)) return task;
+                _nativePackages.Remove(dependency);
+            }
+            task = ProduceNativePackageAsync(exe, iconPath, iconIndex, dependency, true);
+            _nativePackages.Add(dependency, task); return TrackCacheWork(task);
+        }
+    }
+
+    private Task<NativeIconPackage> ProduceNativePackageAsync(string exe, string? iconPath, int? iconIndex,
+        string dependency, bool cacheAllowed) => Task.Run(async () =>
+    {
+        await _nativeSlots.WaitAsync(_cacheLifetime.Token).ConfigureAwait(false);
+        try
+        {
+            var language = CultureInfo.CurrentUICulture.Name;
+            var shared = cacheAllowed ? await ReadSharedNativePackageAsync(dependency, _cacheLifetime.Token).ConfigureAwait(false) : null;
+            if (shared is not null && NativeIconDependency(exe, iconPath, iconIndex, language) == dependency) return shared;
+            var reader = cacheAllowed ? _peReader : new PeIconResourceReader();
+            var explicitPath = NormalizePath(iconPath);
+            var resourcePath = explicitPath;
+            PeIconGroup? group = null;
+            if (explicitPath is not null)
+                group = Path.GetExtension(explicitPath).Equals(".ico", StringComparison.OrdinalIgnoreCase)
+                    ? ReadExplicitIco(explicitPath, iconIndex)
+                    : reader.Read(explicitPath, allowResourceModule: true).Catalog?
+                        .SelectGroup(explicitPath, iconIndex ?? 0, fallbackToDefault: false);
+            var frames = await DecodeIconGroupAsync(group, _cacheLifetime.Token).ConfigureAwait(false);
+            var explicitFailure = explicitPath is not null && frames.Count == 0;
+            PeIconReadResult? fallback = null;
+            if (frames.Count == 0)
+            {
+                resourcePath = exe;
+                fallback = reader.Read(exe);
+                group = fallback.Catalog?.SelectGroup();
+                frames = await DecodeIconGroupAsync(group, _cacheLifetime.Token).ConfigureAwait(false);
+            }
+            _cacheLifetime.Token.ThrowIfCancellationRequested();
+            // The parsed resource and its cache identity must describe the same file generation.
+            if (NativeIconDependency(exe, iconPath, iconIndex, language) != dependency)
+                return new NativeIconPackage(null, [], false, Complete: false);
+            var cacheEmpty = group is null && fallback?.Status is PeIconReadStatus.NoIconGroups or PeIconReadStatus.NotExe or PeIconReadStatus.FileTooLarge;
+            var complete = !explicitFailure && (group is null ? cacheEmpty : frames.Count == group.Frames.Count);
+            var result = new NativeIconPackage(group, frames, cacheEmpty, resourcePath, Complete: complete);
+            if (cacheAllowed && NativeIconDependency(exe, iconPath, iconIndex, language) == dependency)
+                result = result with { Key = PublishSharedNativePackage(result, dependency, _cacheLifetime.Token) };
+            if (cacheAllowed)
+            {
                 lock (_workGate)
                 {
                     var completed = _nativePackages.Where(pair => pair.Key != dependency && pair.Value.IsCompletedSuccessfully).ToArray();
@@ -444,13 +309,11 @@ public sealed partial class WallImageService
                     foreach (var pair in completed)
                     { if (_nativePackages.Count <= 32 && bytes <= 64L * 1024 * 1024) break; _nativePackages.Remove(pair.Key); bytes -= pair.Value.Result.Frames.Sum(frame => (long)frame.Ico.Length + (frame.Decoded.Pixels?.LongLength ?? 0)); }
                 }
-                return result;
-                }
-                finally { _nativeSlots.Release(); }
-            }, _cacheLifetime.Token);
-            _nativePackages.Add(dependency, task); return TrackCacheWork(task);
+            }
+            return result;
         }
-    }
+        finally { _nativeSlots.Release(); }
+    }, _cacheLifetime.Token);
 
     private static async Task<Prepared> DecodeNativeFrameAsync(PeIconFrame frame, PeIconGroup group, CancellationToken ct)
     {
@@ -467,6 +330,9 @@ public sealed partial class WallImageService
             var pixels = data.DetachPixelData();
             if (decoder.PixelWidth != frame.Width || decoder.PixelHeight != frame.Height || pixels.Length != frame.Width * frame.Height * 4)
                 return new(WallImageStatus.Fallback, null, 0, 0, "PE:InvalidFramePixels");
+            var visible = false;
+            for (var index = 3; index < pixels.Length; index += 4) visible |= pixels[index] != 0;
+            if (!visible) return new(WallImageStatus.Fallback, null, 0, 0, "PE:TransparentFrame");
             return new(WallImageStatus.Loaded, pixels, frame.Width, frame.Height, $"PE:{group.ResourceId}:{frame.ResourceId}:{frame.Width}x{frame.Height}");
         }
         catch (Exception ex) when (ex is COMException or IOException or ArgumentException or InvalidOperationException)

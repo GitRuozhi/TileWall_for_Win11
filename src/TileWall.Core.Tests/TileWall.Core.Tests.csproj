@@ -12,6 +12,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\TileWall.Core\TileWall.Core.csproj" />
+    <Compile Include="..\TileWall\Graphics\ManagedImageCache.cs" Link="Graphics\ManagedImageCache.cs" />
     <Compile Include="..\TileWall\Application\FullscreenResizeGesture.cs" Link="Application\FullscreenResizeGesture.cs" />
     <Compile Include="..\TileWall\Shell\Interop\ExplorerContextMenuRegistration.cs" Link="Shell\ExplorerContextMenuRegistration.cs" />
     <Compile Include="..\TileWall\Application\ContextMenuUserCommand.cs" Link="Application\ContextMenuUserCommand.cs" />

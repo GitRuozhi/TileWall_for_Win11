@@ -29,6 +29,20 @@ public sealed class ShellLinkFileService : ILnkFileService
         Save(link, path);
     }
 
+    public void CreateShell(string path, string parsingName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(parsingName);
+        Marshal.ThrowExceptionForHR(SHParseDisplayName(parsingName, IntPtr.Zero, out var pidl, 0, out _));
+        if (pidl == IntPtr.Zero) throw new InvalidDataException("The native Shell target is unavailable.");
+        try
+        {
+            var link = (IShellLinkW)(object)new ShellLink();
+            link.SetIDList(pidl);
+            Save(link, path);
+        }
+        finally { Marshal.FreeCoTaskMem(pidl); }
+    }
+
     public LinkFields Read(string path)
     {
         // Keep COM and persisted path fields on the same read-only file snapshot.
@@ -248,4 +262,7 @@ public sealed class ShellLinkFileService : ILnkFileService
 
     [DllImport("shell32.dll")]
     private static extern int SHGetNameFromIDList(IntPtr pidl, uint nameKind, out IntPtr name);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHParseDisplayName(string name, IntPtr bindContext, out IntPtr pidl, uint attributes, out uint returnedAttributes);
 }
