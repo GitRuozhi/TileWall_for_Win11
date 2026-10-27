@@ -1,20 +1,18 @@
 <p align="center">
-  <img src="../../src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall 아이콘">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall 아이콘">
 </p>
 
 <h1 align="center">TileWall</h1>
 
-<p align="center">V1.40 · 첫 Microsoft Store 정식 버전 제출 준비 중 (아직 스토어에 등록되지 않음)</p>
-
 <p align="center">
-  <a href="README.en-US.md">English</a> ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="README.zh-TW.md">繁體中文</a> ·
-  <a href="README.ja-JP.md">日本語</a> ·
-  <a href="README.ko-KR.md"><strong>한국어</strong></a> ·
-  <a href="README.de-DE.md">Deutsch</a> ·
-  <a href="README.fr-FR.md">Français</a> ·
-  <a href="README.es-ES.md">Español</a>
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md">简体中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md"><strong>한국어</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md">Español</a>
 </p>
 
 <p align="center">
@@ -30,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-dark.png" width="1280" alt="사용자 지정 타일 벽과 그림 퍼즐">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="사용자 지정 타일 벽과 그림 퍼즐">
 </p>
 
 ## **되살아나라! 나의 타일이여!**
@@ -55,7 +53,7 @@ Split tiles(타일 분할)를 누른 다음 미리 보기의 점선에서 마우
 일반 바로 가기 타일도 그림이나 앨범으로 모양을 바꿀 수 있습니다.
 
 <p align="center">
-  <img src="../images/v1.40/puzzle-edit.png" width="1280" alt="퍼즐 나누기, 합치기 및 그림 조정">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="퍼즐 나누기, 합치기 및 그림 조정">
 </p>
 
 ## Windows 10 시작 메뉴 경험 재현
@@ -73,7 +71,7 @@ Split tiles(타일 분할)를 누른 다음 미리 보기의 점선에서 마우
 설정에서 시스템 시작 메뉴 대체를 켜면 Windows 키나 시작 버튼으로 TileWall을 열 수 있습니다. 언제든지 기본 시작 메뉴로 돌아갈 수 있습니다.
 
 <p align="center">
-  <img src="../images/v1.40/wall-dark.png" width="1280" alt="타일, 그룹 및 메뉴형 시작">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="타일, 그룹 및 메뉴형 시작">
 </p>
 
 ## 더 강력한 기능
@@ -93,11 +91,11 @@ Split tiles(타일 분할)를 누른 다음 미리 보기의 점선에서 마우
 시작 메뉴가 그립다면 설정에서 **Start menu list(시작 메뉴 목록)**를 켜세요. 목록과 타일이 나란히 표시되고, 양쪽에서 같은 항목에 접근할 수 있습니다.
 
 <p align="center">
-  <img src="../images/v1.40/import.png" width="1280" alt="여러 항목 선택 및 가져오기 미리 보기">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="여러 항목 선택 및 가져오기 미리 보기">
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-light.png" width="1280" alt="밝은 테마의 사용자 지정 타일 벽">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="밝은 테마의 사용자 지정 타일 벽">
 </p>
 
 ## 출시 예정

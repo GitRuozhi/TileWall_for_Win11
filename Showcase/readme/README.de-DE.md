@@ -1,20 +1,18 @@
 <p align="center">
-  <img src="../../src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall-Symbol">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall-Symbol">
 </p>
 
 <h1 align="center">TileWall</h1>
 
-<p align="center">V1.40 · Die erste offizielle Store-Version wird für die Einreichung vorbereitet</p>
-
 <p align="center">
-  <a href="README.en-US.md">English</a> ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="README.zh-TW.md">繁體中文</a> ·
-  <a href="README.ja-JP.md">日本語</a> ·
-  <a href="README.ko-KR.md">한국어</a> ·
-  <a href="README.de-DE.md"><strong>Deutsch</strong></a> ·
-  <a href="README.fr-FR.md">Français</a> ·
-  <a href="README.es-ES.md">Español</a>
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md">简体中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md"><strong>Deutsch</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md">Español</a>
 </p>
 
 <p align="center">
@@ -30,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-dark.png" width="1280" alt="Individuelle Kachelwand mit Bildpuzzles">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="Individuelle Kachelwand mit Bildpuzzles">
 </p>
 
 ## **Erhebt euch wieder, meine Kacheln!**
@@ -54,7 +52,7 @@ Lege einen Ordner mit unterstützten Bildern als Ziel fest, und **TileWall** akt
 Auch das Aussehen normaler Verknüpfungskacheln kannst du mit einem Bild oder Album anpassen.
 
 <p align="center">
-  <img src="../images/v1.40/puzzle-edit.png" width="1280" alt="Bildpuzzle teilen, zusammenführen und anpassen">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="Bildpuzzle teilen, zusammenführen und anpassen">
 </p>
 
 ## Das Startmenü-Erlebnis von Windows 10 nachbilden
@@ -72,7 +70,7 @@ Alle vier Ecken des Desktops können als Anker dienen – so hast du mehr Freihe
 In Settings kannst du außerdem Replace system Start aktivieren. Die Option ist standardmäßig ausgeschaltet. Wenn du sie einschaltest, kannst du TileWall mit der Windows-Taste oder der Start-Schaltfläche aufrufen und jederzeit zum nativen Startmenü zurückwechseln.
 
 <p align="center">
-  <img src="../images/v1.40/wall-dark.png" width="1280" alt="Kacheln, Gruppen und Startmenü im Listenformat">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="Kacheln, Gruppen und Startmenü im Listenformat">
 </p>
 
 ## Noch mehr Funktionen
@@ -92,11 +90,11 @@ Entfernte Kacheln landen im Papierkorb und lassen sich bei Bedarf wiederherstell
 Wenn du auch das Startmenü vermisst, aktiviere in Settings Start menu list. Liste und Kacheln erscheinen nebeneinander und bieten Zugriff auf dieselben Einträge.
 
 <p align="center">
-  <img src="../images/v1.40/import.png" width="1280" alt="Mehrere Einträge auswählen und den Import vorab ansehen">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="Mehrere Einträge auswählen und den Import vorab ansehen">
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-light.png" width="1280" alt="Helle Kachelwand mit eigenen Kacheln">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="Helle Kachelwand mit eigenen Kacheln">
 </p>
 
 ## Demnächst

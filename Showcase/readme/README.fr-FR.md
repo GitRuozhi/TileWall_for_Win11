@@ -1,20 +1,18 @@
 <p align="center">
-  <img src="../../src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="Icône de TileWall">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="Icône de TileWall">
 </p>
 
 <h1 align="center">TileWall</h1>
 
-<p align="center">V1.40 · Préparation de la soumission de la première version officielle pour le Store</p>
-
 <p align="center">
-  <a href="README.en-US.md">English</a> ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="README.zh-TW.md">繁體中文</a> ·
-  <a href="README.ja-JP.md">日本語</a> ·
-  <a href="README.ko-KR.md">한국어</a> ·
-  <a href="README.de-DE.md">Deutsch</a> ·
-  <a href="README.fr-FR.md"><strong>Français</strong></a> ·
-  <a href="README.es-ES.md">Español</a>
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md">简体中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md"><strong>Français</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md">Español</a>
 </p>
 
 <p align="center">
@@ -30,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-dark.png" width="1280" alt="Mur de vignettes personnalisé et puzzles d’images">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="Mur de vignettes personnalisé et puzzles d’images">
 </p>
 
 ## **Reprenez vie, mes vignettes !**
@@ -54,7 +52,7 @@ Définis comme cible un dossier contenant des images compatibles : **TileWall** 
 Tu peux aussi personnaliser l’apparence d’une vignette de raccourci classique avec une image ou un album.
 
 <p align="center">
-  <img src="../images/v1.40/puzzle-edit.png" width="1280" alt="Découper, fusionner et ajuster un puzzle d’images">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="Découper, fusionner et ajuster un puzzle d’images">
 </p>
 
 ## Retrouvez l’expérience du menu Démarrer de Windows 10
@@ -72,7 +70,7 @@ Les quatre coins du bureau peuvent servir de points d’ancrage, pour encore plu
 Tu peux aussi activer Replace system Start dans Settings. L’option est désactivée par défaut. Une fois activée, la touche Windows ou le bouton Démarrer permet d’afficher TileWall ; tu peux revenir au menu Démarrer natif quand tu veux.
 
 <p align="center">
-  <img src="../images/v1.40/wall-dark.png" width="1280" alt="Vignettes, groupes et menu Démarrer en mode liste">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="Vignettes, groupes et menu Démarrer en mode liste">
 </p>
 
 ## Plus de fonctionnalités
@@ -92,11 +90,11 @@ Les vignettes désépinglées vont dans la corbeille et peuvent être restaurée
 Le menu Démarrer te manque aussi ? Active Start menu list dans Settings : la liste et les vignettes s’affichent côte à côte et donnent accès aux mêmes éléments.
 
 <p align="center">
-  <img src="../images/v1.40/import.png" width="1280" alt="Sélectionner plusieurs éléments et prévisualiser l’importation">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="Sélectionner plusieurs éléments et prévisualiser l’importation">
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-light.png" width="1280" alt="Mur de vignettes personnalisé en thème clair">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="Mur de vignettes personnalisé en thème clair">
 </p>
 
 ## À venir

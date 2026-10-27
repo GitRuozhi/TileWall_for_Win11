@@ -1,20 +1,18 @@
 <p align="center">
-  <img src="../../src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="Icono de TileWall">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="Icono de TileWall">
 </p>
 
 <h1 align="center">TileWall</h1>
 
-<p align="center">V1.40 · Preparando el envío de la primera versión oficial a Microsoft Store</p>
-
 <p align="center">
-  <a href="README.en-US.md">English</a> ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="README.zh-TW.md">繁體中文</a> ·
-  <a href="README.ja-JP.md">日本語</a> ·
-  <a href="README.ko-KR.md">한국어</a> ·
-  <a href="README.de-DE.md">Deutsch</a> ·
-  <a href="README.fr-FR.md">Français</a> ·
-  <a href="README.es-ES.md"><strong>Español</strong></a>
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md">简体中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md"><strong>Español</strong></a>
 </p>
 
 <p align="center">
@@ -30,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-dark.png" width="1280" alt="Panel de mosaicos personalizado con puzles de imágenes">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="Panel de mosaicos personalizado con puzles de imágenes">
 </p>
 
 ## **¡Resucitad, mis mosaicos!**
@@ -54,7 +52,7 @@ Elige como destino una carpeta con imágenes compatibles y **TileWall** activar�
 También puedes personalizar el aspecto de un mosaico de acceso directo normal con una imagen o un álbum.
 
 <p align="center">
-  <img src="../images/v1.40/puzzle-edit.png" width="1280" alt="Dividir, unir y ajustar un puzle de imágenes">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="Dividir, unir y ajustar un puzle de imágenes">
 </p>
 
 ## Recupera la experiencia del menú Inicio de Windows 10
@@ -72,7 +70,7 @@ Cualquiera de las cuatro esquinas del escritorio puede servir de anclaje, con m�
 También puedes activar Replace system Start en Settings. La opción está desactivada de forma predeterminada. Cuando la activas, puedes mostrar TileWall con cualquiera de las teclas Windows o con el botón Inicio, y volver al menú Inicio nativo cuando quieras.
 
 <p align="center">
-  <img src="../images/v1.40/wall-dark.png" width="1280" alt="Mosaicos, grupos y menú Inicio en modo lista">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="Mosaicos, grupos y menú Inicio en modo lista">
 </p>
 
 ## Más funciones
@@ -92,11 +90,11 @@ Los mosaicos que quites de la pared van a la papelera y se pueden restaurar cuan
 Si también echas de menos el menú Inicio, activa Start menu list en Settings. La lista y los mosaicos aparecerán uno al lado del otro y darán acceso a las mismas entradas.
 
 <p align="center">
-  <img src="../images/v1.40/import.png" width="1280" alt="Seleccionar varios elementos y previsualizar la importación">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="Seleccionar varios elementos y previsualizar la importación">
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-light.png" width="1280" alt="Panel de mosaicos personalizado en tema claro">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="Panel de mosaicos personalizado en tema claro">
 </p>
 
 ## Próximamente

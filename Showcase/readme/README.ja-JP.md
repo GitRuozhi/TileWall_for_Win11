@@ -1,20 +1,18 @@
 <p align="center">
-  <img src="../../src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall ロゴ">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall ロゴ">
 </p>
 
 <h1 align="center">TileWall</h1>
 
-<p align="center">V1.40 · 初の Microsoft Store 正式版を提出準備中（まだ掲載されていません）</p>
-
 <p align="center">
-  <a href="README.en-US.md">English</a> ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="README.zh-TW.md">繁體中文</a> ·
-  <a href="README.ja-JP.md"><strong>日本語</strong></a> ·
-  <a href="README.ko-KR.md">한국어</a> ·
-  <a href="README.de-DE.md">Deutsch</a> ·
-  <a href="README.fr-FR.md">Français</a> ·
-  <a href="README.es-ES.md">Español</a>
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md">简体中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md"><strong>日本語</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md">Español</a>
 </p>
 
 <p align="center">
@@ -30,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-dark.png" width="1280" alt="カスタムタイルウォールと画像パズル">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="カスタムタイルウォールと画像パズル">
 </p>
 
 ## **よみがえれ！わがタイルよ！**
@@ -55,7 +53,7 @@ Windows 10 22H2（build 19045）と Windows 11 に対応し、x64 PC 向けで�
 通常のショートカットタイルも、画像やアルバムで見た目をカスタマイズできます。
 
 <p align="center">
-  <img src="../images/v1.40/puzzle-edit.png" width="1280" alt="画像パズルの分割、結合、画像調整">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="画像パズルの分割、結合、画像調整">
 </p>
 
 ## Windows 10 のスタートメニューを再現
@@ -73,7 +71,7 @@ Windows 10 22H2（build 19045）と Windows 11 に対応し、x64 PC 向けで�
 設定で「システムのスタートを置き換える」を有効にすると、Windows キーやスタートボタンから TileWall を呼び出せます。いつでもネイティブのスタートメニューに戻せます。
 
 <p align="center">
-  <img src="../images/v1.40/wall-dark.png" width="1280" alt="タイル、グループ、メニュー形式のスタート">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="タイル、グループ、メニュー形式のスタート">
 </p>
 
 ## さらに便利な機能
@@ -93,11 +91,11 @@ Windows 10 22H2（build 19045）と Windows 11 に対応し、x64 PC 向けで�
 スタートメニューが恋しい方は、設定で**Start menu list（スタートメニューリスト）**を有効にしてください。リストとタイルが並んで表示され、どちらからも同じ項目にアクセスできます。
 
 <p align="center">
-  <img src="../images/v1.40/import.png" width="1280" alt="一括選択とインポートのプレビュー">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="一括選択とインポートのプレビュー">
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-light.png" width="1280" alt="ライトテーマのカスタムタイルウォール">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="ライトテーマのカスタムタイルウォール">
 </p>
 
 ## 今後の予定

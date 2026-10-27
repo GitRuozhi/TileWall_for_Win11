@@ -10,17 +10,15 @@
   <img src="https://img.shields.io/badge/UI-English%20%2F%20Simplified%20Chinese-5C2D91?style=flat-square" alt="English and Simplified Chinese interface">
 </p>
 
-<p align="center"><sub>V1.40’s first Microsoft Store release is being prepared.</sub></p>
-
 <p align="center">
-  <a href="README.en-US.md"><strong>English</strong></a> ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="README.zh-TW.md">繁體中文</a> ·
-  <a href="README.ja-JP.md">日本語</a> ·
-  <a href="README.ko-KR.md">한국어</a> ·
-  <a href="README.de-DE.md">Deutsch</a> ·
-  <a href="README.fr-FR.md">Français</a> ·
-  <a href="README.es-ES.md">Español</a>
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md"><strong>English</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md">简体中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md">Español</a>
 </p>
 
 <p align="center">
@@ -30,12 +28,12 @@
 </p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-dark.png" width="1280" alt="A custom TileWall layout in dark mode">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="A custom TileWall layout in dark mode">
 </p>
 <p align="center"><sub>Make the wall yours with your favorite shortcuts and pictures.</sub></p>
 
 <p align="center">
-  <img src="../images/v1.40/custom-light.png" width="1280" alt="A custom TileWall layout in light mode">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="A custom TileWall layout in light mode">
 </p>
 
 ## **Come back to life, my tiles!**
@@ -59,7 +57,7 @@ Set a folder containing supported pictures as the target, and **TileWall** autom
 You can also customize an ordinary shortcut tile with a picture or an album.
 
 <p align="center">
-  <img src="../images/v1.40/puzzle-edit.png" width="1280" alt="Split and merge sections of a picture puzzle">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="Split and merge sections of a picture puzzle">
 </p>
 
 ## Recreate the Windows 10 Start menu experience
@@ -77,7 +75,7 @@ All four desktop corners can be anchors, giving you more freedom than the native
 You can also turn on **Replace system Start** in Settings. Press the Windows key or click a Start button to open TileWall; turn the option off whenever you want to return to the native Start menu.
 
 <p align="center">
-  <img src="../images/v1.40/wall-dark.png" width="1012" alt="Arrange tiles and move groups on the wall">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1012" alt="Arrange tiles and move groups on the wall">
 </p>
 
 ## More features
@@ -95,7 +93,7 @@ Export selected tiles, puzzles, and albums as a ZIP share file. Unpinned tiles g
 If you miss the Start menu too, turn on **Start menu list** in Settings. The list and tiles appear side by side, giving you access to the same launchable items.
 
 <p align="center">
-  <img src="../images/v1.40/import.png" width="1012" alt="Choose items in a batch and review the import result">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1012" alt="Choose items in a batch and review the import result">
 </p>
 
 ## Coming soon

@@ -1,20 +1,18 @@
 <p align="center">
-  <img src="src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall 图标">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall 图标">
 </p>
 
 <h1 align="center">TileWall</h1>
 
-<p align="center">V1.40 · 首个商店正式版本，准备提交中</p>
-
 <p align="center">
-  <a href="README.md">English</a> ·
-  <a href="README.zh-CN.md"><strong>简体中文</strong></a> ·
-  <a href="Showcase/readme/README.zh-TW.md">繁體中文</a> ·
-  <a href="Showcase/readme/README.ja-JP.md">日本語</a> ·
-  <a href="Showcase/readme/README.ko-KR.md">한국어</a> ·
-  <a href="Showcase/readme/README.de-DE.md">Deutsch</a> ·
-  <a href="Showcase/readme/README.fr-FR.md">Français</a> ·
-  <a href="Showcase/readme/README.es-ES.md">Español</a>
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md"><strong>简体中文</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md">Español</a>
 </p>
 
 <p align="center">
@@ -30,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="Showcase/images/v1.40/custom-dark.png" width="1280" alt="自定义磁贴墙与图片拼图">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="自定义磁贴墙与图片拼图">
 </p>
 
 ## **复活吧！我的磁贴！**
@@ -55,7 +53,7 @@
 普通快捷方式磁贴，也能自定义外观为图片或图集。
 
 <p align="center">
-  <img src="Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="拼图分割、合并与图片调整">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="拼图分割、合并与图片调整">
 </p>
 
 ## 复刻 Windows 10 开始菜单体验
@@ -73,7 +71,7 @@
 还可以在设置中开启替换系统开始，用 Win 键或开始按钮呼出 TileWall，随时可以切回原生开始菜单。
 
 <p align="center">
-  <img src="Showcase/images/v1.40/wall-dark.png" width="1280" alt="磁贴、分组与菜单式开始">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="磁贴、分组与菜单式开始">
 </p>
 
 ## 更强的功能
@@ -93,12 +91,12 @@
 如果你也怀念开始菜单，打开设置中的**菜单式开始**，列表与磁贴会并排显示，两边访问同一批入口。
 
 <p align="center">
-  <img src="Showcase/images/v1.40/import.png" width="1280" alt="批量选择与导入预览">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="批量选择与导入预览">
 </p>
 
 
 <p align="center">
-  <img src="Showcase/images/v1.40/custom-light.png" width="1280" alt="亮色自定义磁贴墙">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="亮色自定义磁贴墙">
 </p>
 
 ## 即将
