@@ -109,10 +109,6 @@ Si también echas de menos el menú Inicio, activa Start menu list en Settings. 
 </p>
 <p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a>.</sub></p>
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="Panel de mosaicos personalizado en tema claro">
-</p>
-
 ## Próximamente
 
 Estas funciones están previstas. ¡Estate atento!

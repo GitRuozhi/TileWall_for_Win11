@@ -110,10 +110,6 @@ Windows 10 22H2（build 19045）と Windows 11 に対応し、x64 PC 向けで�
 </p>
 <p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> または <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="ライトテーマのカスタムタイルウォール">
-</p>
-
 ## 今後の予定
 
 以下の要望を予定しています。続報をお待ちください：

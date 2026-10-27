@@ -110,10 +110,6 @@
 </p>
 <p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a>。</sub></p>
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="亮色自訂動態磚牆">
-</p>
-
 ## 即將推出
 
 以下需求正在排程中，敬請期待：

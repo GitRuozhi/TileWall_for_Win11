@@ -109,10 +109,6 @@ Le menu Démarrer te manque aussi ? Active Start menu list dans Settings : la li
 </p>
 <p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consultez séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a>.</sub></p>
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="Mur de vignettes personnalisé en thème clair">
-</p>
-
 ## À venir
 
 Ces demandes sont prévues. Reste à l’écoute :

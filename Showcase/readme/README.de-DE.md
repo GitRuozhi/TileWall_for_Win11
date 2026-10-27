@@ -109,10 +109,6 @@ Wenn du auch das Startmenü vermisst, aktiviere in Settings Start menu list. Lis
 </p>
 <p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, rufe <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a> einzeln auf.</sub></p>
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="Helle Kachelwand mit eigenen Kacheln">
-</p>
-
 ## Demnächst
 
 Diese Wünsche stehen auf dem Entwicklungsplan. Bleib gespannt:

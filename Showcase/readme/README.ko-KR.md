@@ -110,10 +110,6 @@ Split tiles(타일 분할)를 누른 다음 미리 보기의 점선에서 마우
 </p>
 <p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="밝은 테마의 사용자 지정 타일 벽">
-</p>
-
 ## 출시 예정
 
 다음 요청을 개발 일정에 올려 두었습니다. 기대해 주세요!

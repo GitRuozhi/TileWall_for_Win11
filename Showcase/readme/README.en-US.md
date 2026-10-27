@@ -34,11 +34,6 @@
   </picture>
 </p>
 <p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a> separately.</sub></p>
-<p align="center"><sub>Make the wall yours with your favorite shortcuts and pictures.</sub></p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="A custom TileWall layout in light mode">
-</p>
 
 ## **Come back to life, my tiles!**
 
