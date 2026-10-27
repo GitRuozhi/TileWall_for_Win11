@@ -40,6 +40,8 @@ public sealed class LaunchIdentityService(IFileStore files, ILnkFileService link
         fields ??= links.Read(originalSourcePath);
         if (!string.IsNullOrWhiteSpace(fields.TargetPath))
             return ForPath(fields.TargetPath, fields.Arguments, fields.WorkingDirectory);
+        if (fields.HasIdList && fields.ShellIdListHash is { } pidlHash)
+            return ForShellIdList(pidlHash, fields.ShellParsingName, fields.Arguments, fields.WorkingDirectory);
         if (!string.IsNullOrWhiteSpace(fields.ShellParsingName))
             return ForShell(fields.ShellParsingName, fields.Arguments, fields.WorkingDirectory);
         // Identical opaque shortcuts remain identical without guessing their PIDL target.
@@ -49,8 +51,8 @@ public sealed class LaunchIdentityService(IFileStore files, ILnkFileService link
 
     public static LaunchIdentity ForPath(string target, string arguments = "", string workingDirectory = "")
     {
-        var normalized = NormalizePath(target);
-        var work = string.IsNullOrEmpty(workingDirectory) ? string.Empty : NormalizePath(workingDirectory);
+        var normalized = NormalizeIdentityPath(target);
+        var work = string.IsNullOrEmpty(workingDirectory) ? string.Empty : NormalizeIdentityPath(workingDirectory);
         return new(Key("path", normalized.ToUpperInvariant(), arguments, work.ToUpperInvariant()),
             normalized, arguments, work, false);
     }
@@ -58,6 +60,19 @@ public sealed class LaunchIdentityService(IFileStore files, ILnkFileService link
     public static LaunchIdentity ForShell(string shell, string arguments = "", string workingDirectory = "") =>
         new(Key("shell", shell.ToUpperInvariant(), arguments, workingDirectory.ToUpperInvariant()),
             shell, arguments, workingDirectory, false);
+
+    internal static LaunchIdentity ForShellIdList(string hash, string? description = null,
+        string arguments = "", string workingDirectory = "")
+    {
+        if (hash.Length != 64 || !hash.All(Uri.IsHexDigit))
+            throw new ArgumentException("A complete Shell IDList digest is required.", nameof(hash));
+        hash = hash.ToUpperInvariant();
+        // Keep Shell classification while distinguishing this key from a parsing-name key.
+        // The name is descriptive only: it may be absent from a persisted Shell link.
+        return new(Key("shell:pidl", hash, arguments, workingDirectory.ToUpperInvariant()),
+            string.IsNullOrWhiteSpace(description) ? "pidl:" + hash : description,
+            arguments, workingDirectory, false);
+    }
 
     public static LaunchIdentity ForUrl(string url)
     {
@@ -69,6 +84,13 @@ public sealed class LaunchIdentityService(IFileStore files, ILnkFileService link
 
     public static string NormalizePath(string path)
     {
+        var value = NormalizeIdentityPath(path);
+        return OperatingSystem.IsWindows() && Path.IsPathFullyQualified(value)
+            ? Path.TrimEndingDirectorySeparator(ShellLinkFileService.NormalizePath(value)) : value;
+    }
+
+    private static string NormalizeIdentityPath(string path)
+    {
         var value = Environment.ExpandEnvironmentVariables(path).Replace('/', '\\');
         if (value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) value = @"\\" + value[8..];
         else if (value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)) value = value[4..];
@@ -76,7 +98,8 @@ public sealed class LaunchIdentityService(IFileStore files, ILnkFileService link
         if (Path.IsPathFullyQualified(value))
         {
             value = Path.GetFullPath(value);
-            if (OperatingSystem.IsWindows()) value = ShellLinkFileService.NormalizePath(value);
+            // Identity is lexical. Expanding 8.3 aliases with GetLongPathName would
+            // contact untrusted package targets before the user confirms import.
         }
         return Path.TrimEndingDirectorySeparator(value);
     }

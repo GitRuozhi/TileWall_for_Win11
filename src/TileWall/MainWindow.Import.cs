@@ -288,6 +288,8 @@ public sealed partial class MainWindow
                 token: CancellationToken.None);
             if (result.Status == WallPackageWriteStatus.Saved)
             { TransientStatus(string.Format(ProductStrings.Get("Import.ExportSaved"), request.OutputPath)); return new(); }
+            if (result.PreservedPath is { } preserved)
+                return new(string.Format(ProductStrings.Get("Import.ExportConflict"), preserved));
             return new(result.Status == WallPackageWriteStatus.ResultUnknown ? ProductStrings.Get("Import.ExportUnknown") :
                 string.Format(ProductStrings.Get("Import.ExportFailed"), result.Diagnostic ?? result.Status.ToString()));
         }

@@ -5,7 +5,7 @@
     <TargetPlatformMinVersion>10.0.18362.0</TargetPlatformMinVersion>
     <RootNamespace>TileWall</RootNamespace>
     <DefaultLanguage>en-US</DefaultLanguage>
-    <Version>1.3.9</Version>
+    <Version>1.4.0</Version>
     <!-- exe 内嵌 Win32 图标：任务栏/资源管理器显示用（托盘走运行时加载 Assets/AppIcon.ico，两者同源） -->
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -83,6 +83,8 @@
   <ItemGroup>
     <Content Remove="Properties\PublishProfiles\**" />
     <None Remove="Properties\PublishProfiles\**" />
+    <Content Remove=".gitignore;Properties\launchSettings.json" />
+    <None Remove=".gitignore;Properties\launchSettings.json" />
   </ItemGroup>
 
   <ItemGroup>

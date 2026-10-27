@@ -183,11 +183,11 @@ internal static class WallMemberVisualFactory
 
     internal static PuzzleCanvasView Create(WallMember member, PuzzleFrame? frame, WallMetrics metrics,
         double scale, WallVisualStyle style, Action<Button, int>? partitionCreated = null, bool interactive = true,
-        bool externalInteraction = false)
+        bool externalInteraction = false, bool? targetIsFolder = null)
     {
         var view = new PuzzleCanvasView { Interactive = interactive, ExternalInteraction = externalInteraction };
         if (partitionCreated is not null) view.PartitionCreated += partitionCreated;
-        view.SetScene(Project(member), frame, metrics, scale, style);
+        view.SetScene(Project(member), frame, metrics, scale, style, targetIsFolder);
         return view;
     }
 

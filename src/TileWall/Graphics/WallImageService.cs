@@ -439,18 +439,19 @@ public sealed partial class WallImageService : IDisposable
     {
         try
         {
-            if (new FileInfo(path).Length > TileWall.Core.Entries.EntryObservation.MaximumBytes) return (null, null);
-            string? icon = null; int? iconIndex = null;
-            foreach (var line in File.ReadLines(path))
+            using var source = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (source.Length > TileWall.Core.Entries.EntryObservation.MaximumBytes) return (null, null);
+            var bytes = new byte[checked((int)source.Length)];
+            source.ReadExactly(bytes);
+            if (source.ReadByte() != -1) return (null, null);
+            var metadata = TileWall.Core.Entries.UrlShortcut.ReadMetadata(bytes);
+            int? iconIndex = int.TryParse(metadata.IconIndex, out var parsedIndex) ? parsedIndex : null;
+            string? icon = null;
+            if (metadata.IconFile is { } value)
             {
-                if (line.StartsWith("IconIndex=", StringComparison.OrdinalIgnoreCase) && int.TryParse(line["IconIndex=".Length..].Trim(), out var parsedIndex)) iconIndex = parsedIndex;
-                if (line.StartsWith("IconFile=", StringComparison.OrdinalIgnoreCase))
-                {
-                    var value = line["IconFile=".Length..].Trim();
-                    var comma = value.LastIndexOf(',');
-                    if (comma >= 0 && int.TryParse(value[(comma + 1)..], out var index)) { iconIndex ??= index; value = value[..comma]; }
-                    icon = NormalizePath(value.Trim('"'));
-                }
+                var comma = value.LastIndexOf(',');
+                if (comma >= 0 && int.TryParse(value[(comma + 1)..], out var index)) { iconIndex ??= index; value = value[..comma]; }
+                icon = NormalizePath(value.Trim('"'));
             }
             return (icon, iconIndex);
         }

@@ -713,7 +713,8 @@ internal sealed class ImportDialog : IWallDialogSession
         PuzzleCanvasView? view = null; ClockMemberView? clock = null;
         if (member is ClockMember clockMember) { clock = new ClockMemberView(clockMember, _metrics, _dialog.XamlRoot?.RasterizationScale ?? 1, _style); card.Children.Add(clock); }
         else { view = WallMemberVisualFactory.Create(member, null, _metrics, _dialog.XamlRoot?.RasterizationScale ?? 1, _style,
-            interactive: false, externalInteraction: true); view.IsHitTestVisible = false; card.Children.Add(view); }
+            interactive: false, externalInteraction: true, targetIsFolder: candidate.Source.TargetKind == ImportTargetKind.Folder);
+            view.IsHitTestVisible = false; card.Children.Add(view); }
         var selection = WallMemberVisualFactory.AddSelection(card, _style);
         var toggle = new ToggleButton { Content = card, Width = item.Bounds.Width, Height = item.Bounds.Height,
             Padding = new Thickness(0), BorderThickness = new Thickness(0), MinWidth = 0, MinHeight = 0,
@@ -962,29 +963,14 @@ internal sealed class ImportDialog : IWallDialogSession
                 }
                 finally { _packageMediaSlots.Release(); }
             }
-            else if (packageSource is not null && row.Member.Images.Kind == MemberImageSourceKind.Automatic &&
-                row.Candidate.Source.Member.Entry is not null)
-            {
-                await _packageMediaSlots.WaitAsync(request.Token);
-                try
-                {
-                    var batch = await packageSource.OpenAsync();
-                    await packageSource.ReadGate.WaitAsync(request.Token);
-                    VerifiedPackageEntry entry;
-                    try { entry = await batch.ReadEntryAsync(row.Candidate.Source.Member.Id, request.Token); }
-                    finally { packageSource.ReadGate.Release(); }
-                    result = await _images.LoadPackageIconFrameAsync(entry, contentWidth, contentHeight,
-                        row.Member.Visual.BackgroundMode == MemberBackgroundMode.Blur, request.Token);
-                }
-                finally { _packageMediaSlots.Release(); }
-            }
-            else if (row.Member.Images.Kind == MemberImageSourceKind.Automatic && _loadIcon is not null)
+            // Unconfirmed packages never delegate target/icon/source paths to Shell.
+            // Keep the shared first-party placeholder when no bundled media exists.
+            else if (packageSource is null && row.Member.Images.Kind == MemberImageSourceKind.Automatic && _loadIcon is not null)
             {
                 result = await _loadIcon(row.Candidate.Source, contentWidth, contentHeight, request.Token);
             }
             var cacheAllowed = result?.CacheAllowed != false;
-            if (result?.Frame is null && !(source.Package is not null &&
-                (row.Member.Images.Kind == MemberImageSourceKind.Automatic || row.Member.Images.ManagedGallery is not null || row.Member.Images.Media is not null)))
+            if (result?.Frame is null && source.Package is null)
             {
                 var path = source.StartMenuSources.TryGetValue(row.Candidate.SelectionKey, out var startMenu)
                     ? startMenu.Candidate.FullPath : row.Candidate.Source.Identity?.Target ?? row.Member.TargetInput;

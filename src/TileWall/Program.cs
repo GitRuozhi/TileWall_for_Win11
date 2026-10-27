@@ -10,6 +10,15 @@ public static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        if (ApplicationModel.CurrentUserUninstallCommand.IsNotificationRequested(args))
+        {
+#if TILEWALL_PACKAGED
+            return ApplicationModel.ContextMenuUserCommand.OperationFailed;
+#else
+            return ApplicationModel.CurrentUserUninstallCommand.RunNotificationCleanup(args,
+                Shell.Interop.ExplorerAddNotification.UnregisterForUninstall);
+#endif
+        }
         if (ApplicationModel.ContextMenuUserCommand.IsRequested(args))
         {
             // Retired and mixed helper requests must fail before COM, RuntimeScope, and XAML initialization.
@@ -29,7 +38,7 @@ public static class Program
 #if TILEWALL_PACKAGED
             return ApplicationModel.ContextMenuUserCommand.OperationFailed;
 #else
-            return ApplicationModel.CurrentUserUninstallCommand.Run(args, Shell.Interop.ExplorerAddNotification.UnregisterForUninstall);
+            return ApplicationModel.CurrentUserUninstallCommand.Run(args);
 #endif
         }
         try { return RunApplication(args); }

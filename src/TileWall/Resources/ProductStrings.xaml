@@ -311,9 +311,9 @@
     <x:String x:Key="Settings.Privacy">隐私</x:String>
     <x:String x:Key="Settings.PrivacyPolicy">隐私政策</x:String>
     <x:String x:Key="Settings.MicrosoftStore">微软商店</x:String>
-    <x:String x:Key="Settings.OpenSource">开源地址</x:String>
+    <x:String x:Key="Settings.OpenSource">源码仓库</x:String>
     <x:String x:Key="Settings.Developer">开发者</x:String>
-    <x:String x:Key="Settings.Discussion">Discussion</x:String>
+    <x:String x:Key="Settings.Discussion">讨论区</x:String>
     <x:String x:Key="Settings.QQGroup">QQ群</x:String>
     <x:String x:Key="Settings.Feedback">反馈</x:String>
     <x:String x:Key="Settings.OpenLinkFailed">无法打开链接：{0}</x:String>
@@ -539,6 +539,7 @@
     <x:String x:Key="Import.OutputChanged">输出文件已改变，请重新选择路径。</x:String>
     <x:String x:Key="Import.ExportSaved">分享 ZIP 已导出：{0}</x:String>
     <x:String x:Key="Import.ExportUnknown">无法确认导出结果，请检查目标墙文件。</x:String>
+    <x:String x:Key="Import.ExportConflict">导出时目标发生变化或结果未确认。替换前的文件保留在：{0}。请核对后恢复或保留该文件。</x:String>
     <x:String x:Key="Import.Path.ExportEmpty">请选择输出 ZIP</x:String>
     <x:String x:Key="Recycle.Title">回收站</x:String>
     <x:String x:Key="Settings.RecycleRecoveryHint">取消固定的磁贴会进入「导入和导出 → 回收站」，可在那里恢复。</x:String>

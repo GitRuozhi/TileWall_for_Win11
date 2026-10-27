@@ -22,7 +22,7 @@ public sealed class WallPackageReader(
         {
             token.ThrowIfCancellationRequested();
             using var source = Open(packagePath);
-            WallPackageZip.Preflight(source, limits);
+            WallPackageZip.Preflight(source, limits, token);
             var fingerprint = Convert.ToHexString(await SHA256.HashDataAsync(source, token).ConfigureAwait(false));
             source.Position = 0;
             using var zip = new ZipArchive(source, ZipArchiveMode.Read, leaveOpen: true);
@@ -61,7 +61,7 @@ public sealed class WallPackageReader(
                 throw new InvalidDataException("Missing or additional package files.");
             var wallBytes = await ReadDeclaredAsync(entries["wall.json"], wallFile, limits.MaximumContentBytes, token).ConfigureAwait(false);
             var content = WallPackageJson.Deserialize<WallPackageContent>(wallBytes);
-            WallPackageJson.ValidateContent(content);
+            WallPackageJson.ValidateContent(content, limits, token);
             content = WallPackageJson.Freeze(content);
             var expected = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["wall.json"] = "wall" };
             foreach (var member in content.Members.Where(m => m.EntryKind is not null))

@@ -310,7 +310,7 @@
   <x:String x:Key="Settings.Privacy">Privacy</x:String>
   <x:String x:Key="Settings.PrivacyPolicy">Privacy policy</x:String>
   <x:String x:Key="Settings.MicrosoftStore">Microsoft Store</x:String>
-  <x:String x:Key="Settings.OpenSource">Open source</x:String>
+  <x:String x:Key="Settings.OpenSource">Source code</x:String>
   <x:String x:Key="Settings.Developer">Developer</x:String>
   <x:String x:Key="Settings.Discussion">Discussion</x:String>
   <x:String x:Key="Settings.QQGroup">QQ group</x:String>
@@ -538,6 +538,7 @@
     <x:String x:Key="Import.OutputChanged">The output file changed. Choose the path again.</x:String>
     <x:String x:Key="Import.ExportSaved">Sharing ZIP exported: {0}</x:String>
     <x:String x:Key="Import.ExportUnknown">The export result could not be confirmed. Check the destination wall file.</x:String>
+    <x:String x:Key="Import.ExportConflict">The destination changed during export or publication could not be confirmed. Its previous contents are preserved at: {0}. Check this file before restoring or keeping it.</x:String>
     <x:String x:Key="Import.Path.ExportEmpty">Choose an output ZIP</x:String>
     <x:String x:Key="Recycle.Title">Recycle bin</x:String>
     <x:String x:Key="Settings.RecycleRecoveryHint">Unpinned tiles go to Import and Export → Recycle Bin, where you can restore them.</x:String>

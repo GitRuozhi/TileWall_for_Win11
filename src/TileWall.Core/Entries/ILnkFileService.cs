@@ -12,6 +12,8 @@ public sealed record LinkFields(
 {
     /// <summary>Desktop-absolute parsing name for a non-file PIDL, when Shell can provide one.</summary>
     public string? ShellParsingName { get; init; }
+    /// <summary>Digest of the actual non-file target PIDL, without binding its namespace.</summary>
+    public string? ShellIdListHash { get; init; }
 }
 
 /// <summary>

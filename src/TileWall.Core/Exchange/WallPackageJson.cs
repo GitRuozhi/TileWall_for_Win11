@@ -83,12 +83,18 @@ internal static class WallPackageJson
         return references;
     }
 
-    internal static void ValidateContent(WallPackageContent content)
+    internal static void ValidateContent(WallPackageContent content, WallPackageLimits? limits = null, CancellationToken token = default)
     {
+        token.ThrowIfCancellationRequested();
+        limits ??= new(); limits.Validate();
         if (content.Lanes is null || content.Groups is null || content.Members is null || content.Galleries is null ||
             content.Lanes.Any(l => l?.GroupIds is null) || content.Groups.Any(g => g?.MemberIds is null) ||
             content.Members.Any(m => m is null || m.Visual is null || m.Images is null || m.ImageDisplay is null))
             throw new InvalidDataException("Malformed content collections.");
+        if (content.Lanes.Count > 64 || content.Groups.Count > limits.MaximumGroups || content.Members.Count > limits.MaximumMembers ||
+            content.Galleries.Count > limits.MaximumEntries ||
+            content.Lanes.Sum(lane => (long)lane.GroupIds.Count) + content.Groups.Sum(group => (long)group.MemberIds.Count) > limits.MaximumReferences)
+            throw new InvalidDataException("Wall content exceeds its structure budget.");
         if (content.Galleries.Any(gallery => gallery is null || !WallPackageJson.ValidHash(gallery.Id) || gallery.ManifestSha256 != gallery.Id) ||
             content.Galleries.Select(gallery => gallery.Id).Distinct(StringComparer.Ordinal).Count() != content.Galleries.Count)
             throw new InvalidDataException("Malformed managed-gallery declarations.");
@@ -108,6 +114,7 @@ internal static class WallPackageJson
             throw new InvalidDataException("Each member must belong to exactly one nonempty source group.");
         foreach (var member in content.Members)
         {
+            token.ThrowIfCancellationRequested();
             if (member.EntryKind is { } kind && !Enum.IsDefined(kind) ||
                 member.Kind == "puzzle" && member.Partitions is null ||
                 member.Kind != "puzzle" && member.Partitions is not null ||
@@ -123,7 +130,8 @@ internal static class WallPackageJson
         var conflicts = content.Members.Select(m => m.Images.Media).OfType<ManagedMediaReference>()
             .GroupBy(m => m.Sha256, StringComparer.Ordinal).Any(g => g.Distinct().Count() != 1);
         if (conflicts) throw new InvalidDataException("Conflicting media references.");
-        var errors = WallLayoutEngine.ValidateGeometry(content.ToDocument());
+        token.ThrowIfCancellationRequested();
+        var errors = WallLayoutEngine.ValidateGeometry(content.ToDocument(), token: token);
         if (errors.Count != 0) throw new InvalidDataException(string.Join("; ", errors));
     }
 }

@@ -5,22 +5,60 @@ using System.Globalization;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using System.Security.AccessControl;
-using System.Security.Principal;
 using TileWall.Shell.Interop;
 
 namespace TileWall.ApplicationModel;
 
-/// <summary>One-shot ordinary-user broker for an installed, administrator-owned file uninstaller.</summary>
+/// <summary>Compatibility activation; native Inno owns confirmation and the final uninstall result.</summary>
 internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop = false)
 {
     internal const string Argument = "--uninstall-current-user";
     internal const string UninstallRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{55D7663D-DFB4-4735-B28A-2EF358DB19F4}_is1";
-    private const string StartupRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const byte DeleteRequest = 0x44; // D: Inno has entered usUninstall, after confirmation.
-    private const byte Removed = 0x4F; // O: menu and owned startup value removed, transaction still open.
-    private const byte Acknowledge = 0x41; // A: client will wait for successful broker exit before deleting files.
-    private const byte Error = 0x45;
+    // Legacy management activation is only a handoff; Inno owns the final result.
+    internal const int Accepted = 10;
+    internal const int Cancelled = 21;
+    internal const string NotificationArgument = "--uninstall-notification-cleanup";
+
+    internal static bool IsNotificationRequested(string[] args) => args.Any(value =>
+        value.StartsWith(NotificationArgument, StringComparison.OrdinalIgnoreCase));
+
+    [SupportedOSPlatform("windows")]
+    internal static int RunNotificationCleanup(string[] args, Action cleanup)
+    {
+        if (args.Length != 3 || args[0] != NotificationArgument || args[1].Length != 32 ||
+            args[1].Any(value => value is not (>= '0' and <= '9') and not (>= 'a' and <= 'f')) ||
+            !int.TryParse(args[2], NumberStyles.None, CultureInfo.InvariantCulture, out var brokerPid) || brokerPid <= 0)
+            return ContextMenuUserCommand.InvalidArguments;
+        if (ContextMenuUserCommand.IsElevated()) return ContextMenuUserCommand.ElevatedContext;
+        try
+        {
+            var executable = Path.GetFullPath(Environment.ProcessPath ?? throw new IOException("Missing executable."));
+            _ = ReadInstalledUninstaller(executable);
+            using var pipe = new NamedPipeClientStream(".", "TileWall.Uninstall." + args[1] + ".notify",
+                PipeDirection.InOut, PipeOptions.Asynchronous, System.Security.Principal.TokenImpersonationLevel.Identification);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            pipe.ConnectAsync(timeout.Token).GetAwaiter().GetResult();
+            if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var actualPid) || actualPid != brokerPid)
+                return ContextMenuUserCommand.OperationFailed;
+            using var broker = Process.GetProcessById(brokerPid);
+            using var ownProcess = Process.GetCurrentProcess();
+            if (broker.HasExited || broker.SessionId != ownProcess.SessionId ||
+                !string.Equals(broker.MainModule?.FileName, Path.Combine(Path.GetDirectoryName(executable)!, "TileWall.UninstallBroker.exe"), StringComparison.OrdinalIgnoreCase))
+                return ContextMenuUserCommand.OperationFailed;
+            var request = new byte[1];
+            if (pipe.ReadAsync(request.AsMemory(), timeout.Token).AsTask().GetAwaiter().GetResult() != 1 || request[0] != 0x4E)
+                return ContextMenuUserCommand.OperationFailed;
+            // Only the authenticated broker opens this first-instance channel,
+            // after Inno's confirmed D request. Arbitrary command activation cannot unregister.
+            cleanup();
+            return ContextMenuUserCommand.Success;
+        }
+        catch (Exception) { return ContextMenuUserCommand.OperationFailed; }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out int processId);
 
     internal static bool IsRequested(string[] args) => args.Any(value =>
         string.Equals(value, Argument, StringComparison.OrdinalIgnoreCase) ||
@@ -43,22 +81,22 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
     }
 
     [SupportedOSPlatform("windows")]
-    internal static int Run(string[] args, Action? afterUninstall = null)
+    internal static int Run(string[] args)
     {
         if (!TryParse(args, out var command)) return ContextMenuUserCommand.InvalidArguments;
         int result;
         try
         {
             result = ExecuteEntry(command!, ContextMenuUserCommand.IsElevated,
-                () => RunInstalled(command!, afterUninstall), () => DelegateToDesktop(command!));
+                () => RunInstalled(command!), () => DelegateToDesktop(command!));
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
             // Declining file-uninstall elevation happens before any current-user mutation.
-            return ContextMenuUserCommand.Success;
+            return Cancelled;
         }
         catch (Exception) { result = ContextMenuUserCommand.OperationFailed; }
-        if (result != ContextMenuUserCommand.Success && !command!.Quiet) ShowFailure(result);
+        if (result != ContextMenuUserCommand.Success && result != Accepted && !command!.Quiet) ShowFailure(result);
         return result;
     }
 
@@ -71,7 +109,7 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
         // The receiving process must still be unelevated; never delegate recursively.
         if (command.FromDesktop) return ContextMenuUserCommand.ElevatedContext;
         delegateToDesktop();
-        return ContextMenuUserCommand.Success; // Request accepted; not an uninstall-completion receipt.
+        return Accepted; // Request accepted; not an uninstall-completion receipt.
     }
 
     [SupportedOSPlatform("windows")]
@@ -84,49 +122,20 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
     }
 
     [SupportedOSPlatform("windows")]
-    private static int RunInstalled(CurrentUserUninstallCommand command, Action? afterUninstall)
+    private static int RunInstalled(CurrentUserUninstallCommand command)
     {
-        var executable = Environment.ProcessPath ?? throw new IOException("The installed executable is unavailable.");
-        executable = Path.GetFullPath(executable);
+        // Compatibility activation only: release the installed runtime and let
+        // the native Inno clone own confirmation, cleanup and the final result.
+        var executable = Path.GetFullPath(Environment.ProcessPath ?? throw new IOException("Missing executable."));
         var uninstaller = ReadInstalledUninstaller(executable);
-        var id = Guid.NewGuid().ToString("N");
-        using var pipe = CreatePipe("TileWall.Uninstall." + id);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-        try
+        using var child = Process.Start(new ProcessStartInfo
         {
-            using var child = Process.Start(new ProcessStartInfo
-            {
-                FileName = uninstaller,
-                Arguments = "/TWUSERPIPE=" + id + " /TWUSERPID=" + Environment.ProcessId.ToString(CultureInfo.InvariantCulture) +
-                    (command.Quiet ? " /SILENT /SUPPRESSMSGBOXES" : string.Empty),
-                WorkingDirectory = Path.GetDirectoryName(uninstaller)!,
-                UseShellExecute = true,
-                Verb = "runas"
-            }) ?? throw new IOException("The installed uninstaller did not start.");
-
-            var connected = pipe.WaitForConnectionAsync(deadline.Token);
-            // Inno keeps its original loader alive until its temporary clone exits; the peer PID can be the clone.
-            var exited = child.WaitForExitAsync(deadline.Token);
-            var first = Task.WhenAny(connected, exited).GetAwaiter().GetResult();
-            if (first == exited && !pipe.IsConnected)
-            {
-                exited.GetAwaiter().GetResult();
-                return ContextMenuUserCommand.Success;
-            }
-            connected.GetAwaiter().GetResult();
-            var cleanupRequested = false;
-            var result = ExecuteHandshake(pipe, afterMutation =>
-            {
-                cleanupRequested = true;
-                return RemoveCurrentUserState(executable, afterMutation);
-            }, deadline.Token);
-            if (cleanupRequested && result == ContextMenuUserCommand.Success) afterUninstall?.Invoke();
-            return result;
-        }
-        finally { deadline.Cancel(); }
-        // Do not wait for child after O/A: it waits for this EXE to exit before removing program files.
+            FileName = uninstaller,
+            Arguments = command.Quiet ? "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" : string.Empty,
+            WorkingDirectory = Path.GetDirectoryName(uninstaller)!, UseShellExecute = true, Verb = "runas"
+        }) ?? throw new IOException("The native uninstaller did not start.");
+        return Accepted;
     }
-
     [SupportedOSPlatform("windows")]
     private static string ReadInstalledUninstaller(string executable)
     {
@@ -135,7 +144,7 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
         var directory = Path.GetDirectoryName(executable) ?? throw new IOException("Missing install directory.");
         using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
         using var registration = machine.OpenSubKey(UninstallRegistryPath) ?? throw new IOException("The installation is not registered.");
-        if (registration.GetValue("TWCurrentUserMenuProtocol") is not int version || version != 1 ||
+        if (registration.GetValue("TWCurrentUserMenuProtocol") is not int version || version != 2 ||
             registration.GetValueKind("TWCurrentUserMenuProtocol") != RegistryValueKind.DWord)
             throw new IOException("The installed uninstaller does not support current-user cleanup.");
         var location = ReadRegistryString(registration, "InstallLocation");
@@ -177,122 +186,6 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
         var attributes = File.GetAttributes(path);
         if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
             throw new IOException("The installation uses an unsafe file.");
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static NamedPipeServerStream CreatePipe(string name)
-    {
-        using var identity = WindowsIdentity.GetCurrent();
-        var sid = identity.User ?? throw new IOException("The current user identity is unavailable.");
-        var security = new PipeSecurity();
-        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-        security.AddAccessRule(new PipeAccessRule(sid, PipeAccessRights.FullControl, AccessControlType.Allow));
-        // A different administrator may approve UAC. CurrentUserOnly would reject that legitimate client.
-        security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-            PipeAccessRights.ReadWrite | PipeAccessRights.Synchronize, AccessControlType.Allow));
-        security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-            PipeAccessRights.FullControl, AccessControlType.Allow));
-        return NamedPipeServerStreamAcl.Create(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance, 1024, 1024, security,
-            HandleInheritability.None, (PipeAccessRights)0);
-    }
-
-    // The cleanup delegate owns rollback, invoking its callback before committing the menu/startup transaction.
-    // Tests supply an ordinary Stream and a small transaction fixture; no desktop or registry is needed here.
-    internal static int ExecuteHandshake(Stream pipe, Func<Action, ContextMenuRegistrationResult> cleanup,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var request = ReadByte(pipe, cancellationToken);
-            if (request == -1) return ContextMenuUserCommand.Success; // Confirmation cancelled before usUninstall.
-            if (request != DeleteRequest) throw new IOException("Invalid uninstall request.");
-            var result = cleanup(() =>
-            {
-                WriteByte(pipe, Removed, cancellationToken);
-                using var acknowledgement = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                acknowledgement.CancelAfter(TimeSpan.FromSeconds(5));
-                if (ReadByte(pipe, acknowledgement.Token) != Acknowledge)
-                    throw new IOException("The uninstaller did not acknowledge current-user cleanup.");
-            });
-            if (result.Success) return ContextMenuUserCommand.Success;
-            TryWriteError(pipe);
-            return result.RollbackIncomplete ? ContextMenuUserCommand.RollbackIncomplete : ContextMenuUserCommand.OperationFailed;
-        }
-        catch (Exception)
-        {
-            TryWriteError(pipe);
-            return ContextMenuUserCommand.OperationFailed;
-        }
-    }
-
-    private static int ReadByte(Stream stream, CancellationToken cancellationToken)
-    {
-        var buffer = new byte[1];
-        return stream.ReadAsync(buffer.AsMemory(), cancellationToken).AsTask().GetAwaiter().GetResult() == 0 ? -1 : buffer[0];
-    }
-
-    private static void WriteByte(Stream stream, byte value, CancellationToken cancellationToken)
-    {
-        stream.WriteAsync(new byte[] { value }.AsMemory(), cancellationToken).AsTask().GetAwaiter().GetResult();
-        stream.FlushAsync(cancellationToken).GetAwaiter().GetResult();
-    }
-
-    private static void TryWriteError(Stream stream)
-    {
-        try
-        {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-            WriteByte(stream, Error, timeout.Token);
-        }
-        catch (Exception) { }
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static ContextMenuRegistrationResult RemoveCurrentUserState(string executable, Action afterMutation)
-    {
-        string? previous = null;
-        var previousKind = RegistryValueKind.Unknown;
-        var startupChanged = false;
-        string? startupRollbackError = null;
-        var result = ExplorerContextMenuRegistration.UnregisterCurrentUserOwnedByCurrentExecutable(() =>
-        {
-            try
-            {
-                using var user = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, RegistryView.Registry64);
-                using var startup = user.OpenSubKey(StartupRegistryPath, writable: true);
-                if (startup is not null && startup.GetValue("TileWall", null, RegistryValueOptions.DoNotExpandEnvironmentNames) is string value)
-                {
-                    var kind = startup.GetValueKind("TileWall");
-                    if ((kind is RegistryValueKind.String or RegistryValueKind.ExpandString) &&
-                        string.Equals(value, "\"" + executable + "\" --background", StringComparison.Ordinal))
-                    {
-                        previous = value;
-                        previousKind = kind;
-                        startupChanged = true; // A partially failed delete also requires restoration.
-                        startup.DeleteValue("TileWall", throwOnMissingValue: false);
-                    }
-                }
-                afterMutation();
-            }
-            catch (Exception)
-            {
-                // Restore Run before leaving the menu callback, while the current-user registration lock is held.
-                if (startupChanged)
-                {
-                    try
-                    {
-                        using var user = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, RegistryView.Registry64);
-                        using var startup = user.CreateSubKey(StartupRegistryPath, writable: true);
-                        startup.SetValue("TileWall", previous!, previousKind);
-                    }
-                    catch (Exception ex) { startupRollbackError = ex.Message; }
-                }
-                throw; // The registration transaction now restores its menu snapshots.
-            }
-        });
-        return startupRollbackError is null ? result :
-            new(false, RollbackIncomplete: true, Error: result.Error + " Startup rollback: " + startupRollbackError);
     }
 
     [SupportedOSPlatform("windows")]

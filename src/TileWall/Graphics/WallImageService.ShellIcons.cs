@@ -1,9 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
-using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
-using TileWall.Core.Exchange;
 using TileWall.Core.Imaging;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
@@ -429,55 +427,6 @@ public sealed partial class WallImageService
         }
         return new(WallImageStatus.Fallback, null, 0, 0, "DefaultBrowserUnavailable") { CacheAllowed = cacheAllowed };
     }
-    internal Task<PuzzleFrameResult> LoadPackageIconFrameAsync(VerifiedPackageEntry entry, int width, int height,
-        bool blur, CancellationToken ct = default) => StartImageRequest(token => LoadPackageIconFrameCoreAsync(entry,
-            width, height, blur, token), ct, new PuzzleFrameResult(null, WallImageStatus.Cancelled));
-
-    private async Task<PuzzleFrameResult> LoadPackageIconFrameCoreAsync(VerifiedPackageEntry entry, int width, int height,
-        bool blur, CancellationToken token)
-    {
-        if (_disk is not { } disk) return new(null, WallImageStatus.Invalid, "ImageStorageUnavailable");
-        string? path = null;
-        FileStream? hold = null;
-        var created = false;
-        try
-        {
-            token.ThrowIfCancellationRequested();
-            path = disk.Under("Cache", "Images", "Temp", Guid.NewGuid().ToString("N") + (entry.Kind == ManagedEntryKind.Lnk ? ".lnk" : ".url"));
-            var capturedPath = path;
-            await Task.Run(async () =>
-            {
-                disk.CreateDirectory(Path.GetDirectoryName(capturedPath)!); disk.Guard(capturedPath);
-                using (var output = new LocalFileStore().CreateNewStream(capturedPath))
-                {
-                    created = true;
-                    await output.WriteAsync(entry.CopyBytes(), token).ConfigureAwait(false);
-                    await output.FlushAsync(token).ConfigureAwait(false);
-                }
-                disk.Guard(capturedPath);
-                hold = new FileStream(capturedPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                if (hold.Length != entry.Length || Convert.ToHexString(SHA256.HashData(hold)) != entry.Sha256)
-                    throw new IOException("Verified package icon entry changed during preparation.");
-                hold.Position = 0;
-            }, token);
-            var result = await LoadAutomaticFrameCoreAsync(path, width, height, blur, token);
-            token.ThrowIfCancellationRequested();
-            return result;
-        }
-        catch (OperationCanceledException) { return new(null, WallImageStatus.Cancelled); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or ArgumentException or InvalidOperationException)
-        { return new(null, WallImageStatus.Invalid, ex.GetType().Name); }
-        finally
-        {
-            hold?.Dispose();
-            if (created && path is not null)
-            {
-                try { disk.Delete(path); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { AppLog.Warn("ImageIcon", $"Package icon temporary cleanup failed: {ex.GetType().Name}"); }
-            }
-        }
-    }
-
     // Downsample only the blur underfill; the visible sharp plane retains its
     // actual Shell/PE dimensions, alpha, design padding and aspect ratio.
     private static DecodedImageFrame BlurInput(DecodedImageFrame source)

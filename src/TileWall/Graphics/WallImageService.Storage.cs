@@ -81,14 +81,10 @@ public sealed partial class WallImageService
     private static async Task<VerifiedOriginal> VerifyOriginalAsync(string path, CancellationToken ct)
     {
         var full = NormalizeImageFilePath(path) ?? throw new IOException("Invalid image path.");
-        var before = new FileInfo(full);
-        if (!before.Exists || before.Length is < 1 or > PreparedMediaAsset.MaximumBytes) throw new IOException("Missing or oversized image.");
-        var length = before.Length; var modified = before.LastWriteTimeUtc;
-        var bytes = await File.ReadAllBytesAsync(full, ct).ConfigureAwait(false);
-        before.Refresh();
-        if (!before.Exists || before.Length != length || before.LastWriteTimeUtc != modified || bytes.LongLength != length)
-            throw new IOException("Image changed while being prepared.");
+        await using var source = BoundedOriginalFileRead.OpenRead(full);
+        var bytes = await BoundedOriginalFileRead.ReadAsync(source, PreparedMediaAsset.MaximumBytes, ct).ConfigureAwait(false);
         var extension = await ProbeOriginalBytesAsync(bytes, ct).ConfigureAwait(false);
+        // The decoder probe and PreparedMediaAsset hash both consume this one frozen byte array.
         return new(PreparedMediaAsset.FromVerifiedImage(bytes, extension), bytes);
     }
 

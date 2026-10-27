@@ -24,8 +24,14 @@ internal static class AppLogSetup
     {
         try
         {
+            var fullLogsDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(logsDirectory));
+            if (!string.Equals(Path.GetFileName(fullLogsDirectory), "logs", StringComparison.OrdinalIgnoreCase))
+                throw new IOException("The process log directory must be the logs child of its data root.");
+            var trustedRoot = Directory.GetParent(fullLogsDirectory)?.FullName
+                ?? throw new IOException("The process log directory has no trusted data root.");
+
             // TILEWALL_LOG_INFO=1：主实例诊断期开启INFO；默认仍只WARN+。
-            AppLog.Initialize(new RollingFileSink(logsDirectory, "tilewall"),
+            AppLog.Initialize(new RollingFileSink(fullLogsDirectory, "tilewall", trustedRoot: trustedRoot),
                 infoEnabled: AppLog.InfoEnabledByDefault
                     || Environment.GetEnvironmentVariable("TILEWALL_LOG_INFO") == "1");
         }

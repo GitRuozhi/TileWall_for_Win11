@@ -74,7 +74,7 @@ public sealed record WallPackageImageSource
     internal static WallPackageImageSource From(MemberImageSource source) => new()
     {
         Kind = source.Kind, Media = source.Media,
-        Path = source.ManagedGallery is null ? source.Path : null,
+        Path = source.ManagedGallery is null && source.Media is null ? source.Path : null,
         GalleryId = source.ManagedGallery?.ContentId,
     };
     internal MemberImageSource ToSource() => new()

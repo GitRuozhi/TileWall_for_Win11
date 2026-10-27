@@ -10,14 +10,21 @@ namespace TileWall.Core.Exchange;
 public sealed class WallPackageWriter
 {
     private readonly WallPackageReader _reader;
-    private readonly Action<string, string, bool> _publish;
+    private readonly Action<string, string, string?> _publish;
+    private readonly Action? _beforePublish;
 
-    public WallPackageWriter(WallPackageReader reader) : this(reader, new LocalFileStore().Move) { }
+    public WallPackageWriter(WallPackageReader reader) : this(reader, Publish) { }
 
     // Narrow publication fault seam: container creation and Reader validation still use real files.
-    internal WallPackageWriter(WallPackageReader reader, Action<string, string, bool> publish)
+    internal WallPackageWriter(WallPackageReader reader, Action<string, string, string?> publish, Action? beforePublish = null)
     {
-        _reader = reader; _publish = publish;
+        _reader = reader; _publish = publish; _beforePublish = beforePublish;
+    }
+
+    internal static void Publish(string temporary, string destination, string? backup)
+    {
+        if (backup is null) File.Move(temporary, destination, overwrite: false);
+        else File.Replace(temporary, destination, backup);
     }
 
     public async Task<WallPackageWriteResult> WriteAsync(WallPackageSnapshot snapshot, string destination,
@@ -29,6 +36,7 @@ public sealed class WallPackageWriter
         HashSet<string>? protectedSources = null;
         var publishAttempted = false;
         var temporaryCreated = false;
+        string? backup = null;
         try
         {
             token.ThrowIfCancellationRequested();
@@ -44,7 +52,7 @@ public sealed class WallPackageWriter
             GuardDestination(destination, snapshot.DataRoot, protectedSources);
             originalHash = await DestinationHashAsync(destination, snapshot.DataRoot, protectedSources, token).ConfigureAwait(false);
             var content = snapshot.Content;
-            WallPackageJson.ValidateContent(content);
+            WallPackageJson.ValidateContent(content, limits, token);
             var wallBytes = WallPackageJson.Serialize(content);
             if (wallBytes.Length > limits.MaximumContentBytes) throw new InvalidDataException("Wall content exceeds its byte budget.");
             var files = new List<WallPackageFile> { new("wall.json", wallBytes.Length, WallPackageJson.Hash(wallBytes), "wall") };
@@ -118,9 +126,23 @@ public sealed class WallPackageWriter
             token.ThrowIfCancellationRequested();
             GuardDestination(temporary, snapshot.DataRoot, protectedSources);
             GuardDestination(destination, snapshot.DataRoot, protectedSources);
+            if (originalHash is not null)
+            {
+                backup = Path.Combine(Path.GetDirectoryName(destination)!, ".tilewall-preserved-" + Guid.NewGuid().ToString("N") + ".bak");
+                GuardDestination(backup, snapshot.DataRoot, protectedSources);
+                if (File.Exists(backup)) throw new IOException("Export preservation path is occupied.");
+            }
+            _beforePublish?.Invoke();
             publishAttempted = true;
-            _publish(temporary, destination, originalHash is not null);
+            _publish(temporary, destination, backup);
             temporary = null;
+            if (backup is not null)
+            {
+                if (await DestinationHashAsync(backup, snapshot.DataRoot, protectedSources, CancellationToken.None).ConfigureAwait(false) != originalHash)
+                    return new(WallPackageWriteStatus.DestinationChanged, Diagnostic: "The replaced destination changed concurrently; its contents were preserved.", PreservedPath: backup);
+                GuardDestination(backup, snapshot.DataRoot, protectedSources);
+                File.Delete(backup); backup = null;
+            }
             // Publication is the commit point. A later cancellation cannot undo it.
             return new(WallPackageWriteStatus.Saved, fingerprint);
         }
@@ -134,13 +156,23 @@ public sealed class WallPackageWriter
             {
                 try
                 {
+                    if (backup is not null && File.Exists(backup))
+                    {
+                        if (await DestinationHashAsync(backup, snapshot.DataRoot, protectedSources!, CancellationToken.None).ConfigureAwait(false) != originalHash)
+                            return new(WallPackageWriteStatus.DestinationChanged, Diagnostic: ex.Message, PreservedPath: backup);
+                    }
                     var actual = await DestinationHashAsync(destination, snapshot.DataRoot, protectedSources!, CancellationToken.None).ConfigureAwait(false);
-                    if (actual == packageHash) return new(WallPackageWriteStatus.Saved, contentFingerprint, "Publication confirmed by reading back the generated package.");
+                    if (actual == packageHash)
+                    {
+                        if (backup is not null && File.Exists(backup))
+                        { GuardDestination(backup, snapshot.DataRoot, protectedSources); File.Delete(backup); backup = null; }
+                        return new(WallPackageWriteStatus.Saved, contentFingerprint, "Publication confirmed by reading back the generated package.");
+                    }
                     if (actual != originalHash)
-                        return new(WallPackageWriteStatus.ResultUnknown, Diagnostic: "Could not confirm publication: the destination is neither the original nor the generated file.");
+                        return new(WallPackageWriteStatus.ResultUnknown, Diagnostic: "Could not confirm publication: the destination is neither the original nor the generated file.", PreservedPath: backup is not null && File.Exists(backup) ? backup : null);
                 }
                 catch (Exception check) when (check is IOException or UnauthorizedAccessException or ArgumentException)
-                { return new(WallPackageWriteStatus.ResultUnknown, Diagnostic: "Could not read back publication: " + check.Message); }
+                { return new(WallPackageWriteStatus.ResultUnknown, Diagnostic: "Could not read back publication: " + check.Message, PreservedPath: backup is not null && File.Exists(backup) ? backup : null); }
             }
             return new(WallPackageWriteStatus.IoFailure, Diagnostic: ex.Message);
         }

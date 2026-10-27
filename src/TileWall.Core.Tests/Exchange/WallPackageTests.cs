@@ -20,6 +20,64 @@ public sealed class WallPackageTests : IDisposable
     public WallPackageTests() => Directory.CreateDirectory(_directory);
     public void Dispose() => Directory.Delete(_directory, recursive: true);
 
+    [Theory]
+    [InlineData("members")]
+    [InlineData("groups")]
+    [InlineData("references")]
+    [InlineData("metadata")]
+    public async Task StructureAndMetadataBudgetsRejectBeforeProducingAPreview(string budget)
+    {
+        var path = Path.Combine(_directory, "bounded.zip"); CreatePackage(path);
+        var limits = budget switch
+        {
+            "members" => new WallPackageLimits { MaximumMembers = 2 },
+            "groups" => new WallPackageLimits { MaximumGroups = 1 },
+            "references" => new WallPackageLimits { MaximumReferences = 3 },
+            _ => new WallPackageLimits { MaximumMetadataBytes = 10 },
+        };
+        if (budget == "groups")
+            Mutate(path, payloads =>
+            {
+                var content = WallPackageJson.Deserialize<WallPackageContent>(payloads["wall.json"]);
+                content = content with { Lanes = [new(["one", "two"])], Groups =
+                    [new("one", "One", ["tile"]), new("two", "Two", ["puzzle", "clock"])] };
+                payloads["wall.json"] = WallPackageJson.Serialize(content); RebuildManifest(payloads);
+            });
+        var result = await Harness().ReadPreviewAsync(path, limits);
+        Assert.Equal(WallPackageReadStatus.InvalidPackage, result.Status);
+        Assert.Null(result.Preview);
+    }
+
+    [Fact]
+    public void PreflightAndGeometryRespectAlreadyCancelledOperations()
+    {
+        using var cancel = new CancellationTokenSource(); cancel.Cancel();
+        using var bytes = new MemoryStream(new byte[22]);
+        Assert.Throws<OperationCanceledException>(() => WallPackageZip.Preflight(bytes, new(), cancel.Token));
+        Assert.Throws<OperationCanceledException>(() => WallLayoutEngine.ValidateGeometry(WallDocument.Empty(1, 20), token: cancel.Token));
+    }
+
+    [Fact]
+    public void MaliciousOverlapDoesNotAllocateOneDiagnosticPerMemberPair()
+    {
+        var members = Enumerable.Range(0, 1000).Select(index => (WallMember)new ClockMember
+            { Id = "clock-" + index, LocalBounds = new(0, 0, 1, 1) }).ToArray();
+        var document = WallDocument.Empty(1, 20) with { Lanes = [new() { Groups = [new() { Id = "g", Members = members }] }] };
+        var errors = WallLayoutEngine.ValidateGeometry(document);
+        Assert.InRange(errors.Count, 1, members.Length);
+        Assert.Contains("MEMBER_OVERLAP", errors);
+    }
+
+    [Theory]
+    [InlineData("manifest.json")]
+    [InlineData("Manifest.json")]
+    [InlineData("MANIFEST.JSON")]
+    public void GalleryCannotOverwriteItsOwnManifestOnWindows(string name)
+    {
+        var image = PreparedMediaAsset.FromVerifiedImage(Png, ".png");
+        Assert.Throws<InvalidDataException>(() => PreparedManagedGallery.FromVerifiedFiles([new(name, image)]));
+    }
+
     [Fact]
     public async Task LegacyDevelopmentPackageRequiresASupportedVersionWithoutMigration()
     {

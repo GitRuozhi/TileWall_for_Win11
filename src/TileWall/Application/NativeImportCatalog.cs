@@ -49,7 +49,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
     private readonly Dictionary<ImportPageSourceKind, string> _scopes = [];
     private readonly Dictionary<ImportPageSourceKind, bool> _refreshing = [];
     private readonly Dictionary<ImportPageSourceKind, string?> _errors = [];
-    private const int CacheVersion = 3, SystemCatalogVersion = 4, AppsCatalogVersion = 4, OtherNativeCatalogVersion = 1;
+    private const int CacheVersion = 4, SystemCatalogVersion = 4, AppsCatalogVersion = 4, OtherNativeCatalogVersion = 1;
     private readonly Dictionary<ImportPageSourceKind, SemaphoreSlim> _refreshGates = [];
     private readonly Dictionary<ImportPageSourceKind, (IReadOnlyList<NativeImportEntry> Entries, ImportPageSource Source)> _projections = [];
 
@@ -77,8 +77,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             if (stream.Length is < 1 or > MaximumCacheBytes) return [];
             var value = JsonSerializer.Deserialize<CacheEnvelope>(stream);
             if (UnsafeCache(path)) return [];
-            if (value is not null && (value.Version == CacheVersion && value.Scope == scope ||
-                    kind == ImportPageSourceKind.Desktop && value.Version == 2 && value.Scope == LegacyCacheScope()) && value.Kind == kind &&
+            if (value is not null && value.Version == CacheVersion && value.Scope == scope && value.Kind == kind &&
                 value.Entries is { Count: <= MaximumEntries } && value.Entries.All(ValidCachedEntry) &&
                 value.Entries.Select(entry => entry.Key).Distinct(StringComparer.Ordinal).Count() == value.Entries.Count)
             {
@@ -462,7 +461,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                 token.ThrowIfCancellationRequested(); ValidateAppPath(target, item);
                 return entry;
             }
-            var identity = LaunchIdentityService.ForShell(parsing);
+            var (_, identity) = ShellItemCatalog.ReadForLink(target);
             token.ThrowIfCancellationRequested();
             return entry with { Identity = identity, LinkedTargetPath = ShellItemCatalog.LinkedTargetPath(target) };
         }
@@ -722,13 +721,6 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             Language = ProductStrings.Language.ToString(), UICulture = CultureInfo.CurrentUICulture.Name,
             SystemCatalogVersion = kind == ImportPageSourceKind.SystemFeatures ? SystemCatalogVersion :
                 kind == ImportPageSourceKind.InstalledApplications ? AppsCatalogVersion : OtherNativeCatalogVersion });
-    }
-
-    private string LegacyCacheScope()
-    {
-        using var account = System.Security.Principal.WindowsIdentity.GetCurrent();
-        return JsonSerializer.Serialize(new { Account = account.User?.Value, Root = _dataRoot,
-            Desktop = KnownFolderPaths.Desktop, PublicDesktop = KnownFolderPaths.PublicDesktop });
     }
 
     private static bool ValidCachedEntry(NativeImportEntry entry) => entry is not null &&

@@ -1,6 +1,5 @@
 using TileWall.Core.Application;
 using TileWall.Core.Configuration;
-using TileWall.Core.Entries;
 using TileWall.Core.Shell;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
@@ -140,9 +139,9 @@ public sealed partial class MainWindow
         })
         {
             token.ThrowIfCancellationRequested();
-            var item = ShellItemCatalog.Read(parsingName);
+            var (item, identity) = ShellItemCatalog.ReadForLink(parsingName);
             targets.Add(key, item.Path is { } path
-                ? new(path) : new(item.ParsingName, LaunchIdentityService.ForShell(item.ParsingName).Key));
+                ? new(path) : new(item.ParsingName, identity.Key));
         }
         var system = Environment.GetFolderPath(Environment.SpecialFolder.System);
         foreach (var (key, name) in new[] { ("Calculator", "calc.exe"), ("Notepad", "notepad.exe"), ("CMD", "cmd.exe") })
@@ -179,8 +178,7 @@ public sealed partial class MainWindow
             var parsingName = item.ParsingName.StartsWith("::", StringComparison.Ordinal) ||
                 item.ParsingName.StartsWith("shell:", StringComparison.OrdinalIgnoreCase)
                     ? item.ParsingName : "shell:AppsFolder\\" + item.ParsingName;
-            var actual = ShellItemCatalog.Read(parsingName);
-            var identity = actual.Path is { } path ? LaunchIdentityService.ForPath(path) : LaunchIdentityService.ForShell(actual.ParsingName);
+            var (_, identity) = ShellItemCatalog.ReadForLink(parsingName);
             targets.Add(key, new(parsingName, identity.Key));
         }
     }

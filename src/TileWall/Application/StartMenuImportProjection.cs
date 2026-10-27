@@ -99,7 +99,7 @@ internal sealed class StartMenuImportProjection
             });
         }
         return new(ReuseCandidates(candidates, preview.PackageSha256), new Dictionary<string, StartMenuImportCandidate>(), preview, candidates.Count)
-            { AvailabilityFacts = facts };
+            { AvailabilityFacts = facts, AvailabilityPrepared = true };
     }
 
     internal static ImportTargetKind ContentKind(LaunchIdentity? identity, bool hasTarget, bool? targetIsDirectory = null)
@@ -143,7 +143,7 @@ internal sealed class StartMenuImportProjection
     internal async Task<ImportPageSource> PrepareAvailabilityAsync(ImportPageSource source, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        if (source.AvailabilityPrepared) return source;
+        if (source.AvailabilityPrepared || source.Package is not null) return source with { AvailabilityPrepared = true };
         // The main window retains bounded source facts across pages. Progress-only
         // catalog publications reuse observations; changed entry/dependency facts
         // require IO. Uncertain locations never become confirmed missing by cache.

@@ -39,7 +39,7 @@ public sealed record StartMenuCatalogSnapshot
 
 public static class StartMenuSourceCache
 {
-    public const int FormatVersion = 1;
+    public const int FormatVersion = 2;
     public const int MaximumSourceBytes = 4 * 1024 * 1024;
 
     public static string SourceKey(SourceKind source, string root, string relativePath) =>

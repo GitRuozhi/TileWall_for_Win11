@@ -184,7 +184,7 @@ public sealed class WallStoreMediaAuditTests
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
-            if (File.Exists(Path.Combine(directory.FullName, "AGENTS.md")) &&
+            if (File.Exists(Path.Combine(directory.FullName, "TileWall.sln")) &&
                 File.Exists(Path.Combine(directory.FullName, "src", "TileWall.Core.Tests", "TileWall.Core.Tests.csproj")))
                 return directory.FullName;
         throw new DirectoryNotFoundException("Could not locate the TileWall repository root from the test assembly.");

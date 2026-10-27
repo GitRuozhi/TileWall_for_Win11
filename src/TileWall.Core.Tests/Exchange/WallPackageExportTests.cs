@@ -90,6 +90,7 @@ public sealed class WallPackageExportTests : IDisposable
         using var contentStream = zip.GetEntry("wall.json")!.Open();
         using var text = new StreamReader(contentStream);
         var json = await text.ReadToEndAsync();
+        Assert.DoesNotContain(Path.Combine(_directory, "source.zip").Replace("\\", "\\\\", StringComparison.Ordinal), json, StringComparison.Ordinal);
         Assert.DoesNotContain("must-not-leak", json);
         Assert.DoesNotContain("importSource", json);
         Assert.DoesNotContain("inactive", json);
@@ -200,6 +201,45 @@ public sealed class WallPackageExportTests : IDisposable
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompetitionAtThePublicationPointNeverLosesTheOtherWritersFile(bool initiallyExists)
+    {
+        var (store, document, _, reader) = Seed();
+        using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
+        var path = Path.Combine(_directory, "last-instant.zip");
+        if (initiallyExists) File.WriteAllText(path, "original");
+        var writer = new WallPackageWriter(reader, WallPackageWriter.Publish, () => File.WriteAllText(path, "last instant external write"));
+        var result = await writer.WriteAsync(snapshot, path, "1.4.0");
+        if (initiallyExists)
+        {
+            Assert.Equal(WallPackageWriteStatus.DestinationChanged, result.Status);
+            Assert.NotNull(result.PreservedPath);
+            Assert.Equal("last instant external write", File.ReadAllText(result.PreservedPath));
+            Assert.Equal(WallPackageReadStatus.Valid, (await reader.ReadPreviewAsync(path)).Status);
+        }
+        else
+        {
+            Assert.Equal(WallPackageWriteStatus.ResultUnknown, result.Status);
+            Assert.Equal("last instant external write", File.ReadAllText(path));
+        }
+    }
+
+    [Fact]
+    public async Task DisappearingDestinationDoesNotReportAnUncreatedRecoveryFile()
+    {
+        var (store, document, _, reader) = Seed();
+        using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
+        var path = Path.Combine(_directory, "disappeared.zip"); File.WriteAllText(path, "original");
+        var writer = new WallPackageWriter(reader, WallPackageWriter.Publish, () => File.Delete(path));
+        var result = await writer.WriteAsync(snapshot, path, "1.4.0");
+        Assert.Equal(WallPackageWriteStatus.ResultUnknown, result.Status);
+        Assert.Null(result.PreservedPath);
+        Assert.False(File.Exists(path));
+        Assert.Empty(Directory.GetFiles(_directory, ".tilewall-preserved-*.bak"));
+    }
+
+    [Theory]
     [InlineData("before", WallPackageWriteStatus.IoFailure)]
     [InlineData("after", WallPackageWriteStatus.Saved)]
     [InlineData("cancel-after", WallPackageWriteStatus.Saved)]
@@ -210,9 +250,9 @@ public sealed class WallPackageExportTests : IDisposable
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
         var path = Path.Combine(_directory, "publish.zip"); File.WriteAllText(path, "original");
         using var cancel = new CancellationTokenSource();
-        var writer = new WallPackageWriter(reader, (temporary, destination, overwrite) =>
+        var writer = new WallPackageWriter(reader, (temporary, destination, backup) =>
         {
-            if (failure is "after" or "cancel-after") File.Move(temporary, destination, overwrite);
+            if (failure is "after" or "cancel-after") WallPackageWriter.Publish(temporary, destination, backup);
             if (failure == "unknown") File.WriteAllText(destination, "another writer");
             if (failure == "cancel-after") { cancel.Cancel(); throw new OperationCanceledException(cancel.Token); }
             throw new IOException("Injected publication failure");

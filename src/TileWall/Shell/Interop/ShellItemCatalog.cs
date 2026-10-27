@@ -85,6 +85,7 @@ internal static class ShellItemCatalog
     {
         var item = Open(parsingName);
         IntPtr pidl = IntPtr.Zero;
+        IntPtr linkPidl = IntPtr.Zero;
         IShellLinkPath? link = null;
         try
         {
@@ -99,13 +100,23 @@ internal static class ShellItemCatalog
             var path = new StringBuilder(32768);
             link.GetPath(path, path.Capacity, IntPtr.Zero, 4); // SLGP_RAWPATH
             if (path.Length == path.Capacity - 1) throw new IOException("The Shell link target path is incomplete.");
-            var identity = path.Length != 0 ? LaunchIdentityService.ForPath(path.ToString())
-                : LaunchIdentityService.ForShell(actual.ParsingName);
+            LaunchIdentity identity;
+            if (path.Length != 0) identity = LaunchIdentityService.ForPath(path.ToString());
+            else
+            {
+                // GetIDList returns the validated PIDL owned by the Shell link object.
+                link.GetIDList(out var storedPidl);
+                if (storedPidl == IntPtr.Zero) throw new IOException("The Shell link target IDList is unavailable.");
+                linkPidl = storedPidl;
+                var hash = ShellLinkFileService.IdListHash(linkPidl);
+                identity = LaunchIdentityService.ForShellIdList(hash, actual.ParsingName);
+            }
             return (actual, identity);
         }
         finally
         {
             if (link is not null) Marshal.ReleaseComObject(link);
+            if (linkPidl != IntPtr.Zero) Marshal.FreeCoTaskMem(linkPidl);
             if (pidl != IntPtr.Zero) Marshal.FreeCoTaskMem(pidl);
             Marshal.ReleaseComObject(item);
         }

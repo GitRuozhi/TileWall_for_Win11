@@ -7,6 +7,61 @@ namespace TileWall.Core.Tests.Entries;
 /// <summary>T-URL（M4 设计 §10.2）：ValidateUrl 矩阵 + CreateContent/RewriteUrlLine（其余行保留）/ReadUrlLine。</summary>
 public class UrlShortcutTests
 {
+    [Fact]
+    public void TargetAndIconFieldsUseOnlyTheInternetShortcutSectionAndPreserveOtherBytes()
+    {
+        var input = "[Other]\nURL=https://decoy.invalid/\nIconFile=wrong.ico\n[InternetShortcut]\r\n  URL = https://actual.invalid/  \r\nIconFile=actual.ico\r\nIconIndex=3\r\n[After]\nURL=https://after.invalid/\n";
+        var bytes = Encoding.UTF8.GetBytes(input);
+        var metadata = UrlShortcut.ReadMetadata(bytes);
+        Assert.Equal("https://actual.invalid/", metadata.Url);
+        Assert.Equal("actual.ico", metadata.IconFile);
+        Assert.Equal("3", metadata.IconIndex);
+        Assert.Equal(Encoding.UTF8.GetBytes(input.Replace("https://actual.invalid/", "https://new.invalid/", StringComparison.Ordinal)),
+            UrlShortcut.RewriteUrlLine(bytes, "https://new.invalid/"));
+    }
+
+    [Theory]
+    [InlineData("[InternetShortcut]\nURL=https://one.invalid/\nURL=https://two.invalid/")]
+    [InlineData("[InternetShortcut]\nURL=https://one.invalid/\n[InternetShortcut]\nIconFile=icon.ico")]
+    [InlineData("[InternetShortcut]\nIconFile=one.ico\nIconFile=two.ico")]
+    public void AmbiguousFieldsCannotBecomeAnOpaqueIdentityOrBeEdited(string text)
+    {
+        var bytes = Encoding.UTF8.GetBytes(text);
+        var files = new TileWall.Core.Tests.Fixtures.InMemoryFileStore();
+        var identities = new LaunchIdentityService(files, new TileWall.Core.Tests.Fixtures.FakeLinkFileService(files));
+        Assert.Throws<InvalidDataException>(() => UrlShortcut.ReadMetadata(bytes));
+        Assert.Throws<InvalidDataException>(() => EntryObservation.Observe(identities, TileWall.Core.Wall.ManagedEntryKind.Url, "ambiguous.url", bytes));
+        Assert.Throws<InvalidDataException>(() => UrlShortcut.RewriteUrlLine(bytes, "https://new.invalid/"));
+    }
+
+    [Fact]
+    public void Utf16LittleEndianUsesAndPreservesItsBomEncodingAndUnrelatedFields()
+    {
+        const string text = "[InternetShortcut]\r\nURL=https://old.invalid/\r\nIconFile=C:\\图标\\图.ico\r\n";
+        byte[] bytes = [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(text)];
+        Assert.Equal("https://old.invalid/", UrlShortcut.ReadUrlLine(bytes));
+        Assert.Equal(new byte[] { 0xFF, 0xFE }.Concat(Encoding.Unicode.GetBytes(text.Replace("old.invalid", "new.invalid", StringComparison.Ordinal))),
+            UrlShortcut.RewriteUrlLine(bytes, "https://new.invalid/"));
+    }
+
+    [Fact]
+    public void UnsupportedShellTargetEncodingsAreRejectedButOpaqueBomMetadataRemainsReadable()
+    {
+        const string text = "[InternetShortcut]\r\nURL=https://actual.invalid/\r\n";
+        Assert.Throws<InvalidDataException>(() => UrlShortcut.ReadUrlLine([.. Encoding.BigEndianUnicode.GetPreamble(), .. Encoding.BigEndianUnicode.GetBytes(text)]));
+        Assert.Throws<InvalidDataException>(() => UrlShortcut.ReadUrlLine([0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes(text)]));
+        Assert.True(UrlShortcut.ReadMetadata([0xEF, 0xBB, 0xBF, .. "[InternetShortcut]\nIconFile=icon.ico"u8.ToArray()]).HasInternetShortcut);
+    }
+
+    [Fact]
+    public void AddingMissingTargetStaysInTheCorrectSection()
+    {
+        var bytes = "[InternetShortcut]\nIconIndex=0\n[Other]\nURL=https://decoy.invalid/\n"u8.ToArray();
+        var rewritten = UrlShortcut.RewriteUrlLine(bytes, "https://actual.invalid/");
+        Assert.Equal("https://actual.invalid/", UrlShortcut.ReadUrlLine(rewritten));
+        Assert.Contains("[Other]\nURL=https://decoy.invalid/\n", Encoding.UTF8.GetString(rewritten));
+    }
+
     [Theory]
     [InlineData("https://example.com/path?q=1")]
     [InlineData("http://example.com")]

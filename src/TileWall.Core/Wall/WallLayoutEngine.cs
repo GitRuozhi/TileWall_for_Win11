@@ -290,8 +290,9 @@ public static class WallLayoutEngine
         return WallRejection.WorkAreaTooSmall;
     }
 
-    public static IReadOnlyList<string> Validate(WallDocument document)
+    public static IReadOnlyList<string> Validate(WallDocument document, CancellationToken token = default)
     {
+        token.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(document);
         var errors = new List<string>();
         if (document.SchemaVersion != WallDocument.CurrentSchemaVersion) errors.Add("SCHEMA_VERSION");
@@ -342,6 +343,7 @@ public static class WallLayoutEngine
                 var members = group.Members;
                 for (var i = 0; i < members.Count; i++)
                 {
+                    token.ThrowIfCancellationRequested();
                     var member = members[i];
                     if (member is null) { errors.Add("MEMBER_NULL"); continue; }
                     CheckId(member.Id, ids, errors);
@@ -349,7 +351,11 @@ public static class WallLayoutEngine
                     ValidateMember(member, errors);
 
                     for (var j = 0; j < i; j++)
-                        if (members[j] is not null && IntersectsSafe(b, members[j].LocalBounds)) errors.Add("MEMBER_OVERLAP");
+                    {
+                        if ((j & 255) == 0) token.ThrowIfCancellationRequested();
+                        if (members[j] is not null && IntersectsSafe(b, members[j].LocalBounds))
+                        { errors.Add("MEMBER_OVERLAP"); break; }
+                    }
                 }
             }
         }
@@ -370,11 +376,11 @@ public static class WallLayoutEngine
     }
 
     /// <summary>Checks persisted geometry against saved Rows, independent of the current monitor.</summary>
-    public static IReadOnlyList<string> ValidateGeometry(WallDocument document, WallMetrics? metrics = null)
+    public static IReadOnlyList<string> ValidateGeometry(WallDocument document, WallMetrics? metrics = null, CancellationToken token = default)
     {
         ArgumentNullException.ThrowIfNull(document);
         metrics ??= new WallMetrics();
-        var errors = Validate(document).ToList();
+        var errors = Validate(document, token).ToList();
         if (!metrics.IsValid)
         {
             errors.Add("METRICS");

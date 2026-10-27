@@ -52,7 +52,7 @@
                 HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="8" Padding="8,5">
             <StackPanel Spacing="4">
                 <TextBlock x:Name="StatusText" Foreground="White" TextWrapping="Wrap" />
-                <Button x:Name="RetryViewButton" Content="从已保存状态重建墙面"
+                <Button x:Name="RetryViewButton"
                         Visibility="Collapsed" Click="OnRetryViewClicked" />
             </StackPanel>
         </Border>

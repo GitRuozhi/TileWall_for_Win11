@@ -1,5 +1,6 @@
 // TileWall's own implementation of the Windows SDK COM contracts. No sample code is copied.
-// This DLL has no CRT, .NET, WinUI, registry writes, or wall-state dependency.
+// A static CRT supplies the standard DLL startup and security-cookie initialization.
+// This DLL has no .NET, WinUI, registry writes, or wall-state dependency.
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
 #define CONST_VTABLE
@@ -438,7 +439,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
     if (reason == DLL_PROCESS_ATTACH) {
         DWORD length;
         Module = instance;
-        DisableThreadLibraryCalls(instance);
+        // The static CRT needs thread notifications; do not disable them.
         // Cache our own resource location once. No COM, registry, or application work under loader lock.
         length = GetModuleFileNameW(instance, IconLocation, ARRAYSIZE(IconLocation) - 6);
         if (!length || length >= ARRAYSIZE(IconLocation) - 6) IconLocation[0] = 0;

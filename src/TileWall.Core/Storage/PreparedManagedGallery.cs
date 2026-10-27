@@ -40,7 +40,7 @@ public sealed class PreparedManagedGallery
     }
     public static bool IsValidReference(ManagedGalleryReference? reference) => reference is not null &&
         UserDataSnapshotJson.ValidHash(reference.ContentId) && reference.ManifestSha256 == reference.ContentId;
-    internal static bool ValidName(string? name) => name is { Length: > 0 and <= 240 } && name != "manifest.json" &&
+    internal static bool ValidName(string? name) => name is { Length: > 0 and <= 240 } && !name.Equals("manifest.json", StringComparison.OrdinalIgnoreCase) &&
         name.IndexOfAny(['/', '\\', ':', '\0']) < 0 && EntryNames.Validate(name).Count == 0;
     internal static ManagedGalleryManifest ReadManifest(byte[] bytes, ManagedGalleryReference reference)
     {

@@ -59,6 +59,7 @@ public sealed partial class MainWindow : Window
         _session = new WallSession(scope.DataRoot);
         _images = new WallImageService(_session.LinkFiles);
         InitializeComponent();
+        ActionIcon.Set(RetryViewButton, ProductStrings.Get("Wall.Retry"), ActionIcon.Refresh);
         CreateWindowsSidebar();
         _statusTimer = DispatcherQueue.CreateTimer();
         _statusTimer.IsRepeating = false;
