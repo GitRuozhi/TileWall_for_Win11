@@ -28,8 +28,12 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="사용자 지정 타일 벽과 그림 퍼즐">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="불러오기, 크기 조절 및 전체 화면">
+  </picture>
 </p>
+<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
 ## **되살아나라! 나의 타일이여!**
 
@@ -37,7 +41,7 @@
 
 **TileWall**은 Windows의 네이티브 UI 프레임워크인 WinUI 3로 개발했습니다. 시작 메뉴와 타일 벽을 재현하며, 기본적으로 **Win + 백틱 키(Shift 없이)**를 누르면 나타나고 Windows의 시작 메뉴와 별도로 동작합니다. Windows Shell을 바꿀 필요도, 기존 사용 습관을 바꿀 필요도 없습니다.
 
-Windows 10 22H2(build 19045)와 Windows 11을 지원하며 x64 PC용입니다. 앱 UI는 중국어(간체)와 영어만 제공하고, 아래 스크린샷은 영어 UI입니다.
+Windows 10 22H2(build 19045)와 Windows 11을 지원하며 x64 PC용입니다. 앱 UI는 중국어(간체)와 영어만 제공합니다.
 
 
 ## 퍼즐, 그림과 앨범
@@ -53,8 +57,12 @@ Split tiles(타일 분할)를 누른 다음 미리 보기의 점선에서 마우
 일반 바로 가기 타일도 그림이나 앨범으로 모양을 바꿀 수 있습니다.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="퍼즐 나누기, 합치기 및 그림 조정">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="퍼즐 그림 나누기, 합치기 및 확대">
+  </picture>
 </p>
+<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
 ## Windows 10 시작 메뉴 경험 재현
 
@@ -71,8 +79,12 @@ Split tiles(타일 분할)를 누른 다음 미리 보기의 점선에서 마우
 설정에서 시스템 시작 메뉴 대체를 켜면 Windows 키나 시작 버튼으로 TileWall을 열 수 있습니다. 언제든지 기본 시작 메뉴로 돌아갈 수 있습니다.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="타일, 그룹 및 메뉴형 시작">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="타일과 그룹 이동">
+  </picture>
 </p>
+<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
 ## 더 강력한 기능
 
@@ -91,8 +103,12 @@ Split tiles(타일 분할)를 누른 다음 미리 보기의 점선에서 마우
 시작 메뉴가 그립다면 설정에서 **Start menu list(시작 메뉴 목록)**를 켜세요. 목록과 타일이 나란히 표시되고, 양쪽에서 같은 항목에 접근할 수 있습니다.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="여러 항목 선택 및 가져오기 미리 보기">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="여러 항목 선택 및 가져오기 결과">
+  </picture>
 </p>
+<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="밝은 테마의 사용자 지정 타일 벽">

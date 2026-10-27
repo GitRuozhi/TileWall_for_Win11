@@ -28,8 +28,12 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="Mur de vignettes personnalisé et puzzles d’images">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="Afficher, redimensionner et passer en plein écran">
+  </picture>
 </p>
+<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consultez séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a>.</sub></p>
 
 ## **Reprenez vie, mes vignettes !**
 
@@ -37,7 +41,7 @@
 
 **TileWall** est développé avec WinUI 3, le framework d’interface natif de Windows. Il réinvente le menu Démarrer et le mur de vignettes. Par défaut, le raccourci **Win + la touche accent grave** (à gauche du 1 sur un clavier américain, sans maintenir Maj) affiche le mur, indépendamment du menu Démarrer de Windows. Tu n’as pas besoin de remplacer le shell Windows ni de changer tes habitudes.
 
-TileWall prend en charge Windows 10 22H2 (build 19045) et Windows 11 sur les PC x64. L’interface de l’application est disponible uniquement en chinois simplifié et en anglais ; les captures ci-dessous montrent l’interface anglaise.
+TileWall prend en charge Windows 10 22H2 (build 19045) et Windows 11 sur les PC x64. L’interface de l’application est disponible uniquement en chinois simplifié et en anglais.
 
 ## Puzzles, images et albums
 
@@ -52,8 +56,12 @@ Définis comme cible un dossier contenant des images compatibles : **TileWall** 
 Tu peux aussi personnaliser l’apparence d’une vignette de raccourci classique avec une image ou un album.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="Découper, fusionner et ajuster un puzzle d’images">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="Découper, fusionner et zoomer un puzzle d’image">
+  </picture>
 </p>
+<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consultez séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a>.</sub></p>
 
 ## Retrouvez l’expérience du menu Démarrer de Windows 10
 
@@ -70,8 +78,12 @@ Les quatre coins du bureau peuvent servir de points d’ancrage, pour encore plu
 Tu peux aussi activer Replace system Start dans Settings. L’option est désactivée par défaut. Une fois activée, la touche Windows ou le bouton Démarrer permet d’afficher TileWall ; tu peux revenir au menu Démarrer natif quand tu veux.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="Vignettes, groupes et menu Démarrer en mode liste">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="Déplacer des vignettes et des groupes">
+  </picture>
 </p>
+<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consultez séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a>.</sub></p>
 
 ## Plus de fonctionnalités
 
@@ -90,8 +102,12 @@ Les vignettes désépinglées vont dans la corbeille et peuvent être restaurée
 Le menu Démarrer te manque aussi ? Active Start menu list dans Settings : la liste et les vignettes s’affichent côte à côte et donnent accès aux mêmes éléments.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="Sélectionner plusieurs éléments et prévisualiser l’importation">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="Sélectionner plusieurs vignettes et consulter le résultat de l’importation">
+  </picture>
 </p>
+<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consultez séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a>.</sub></p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="Mur de vignettes personnalisé en thème clair">

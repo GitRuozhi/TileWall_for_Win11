@@ -28,8 +28,12 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="自訂動態磚牆與圖片拼圖">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="呼出、縮放與全螢幕">
+  </picture>
 </p>
+<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a>。</sub></p>
 
 ## **復活吧！我的動態磚！**
 
@@ -37,7 +41,7 @@
 
 **TileWall** 使用 Windows 原生介面框架 WinUI 3 開發，重現開始功能表與動態磚牆；預設按下 **Win + 反引號鍵（無需 Shift）** 即可呼叫，並與系統開始功能表各自獨立。不必取代 Windows Shell，也不必改變你原有的使用習慣。
 
-支援 Windows 10 22H2（build 19045）與 Windows 11，適用於 x64 電腦。應用程式介面僅提供簡體中文與英文；下方截圖皆為英文介面。
+支援 Windows 10 22H2（build 19045）與 Windows 11，適用於 x64 電腦。應用程式介面僅提供簡體中文與英文。
 
 
 ## 拼圖、圖片與圖集
@@ -53,8 +57,12 @@
 一般捷徑動態磚也能自訂外觀，改用圖片或圖集。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="拼圖分割、合併與圖片調整">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="拼圖分割、合併與縮放">
+  </picture>
 </p>
+<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a>。</sub></p>
 
 ## 重現 Windows 10 開始功能表體驗
 
@@ -71,8 +79,12 @@
 還可以在設定中開啟取代系統開始，用 Windows 鍵或開始按鈕呼叫 TileWall；隨時都能切回原生開始功能表。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="動態磚、分組與選單式開始">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="動態磚與群組拖動">
+  </picture>
 </p>
+<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a>。</sub></p>
 
 ## 更多功能
 
@@ -91,8 +103,12 @@
 如果你也懷念開始功能表，可在設定中開啟 **Start menu list（開始功能表清單）**。清單與動態磚會並排顯示，兩邊都能存取同一批項目。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="批次選取與匯入預覽">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="批次選取與匯入結果">
+  </picture>
 </p>
+<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a>。</sub></p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="亮色自訂動態磚牆">

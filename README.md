@@ -5,12 +5,6 @@
 <h1 align="center">TileWall</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.40-0078D4?style=flat-square" alt="Version V1.40">
-  <img src="https://img.shields.io/badge/Windows-10%2022H2%20%2F%2011%20x64-0078D4?style=flat-square" alt="Windows 10 version 22H2 and Windows 11, x64">
-  <img src="https://img.shields.io/badge/UI-English%20%2F%20Simplified%20Chinese-5C2D91?style=flat-square" alt="English and Simplified Chinese interface">
-</p>
-
-<p align="center">
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md"><strong>English</strong></a> ·
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md">简体中文</a> ·
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
@@ -22,14 +16,24 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Version-V1.40-0078D4?style=flat-square" alt="Version V1.40">
+  <img src="https://img.shields.io/badge/Windows-10%2022H2%20%2F%2011%20x64-0078D4?style=flat-square" alt="Windows 10 version 22H2 and Windows 11, x64">
+  <img src="https://img.shields.io/badge/UI-English%20%2F%20Simplified%20Chinese-5C2D91?style=flat-square" alt="English and Simplified Chinese interface">
+</p>
+
+<p align="center">
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11"><strong>Project home</strong></a> ·
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/discussions">Share feedback</a> ·
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&amp;jump_from=webapi&amp;authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">Join the QQ group</a>
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="A custom TileWall layout in dark mode">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="Showing, resizing, and switching between windowed and full-screen modes">
+  </picture>
 </p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a> separately.</sub></p>
 <p align="center"><sub>Make the wall yours with your favorite shortcuts and pictures.</sub></p>
 
 <p align="center">
@@ -57,8 +61,12 @@ Set a folder containing supported pictures as the target, and **TileWall** autom
 You can also customize an ordinary shortcut tile with a picture or an album.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="Split and merge sections of a picture puzzle">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="Splitting, merging, and zooming a picture puzzle">
+  </picture>
 </p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a> separately.</sub></p>
 
 ## Recreate the Windows 10 Start menu experience
 
@@ -75,8 +83,12 @@ All four desktop corners can be anchors, giving you more freedom than the native
 You can also turn on **Replace system Start** in Settings. Press the Windows key or click a Start button to open TileWall; turn the option off whenever you want to return to the native Start menu.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1012" alt="Arrange tiles and move groups on the wall">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="Moving tiles and groups">
+  </picture>
 </p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a> separately.</sub></p>
 
 ## More features
 
@@ -93,8 +105,12 @@ Export selected tiles, puzzles, and albums as a ZIP share file. Unpinned tiles g
 If you miss the Start menu too, turn on **Start menu list** in Settings. The list and tiles appear side by side, giving you access to the same launchable items.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1012" alt="Choose items in a batch and review the import result">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="Selecting tiles in a batch and viewing the import result">
+  </picture>
 </p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a> separately.</sub></p>
 
 ## Coming soon
 

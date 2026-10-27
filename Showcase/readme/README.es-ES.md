@@ -28,8 +28,12 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="Panel de mosaicos personalizado con puzles de imágenes">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="Mostrar, cambiar el tamaño y pasar a pantalla completa">
+  </picture>
 </p>
+<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a>.</sub></p>
 
 ## **¡Resucitad, mis mosaicos!**
 
@@ -37,7 +41,7 @@
 
 **TileWall** está desarrollado con WinUI 3, el framework de interfaz nativo de Windows. Renueva el menú Inicio y el panel de mosaicos. De forma predeterminada, puedes mostrar el panel con **Win + la tecla de acento grave** (la tecla a la izquierda del 1 en un teclado estadounidense; sin pulsar Mayús). El panel funciona por separado del menú Inicio de Windows. No tienes que sustituir Windows Shell ni cambiar tus costumbres.
 
-TileWall es compatible con Windows 10 22H2 (build 19045) y Windows 11 en equipos x64. La interfaz de la aplicación solo está disponible en chino simplificado e inglés; las capturas de abajo muestran la interfaz en inglés.
+TileWall es compatible con Windows 10 22H2 (build 19045) y Windows 11 en equipos x64. La interfaz de la aplicación solo está disponible en chino simplificado e inglés.
 
 ## Puzles, imágenes y álbumes
 
@@ -52,8 +56,12 @@ Elige como destino una carpeta con imágenes compatibles y **TileWall** activar�
 También puedes personalizar el aspecto de un mosaico de acceso directo normal con una imagen o un álbum.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="Dividir, unir y ajustar un puzle de imágenes">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="Dividir, unir y ampliar un puzle de imágenes">
+  </picture>
 </p>
+<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a>.</sub></p>
 
 ## Recupera la experiencia del menú Inicio de Windows 10
 
@@ -70,8 +78,12 @@ Cualquiera de las cuatro esquinas del escritorio puede servir de anclaje, con m�
 También puedes activar Replace system Start en Settings. La opción está desactivada de forma predeterminada. Cuando la activas, puedes mostrar TileWall con cualquiera de las teclas Windows o con el botón Inicio, y volver al menú Inicio nativo cuando quieras.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="Mosaicos, grupos y menú Inicio en modo lista">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="Mover mosaicos y grupos">
+  </picture>
 </p>
+<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a>.</sub></p>
 
 ## Más funciones
 
@@ -90,8 +102,12 @@ Los mosaicos que quites de la pared van a la papelera y se pueden restaurar cuan
 Si también echas de menos el menú Inicio, activa Start menu list en Settings. La lista y los mosaicos aparecerán uno al lado del otro y darán acceso a las mismas entradas.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="Seleccionar varios elementos y previsualizar la importación">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="Seleccionar varios mosaicos y ver el resultado de la importación">
+  </picture>
 </p>
+<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a>.</sub></p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="Panel de mosaicos personalizado en tema claro">

@@ -28,8 +28,12 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="カスタムタイルウォールと画像パズル">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="呼び出し、サイズ変更、全画面表示">
+  </picture>
 </p>
+<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> または <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
 
 ## **よみがえれ！わがタイルよ！**
 
@@ -37,7 +41,7 @@
 
 **TileWall** は Windows 標準の UI フレームワーク WinUI 3 で開発されています。スタートメニューとタイルウォールを再現し、既定では **Win + バッククォートキー（Shift 不要）** で表示できます。システムのスタートメニューとは独立して動作します。Windows Shell を置き換える必要はなく、これまでの使い方を変える必要もありません。
 
-Windows 10 22H2（build 19045）と Windows 11 に対応し、x64 PC 向けです。アプリの UI は簡体字中国語と英語のみです。以下のスクリーンショットは英語 UI です。
+Windows 10 22H2（build 19045）と Windows 11 に対応し、x64 PC 向けです。アプリの UI は簡体字中国語と英語のみです。
 
 
 ## パズル、画像、アルバム
@@ -53,8 +57,12 @@ Windows 10 22H2（build 19045）と Windows 11 に対応し、x64 PC 向けで�
 通常のショートカットタイルも、画像やアルバムで見た目をカスタマイズできます。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="画像パズルの分割、結合、画像調整">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="画像パズルの分割、結合、拡大縮小">
+  </picture>
 </p>
+<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> または <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
 
 ## Windows 10 のスタートメニューを再現
 
@@ -71,8 +79,12 @@ Windows 10 22H2（build 19045）と Windows 11 に対応し、x64 PC 向けで�
 設定で「システムのスタートを置き換える」を有効にすると、Windows キーやスタートボタンから TileWall を呼び出せます。いつでもネイティブのスタートメニューに戻せます。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="タイル、グループ、メニュー形式のスタート">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="タイルとグループの移動">
+  </picture>
 </p>
+<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> または <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
 
 ## さらに便利な機能
 
@@ -91,8 +103,12 @@ Windows 10 22H2（build 19045）と Windows 11 に対応し、x64 PC 向けで�
 スタートメニューが恋しい方は、設定で**Start menu list（スタートメニューリスト）**を有効にしてください。リストとタイルが並んで表示され、どちらからも同じ項目にアクセスできます。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="一括選択とインポートのプレビュー">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="タイルの一括選択とインポート結果">
+  </picture>
 </p>
+<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> または <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-light.png" width="1280" alt="ライトテーマのカスタムタイルウォール">

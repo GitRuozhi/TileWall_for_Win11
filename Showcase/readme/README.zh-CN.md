@@ -28,8 +28,12 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/custom-dark.png" width="1280" alt="自定义磁贴墙与图片拼图">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="呼出、缩放与全屏">
+  </picture>
 </p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a>。</sub></p>
 
 ## **复活吧！我的磁贴！**
 
@@ -37,7 +41,7 @@
 
 **TileWall** 使用 Windows 原生界面框架 WinUI 3 开发，重现了开始菜单和磁贴墙，默认按 **Win + 反引号键（无需 Shift）** 呼出，与系统开始菜单互相独立。不用替换 Windows Shell，也不用强迫你改变原来的使用习惯。
 
-支持 Windows 10 22H2（build 19045）和 Windows 11，适用于 x64 电脑。应用界面提供简体中文和英文；下方截图使用英文界面。
+支持 Windows 10 22H2（build 19045）和 Windows 11，适用于 x64 电脑。应用界面提供简体中文和英文。
 
 
 ## 拼图、图片与图集
@@ -53,8 +57,12 @@
 普通快捷方式磁贴，也能自定义外观为图片或图集。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/puzzle-edit.png" width="1280" alt="拼图分割、合并与图片调整">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="拼图分割、合并与缩放">
+  </picture>
 </p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a>。</sub></p>
 
 ## 复刻 Windows 10 开始菜单体验
 
@@ -71,8 +79,12 @@
 还可以在设置中开启替换系统开始，用 Win 键或开始按钮呼出 TileWall，随时可以切回原生开始菜单。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/wall-dark.png" width="1280" alt="磁贴、分组与菜单式开始">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="磁贴与分组拖动">
+  </picture>
 </p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a>。</sub></p>
 
 ## 更强的功能
 
@@ -91,8 +103,12 @@
 如果你也怀念开始菜单，打开设置中的**菜单式开始**，列表与磁贴会并排显示，两边访问同一批入口。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/v1.40/import.png" width="1280" alt="批量选择与导入预览">
+  <picture>
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="批量选择与导入结果">
+  </picture>
 </p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a>。</sub></p>
 
 
 <p align="center">
