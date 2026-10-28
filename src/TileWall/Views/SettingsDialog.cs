@@ -15,7 +15,9 @@ namespace TileWall.Views;
 
 internal sealed record SettingsDialogState(WallSettings Settings, string? RegisteredHotKey,
     bool? LoginStartupEnabled, string? Error = null, bool StartReplacementActive = false,
-    bool StartReplacementSuspended = false, string? StartReplacementError = null);
+    bool StartReplacementSuspended = false, string? StartReplacementError = null,
+    string? RegisteredSecondaryHotKey = null, string? HotKeyError = null,
+    string? SecondaryHotKeyError = null);
 
 /// <summary>Immediate settings edits. The host owns persistence and operating-system rollback.</summary>
 internal sealed class SettingsDialog : IWallDialogSession
@@ -26,6 +28,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly ExplorerContextMenuController _contextMenuController;
     private readonly Func<SettingsDialogState> _readState;
     private readonly Func<WallSettings, bool, Task<SettingsDialogState>> _apply;
+    private readonly Func<int, bool, Task>? _hotKeyRecordingChanged;
     private readonly Func<Task<SettingsDialogState>>? _retryStartReplacement;
     private readonly Func<CancellationToken, Task<string?>> _initializeWall;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _startReplacementWatch;
@@ -40,8 +43,10 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly ToggleSwitch _expandColumns = new(), _menuStart = new();
     private readonly ComboBox _language = new(), _visualStyle = new(), _theme = new(), _background = new();
     private readonly ToggleSwitch _topmost = new(), _stayVisible = new(), _runAtLogin = new(), _showGrid = new();
-    private readonly HotKeyRecorder _hotKey = new();
-    private readonly Button _resetHotKey = new();
+    private readonly HotKeyRecorder _hotKey = new(), _secondaryHotKey = new();
+    private readonly Button _resetHotKey = new(), _resetSecondaryHotKey = new();
+    private readonly TextBlock _hotKeyDiagnostic = new() { TextWrapping = TextWrapping.Wrap, MaxWidth = 180, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
+    private readonly TextBlock _secondaryHotKeyDiagnostic = new() { TextWrapping = TextWrapping.Wrap, MaxWidth = 180, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
     private readonly ToggleSwitch _replaceStartMenu = new();
     private readonly TextBlock _startReplacementStatus = new() { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
     private readonly Button _retryStart = new() { HorizontalAlignment = HorizontalAlignment.Left };
@@ -75,12 +80,13 @@ internal sealed class SettingsDialog : IWallDialogSession
     private int _inputSequence;
 
     public SettingsDialog(Window owner, ExplorerContextMenuController contextMenuController, Func<SettingsDialogState> readState,
-        Func<WallSettings, bool, Task<SettingsDialogState>> applyAsync, Func<bool, Task>? hotKeyRecordingChanged = null,
+        Func<WallSettings, bool, Task<SettingsDialogState>> applyAsync, Func<int, bool, Task>? hotKeyRecordingChanged = null,
         Func<Task<SettingsDialogState>>? retryStartReplacement = null,
         Func<CancellationToken, Task<string?>>? initializeWall = null)
     {
         _contextMenuController = contextMenuController;
         _owner = owner; _readState = readState; _apply = applyAsync; _state = readState();
+        _hotKeyRecordingChanged = hotKeyRecordingChanged;
         _retryStartReplacement = retryStartReplacement;
         _initializeWall = initializeWall ?? (_ => Task.FromResult<string?>(ProductStrings.Get("Wall.SettingsBlocked")));
         _startReplacementWatch = _form.DispatcherQueue.CreateTimer();
@@ -99,12 +105,12 @@ internal sealed class SettingsDialog : IWallDialogSession
             _anchor.Children.Add(_anchorButtons[index]);
             _anchorButtons[index].Click += (_, _) => BeginApply(s => s with { AnchorCorner = anchor });
         }
-        _hotKey.RecordingChanged += recording => hotKeyRecordingChanged?.Invoke(recording) ?? Task.CompletedTask;
+        _hotKey.RecordingChanged += recording => ChangeHotKeyRecordingAsync(1, _hotKey, _secondaryHotKey, recording);
+        _secondaryHotKey.RecordingChanged += recording => ChangeHotKeyRecordingAsync(2, _secondaryHotKey, _hotKey, recording);
         _hotKey.GestureRecorded += gesture => BeginApply(s => s with { HotKey = gesture.ToConfigString() });
-        _hotKey.RecordingFailed += error =>
-        {
-            _status.Text = error; _status.Visibility = Visibility.Visible;
-        };
+        _secondaryHotKey.GestureRecorded += gesture => BeginApply(s => s with { SecondaryHotKey = gesture.ToConfigString() });
+        _hotKey.RecordingFailed += ShowHotKeyRecordingFailure;
+        _secondaryHotKey.RecordingFailed += ShowHotKeyRecordingFailure;
         AddRow("Settings.Theme", _theme);
         AddRow("Settings.VisualStyle", _visualStyle);
         AddRow("Settings.Language", _language);
@@ -132,14 +138,27 @@ internal sealed class SettingsDialog : IWallDialogSession
         startReplacementRow.Children.Add(_retryStart);
         AddRow("Settings.ReplaceStartMenu", startReplacementRow);
         var hotKeyRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        hotKeyRow.Children.Add(_resetHotKey); hotKeyRow.Children.Add(_hotKey);
+        hotKeyRow.Children.Add(_resetHotKey); hotKeyRow.Children.Add(_hotKey); hotKeyRow.Children.Add(_hotKeyDiagnostic);
         AddRow("Settings.HotKey", hotKeyRow);
+        AutomationProperties.SetLabeledBy(_hotKey, _labels["Settings.HotKey"]);
         Id(_resetHotKey, "reset-hot-key");
+        var secondaryHotKeyRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        secondaryHotKeyRow.Children.Add(_resetSecondaryHotKey); secondaryHotKeyRow.Children.Add(_secondaryHotKey);
+        secondaryHotKeyRow.Children.Add(_secondaryHotKeyDiagnostic);
+        AddRow("Settings.SecondaryHotKey", secondaryHotKeyRow);
+        AutomationProperties.SetLabeledBy(_secondaryHotKey, _labels["Settings.SecondaryHotKey"]);
+        Id(_resetSecondaryHotKey, "reset-secondary-hot-key");
         _resetHotKey.Click += (_, _) =>
         {
             if (_refreshing || _busy) return;
-            _hotKey.CancelRecording();
+            CancelHotKeyRecordings();
             BeginApply(s => s with { HotKey = new WallSettings().HotKey });
+        };
+        _resetSecondaryHotKey.Click += (_, _) =>
+        {
+            if (_refreshing || _busy) return;
+            CancelHotKeyRecordings();
+            BeginApply(s => s with { SecondaryHotKey = new WallSettings().SecondaryHotKey });
         };
         AddRow("Settings.RunAtLogin", _runAtLogin);
         AddRow("Settings.Topmost", _topmost);
@@ -190,7 +209,9 @@ internal sealed class SettingsDialog : IWallDialogSession
         _dialog.Resources["ContentDialogMaxWidth"] = 700d;
         Id(_dialog, "dialog"); Id(_anchor, "anchor"); Id(_topmost, "topmost"); Id(_stayVisible, "stay-visible");
         Id(_language, "language"); Id(_visualStyle, "visual-style"); Id(_theme, "theme"); Id(_background, "background");
-        Id(_hotKey, "hotkey"); Id(_transparency, "transparency"); Id(_transparencyInput, "transparency-input");
+        Id(_hotKey, "hotkey"); Id(_secondaryHotKey, "secondary-hotkey");
+        Id(_hotKeyDiagnostic, "hotkey-diagnostic"); Id(_secondaryHotKeyDiagnostic, "secondary-hotkey-diagnostic");
+        Id(_transparency, "transparency"); Id(_transparencyInput, "transparency-input");
         Id(_backgroundPath, "background-path"); Id(_showGrid, "show-grid"); Id(_runAtLogin, "run-at-login"); Id(_reset, "reset"); Id(_status, "status");
         Id(_contextMenu, "context-menu");
         Id(_initialize, "initialize-wall");
@@ -267,7 +288,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         _reset.Click += (_, _) =>
         {
             if (_refreshing || _busy) return;
-            _hotKey.CancelRecording(); _pending = ApplyAsync(new WallSettings(), restoreDefaults: true);
+            CancelHotKeyRecordings(); _pending = ApplyAsync(new WallSettings(), restoreDefaults: true);
         };
         _contextMenu.Toggled += (_, _) =>
         {
@@ -306,10 +327,10 @@ internal sealed class SettingsDialog : IWallDialogSession
             // Explicitly settle NumberBox's inner text before moving focus, so
             // its apply enters _pending before deciding whether this page closes.
             OwnedDialogWindow.ReleaseTextFocus(_dialog);
-            _hotKey.CancelRecording();
-            if (_forceClose && !_busy && !_hotKey.HasPendingTransition) return;
+            CancelHotKeyRecordings();
+            if (_forceClose && !_busy && !HasPendingHotKeyTransition) return;
             if (_showFailureBeforeClose) { _showFailureBeforeClose = false; e.Cancel = true; return; }
-            if (_busy || _hotKey.HasPendingTransition)
+            if (_busy || HasPendingHotKeyTransition)
             {
                 e.Cancel = true; _closeRequested = true;
                 if (!_busy) _pending = FinishRecordingForCloseAsync();
@@ -339,10 +360,9 @@ internal sealed class SettingsDialog : IWallDialogSession
         _backgroundProbe?.Cancel();
         CancelInitialization();
         OwnedDialogWindow.ReleaseTextFocus(_dialog);
-        await _hotKey.CancelRecordingAsync();
-        await _hotKey.WaitForIdleAsync();
+        await CancelAndWaitForHotKeysAsync();
         await AwaitPendingAsync();
-        await _hotKey.WaitForIdleAsync();
+        await WaitForHotKeysAsync();
     }
     public Task<ExitDecision> ConfirmExitAsync() => Task.FromResult(ExitDecision.DiscardAndExit);
     public string? TrySaveNow() => _busy ? ProductStrings.Get("Settings.Saving") : null;
@@ -391,6 +411,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         ActionIcon.Set(_reset, ProductStrings.Get("Settings.Reset"), ActionIcon.Reset);
         ActionIcon.Set(_initialize, ProductStrings.Get("Settings.InitializeWall"), ActionIcon.Reset);
         ActionIcon.SetIcon(_resetHotKey, ProductStrings.Get("Settings.ResetHotKey"), ActionIcon.Reset);
+        ActionIcon.SetIcon(_resetSecondaryHotKey, ProductStrings.Get("Settings.ResetSecondaryHotKey"), ActionIcon.Reset);
         foreach (var (key, control, helpKey) in new (string, FrameworkElement, string)[]
         {
             ("Settings.ReplaceStartMenu", _replaceStartMenu, "Settings.StartReplacementHelp"),
@@ -445,6 +466,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         _topmost.IsOn = _state.Settings.AlwaysOnTop; _stayVisible.IsOn = _state.Settings.StayVisibleOnFocusLoss;
         _showGrid.IsOn = _state.Settings.ShowGrid; _runAtLogin.IsOn = _state.Settings.RunAtLogin;
         _hotKey.SetConfigured(_state.Settings.HotKey);
+        _secondaryHotKey.SetConfigured(_state.Settings.SecondaryHotKey);
         _status.Text = _state.Error is null ? string.Empty : string.Format(ProductStrings.Get("Settings.ApplyFailed"), _state.Error);
         _status.Visibility = _state.Error is null ? Visibility.Collapsed : Visibility.Visible;
         RefreshContextMenuPresentation();
@@ -458,6 +480,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         if (!_contextPageOpen || _busy) return;
         var current = _readState();
         _state = _state with { Settings = current.Settings, RegisteredHotKey = current.RegisteredHotKey,
+            RegisteredSecondaryHotKey = current.RegisteredSecondaryHotKey,
+            HotKeyError = current.HotKeyError, SecondaryHotKeyError = current.SecondaryHotKeyError,
             StartReplacementActive = current.StartReplacementActive,
             StartReplacementSuspended = current.StartReplacementSuspended,
             StartReplacementError = current.StartReplacementError };
@@ -483,19 +507,121 @@ internal sealed class SettingsDialog : IWallDialogSession
             _startReplacementStatus.Visibility = showStatus ? Visibility.Visible : Visibility.Collapsed;
             _retryStart.Visibility = _state.Settings.ReplaceStartMenu && !_state.StartReplacementActive &&
                 !_state.StartReplacementSuspended && _retryStartReplacement is not null ? Visibility.Visible : Visibility.Collapsed;
-            _retryStart.IsEnabled = !_busy && !_hotKey.HasPendingTransition;
-            SetHelp("Settings.HotKey", _hotKey, ProductStrings.Get(_state.StartReplacementActive
-                ? "Settings.HotKeyOpensStart" : "Settings.HotKeyOpensTileWall"));
+            _retryStart.IsEnabled = !_busy && !HasPendingHotKeyTransition;
+            RefreshHotKeyRegistrationPresentation();
         }
         finally { _refreshing = wasRefreshing; }
     }
+
+    private bool HasPendingHotKeyTransition =>
+        _hotKey.HasPendingTransition || _secondaryHotKey.HasPendingTransition;
+
+    private void CancelHotKeyRecordings()
+    {
+        _hotKey.CancelRecording();
+        _secondaryHotKey.CancelRecording();
+    }
+
+    private async Task CancelAndWaitForHotKeysAsync()
+    {
+        await Task.WhenAll(_hotKey.CancelRecordingAsync(), _secondaryHotKey.CancelRecordingAsync());
+        await WaitForHotKeysAsync();
+    }
+
+    private Task WaitForHotKeysAsync() => Task.WhenAll(
+        _hotKey.WaitForIdleAsync(), _secondaryHotKey.WaitForIdleAsync());
+
+    private void ShowHotKeyRecordingFailure(string error)
+    {
+        _status.Text = error;
+        _status.Visibility = Visibility.Visible;
+    }
+
+    private async Task ChangeHotKeyRecordingAsync(int slot, HotKeyRecorder recorder,
+        HotKeyRecorder other, bool recording)
+    {
+        var hostChange = _hotKeyRecordingChanged;
+        if (!recording)
+        {
+            if (hostChange is not null) await hostChange(slot, false);
+            return;
+        }
+
+        try
+        {
+            if (hostChange is not null) await hostChange(slot, true);
+        }
+        catch
+        {
+            // A host may fail after partially accepting admission. Slot release is
+            // idempotent, and the recorder's paired cleanup will also report false.
+            if (hostChange is not null)
+            {
+                try { await hostChange(slot, false); }
+                catch { }
+            }
+            throw;
+        }
+
+        try
+        {
+            // Focus can move again while host admission is in flight. Let the
+            // newer recorder own the switch instead of cancelling its request.
+            if (!recorder.IsRecordingRequested || !recorder.CanReceiveRecording) return;
+            if (other.IsRecordingRequested && other.CanReceiveRecording) return;
+
+            // Await this cancellation's fixed teardown boundary only: it owns
+            // paired key-up, unhook and slot release. Waiting for the other's
+            // moving idle tail can include a newer focus request that is itself
+            // waiting for this admission, creating a cross-recorder wait cycle.
+            await other.CancelRecordingAsync();
+            if (!recorder.IsRecordingRequested || !recorder.CanReceiveRecording) return;
+        }
+        catch
+        {
+            if (hostChange is not null)
+            {
+                try { await hostChange(slot, false); }
+                catch { }
+            }
+            throw;
+        }
+    }
+
+    private void RefreshHotKeyRegistrationPresentation()
+    {
+        RefreshHotKeyRegistrationPresentation(_hotKey, _hotKeyDiagnostic, "Settings.HotKey",
+            _state.RegisteredHotKey, _state.HotKeyError);
+        RefreshHotKeyRegistrationPresentation(_secondaryHotKey, _secondaryHotKeyDiagnostic,
+            "Settings.SecondaryHotKey", _state.RegisteredSecondaryHotKey, _state.SecondaryHotKeyError);
+    }
+
+    private void RefreshHotKeyRegistrationPresentation(HotKeyRecorder recorder,
+        TextBlock diagnostic, string rowKey, string? registered, string? error)
+    {
+        var registration = registered is null
+            ? ProductStrings.Get("Settings.NotRegistered")
+            : string.Format(ProductStrings.Get("Settings.RegisteredHotKey"), DisplayHotKey(registered));
+        var actualState = error is null ? registration : registration + "\n" + error;
+        diagnostic.Text = error ?? string.Empty;
+        diagnostic.Visibility = error is null ? Visibility.Collapsed : Visibility.Visible;
+        ToolTipService.SetToolTip(diagnostic, error);
+        AutomationProperties.SetHelpText(diagnostic, actualState);
+
+        var help = ProductStrings.Get("Settings.HotKeyOpensTileWall") + "\n" +
+            ProductStrings.Get("Settings.HotKeyHint") + "\n" + actualState;
+        SetHelp(rowKey, recorder, help);
+    }
+
+    private static string DisplayHotKey(string configured) =>
+        HotKeyGesture.TryParse(configured, out var gesture) ? gesture!.ToDisplayString() : configured;
 
     private async Task RetryStartReplacementAsync()
     {
         _busy = true; _formHost.IsEnabled = false;
         try
         {
-            await _hotKey.CancelRecordingAsync();
+            await CancelAndWaitForHotKeysAsync();
             _state = await _retryStartReplacement!();
         }
         catch (Exception ex)
@@ -509,7 +635,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private async Task FinishRecordingForCloseAsync()
     {
         _busy = true; _formHost.IsEnabled = false;
-        try { await _hotKey.CancelRecordingAsync(); await _hotKey.WaitForIdleAsync(); }
+        try { await CancelAndWaitForHotKeysAsync(); }
         catch (Exception ex) { _state = _readState() with { Error = ex.Message }; RestoreState(); }
         finally { _busy = false; _formHost.IsEnabled = true; FinishPending(); }
     }
@@ -599,7 +725,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     {
         if (_refreshing || _busy || !_contextPageOpen) return;
         _contextMutationRevision++;
-        _hotKey.CancelRecording();
+        CancelHotKeyRecordings();
         _contextTransferTargets = null;
         _contextOutcomeKey = null; _contextOutcomeArgument = null;
         _pending = ChangeContextMenuAsync(enable, confirmedTargets);
@@ -611,7 +737,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         var failed = false;
         try
         {
-            await _hotKey.CancelRecordingAsync();
+            await CancelAndWaitForHotKeysAsync();
             RefreshContextMenuPresentation();
             var language = ProductStrings.Language == WallLanguageMode.Chinese ||
                 ProductStrings.Language == WallLanguageMode.System &&
@@ -780,8 +906,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         var completed = false;
         try
         {
-            await _hotKey.CancelRecordingAsync();
-            await _hotKey.WaitForIdleAsync();
+            await CancelAndWaitForHotKeysAsync();
             await _contextPending;
             cancellation.Token.ThrowIfCancellationRequested();
             if (!_contextPageOpen || _closeRequested) return;
@@ -878,7 +1003,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         TraceSettings("ApplyStart", SettingsFlags(candidate));
         var restoreAnchorFocus = _anchor.FocusState != FocusState.Unfocused;
         _busy = true; _formHost.IsEnabled = false; _status.Visibility = Visibility.Visible; _status.Text = ProductStrings.Get("Settings.Saving");
-        try { await _hotKey.CancelRecordingAsync(); _state = await _apply(candidate, restoreDefaults); TraceSettings("ApplyReturned", _state.Error ?? "success"); }
+        try { await CancelAndWaitForHotKeysAsync(); _state = await _apply(candidate, restoreDefaults); TraceSettings("ApplyReturned", _state.Error ?? "success"); }
         catch (Exception ex)
         {
             _state = _readState() with { Error = string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message) };

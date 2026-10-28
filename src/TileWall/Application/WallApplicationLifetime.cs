@@ -18,6 +18,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private readonly ShellNotifyIconHost _tray;
     private readonly ExplorerAddNotification _notifications;
     private readonly GlobalHotKeyRegistrar _hotKey;
+    private readonly GlobalHotKeyRegistrar _secondaryHotKey;
     private readonly LoginStartupController _login;
     private readonly Microsoft.UI.Xaml.Application _application;
     private readonly WallShowMachine _show;
@@ -27,7 +28,10 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private int _queuedPaths;
     private bool? _loginEnabled;
     private bool _settingsBusy;
-    private bool _hotKeyRecording;
+    private int _hotKeyRecordingSlots;
+    private int _pausedHotKeySlots;
+    private bool _hotKeyRecording => _hotKeyRecordingSlots != 0;
+    private string? _hotKeyError, _secondaryHotKeyError;
     private bool _exitPending;
     private bool _tearingDown;
     private bool _started;
@@ -48,7 +52,8 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _application = application;
         _host = new ShellMessageHost(scope.ShellWindowName);
         _host.ActivateRequested += () => Request(WallShowTrigger.Show);
-        _hotKey = new GlobalHotKeyRegistrar(_host);
+        _hotKey = new GlobalHotKeyRegistrar(_host, 1);
+        _secondaryHotKey = new GlobalHotKeyRegistrar(_host, 2);
         _tray = new ShellNotifyIconHost(_host, Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"), scope.IsTest);
         _login = new LoginStartupController(scope);
         _window = new MainWindow(scope);
@@ -90,6 +95,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         };
         _host.AcceptPaths = ReceiveAdd;
         _hotKey.RegistrationChanged += UpdateTray;
+        _secondaryHotKey.RegistrationChanged += UpdateTray;
         _notifications = new ExplorerAddNotification(scope.IsTest, () =>
             _window.DispatcherQueue.TryEnqueue(() => Request(WallShowTrigger.Show)));
     }
@@ -108,7 +114,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             ProductStrings.ApplyLanguage(_window.Settings.LanguageMode);
             _window.RefreshAppearance();
             _window.RefreshProductStrings();
-            if (HotKeyGesture.TryParse(_window.Settings.HotKey, out var gesture)) _hotKey.TryRegister(gesture!);
+            RestoreCommittedHotKeys();
             var login = await _login.ReadAsync();
             _loginEnabled = login.Enabled;
             await InitializeStartReplacementAsync();
@@ -119,7 +125,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             // External adds use the same background lifetime as login startup;
             // only an explicit show request may bring that cold start forward.
             if (_showWhenStarted || !intent.Background && intent.Add is null) Request(WallShowTrigger.Show);
-            if (!_hotKey.IsRegistered) _window.ShowStatus(ProductStrings.Get("Wall.HotKeyUnavailable"));
+            if (!_hotKey.IsRegistered && !_secondaryHotKey.IsRegistered) _window.ShowStatus(ProductStrings.Get("Wall.HotKeyUnavailable"));
             if (login.Error is not null) _window.ShowStatus(login.Error);
             if (_startReplacementError is not null) _window.ShowStatus(_startReplacementError);
             UpdateTray();
@@ -239,8 +245,13 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             _notifications.ShowAdded(_addCount, _addFailed != 0 || _addTruncated);
         QueueAddDrain();
     }
-    private void UpdateTray() => _tray.UpdateTooltip(_hotKey.IsRegistered
-        ? $"TileWall · {_hotKey.CurrentGesture?.ToDisplayString()}" : $"TileWall · {ProductStrings.Get("Wall.HotKeyUnavailable")}");
+    private void UpdateTray()
+    {
+        var available = new[] { _hotKey.CurrentGesture, _secondaryHotKey.CurrentGesture }
+            .OfType<HotKeyGesture>().Select(gesture => gesture.ToDisplayString());
+        var combinations = string.Join(" / ", available);
+        _tray.UpdateTooltip($"TileWall · {(combinations.Length != 0 ? combinations : ProductStrings.Get("Wall.HotKeyUnavailable"))}");
+    }
 
     private void RequestExit()
     {
@@ -323,7 +334,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     public void CloseTopSession() => _window.ActiveDialog?.Close();
     public void CancelTransientState() => _window.CancelTransientState();
     public void SnapHideWall() => SnapHide();
-    public void UnregisterHotKey() => _hotKey.Dispose();
+    public void UnregisterHotKey() { _hotKey.Dispose(); _secondaryHotKey.Dispose(); }
     public void RemoveTrayIcon() => _tray.Dispose();
     public void DestroyShellHostWindow()
     {

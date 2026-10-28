@@ -17,9 +17,10 @@ internal sealed record StartButtonTarget(StartButtonIdentity Identity, string Au
     nint NativeButtonWindow, PhysicalRect ButtonBounds, PhysicalRect TaskbarBounds, bool NativeWholeButton);
 
 internal sealed record StartButtonSnapshot(long Generation, long ReadTick, int DiscoveredTaskbarCount,
-    int RecognizedTaskbarCount, IReadOnlyList<StartButtonTarget> Targets)
+    int RecognizedTaskbarCount, IReadOnlyList<StartButtonTarget> Targets, int PendingAutoHideTaskbarCount = 0)
 {
-    public bool IsReady => DiscoveredTaskbarCount > 0 && RecognizedTaskbarCount == DiscoveredTaskbarCount;
+    public bool IsReady => DiscoveredTaskbarCount > 0
+        && RecognizedTaskbarCount + PendingAutoHideTaskbarCount == DiscoveredTaskbarCount;
 }
 
 internal enum StartButtonLocatorFailure { AutomationUnavailable, TaskbarUnavailable, ButtonUnrecognized, AmbiguousButton, NativeQueryFailed, TaskbarTopologyChanged }
@@ -60,7 +61,7 @@ internal sealed class StartButtonLocator : IAsyncDisposable
     public event Action<StartButtonSnapshot>? SnapshotChanged;
     public event Action<StartButtonLocatorException>? Faulted;
 
-    /// <summary>Completes only after all current Explorer taskbars have exactly one recognized button (hidden is allowed).</summary>
+    /// <summary>Completes after every Explorer taskbar has a recognized button or is confirmed hidden by auto-hide.</summary>
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
         lock (_lifecycle)
@@ -191,6 +192,7 @@ internal sealed class StartButtonLocator : IAsyncDisposable
                     var taskbars = Native.FindExplorerTaskbars();
                     ValidateTaskbarContinuity(taskbars);
                     var candidates = new List<Candidate>();
+                    var pendingAutoHideCount = 0;
                     foreach (var taskbar in taskbars)
                     {
                         bool Cancelled() => Volatile.Read(ref _stopping) != 0 || Interlocked.Read(ref _epoch) != epoch;
@@ -230,6 +232,14 @@ internal sealed class StartButtonLocator : IAsyncDisposable
                         }
                         if (!Native.TryGetTaskbar(taskbar.Window, taskbar.ProcessId, out var current)
                             || current.Bounds != taskbar.Bounds) throw new OperationCanceledException();
+                        if (buttons.Count == 0 && Native.IsHiddenAutoHideTaskbar(current))
+                        {
+                            // Win11 can remove the button provider while the taskbar is hidden.
+                            // Keep keyboard admission ready, but publish no guessed mouse target.
+                            // Revealing this taskbar must pass the normal UIA identity checks again.
+                            pendingAutoHideCount++;
+                            continue;
+                        }
                         if (buttons.Count == 0) throw new StartButtonLocatorException(StartButtonLocatorFailure.ButtonUnrecognized,
                             context: $"Taskbar 0x{taskbar.Window:X}; UIA buttons={automation.LastReadElementCount}; bounds={current.Bounds}.");
                         if (buttons.Count != 1) throw new StartButtonLocatorException(StartButtonLocatorFailure.AmbiguousButton);
@@ -244,7 +254,7 @@ internal sealed class StartButtonLocator : IAsyncDisposable
                         candidates.Add(new(taskbar.Window, taskbar.ProcessId, button, taskbar.Bounds, canCapture, nativeWholeButton));
                     }
 
-                    Publish(epoch, readTick, taskbars.Count, candidates);
+                    Publish(epoch, readTick, taskbars, candidates, pendingAutoHideCount);
                 }
                 catch (StartButtonLocatorException error) when (error.HResult == unchecked((int)0x80131505)
                     && !_ready.Task.IsCompletedSuccessfully && !startupTimeoutRetried && Volatile.Read(ref _stopping) == 0)
@@ -303,25 +313,26 @@ internal sealed class StartButtonLocator : IAsyncDisposable
             context: "Explorer taskbar windows or processes changed after discovery; explicit retry is required.");
     }
 
-    private void Publish(long epoch, long readTick, int discoveredCount, List<Candidate> candidates)
+    private void Publish(long epoch, long readTick, IReadOnlyList<Native.Taskbar> taskbars, List<Candidate> candidates,
+        int pendingAutoHideCount)
     {
         StartButtonSnapshot snapshot;
         lock (_lifecycle)
         {
             if (Volatile.Read(ref _stopping) != 0 || Interlocked.Read(ref _epoch) != epoch) return;
-            if (candidates.Count != discoveredCount) return;
+            if (candidates.Count + pendingAutoHideCount != taskbars.Count) return;
             // A locator lifetime belongs to this confirmed set. Geometry may change, but Explorer
             // replacement or monitor/taskbar additions/removals require a fresh explicit preparation.
             if (_publishedTaskbars.Length == 0)
-                _publishedTaskbars = candidates.Select(candidate => new Native.Taskbar(
-                    candidate.Window, candidate.ProcessId, candidate.TaskbarBounds)).ToArray();
-            if (!_previousCandidates.SequenceEqual(candidates)) _generation++;
+                _publishedTaskbars = taskbars.ToArray();
+            if (!_previousCandidates.SequenceEqual(candidates) || _snapshot.PendingAutoHideTaskbarCount != pendingAutoHideCount)
+                _generation++;
             _previousCandidates = candidates.ToArray();
             var targets = candidates.Where(candidate => candidate.CanCapture).Select(candidate => new StartButtonTarget(
                 new(candidate.Window, candidate.ProcessId, _generation, candidate.Button.RuntimeId),
                 candidate.Button.AutomationId, candidate.Button.ClassName, candidate.Button.NativeWindow,
                 candidate.Button.Bounds, candidate.TaskbarBounds, candidate.NativeWholeButton)).ToArray();
-            snapshot = new(_generation, readTick, discoveredCount, candidates.Count, Array.AsReadOnly(targets));
+            snapshot = new(_generation, readTick, taskbars.Count, candidates.Count, Array.AsReadOnly(targets), pendingAutoHideCount);
             Volatile.Write(ref _snapshot, snapshot);
             if (_ready.TrySetResult()) _startupCancellation.Unregister();
         }
@@ -439,6 +450,24 @@ internal sealed class StartButtonLocator : IAsyncDisposable
             return monitor != 0 && GetMonitorInfoW(monitor, ref info) && info.Monitor.ToPhysical().Contains(rectangle);
         }
 
+        internal static bool IsHiddenAutoHideTaskbar(Taskbar taskbar)
+        {
+            var monitor = MonitorFromWindow(taskbar.Window, 2); // MONITOR_DEFAULTTONEAREST
+            var info = new MonitorInformation { Size = (uint)Marshal.SizeOf<MonitorInformation>() };
+            if (monitor == 0 || !GetMonitorInfoW(monitor, ref info)
+                || info.Monitor.ToPhysical().Contains(taskbar.Bounds)) return false;
+
+            // ABM_GETAUTOHIDEBAREX identifies the exact auto-hide HWND for an edge of
+            // this monitor. Off-screen geometry alone never excuses an unknown button.
+            var data = new AppBarData { Size = (uint)Marshal.SizeOf<AppBarData>(), Window = taskbar.Window, Rectangle = info.Monitor };
+            for (uint edge = 0; edge < 4; edge++)
+            {
+                data.Edge = edge;
+                if (SHAppBarMessage(0x0000000B, ref data) == unchecked((nuint)taskbar.Window)) return true;
+            }
+            return false;
+        }
+
         private static bool IsTaskbarClass(nint window) => ReadClass(window) is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd";
         private static string ReadClass(nint window)
         {
@@ -461,6 +490,14 @@ internal sealed class StartButtonLocator : IAsyncDisposable
             public StartButtonAutomationInterop.NativeRect Monitor, WorkArea;
             public uint Flags;
         }
+        [StructLayout(LayoutKind.Sequential)] private struct AppBarData
+        {
+            public uint Size;
+            public nint Window;
+            public uint CallbackMessage, Edge;
+            public StartButtonAutomationInterop.NativeRect Rectangle;
+            public nint Parameter;
+        }
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(nint window, StringBuilder name, int maximum);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint window, out uint processId);
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool IsWindow(nint window);
@@ -475,6 +512,7 @@ internal sealed class StartButtonLocator : IAsyncDisposable
         [DllImport("user32.dll")] private static extern nint MonitorFromWindow(nint window, uint flags);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetMonitorInfoW(nint monitor, ref MonitorInformation information);
         [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
+        [DllImport("shell32.dll")] private static extern nuint SHAppBarMessage(uint message, ref AppBarData data);
         [DllImport("kernel32.dll", SetLastError = true)] private static extern SafeProcessHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool QueryFullProcessImageNameW(SafeProcessHandle process, uint flags, StringBuilder name, ref int size);
     }

@@ -9,6 +9,15 @@ namespace TileWall.Core.Tests.Settings;
 /// </summary>
 public sealed class HotKeyGestureTests
 {
+    [Fact]
+    public void SecondaryDefaultIsAValidIndependentCombination()
+    {
+        Assert.Equal("Win+Ctrl+Oem3", HotKeyGesture.DefaultSecondary.ToConfigString());
+        Assert.True(HotKeyGesture.IsValid(HotKeyGesture.DefaultSecondary));
+        Assert.True(HotKeyGesture.TryParse(HotKeyGesture.DefaultSecondary.ToConfigString(), out var parsed));
+        Assert.Equal(HotKeyGesture.DefaultSecondary, parsed);
+    }
+
     private const uint ModAlt = HotKeyGesture.ModAlt;
     private const uint ModCtrl = HotKeyGesture.ModCtrl;
     private const uint ModShift = HotKeyGesture.ModShift;

@@ -36,12 +36,12 @@ public sealed partial class WallStore
             _paths.Guard(_paths.Previous);
             var primary = Classify(_paths.Config);
             var previous = Classify(_paths.Previous);
-            if (primary.Schema is { } primarySchema && primarySchema != UserDataManifest.CurrentFormatVersion ||
-                previous.Schema is { } previousSchema && previousSchema != UserDataManifest.CurrentFormatVersion)
-                return OpenResult(WallOpenStatus.UnsupportedFormatBlocked, null, "Only the current wall format is supported; data remains untouched.");
-            if (primary.Present && primary.Schema != UserDataManifest.CurrentFormatVersion)
+            if (primary.Schema is { } primarySchema && !UserDataManifest.IsSupportedFormatVersion(primarySchema) ||
+                previous.Schema is { } previousSchema && !UserDataManifest.IsSupportedFormatVersion(previousSchema))
+                return OpenResult(WallOpenStatus.UnsupportedFormatBlocked, null, "The wall format is unsupported; data remains untouched.");
+            if (primary.Present && !UserDataManifest.IsSupportedFormatVersion(primary.Schema))
                 return OpenResult(WallOpenStatus.CorruptBlocked, null, "Primary schema is missing or ambiguous.");
-            if (previous.Present && previous.Schema != UserDataManifest.CurrentFormatVersion)
+            if (previous.Present && !UserDataManifest.IsSupportedFormatVersion(previous.Schema))
                 return OpenResult(WallOpenStatus.CorruptBlocked, null, "Previous schema is missing or ambiguous.");
             var initTemp = _paths.Under("state.init.tmp");
             _paths.Guard(initTemp);
@@ -68,11 +68,11 @@ public sealed partial class WallStore
                     TryReclaimUnreferencedResources();
                     return OpenResult(WallOpenStatus.Loaded, document) with { ManifestSha256 = manifestSha256 };
                 }
-                if (previous.Schema != UserDataManifest.CurrentFormatVersion || !TryReadDocument(_paths.Previous, out var prior, out _))
+                if (!UserDataManifest.IsSupportedFormatVersion(previous.Schema) || !TryReadDocument(_paths.Previous, out var prior, out _))
                     return OpenResult(WallOpenStatus.CorruptBlocked, null, $"Invalid primary: {error}");
                 return RecoverPrevious(prior!);
             }
-            if (previous.Schema == UserDataManifest.CurrentFormatVersion && TryReadDocument(_paths.Previous, out var backup, out _))
+            if (UserDataManifest.IsSupportedFormatVersion(previous.Schema) && TryReadDocument(_paths.Previous, out var backup, out _))
                 return RecoverPrevious(backup!);
             return OpenResult(WallOpenStatus.CorruptBlocked, null, "No valid primary or previous document.");
         }
@@ -359,7 +359,7 @@ public sealed partial class WallStore
         _paths.Guard(_paths.Config);
         _paths.Guard(_paths.Previous);
         var previous = Classify(_paths.Previous);
-        if (previous.Present && previous.Schema != UserDataManifest.CurrentFormatVersion)
+        if (previous.Present && !UserDataManifest.IsSupportedFormatVersion(previous.Schema))
             return CommitResult(WallCommitStatus.RecoveryBlocked, null, "Previous format is unsupported, missing or ambiguous.");
         var initTemp = _paths.Under("state.init.tmp");
         _paths.Guard(initTemp);

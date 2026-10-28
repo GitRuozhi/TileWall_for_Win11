@@ -218,7 +218,7 @@ public sealed partial class MainWindow
 
     internal async Task OpenSettingsAsync(Func<SettingsDialogState> read,
         Func<WallSettings, bool, Task<SettingsDialogState>> apply,
-        Func<bool, Task>? hotKeyRecordingChanged = null,
+        Func<int, bool, Task>? hotKeyRecordingChanged = null,
         Func<Task<SettingsDialogState>>? retryStartReplacement = null)
     {
         if (PersistenceInteractionBlocked || _modal || !_hasDocument) return;

@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using TileWall.Core.Settings;
 using TileWall.Core.Wall;
 
 namespace TileWall.Core.Storage;
@@ -7,7 +9,8 @@ namespace TileWall.Core.Storage;
 public sealed record UserDataManifest(int SchemaVersion, long Generation, string SnapshotId,
     UserDataFileDigest Settings, UserDataFileDigest Wall, UserDataFileDigest RecycleBin)
 {
-    public const int CurrentFormatVersion = 1;
+    public const int CurrentFormatVersion = 2;
+    internal static bool IsSupportedFormatVersion(int? version) => version is 1 or CurrentFormatVersion;
 }
 public sealed record UserDataFileDigest(long Length, string Sha256);
 internal sealed record UserSettingsData(int SchemaVersion, WallSettings Value);
@@ -25,21 +28,42 @@ internal static class UserDataSnapshotJson
         UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow,
         WriteIndented = true,
     };
-    public static PreparedUserDataSnapshot Prepare(WallDocument document)
+    // V1 identity must retain the old settings shape, even though the runtime model
+    // initializes the newly introduced second shortcut when that field is absent.
+    private static readonly JsonSerializerOptions V1Options = CreateV1Options();
+
+    private static JsonSerializerOptions CreateV1Options()
+    {
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(typeInfo =>
+        {
+            if (typeInfo.Type != typeof(WallSettings)) return;
+            var secondary = typeInfo.Properties.Single(property => property.Name == "secondaryHotKey");
+            typeInfo.Properties.Remove(secondary);
+        });
+        return new(Options) { TypeInfoResolver = resolver };
+    }
+
+    public static PreparedUserDataSnapshot Prepare(WallDocument document) => Prepare(document, UserDataManifest.CurrentFormatVersion);
+
+    private static PreparedUserDataSnapshot Prepare(WallDocument document, int version)
     {
         if (document.InactiveMembers.Count > 200 || !document.RecycleBinEnabled && document.InactiveMembers.Count != 0)
             throw new InvalidDataException("Invalid recycle-bin retention policy.");
         var clean = MapGalleryPaths(document, _ => null);
+        if (!HotKeyGesture.TryParse(clean.Settings.SecondaryHotKey, out _))
+            throw new InvalidDataException("Invalid secondary hotkey.");
+        var settingsOptions = version == 1 ? V1Options : Options;
         var files = new Dictionary<string, byte[]>(StringComparer.Ordinal)
         {
-            ["settings.json"] = JsonSerializer.SerializeToUtf8Bytes(new UserSettingsData(1, clean.Settings), Options),
+            ["settings.json"] = JsonSerializer.SerializeToUtf8Bytes(new UserSettingsData(version, clean.Settings), settingsOptions),
             ["wall.json"] = JsonSerializer.SerializeToUtf8Bytes(new UserWallData(1, clean.Columns, clean.Rows, clean.Lanes), Options),
             ["recycle-bin.json"] = JsonSerializer.SerializeToUtf8Bytes(new UserRecycleBinData(1, clean.RecycleBinEnabled, clean.InactiveMembers), Options),
         };
         UserDataFileDigest Digest(string name) => new(files[name].LongLength, Hash(files[name]));
         var settings = Digest("settings.json"); var wall = Digest("wall.json"); var recycle = Digest("recycle-bin.json");
         var identity = System.Text.Encoding.UTF8.GetBytes($"TileWall.Snapshot/1\n{document.Generation}\n{settings.Sha256}\n{wall.Sha256}\n{recycle.Sha256}\n");
-        var manifest = new UserDataManifest(1, document.Generation, Hash(identity), settings, wall, recycle);
+        var manifest = new UserDataManifest(version, document.Generation, Hash(identity), settings, wall, recycle);
         return new(manifest, JsonSerializer.SerializeToUtf8Bytes(manifest, Options), files);
     }
     public static UserDataManifest ReadManifest(byte[] bytes)
@@ -49,13 +73,15 @@ internal static class UserDataSnapshotJson
             foreach (var name in new[] { "settings", "wall", "recycleBin" })
                 RequireFields(System.Text.Encoding.UTF8.GetBytes(json.RootElement.GetProperty(name).GetRawText()), ["length", "sha256"]);
         var manifest = JsonSerializer.Deserialize<UserDataManifest>(bytes, Options) ?? throw new InvalidDataException("Empty data manifest.");
-        if (manifest.SchemaVersion != UserDataManifest.CurrentFormatVersion || manifest.Generation < 0 ||
+        if (!UserDataManifest.IsSupportedFormatVersion(manifest.SchemaVersion) || manifest.Generation < 0 ||
             !ValidHash(manifest.SnapshotId) || !ValidDigest(manifest.Settings) || !ValidDigest(manifest.Wall) || !ValidDigest(manifest.RecycleBin))
             throw new InvalidDataException("Invalid or unsupported data manifest.");
         return manifest;
     }
     public static WallDocument Read(UserDataManifest manifest, Func<string, byte[]> read, Func<ManagedGalleryReference, string> galleryPath)
     {
+        if (!UserDataManifest.IsSupportedFormatVersion(manifest.SchemaVersion))
+            throw new InvalidDataException("Unsupported data manifest.");
         byte[] File(string name, UserDataFileDigest expected)
         {
             var bytes = read(name);
@@ -69,12 +95,19 @@ internal static class UserDataSnapshotJson
         RequireFields(settingsBytes, ["schemaVersion", "value"]);
         RequireFields(wallBytes, ["schemaVersion", "columns", "rows", "lanes"]);
         RequireFields(recycleBytes, ["schemaVersion", "enabled", "members"]);
-        var settings = JsonSerializer.Deserialize<UserSettingsData>(settingsBytes, Options)!;
+        var settingsOptions = manifest.SchemaVersion == 1 ? V1Options : Options;
+        var settings = JsonSerializer.Deserialize<UserSettingsData>(settingsBytes, settingsOptions)!;
         var wall = JsonSerializer.Deserialize<UserWallData>(wallBytes, Options)!;
         var recycle = JsonSerializer.Deserialize<UserRecycleBinData>(recycleBytes, Options)!;
-        if (settings.SchemaVersion != 1 || wall.SchemaVersion != 1 || recycle.SchemaVersion != 1 ||
+        if (settings.SchemaVersion != manifest.SchemaVersion || wall.SchemaVersion != 1 || recycle.SchemaVersion != 1 ||
             settings.Value is null || wall.Lanes is null || recycle.Members is null)
             throw new InvalidDataException("Incomplete or unsupported snapshot set.");
+        if (manifest.SchemaVersion == UserDataManifest.CurrentFormatVersion)
+        {
+            using var json = JsonDocument.Parse(settingsBytes);
+            if (!json.RootElement.GetProperty("value").TryGetProperty("secondaryHotKey", out _))
+                throw new InvalidDataException("Missing secondary hotkey.");
+        }
         if (recycle.Members.Count > 200 || !recycle.Enabled && recycle.Members.Count != 0)
             throw new InvalidDataException("Invalid recycle-bin retention policy.");
         var document = new WallDocument
@@ -83,7 +116,7 @@ internal static class UserDataSnapshotJson
             Lanes = wall.Lanes, InactiveMembers = recycle.Members, RecycleBinEnabled = recycle.Enabled,
         };
         document = WallJson.Deserialize(WallJson.Serialize(document));
-        if (Prepare(document).Manifest.SnapshotId != manifest.SnapshotId)
+        if (Prepare(document, manifest.SchemaVersion).Manifest.SnapshotId != manifest.SnapshotId)
             throw new InvalidDataException("Snapshot identity does not cover its complete file set.");
         return MapGalleryPaths(document, galleryPath);
     }

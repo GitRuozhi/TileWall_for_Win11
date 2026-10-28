@@ -23,8 +23,10 @@ internal sealed partial class HotKeyRecorder : TextBox
     private IntPtr _hook, _recordingWindow;
     private uint _modifierKeys, _suppressedModifiers;
     private int _recordingGeneration;
-    private bool _requested, _admitted, _inputPending;
+    private bool _requested, _admitted, _inputPending, _beginAfterIdleQueued;
     internal bool IsRecording { get; private set; }
+    internal bool IsRecordingRequested => _requested;
+    internal bool CanReceiveRecording => CanRecord();
     internal bool HasPendingTransition => _requested || !_transition.IsCompleted || !_gestureCompletion.IsCompleted || _hook != IntPtr.Zero || _admitted;
     internal event Func<bool, Task>? RecordingChanged;
     internal event Action<HotKeyGesture>? GestureRecorded;
@@ -36,14 +38,23 @@ internal sealed partial class HotKeyRecorder : TextBox
         _focusWatch = DispatcherQueue.CreateTimer();
         _focusWatch.Interval = TimeSpan.FromMilliseconds(100);
         _focusWatch.IsRepeating = true;
-        _focusWatch.Tick += (_, _) => { if (_requested && !HasRecordingFocus()) CancelRecording(); };
+        _focusWatch.Tick += (_, _) =>
+        {
+            if (_requested && !HasRecordingFocus() && !FocusMovedToAnotherRecorder()) CancelRecording();
+        };
         IsReadOnly = true; IsSpellCheckEnabled = false; IsTextPredictionEnabled = false;
         Width = 220; MinHeight = 32; CornerRadius = new CornerRadius(0); FontSize = 14; Padding = new Thickness(8, 4, 8, 4);
         HorizontalAlignment = HorizontalAlignment.Left;
         GotFocus += (_, _) => BeginRecording();
         AddHandler(PointerPressedEvent, new PointerEventHandler((_, _) => BeginRecording()), true);
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDown), true);
-        LostFocus += (_, _) => CancelRecording();
+        LostFocus += (_, _) =>
+        {
+            if (!DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (_requested && !FocusMovedToAnotherRecorder()) CancelRecording();
+                })) CancelRecording();
+        };
         Unloaded += (_, _) => CancelRecording();
     }
 
@@ -57,6 +68,9 @@ internal sealed partial class HotKeyRecorder : TextBox
 
     internal Task CancelRecordingAsync()
     {
+        // Callers handing focus to another recorder await this fixed task,
+        // rather than the idle tail which may include later focus requests.
+        _beginAfterIdleQueued = false;
         _requested = false; IsRecording = false; _inputPending = false;
         _recordingGeneration++;
         _focusWatch.Stop(); Text = _configured;
@@ -83,10 +97,32 @@ internal sealed partial class HotKeyRecorder : TextBox
 
     private void BeginRecording()
     {
-        if (HasPendingTransition || !CanRecord()) return;
+        if (!CanRecord() || _requested) return;
+        if (HasPendingTransition) { QueueBeginAfterIdle(); return; }
         _requested = true;
         var generation = ++_recordingGeneration;
         _ = QueueTransition(() => BeginRecordingCoreAsync(generation));
+    }
+
+    private void QueueBeginAfterIdle()
+    {
+        if (_beginAfterIdleQueued) return;
+        _beginAfterIdleQueued = true;
+        _ = BeginAfterIdleAsync();
+    }
+
+    private async Task BeginAfterIdleAsync()
+    {
+        try { await WaitForIdleAsync(); }
+        catch
+        {
+            _beginAfterIdleQueued = false;
+            RecordingFailed?.Invoke(ProductStrings.Get("Settings.HotKeyRecordingFailed"));
+            return;
+        }
+        if (!_beginAfterIdleQueued) return;
+        _beginAfterIdleQueued = false;
+        if (CanRecord() && !_requested && !HasPendingTransition) BeginRecording();
     }
 
     private async Task BeginRecordingCoreAsync(int generation)
@@ -154,7 +190,7 @@ internal sealed partial class HotKeyRecorder : TextBox
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
         if (!_requested) return;
-        if (e.Key == VirtualKey.Tab) { CancelRecording(); return; }
+        if (e.Key == VirtualKey.Tab) return;
         e.Handled = true;
         if (e.Key == VirtualKey.Escape) CancelRecording();
     }
@@ -205,7 +241,6 @@ internal sealed partial class HotKeyRecorder : TextBox
             }
             if (key == (uint)VirtualKey.Tab)
             {
-                if (down) QueueInput(CancelRecording);
                 return Win32Api.CallNextHookEx(_hook, code, message, data);
             }
             if (up) return Win32Api.CallNextHookEx(_hook, code, message, data);
@@ -237,6 +272,8 @@ internal sealed partial class HotKeyRecorder : TextBox
     private bool CanRecord() => IsEnabled && XamlRoot is not null
         && ReferenceEquals(FocusManager.GetFocusedElement(XamlRoot), this);
     private bool HasRecordingFocus() => IsRecording && _requested && CanRecord() && GetForegroundWindow() == _recordingWindow;
+    private bool FocusMovedToAnotherRecorder() => XamlRoot is not null &&
+        FocusManager.GetFocusedElement(XamlRoot) is HotKeyRecorder recorder && !ReferenceEquals(recorder, this);
 
     private void QueueInput(Action action)
     {

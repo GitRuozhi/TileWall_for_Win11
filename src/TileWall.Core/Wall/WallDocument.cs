@@ -77,6 +77,7 @@ public sealed record WallSettings
     public bool ShowGrid { get; init; }
     public WallLanguageMode LanguageMode { get; init; } = WallLanguageMode.System;
     public string? HotKey { get; init; } = "Win+Oem3";
+    public string SecondaryHotKey { get; init; } = "Win+Ctrl+Oem3";
     public bool ReplaceStartMenu { get; init; }
     public bool RunAtLogin { get; init; }
 }

@@ -227,7 +227,8 @@ public sealed partial class WallStore
             {
                 using var json = JsonDocument.Parse(_files.ReadAllBytes(file));
                 if (json.RootElement.ValueKind != JsonValueKind.Object || !json.RootElement.TryGetProperty("schemaVersion", out var version) ||
-                    version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var schema) || schema != 1)
+                    version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var schema) ||
+                    (Path.GetFileName(file) == "settings.json" ? !UserDataManifest.IsSupportedFormatVersion(schema) : schema != 1))
                     throw new InvalidDataException("Unsupported orphan snapshot.");
             }
         }

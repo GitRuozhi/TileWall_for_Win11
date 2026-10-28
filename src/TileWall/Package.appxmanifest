@@ -9,10 +9,9 @@
   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
   xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
   xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
-  xmlns:desktop9="http://schemas.microsoft.com/appx/manifest/desktop/windows10/9"
   xmlns:virtualization="http://schemas.microsoft.com/appx/manifest/virtualization/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap com desktop desktop4 desktop5 desktop6 desktop9 virtualization rescap">
+  IgnorableNamespaces="uap com desktop desktop4 desktop5 desktop6 virtualization rescap">
 
   <!--
     正式商店身份来自 Partner Center。Name、Publisher 与 Application Id 发布后保持稳定。
@@ -21,7 +20,7 @@
   <Identity
     Name="Ruozhi.TileWall"
     Publisher="CN=E85F876C-CE51-47F1-A1F6-9007A3C15A22"
-    Version="1.4.0.0" />
+    Version="1.4.1.0" />
 
   <mp:PhoneIdentity PhoneProductId="1A027D37-1D32-492F-ACD2-E456FB4E670C" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
@@ -63,7 +62,7 @@
         <uap:SplashScreen Image="Assets\SplashScreen.png" />
       </uap:VisualElements>
       <Extensions>
-        <!-- Native modern/classic interfaces share one system COM surrogate and package activation. -->
+        <!-- One native Explorer command uses the system COM surrogate and package activation. -->
         <com:Extension Category="windows.comServer">
           <com:ComServer>
             <com:ExeServer Executable="TileWall.exe" Arguments="----AppNotificationActivated:" DisplayName="TileWall">
@@ -83,6 +82,8 @@
              （ST_FileTypeOrStarWithDirectory 才含 Directory；min OS 1809=17763，由清单 MinVersion 覆盖；其父元素
              desktop4:FileExplorerContextMenus 官方 schema 允许 desktop5:ItemType 子元素）。
              实测：desktop4:ItemType Type="Directory" 被 MakeAppx 拒（C00CE169 pattern 校验失败）。 -->
+        <!-- IExplorerCommand supplies Win10 classic and Win11 modern/classic menus.
+             A parallel desktop9 IContextMenu registration duplicates the Win11 classic item. -->
         <desktop4:Extension Category="windows.fileExplorerContextMenus">
           <desktop4:FileExplorerContextMenus>
             <desktop4:ItemType Type="*">
@@ -93,15 +94,6 @@
             </desktop5:ItemType>
           </desktop4:FileExplorerContextMenus>
         </desktop4:Extension>
-        <!-- Win11 classic menu uses its supported IContextMenu declaration. Win10 ignores desktop9
-             and retains the desktop4 IExplorerCommand route. Both read one per-user preference.
-             Modern/classic item counts still require final Win11 GUI verification. -->
-        <desktop9:Extension Category="windows.fileExplorerClassicContextMenuHandler">
-          <desktop9:FileExplorerClassicContextMenuHandler>
-            <desktop9:ExtensionHandler Type="*" Clsid="cb391e98-9cf2-4a54-abea-fbc529ca2d44" />
-            <desktop9:ExtensionHandler Type="Directory" Clsid="cb391e98-9cf2-4a54-abea-fbc529ca2d44" />
-          </desktop9:FileExplorerClassicContextMenuHandler>
-        </desktop9:Extension>
         <!-- (3) packaged 登录启动（M9 设计 §5.1）：替代 Run 键——版本化 WindowsApps 路径升级即失效、卸载即残留；
              StartupTask 由系统随卸载自动回收，零残留。TaskId 与 StartupTaskLoginStartup.TaskId 一致。 -->
         <desktop:Extension Category="windows.startupTask" Executable="TileWall.exe" EntryPoint="Windows.FullTrustApplication">

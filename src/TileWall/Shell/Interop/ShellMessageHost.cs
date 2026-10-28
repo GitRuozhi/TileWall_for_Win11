@@ -43,8 +43,8 @@ public sealed class ShellMessageHost : IDisposable
     /// <summary>Explorer 重启广播（"TaskbarCreated"，系统分配值）。</summary>
     public uint TaskbarCreatedMessage { get; }
 
-    /// <summary>WM_HOTKEY（任一已注册热键；本项目仅 id=1 一个组合）。</summary>
-    public event Action? HotKeyPressed;
+    /// <summary>WM_HOTKEY for one of the two owned registration IDs.</summary>
+    public event Action<int>? HotKeyPressed;
 
     /// <summary>托盘 v4 回调（单击无分支——B9 由分发表结构保证）。</summary>
     public event Action<TrayNotification>? TrayNotified;
@@ -110,7 +110,8 @@ public sealed class ShellMessageHost : IDisposable
         {
             if (msg == Win32Api.WmHotkey)
             {
-                self.HotKeyPressed?.Invoke();
+                var hotKeyId = wParam.ToInt64();
+                if (hotKeyId is 1 or 2) self.HotKeyPressed?.Invoke((int)hotKeyId);
                 return IntPtr.Zero;
             }
 

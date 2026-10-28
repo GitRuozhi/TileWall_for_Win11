@@ -104,13 +104,23 @@ static Installation ReadInstallation() {
 }
 static std::vector<BYTE> Digest(const wstring& path) {
     SafePath(path, true);
+    // Inno may launch its byte-identical clone through a real 8.3 TEMP alias.
+    // Expand that spelling independently; the opened handle must still resolve
+    // to this expected path, never merely to an arbitrary final-path result.
+    auto longPath = [&]() {
+        std::vector<wchar_t> text(32768); DWORD count = GetLongPathNameW(path.c_str(), text.data(), static_cast<DWORD>(text.size()));
+        Require(count > 0 && count < text.size()); return wstring(text.data(), count);
+    };
+    auto canonical = longPath(); SafePath(canonical, true);
     Handle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
     Require(file.value != INVALID_HANDLE_VALUE);
     auto confirmPath = [&]() {
+        SafePath(path, true); SafePath(canonical, true); Require(Same(longPath(), canonical));
         std::vector<wchar_t> text(32768); DWORD count = GetFinalPathNameByHandleW(file.value, text.data(), static_cast<DWORD>(text.size()), FILE_NAME_NORMALIZED);
         Require(count > 0 && count < text.size()); wstring actual(text.data(), count);
         if (actual.starts_with(L"\\\\?\\")) actual.erase(0, 4);
-        Require(Same(actual, path)); SafePath(path, true);
+        Require(Same(actual, canonical));
+        SafePath(path, true); SafePath(canonical, true); Require(Same(longPath(), canonical));
     };
     confirmPath();
     LARGE_INTEGER length{}; Require(GetFileSizeEx(file.value, &length) && length.QuadPart > 0 && length.QuadPart <= 128LL * 1024 * 1024);

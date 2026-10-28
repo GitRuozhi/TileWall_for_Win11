@@ -13,7 +13,8 @@ namespace TileWall.Views;
 /// <summary>System materials with an independent alpha mask, never opacity on the wall's content.</summary>
 internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fallbackChanged, bool isTest = false) : SystemBackdrop
 {
-    private readonly bool _diagnosticTrace = isTest && Environment.GetCommandLineArgs().Contains("--trace-input", StringComparer.OrdinalIgnoreCase);
+    private readonly bool _diagnosticTrace = Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1" ||
+        isTest && Environment.GetCommandLineArgs().Contains("--trace-input", StringComparer.OrdinalIgnoreCase);
     private readonly UISettings _uiSettings = new();
     private readonly Dictionary<WallBackgroundMode, MaterialSlot> _materials = [];
     private ICompositionSupportsSystemBackdrop? _target;
@@ -64,7 +65,7 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
         _lastMaterialPolicy = null;
         queue.EnsureSystemDispatcherQueue();
         _target = connectedTarget;
-        TraceDiagnostic("Connected mode=alpha-mask");
+        TraceDiagnostic("Connected mode=alpha-surface-mask");
         _defaultConfiguration = GetDefaultSystemBackdropConfiguration(connectedTarget, xamlRoot);
         _uiSettings.AdvancedEffectsEnabledChanged += OnEffectsChanged;
         UpdateMaterial();
@@ -299,7 +300,9 @@ internal sealed partial class AlphaBackdropTarget(ICompositionSupportsSystemBack
     private Windows.UI.Composition.CompositionBrush? _source;
     private Windows.UI.Composition.CompositionMaskBrush? _mask;
     private Windows.UI.Composition.CompositionColorBrush? _alpha;
-    private Windows.UI.Composition.CompositionNineGridBrush? _alphaMask;
+    private Windows.UI.Composition.SpriteVisual? _alphaVisual;
+    private Windows.UI.Composition.CompositionVisualSurface? _alphaSurface;
+    private Windows.UI.Composition.CompositionSurfaceBrush? _alphaMask;
     private float _opacity = 0.85f;
     private bool _enabled, _ready, _disposed;
     private readonly CancellationTokenSource _commitLifetime = new();
@@ -394,23 +397,30 @@ internal sealed partial class AlphaBackdropTarget(ICompositionSupportsSystemBack
                 return;
             }
             // This interface consumes Windows.UI.Composition, unlike XAML visuals.
-            // Both mask brushes come from the incoming material's own compositor.
+            // The entire alpha graph belongs to the incoming material's compositor.
             if (_mask is null || !_mask.Compositor.Equals(value.Compositor))
             {
                 TraceDiagnostic("Setter graph replacement before");
                 ReleaseMask();
                 _alpha = value.Compositor.CreateColorBrush(Color.FromArgb((byte)Math.Round(255 * _opacity), 255, 255, 255));
-                // The narrower OS mask contract permits SurfaceBrush/NineGridBrush.
-                _alphaMask = value.Compositor.CreateNineGridBrush();
-                _alphaMask.Source = _alpha;
-                _alphaMask.IsCenterHollow = false;
+                // The former NineGrid/ColorBrush mask can remain empty on Windows 11
+                // even after a successful commit. Give the uniform alpha an explicit
+                // 1x1 surface, then stretch it over only the backdrop plane.
+                _alphaVisual = value.Compositor.CreateSpriteVisual();
+                _alphaVisual.Size = System.Numerics.Vector2.One;
+                _alphaVisual.Brush = _alpha;
+                _alphaSurface = value.Compositor.CreateVisualSurface();
+                _alphaSurface.SourceVisual = _alphaVisual;
+                _alphaSurface.SourceSize = System.Numerics.Vector2.One;
+                _alphaMask = value.Compositor.CreateSurfaceBrush(_alphaSurface);
+                _alphaMask.Stretch = Windows.UI.Composition.CompositionStretch.Fill;
                 _mask = value.Compositor.CreateMaskBrush();
                 _mask.Mask = _alphaMask;
                 TraceDiagnostic("Setter graph replacement after");
             }
             TraceDiagnostic("Setter mask inputs before");
             _mask.Source = value;
-            var materialLog = $"Material source={value.GetType().Name} alpha={_opacity:F2} mask=CompositionNineGridBrush";
+            var materialLog = $"Material source={value.GetType().Name} alpha={_opacity:F2} mask=CompositionSurfaceBrush";
             if (Environment.GetCommandLineArgs().Contains("--trace-input", StringComparer.OrdinalIgnoreCase))
                 AppLog.Warn("WallBackdrop", materialLog);
             else AppLog.Info("WallBackdrop", materialLog);
@@ -428,9 +438,13 @@ internal sealed partial class AlphaBackdropTarget(ICompositionSupportsSystemBack
         SetReady(false);
         target.SystemBackdrop = null!;
         if (_mask is not null) { _mask.Source = null!; _mask.Mask = null!; }
-        if (_alphaMask is not null) _alphaMask.Source = null!;
+        if (_alphaMask is not null) _alphaMask.Surface = null!;
+        if (_alphaSurface is not null) _alphaSurface.SourceVisual = null!;
+        if (_alphaVisual is not null) _alphaVisual.Brush = null!;
         _mask?.Dispose(); _mask = null;
         _alphaMask?.Dispose(); _alphaMask = null;
+        _alphaSurface?.Dispose(); _alphaSurface = null;
+        _alphaVisual?.Dispose(); _alphaVisual = null;
         _alpha?.Dispose(); _alpha = null;
     }
 

@@ -28,5 +28,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Update="Fixtures\Compatibility\**" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\Snapshots\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
