@@ -71,7 +71,8 @@ public sealed class PuzzleCanvasView : Canvas
         _viewports = member.Partitions.Select(p => new DipRect(p.Column * metrics.Pitch,
             p.Row * metrics.Pitch, p.Width * metrics.Pitch - metrics.Gap,
             p.Height * metrics.Pitch - metrics.Gap)).ToArray();
-        var title = MemberPresentationRules.ResolveTitle(member, targetIsFolder ?? Directory.Exists(member.TargetInput));
+        var title = MemberPresentationRules.ResolveTitle(member, targetIsFolder ??
+            (member.ResourceOrigin == MemberResourceOrigin.Local && Directory.Exists(member.SourceShortcutPath ?? member.TargetInput)));
         for (var index = 0; index < _viewports.Length; index++)
         {
             var pixels = PuzzleSceneGeometry.ToPixelRect(_viewports[index], rasterScale);

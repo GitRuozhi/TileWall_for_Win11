@@ -45,6 +45,10 @@ public sealed class WallSurface : Canvas
     private readonly HashSet<MenuFlyout> _openContextMenus = [];
     private Canvas? _gridBackground;
     private double _viewportMinimumWidth, _viewportMinimumHeight;
+    private bool _automaticHeightPresentation;
+    private double _heightPresentationMinimum;
+    private double _heightGridProgress, _heightGridFromProgress;
+    private readonly Dictionary<Canvas, double> _heightGridLayers = [];
     private readonly Dictionary<string, ClockMemberView> _clocks = new(StringComparer.Ordinal);
     private WallDocument? _document;
     private string? _dragMemberId;
@@ -92,7 +96,7 @@ public sealed class WallSurface : Canvas
         AutomationProperties.SetAutomationId(this, "wall-surface");
         RightTapped += OnBackgroundRightTapped;
         AddHandler(UIElement.DoubleTappedEvent, new DoubleTappedEventHandler(OnWallDoubleTapped), true);
-        Unloaded += (_, _) => { StopClockFeedback(); ClearGroupFeedback(); };
+        Unloaded += (_, _) => { StopClockFeedback(); ClearGroupFeedback(); EndAutomaticHeightPresentation(); };
         ActualThemeChanged += (_, _) =>
         {
             RefreshGridBackground();
@@ -112,7 +116,51 @@ public sealed class WallSurface : Canvas
         _viewportMinimumHeight = height;
         if (Geometry is null) return;
         Width = Math.Max(Geometry.WallWidth, _viewportMinimumWidth);
-        Height = Math.Max(Geometry.WallHeight, _viewportMinimumHeight);
+        Height = Math.Max(Math.Max(Geometry.WallHeight, _viewportMinimumHeight), _heightPresentationMinimum);
+        RefreshGridBackground();
+    }
+
+    // Presentation only: neither this envelope nor the fading grid layers supplies
+    // geometry, hit targets, rows or capacity to the layout engine.
+    public void BeginAutomaticHeightPresentation()
+    {
+        _automaticHeightPresentation = true;
+        _heightGridProgress = _heightGridFromProgress = 0;
+        _heightPresentationMinimum = Math.Max(_heightPresentationMinimum, Height);
+        foreach (var layer in _heightGridLayers.Keys.ToArray())
+        {
+            if (!ReferenceEquals(layer, _gridBackground) && layer.Opacity < .002)
+            { Children.Remove(layer); _heightGridLayers.Remove(layer); }
+            else _heightGridLayers[layer] = layer.Opacity;
+        }
+        if (_gridBackground is { } grid) _heightGridLayers[grid] = grid.Opacity;
+    }
+
+    public void AdvanceAutomaticHeightPresentation(double progress)
+    {
+        if (!_automaticHeightPresentation) return;
+        _heightGridProgress = progress;
+        var segment = Math.Clamp((progress - _heightGridFromProgress) /
+            Math.Max(.000001, 1 - _heightGridFromProgress), 0, 1);
+        foreach (var (layer, opacity) in _heightGridLayers)
+            if (!ReferenceEquals(layer, _gridBackground)) layer.Opacity = opacity * (1 - segment);
+        if (_gridBackground is { } grid)
+        {
+            var from = _heightGridLayers.GetValueOrDefault(grid);
+            grid.Opacity = from + (1 - from) * segment;
+        }
+    }
+
+    public void EndAutomaticHeightPresentation()
+    {
+        if (!_automaticHeightPresentation) return;
+        _automaticHeightPresentation = false;
+        foreach (var layer in _heightGridLayers.Keys)
+            if (!ReferenceEquals(layer, _gridBackground)) Children.Remove(layer);
+        _heightGridLayers.Clear();
+        _heightPresentationMinimum = 0;
+        if (_gridBackground is { } grid) grid.Opacity = 1;
+        if (Geometry is not null) Height = Math.Max(Geometry.WallHeight, _viewportMinimumHeight);
         RefreshGridBackground();
     }
 
@@ -133,7 +181,7 @@ public sealed class WallSurface : Canvas
         _document = document;
         Geometry = geometry;
         Width = Math.Max(geometry.WallWidth, _viewportMinimumWidth);
-        Height = Math.Max(geometry.WallHeight, _viewportMinimumHeight);
+        Height = Math.Max(Math.Max(geometry.WallHeight, _viewportMinimumHeight), _heightPresentationMinimum);
         foreach (var id in _memberModels.Keys.Where(id => !members.ContainsKey(id)).ToArray()) RemoveMemberView(id);
         foreach (var id in _titleViews.Keys.Where(id => !groups.ContainsKey(id)).ToArray()) RemoveGroupView(id);
         RefreshGridBackground();
@@ -217,6 +265,7 @@ public sealed class WallSurface : Canvas
 
     public void ResetProjection()
     {
+        EndAutomaticHeightPresentation();
         StopClockFeedback();
         foreach (var id in _memberModels.Keys.ToArray()) RemoveMemberView(id);
         foreach (var id in _titleViews.Keys.ToArray()) RemoveGroupView(id);
@@ -248,11 +297,21 @@ public sealed class WallSurface : Canvas
             return;
         }
         _gridKey = key;
-        if (_gridBackground is not null) Children.Remove(_gridBackground);
+        if (_automaticHeightPresentation)
+        {
+            foreach (var layer in _heightGridLayers.Keys.ToArray()) _heightGridLayers[layer] = layer.Opacity;
+            _heightGridFromProgress = _heightGridProgress;
+        }
+        if (_gridBackground is { } previous)
+        {
+            if (_automaticHeightPresentation) _heightGridLayers[previous] = previous.Opacity;
+            else Children.Remove(previous);
+        }
         _gridBackground = null;
         if (!_document.Settings.ShowGrid) return;
         GridCreationCount++;
         var background = new Canvas { Width = Width, Height = Height, IsHitTestVisible = false,
+            Opacity = _automaticHeightPresentation ? 0 : 1,
             Clip = new RectangleGeometry { Rect = new Rect(0, 0, Width, Height) } };
         // Fill each complete lane independently of its objects, preserving the lane gaps.
         var channel = ActualTheme == ElementTheme.Dark ? (byte)255 : (byte)0;
@@ -886,7 +945,7 @@ public sealed class WallSurface : Canvas
     private static string MenuGlyph(WallMenuAction action) => action switch
     {
         WallMenuAction.Edit => ActionIcon.Edit, WallMenuAction.Remove => ActionIcon.Delete,
-        WallMenuAction.Settings => ActionIcon.Settings, WallMenuAction.Import => ActionIcon.Import,
+        WallMenuAction.Settings => ActionIcon.Settings, WallMenuAction.Import => ActionIcon.Share,
         WallMenuAction.PuzzleNextPage => ActionIcon.Next, WallMenuAction.Location => ActionIcon.Browse,
         WallMenuAction.Open => "\uE8E5",
         WallMenuAction.Admin => "\uE7EF", _ => ActionIcon.Add,

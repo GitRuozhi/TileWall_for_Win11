@@ -1,9 +1,35 @@
 using System.Security.Cryptography;
+using System.Runtime.InteropServices.WindowsRuntime;
+using Microsoft.UI.Xaml.Media.Imaging;
+using TileWall.Core.Imaging;
 
 namespace TileWall.Graphics;
 
 public sealed partial class WallImageService
 {
+    /// <summary>Derive an editor underfill from an already held wall frame; never reread its source.</summary>
+    public Task<PuzzleFrame> EnsureFrameBlurAsync(PuzzleFrame frame, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(frame);
+        return StartImageRequest(token => EnsureFrameBlurCoreAsync(frame, token), ct, frame);
+    }
+
+    private static async Task<PuzzleFrame> EnsureFrameBlurCoreAsync(PuzzleFrame frame, CancellationToken ct)
+    {
+        if (frame.BlurredUnderfill is not null) return frame;
+        ct.ThrowIfCancellationRequested();
+        if (frame.Sharp is not WriteableBitmap bitmap) return frame;
+        var width = bitmap.PixelWidth;
+        var height = bitmap.PixelHeight;
+        var pixels = new byte[checked(width * height * 4)];
+        using (var stream = bitmap.PixelBuffer.AsStream()) stream.ReadExactly(pixels);
+        var source = new DecodedImageFrame(frame.CanonicalPath, frame.SourceBytes, frame.LastWriteUtc,
+            checked((int)frame.SourcePixels.Width), checked((int)frame.SourcePixels.Height), width, height, pixels);
+        var blur = await Task.Run(() => LowResolutionBlur.Apply(BlurInput(source)), ct);
+        ct.ThrowIfCancellationRequested();
+        return frame with { BlurredUnderfill = MakeBitmap(blur), BlurDecodedPixels = new PixelSize(blur.Width, blur.Height) };
+    }
+
     private const long DerivedLimit = 128L * 1024 * 1024;
     private const int MaximumDerivedBytes = 2 * 1024 * 1024;
     private string DerivedPath(string hash, PuzzleDecodeBudget budget) => _disk!.Under("Cache", "Images", "Derived",

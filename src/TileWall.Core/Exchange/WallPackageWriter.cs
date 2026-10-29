@@ -41,6 +41,7 @@ public sealed class WallPackageWriter
         {
             token.ThrowIfCancellationRequested();
             snapshot.EnsureAvailable();
+            if (!snapshot.AutomaticImagesCompleted) throw new InvalidDataException("Complete automatic export foregrounds before writing the package.");
             limits ??= new(); limits.Validate();
             ArgumentException.ThrowIfNullOrWhiteSpace(appVersion);
             ArgumentException.ThrowIfNullOrWhiteSpace(destination);
@@ -217,6 +218,12 @@ public sealed class WallPackageWriter
             var expanded = Environment.ExpandEnvironmentVariables(candidate);
             if (!Path.IsPathFullyQualified(expanded)) continue;
             paths.Add(LaunchIdentityService.NormalizePath(expanded));
+        }
+        foreach (var candidate in snapshot.LexicalProtectedSourcePaths)
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) continue;
+            var expanded = Environment.ExpandEnvironmentVariables(candidate);
+            if (Path.IsPathFullyQualified(expanded)) paths.Add(Path.TrimEndingDirectorySeparator(Path.GetFullPath(expanded)));
         }
         return paths;
     }

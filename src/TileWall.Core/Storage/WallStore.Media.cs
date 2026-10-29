@@ -32,6 +32,14 @@ public sealed partial class WallStore
     {
         foreach (var member in document.EnumerateAllMembers())
         {
+            if (member.Images.Kind == MemberImageSourceKind.None &&
+                (member.Images.Path is not null || member.Images.ManagedGallery is not null || member.Carousel is not null))
+                yield return "NONE_IMAGE_SOURCE";
+            if (member.ResourceOrigin == MemberResourceOrigin.Package &&
+                !(member.Images.Kind == MemberImageSourceKind.None ||
+                  member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is not null ||
+                  member.Images.Kind == MemberImageSourceKind.Folder))
+                yield return "PACKAGE_IMAGE_SOURCE";
             if (member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is null)
                 yield return "SINGLE_MEDIA_REQUIRED";
             if (member.Images.Media is not null && (member.Images.Kind != MemberImageSourceKind.Single ||

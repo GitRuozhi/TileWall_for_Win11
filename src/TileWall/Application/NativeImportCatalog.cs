@@ -250,7 +250,11 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                     ? ImportTargetKind.Program : ImportTargetKind.File;
             return new ImportSourceCandidate(entry.Key, entry.Name, new TileMember
             {
-                Id = id, LocalBounds = new(0, 0, 1, 1), TargetInput = entry.SourcePath ?? entry.Target,
+                Id = id, LocalBounds = new(0, 0, 1, 1),
+                TargetInput = entry.Kind == NativeImportTarget.Shortcut && identity is not null &&
+                    !identity.Key.StartsWith("opaque", StringComparison.Ordinal) ? identity.Target : entry.Target,
+                SourceShortcutPath = entry.Kind == NativeImportTarget.Shortcut ? entry.SourcePath ?? entry.Target : null,
+                TargetDisplayName = entry.Name,
                 Entry = new(id, $"Objects/{id}/entry.{(urlEntry ? "url" : "lnk")}",
                     urlEntry ? ManagedEntryKind.Url : ManagedEntryKind.Lnk),
                 Visual = new MemberVisual { Title = entry.Name, TitleMode = MemberTitleMode.Manual },

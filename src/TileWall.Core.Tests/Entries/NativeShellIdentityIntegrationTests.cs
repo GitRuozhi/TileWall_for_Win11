@@ -173,7 +173,10 @@ public sealed class NativeShellIdentityIntegrationTests : IDisposable
             (_, _, _) => Task.FromResult(true));
         var firstPackage = Path.Combine(_fixture, "native-source.zip");
         using (var snapshot = sourceStore.CapturePackageSnapshot(sourceDocument, sourceDocument.Generation, ["computer"]))
+        {
+            snapshot.CompleteAutomaticImages();
             Assert.Equal(WallPackageWriteStatus.Saved, (await new WallPackageWriter(sourceReader).WriteAsync(snapshot, firstPackage, "1.4.0")).Status);
+        }
         var firstRead = await sourceReader.ReadPreviewAsync(firstPackage);
         Assert.Equal(WallPackageReadStatus.Valid, firstRead.Status);
         var preview = firstRead.Preview!;
@@ -209,7 +212,10 @@ public sealed class NativeShellIdentityIntegrationTests : IDisposable
             (_, _, _) => Task.FromResult(true));
         var secondPackage = Path.Combine(_fixture, "native-reexport.zip");
         using (var snapshot = importedStore.CapturePackageSnapshot(importedDocument, importedDocument.Generation, ["computer"]))
+        {
+            snapshot.CompleteAutomaticImages();
             Assert.Equal(WallPackageWriteStatus.Saved, (await new WallPackageWriter(importedReader).WriteAsync(snapshot, secondPackage, "1.4.0")).Status);
+        }
         var secondRead = await importedReader.ReadPreviewAsync(secondPackage);
         Assert.Equal(WallPackageReadStatus.Valid, secondRead.Status);
         Assert.Equal(preview.Manifest.FormatVersion, secondRead.Preview!.Manifest.FormatVersion);

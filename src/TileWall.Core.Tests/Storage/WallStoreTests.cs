@@ -350,7 +350,8 @@ public sealed partial class WallStoreTests
     [Fact]
     public void UnsupportedOlderSchemaDoesNotDeleteAnyFiles()
     {
-        var schema = WallDocument.CurrentSchemaVersion - 1;
+        // state.json is a UserDataManifest, not a WallDocument. Manifest 3 is now supported.
+        const int schema = 0;
         var (store, files, _, root) = Harness();
         var external = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "external-" + Guid.NewGuid().ToString("N") + ".url"));
         files.WriteAllBytes(external, [1, 2, 3]);
@@ -825,7 +826,7 @@ public sealed partial class WallStoreTests
     {
         var (store, files, _, root) = Harness();
         var config = Path.Combine(root, "state.json");
-        files.WriteAllBytes(config, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion - 1}}}"));
+        files.WriteAllBytes(config, Encoding.UTF8.GetBytes("{\"schemaVersion\":0}"));
         var stage = Path.Combine(root, "Staging", Guid.NewGuid().ToString("N"));
         files.CreateDirectory(Path.Combine(root, "Staging"));
         files.CreateDirectory(stage);

@@ -177,6 +177,7 @@ public sealed partial class MainWindow
     {
         TerminateGesture();
         CancelResize(reason);
+        if (_viewportTransition is { AutomaticHeight: true }) StopViewportTransition();
         _windowsSidebar?.Collapse();
     }
 
@@ -345,7 +346,8 @@ public sealed partial class MainWindow
         }
     }
 
-    private void ApplyViewport(WallDocument? previewDocument = null, WallGeometry? previewGeometry = null, bool animateMode = true)
+    private void ApplyViewport(WallDocument? previewDocument = null, WallGeometry? previewGeometry = null,
+        bool animateMode = true, bool animateHeight = false)
     {
         if (!_hasDocument) return;
         RefreshNativeFrame();
@@ -385,7 +387,7 @@ public sealed partial class MainWindow
         var x = right && !fullScreen ? _screenArea.Right - width : _screenArea.Left;
         var y = bottom && !fullScreen ? _screenArea.Bottom - height : _screenArea.Top;
         PresentViewport(new RectInt32(x, y, Math.Max(1, width), Math.Max(1, height)), fullScreen,
-            document.Settings.AnchorCorner, animateMode, presentationSettings: document.Settings);
+            document.Settings.AnchorCorner, animateMode, presentationSettings: document.Settings, animateHeight: animateHeight);
         UpdateWindowZOrder(IsForegroundWallSession());
         UpdateResizeZones();
     }

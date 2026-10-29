@@ -536,6 +536,64 @@ public sealed class ImportSourcePlannerTests
     }
 
     [Fact]
+    public void TailKeepsOldLaneBoundariesAndReusesTheAdjacentTailForEverySource()
+    {
+        var first = Group("first", "First", Tile("first-member"));
+        var last = Group("last", "Last", Tile("last-member"));
+        var wall = WallDocument.Empty(3, 8) with
+            { Lanes = [new() { Groups = [first] }, new() { Groups = [last] }, new() { Groups = [] }] };
+        var source = Item("new", "New", new("source", "Imported", 0), order: 0);
+        var projection = ImportSourcePlanner.Project(wall, [source], recognizeGroups: false);
+        var plan = Plan(wall, projection, [source.SourceKey], position: ImportInsertionPosition.Tail);
+        Assert.Equal(ImportPlanStatus.Ready, plan.Status);
+        var lanes = plan.Proposal!.Document.Lanes;
+        Assert.Same(first, Assert.Single(lanes[0].Groups));
+        Assert.Same(last, Assert.Single(lanes[1].Groups));
+        Assert.Equal("Imported", Assert.Single(lanes[2].Groups).Title);
+        Assert.Equal(3, lanes.Count);
+        Assert.Single(plan.Accepted);
+    }
+
+    [Fact]
+    public void TailAllowsNecessaryRecordedBlankRowCompressionWithoutChangingHead()
+    {
+        var wall = WallDocument.Empty(1, 8);
+        var source = Item("sparse", "Sparse", new("source", "Source", 0),
+            bounds: new(3, 30, 2, 2), position: true, size: true);
+        var projection = ImportSourcePlanner.Project(wall, [source], recognizeGroups: false);
+        var before = WallJson.Serialize(wall);
+        var tail = Plan(wall, projection, [source.SourceKey], position: ImportInsertionPosition.Tail);
+        Assert.Equal(ImportPlanStatus.Ready, tail.Status);
+        var member = Assert.Single(Destination(tail).Members);
+        Assert.Equal(new GridRect(3, 21, 2, 2), member.LocalBounds);
+        Assert.Equal(24, tail.Proposal!.Document.Rows);
+        var head = Plan(wall, projection, [source.SourceKey]);
+        Assert.Equal(ImportPlanStatus.Rejected, head.Status);
+        Assert.StartsWith("GROUP_TOO_TALL:", head.Detail);
+        Assert.Equal(before, WallJson.Serialize(wall));
+    }
+
+    [Fact]
+    public void TailMovesTheCompleteMergedDestinationAfterUntouchedContent()
+    {
+        var destination = Group("destination", "Merge", Tile("existing"));
+        var untouched = Group("untouched", "Untouched", Tile("other"));
+        var wall = WallDocument.Empty(3, 8) with
+            { Lanes = [new() { Groups = [destination] }, new() { Groups = [untouched] }, new() { Groups = [] }] };
+        var source = Item("new", "New", new("source", "Merge", 0));
+        var plan = Plan(wall, ImportSourcePlanner.Project(wall, [source], recognizeGroups: false),
+            [source.SourceKey], position: ImportInsertionPosition.Tail);
+        Assert.Equal(ImportPlanStatus.Ready, plan.Status);
+        var lanes = plan.Proposal!.Document.Lanes;
+        Assert.Empty(lanes[0].Groups);
+        Assert.Same(untouched, Assert.Single(lanes[1].Groups));
+        var merged = Assert.Single(lanes[2].Groups);
+        Assert.Equal(destination.Id, merged.Id);
+        Assert.Contains(merged.Members, member => member.Id == "existing");
+        Assert.Equal(2, merged.Members.Count);
+    }
+
+    [Fact]
     public void PurposeFilteringPrecedesFolderAndFamilyCounts()
     {
         var folder = new ImportSourceGroup("tools", "Tools", 0);

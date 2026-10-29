@@ -3,7 +3,7 @@ namespace TileWall.Core.Exchange;
 public sealed record WallPackageManifest
 {
     public const string CurrentFormatId = "TileWall.WallPackage";
-    public const int CurrentFormatVersion = 2;
+    public const int CurrentFormatVersion = 3;
     public string FormatId { get; init; } = CurrentFormatId;
     public int FormatVersion { get; init; } = CurrentFormatVersion;
     public int WallSchemaVersion { get; init; } = 4;

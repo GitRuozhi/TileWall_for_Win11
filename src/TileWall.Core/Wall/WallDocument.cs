@@ -103,7 +103,8 @@ public sealed record MemberVisual
 
 public enum MemberTitleMode { Automatic, Manual }
 public enum MemberBackgroundMode { Default, Color, Blur, None }
-public enum MemberImageSourceKind { Automatic, Single, Folder }
+public enum MemberImageSourceKind { Automatic, Single, Folder, None }
+public enum MemberResourceOrigin { Local, Package }
 public enum ImageRotationInterval { Seconds5 = 5, Seconds15 = 15, Seconds30 = 30, Minute1 = 60,
     Minute5 = 300, Minute15 = 900, Minute30 = 1800 }
 
@@ -150,6 +151,9 @@ public abstract record WallMember
     public MemberVisual Visual { get; init; } = new();
     public ManagedEntryReference? Entry { get; init; }
     public string? TargetInput { get; init; }
+    public string? SourceShortcutPath { get; init; }
+    public string? TargetDisplayName { get; init; }
+    public MemberResourceOrigin ResourceOrigin { get; init; } = MemberResourceOrigin.Local;
     public MemberImageSource Images { get; init; } = new();
     public MemberImageDisplay ImageDisplay { get; init; } = new();
     public ImageRotationInterval RotationInterval { get; init; } = ImageRotationInterval.Minute1;

@@ -94,7 +94,8 @@ public sealed partial class WallImageService
     private readonly SemaphoreSlim _automaticAdmissions = new(256, 256);
     private static readonly TimeSpan VolatileIconMemoryLifetime = TimeSpan.FromMinutes(5);
     private readonly Dictionary<string, (string? Target, string? Icon, int? Index, bool ShellLink)> _automaticDescriptors = new(StringComparer.Ordinal);
-    private sealed record AutomaticSourceSnapshot(string? Stamp, bool CacheAllowed, MmcIconSource? MmcSource);
+    private sealed record AutomaticSourceSnapshot(string? Stamp, bool CacheAllowed, MmcIconSource? MmcSource,
+        string? PackageTarget = null);
     private sealed record AutomaticDiskMapping(int Format, string Stamp, string PackageKey, string PixelsSha256,
         int Width, int Height, WallImageStatus Status, string? Diagnostic);
 
@@ -194,11 +195,11 @@ public sealed partial class WallImageService
         try
         {
             var diskHit = allowPixelCache && snapshot.CacheAllowed ? ReadAutomaticPixels(key, snapshot.Stamp) : null;
-            if (diskHit is not null && snapshot == AutomaticSourceStamp(source)) return diskHit;
+            if (diskHit is not null && snapshot == AutomaticSourceStamp(source, snapshot.PackageTarget)) return diskHit;
             var prepared = await PrepareAutoAsync(source, width, height, lifetime,
-                cacheAllowed: allowResultCache, mmcSource: snapshot.MmcSource).ConfigureAwait(false);
+                cacheAllowed: allowResultCache, mmcSource: snapshot.MmcSource, verifiedPackageTarget: snapshot.PackageTarget).ConfigureAwait(false);
             lifetime.ThrowIfCancellationRequested();
-            if (snapshot != AutomaticSourceStamp(source))
+            if (snapshot != AutomaticSourceStamp(source, snapshot.PackageTarget))
                 return new Prepared(WallImageStatus.Invalid, null, 0, 0, "IconSourceChanged") { CacheAllowed = false };
             prepared = prepared with
             {
@@ -263,13 +264,19 @@ public sealed partial class WallImageService
     private async Task<PuzzleFrameResult> LoadAutomaticFrameCoreAsync(string? source, int width, int height, bool blur,
         CancellationToken token, WallMember? member = null)
     {
+        if (member?.ResourceOrigin == MemberResourceOrigin.Package) return new(null, WallImageStatus.None);
         if (width is < 1 or > 4096 || height is < 1 or > 4096) throw new ArgumentOutOfRangeException(nameof(width));
         try
         {
-            var before = await Task.Run(() => AutomaticSourceStamp(source), token);
+            var packageTarget = await Task.Run(() => VerifiedPackageIconTarget(source, member), token);
+            var before = await Task.Run(() => AutomaticSourceStamp(source, packageTarget), token);
+            if (packageTarget is not null && packageTarget != await Task.Run(() => VerifiedPackageIconTarget(source, member), token))
+                return new(null, WallImageStatus.Invalid, "IconSourceChanged");
             var prepared = await PrepareAutomaticSharedAsync(source, width, height, before, token);
             token.ThrowIfCancellationRequested();
-            if (before != await Task.Run(() => AutomaticSourceStamp(source), token)) return new(null, WallImageStatus.Invalid, "IconSourceChanged");
+            if (before != await Task.Run(() => AutomaticSourceStamp(source, packageTarget), token)) return new(null, WallImageStatus.Invalid, "IconSourceChanged");
+            if (packageTarget is not null && packageTarget != await Task.Run(() => VerifiedPackageIconTarget(source, member), token))
+                return new(null, WallImageStatus.Invalid, "IconSourceChanged");
             if (prepared.Pixels is null) return new(null, prepared.Status, prepared.Diagnostic)
                 { CacheAllowed = prepared.CacheAllowed, MemoryCacheAllowed = false };
             var sharp = new DecodedImageFrame(source ?? "automatic", 0, DateTime.MinValue, prepared.Width, prepared.Height,
@@ -281,7 +288,7 @@ public sealed partial class WallImageService
                 blurred is null ? default : new PixelSize(blurred.Width, blurred.Height), MakeBitmap(sharp),
                 blurred is null ? null : MakeBitmap(blurred))
                 {
-                    AutomaticStamp = before.Stamp, MemoryCacheAllowed = prepared.MemoryCacheAllowed,
+                    AutomaticStamp = before.Stamp, AutomaticPackageTarget = packageTarget, MemoryCacheAllowed = prepared.MemoryCacheAllowed,
                     MemoryValidUntil = prepared.MemoryValidUntil,
                 }, prepared.Status, prepared.Diagnostic)
                 { CacheAllowed = prepared.CacheAllowed, MemoryCacheAllowed = prepared.MemoryCacheAllowed };
@@ -292,19 +299,28 @@ public sealed partial class WallImageService
     }
 
     public Task<bool> IsAutomaticFrameCurrentAsync(PuzzleFrame frame, string? entryOrTargetPath,
-        CancellationToken ct = default) => StartImageRequest(token => Task.Run(() =>
+        CancellationToken ct = default, bool heldByCurrentWall = false) => StartImageRequest(token => Task.Run(() =>
     {
         try
         {
-            if (!frame.MemoryCacheAllowed || frame.AutomaticStamp is null || frame.MemoryValidUntil <= DateTimeOffset.UtcNow) return false;
-            var current = AutomaticSourceStamp(entryOrTargetPath);
-            return current.CacheAllowed && frame.AutomaticStamp == current.Stamp;
+            if (!frame.MemoryCacheAllowed || frame.AutomaticStamp is null ||
+                !heldByCurrentWall && frame.MemoryValidUntil <= DateTimeOffset.UtcNow) return false;
+            var current = AutomaticSourceStamp(entryOrTargetPath, frame.AutomaticPackageTarget);
+            return (heldByCurrentWall || current.CacheAllowed) && frame.AutomaticStamp == current.Stamp;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or ArgumentException or InvalidOperationException or NotSupportedException)
         { return false; }
     }, token), ct, false);
 
-    private AutomaticSourceSnapshot AutomaticSourceStamp(string? source) => AutomaticSourceStampCore(source, followLinkedTarget: true);
+    private AutomaticSourceSnapshot AutomaticSourceStamp(string? source, string? packageTarget = null)
+    {
+        var snapshot = AutomaticSourceStampCore(source, followLinkedTarget: true);
+        return packageTarget is null ? snapshot : snapshot with
+        {
+            PackageTarget = packageTarget,
+            Stamp = snapshot.Stamp + "|verified-package-app-list-v2|" + packageTarget + "|" + PackageRegistrationStamp(packageTarget),
+        };
+    }
 
     private AutomaticSourceSnapshot AutomaticSourceStampCore(string? source, bool followLinkedTarget)
     {

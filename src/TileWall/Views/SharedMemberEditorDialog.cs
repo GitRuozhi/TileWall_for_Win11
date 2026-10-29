@@ -50,8 +50,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _operationText = new() { TextWrapping = TextWrapping.Wrap, MaxWidth = 360 };
     private readonly Border _operationToast;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _operationTimer;
-    private readonly IconSelector _source = new(ActionIcon.Reset, ActionIcon.Picture, ActionIcon.Folder),
-        _background = new(ActionIcon.Reset, ActionIcon.Color, ActionIcon.BackgroundBlur, ActionIcon.Cancel);
+    private readonly IconSelector _source = new(ActionIcon.Reset, ActionIcon.Photo2, ActionIcon.GallerySet),
+        _background = new(ActionIcon.Reset, ActionIcon.Color, ActionIcon.BackgroundBlur, ActionIcon.Checkbox);
     private readonly ComboBox _interval = new();
     private readonly IntegerStepper _width = new() { Minimum = 1, Maximum = 8 }, _height = new() { Minimum = 1, Maximum = 256 };
     private readonly NumberBox _transparencyInput = Number(0, 100);
@@ -98,6 +98,9 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private bool _titleDirty, _targetDirty, _sourceDirty, _ratioDirty;
     private string? _targetSourceError;
     private bool _explicitImageSource;
+    private bool _foregroundActivated;
+    private bool _targetWasConfirmed;
+    private string? _selectedShortcutPath;
     private bool _targetRecognitionRequired;
     private TargetImageSourceResult? _targetRecognition;
     private long _targetRecognitionRevision;
@@ -111,21 +114,24 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private long _appearanceRevision, _recognitionAppearanceRevision;
     private readonly Grid _page;
     internal MemberImageSource? GallerySource => _opened && !_closed && !_previewClosing && !_sourceDirty &&
-        _draft.Images.Kind == MemberImageSourceKind.Folder ? _draft.Images : null;
+        _draft.Images.Kind == MemberImageSourceKind.Folder &&
+        (_draft.ResourceOrigin == MemberResourceOrigin.Local || _draft.Images.ManagedGallery is not null) ? _draft.Images : null;
     internal event Action? GallerySourceChanged;
     internal long GallerySourceRevision => _sourceRevision;
 
     internal SharedMemberEditorDialog(Window owner, WallMember original, WallImageService images,
         string? managedEntryPath, ILnkFileService links, int maxRows,
-        Func<WallMember, IReadOnlyList<EntryChange>, IReadOnlyList<PreparedMediaAsset>, string?> save, WallVisualStyle visualStyle = WallVisualStyle.Win10)
+        Func<WallMember, IReadOnlyList<EntryChange>, IReadOnlyList<PreparedMediaAsset>, string?> save,
+        WallVisualStyle visualStyle = WallVisualStyle.Win10, PuzzleFrame? initialFrame = null)
     {
         if (original is not (TileMember or PuzzleMember)) throw new ArgumentException("A tile or puzzle is required.", nameof(original));
         _owner = owner; _original = original; _draft = original; _images = images;
+        _frame = initialFrame;
         _explicitImageSource = original.Images.Kind != MemberImageSourceKind.Automatic;
         _managedEntryPath = managedEntryPath; _links = links; _save = save;
         _visualStyle = visualStyle;
         _maxRows = Math.Clamp(maxRows, 0, WallViewportPolicy.MaximumMemberRows);
-        _originalInput = original.TargetInput ?? ReadManagedTarget();
+        _originalInput = original.TargetInput ?? (original.ResourceOrigin == MemberResourceOrigin.Local ? ReadManagedTarget() : null);
         _draft = original with { TargetInput = _originalInput };
         if (original is PuzzleMember puzzle) _layout = new(puzzle.LocalBounds.Size, puzzle.Partitions);
         if (original is PuzzleMember)
@@ -496,7 +502,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         AutomationProperties.SetName(_galleryScrollBar, T("Editor.Gallery"));
         ToolTipService.SetToolTip(_galleryScrollBar, T("Editor.Gallery"));
         foreach (var (button, key, _) in _imageActions) { ToolTipService.SetToolTip(button, T(key)); AutomationProperties.SetName(button, T(key)); }
-        ActionIcon.SetIcon(_autoTitle, T("Editor.AutoTitle"), ActionIcon.Reset); ActionIcon.SetIcon(_targetBrowse, T("Entry.Browse"), ActionIcon.OpenFile);
+        ActionIcon.SetIcon(_autoTitle, T("Editor.AutoTitle"), ActionIcon.Reset); ActionIcon.SetIcon(_targetBrowse, T("Entry.Browse"), ActionIcon.OpenFolderHorizontal);
         ActionIcon.SetIcon(_targetConfirm, T("Editor.ConfirmTarget"), ActionIcon.Confirm); ActionIcon.SetIcon(_titleConfirm, T("Editor.ConfirmTitle"), ActionIcon.Confirm);
         ActionIcon.SetIcon(_sourceBrowse, T("Entry.Browse"), ActionIcon.OpenFile); ActionIcon.SetIcon(_colorButton, T("Tile.CustomColor"), ActionIcon.Color);
         ActionIcon.SetIcon(_undo, T("Layout.Undo"), ActionIcon.Undo); ActionIcon.SetIcon(_redo, T("Layout.Redo"), ActionIcon.Redo);
@@ -514,12 +520,15 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private void RefreshFields()
     {
         _refreshing = true;
-        if (!_titleDirty) _title.Text = MemberPresentationRules.ResolveTitle(_draft, Directory.Exists(_draft.TargetInput));
+        if (!_titleDirty) _title.Text = MemberPresentationRules.ResolveTitle(_draft,
+            _draft.ResourceOrigin == MemberResourceOrigin.Local && _foregroundActivated && Directory.Exists(_draft.TargetInput));
         if (!_targetDirty) _target.Text = _draft.TargetInput ?? string.Empty;
         _width.Value = _draft.LocalBounds.Width; _height.Value = _draft.LocalBounds.Height;
-        _source.SelectedIndex = (int)_draft.Images.Kind; if (!_sourceDirty) _sourcePath.Text = _draft.Images.Path ?? string.Empty;
-        ToolTipService.SetToolTip(_sourcePath, string.IsNullOrWhiteSpace(_sourcePath.Text) ? null : _sourcePath.Text); _sourceBrowse.IsEnabled = _sourcePath.IsEnabled = _draft.Images.Kind != MemberImageSourceKind.Automatic;
-        ActionIcon.SetIcon(_sourceBrowse, T("Entry.Browse"), _draft.Images.Kind == MemberImageSourceKind.Folder ? ActionIcon.Folder : ActionIcon.Picture);
+        _source.SelectedIndex = _draft.Images.Kind == MemberImageSourceKind.None ? -1 : (int)_draft.Images.Kind;
+        if (!_sourceDirty) _sourcePath.Text = _draft.Images.Path ?? string.Empty;
+        ToolTipService.SetToolTip(_sourcePath, string.IsNullOrWhiteSpace(_sourcePath.Text) ? null : _sourcePath.Text);
+        _sourceBrowse.IsEnabled = _sourcePath.IsEnabled = _draft.Images.Kind is MemberImageSourceKind.Single or MemberImageSourceKind.Folder;
+        ActionIcon.SetIcon(_sourceBrowse, T("Entry.Browse"), _draft.Images.Kind == MemberImageSourceKind.Folder ? ActionIcon.GallerySet : ActionIcon.Photo2);
         ActionIcon.SetTip(_sourceBrowse, T(_sourceBrowse.IsEnabled ? "Entry.Browse" : "Editor.AutomaticSource"));
         _background.SelectedIndex = (int)_draft.Visual.BackgroundMode; _colorButton.IsEnabled = _draft.Visual.BackgroundMode == MemberBackgroundMode.Color;
         ActionIcon.SetTip(_colorButton, T(_colorButton.IsEnabled ? "Tile.CustomColor" : "Editor.RequiresColor"));
@@ -763,6 +772,10 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private async Task ReloadCandidatesAsync(PuzzleCandidateResult? cached = null)
     {
         if (_closed || _previewClosing) return;
+        if (!_foregroundActivated && _draft.Images.Kind is MemberImageSourceKind.Automatic or MemberImageSourceKind.None)
+        { await LoadPreviewAsync(); return; }
+        if (_draft.ResourceOrigin == MemberResourceOrigin.Package && _draft.Images.Kind == MemberImageSourceKind.Folder &&
+            _draft.Images.ManagedGallery is null) { RefreshPreview(); return; }
         var source = _draft.Images; var revision = _sourceRevision;
         var request = BeginRequest(); _sourceStatus.Text = T("Puzzle.ReadingSource");
         TraceImage($"CandidatesBegin request={request.Generation} prepared={cached is not null}");
@@ -823,11 +836,22 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private async Task LoadPreviewAsync()
     {
         if (_closed || _previewClosing) return;
+        if (!_foregroundActivated && _draft.Images.Kind is MemberImageSourceKind.Automatic or MemberImageSourceKind.None)
+        {
+            var retained = _frame;
+            if (retained is not null && _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur && retained.BlurredUnderfill is null)
+            {
+                var memoryRequest = BeginRequest();
+                var blurred = await _images.EnsureFrameBlurAsync(retained, memoryRequest.Token);
+                if (Active(memoryRequest.Generation) && ReferenceEquals(_frame, retained)) _frame = blurred;
+            }
+            RefreshPreview(); return;
+        }
         var request = BeginRequest();
         TraceImage($"PreviewBegin request={request.Generation} selected={_previewPath}");
         try
         {
-            var target = _draft.TargetInput is null ? null : string.Equals(_draft.TargetInput, _originalInput, StringComparison.Ordinal) ? _managedEntryPath ?? _draft.TargetInput : _draft.TargetInput;
+            var target = _selectedShortcutPath ?? (_draft.TargetInput is null ? null : string.Equals(_draft.TargetInput, _originalInput, StringComparison.Ordinal) ? _managedEntryPath ?? _draft.TargetInput : _draft.TargetInput);
             var requestedMember = _draft;
             var requestedScale = PreviewRasterizationScale;
             var metrics = new WallMetrics();
@@ -953,15 +977,17 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         if (_titleDirty && !ConfirmTitle()) return _error.Text;
         try
         {
-            var target = NormalizeTarget(_target.Text.Trim()) ?? string.Empty;
+            var target = _draft.TargetInput ?? string.Empty;
             var unchanged = string.Equals(target, _originalInput ?? string.Empty, StringComparison.Ordinal);
             var changes = new List<EntryChange>();
             var isUrl = !Path.IsPathFullyQualified(target) && Uri.TryCreate(target, UriKind.Absolute, out var uri) &&
                 !uri.Scheme.Equals(Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase);
-            if (target.Length == 0) { if (_original.Entry is not null) changes.Add(new EntryChange.Remove(_draft.Id)); }
-            else if (!unchanged || _original.Entry is null)
+            if (target.Length == 0) { if (_targetWasConfirmed && _original.Entry is not null) changes.Add(new EntryChange.Remove(_draft.Id)); }
+            else if (_targetWasConfirmed && (!unchanged || _original.Entry is null || _selectedShortcutPath is not null))
             {
-                if (isUrl)
+                if (_selectedShortcutPath is { } shortcutSource)
+                    changes.Add(new EntryChange.CopyShortcut(_draft.Id, shortcutSource));
+                else if (isUrl)
                 {
                     if (!RegisteredUrlProtocols.IsSupported(target)) return ShowError(T("Entry.InvalidUrl"));
                     changes.Add(_original.Entry?.Kind == ManagedEntryKind.Url ? new EntryChange.ChangeTarget(_draft.Id, target) : new EntryChange.CreateUrl(_draft.Id, target));
@@ -999,7 +1025,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             if (_draft is PuzzleMember puzzle && !new PartitionLayout(puzzle.LocalBounds.Size, puzzle.Partitions).Check().IsValid) return ShowError(T("Puzzle.InvalidPartition"));
             var candidate = _draft with
             {
-                TargetInput = target.Length == 0 ? null : target, Entry = target.Length == 0 ? null : _original.Entry,
+                TargetInput = _targetWasConfirmed ? target.Length == 0 ? null : target : _original.TargetInput,
+                Entry = _targetWasConfirmed && target.Length == 0 ? null : _original.Entry,
                 Images = _preparedSourceAsset is { } frozen && _draft.Images.Kind == MemberImageSourceKind.Single
                     ? _draft.Images with { Media = frozen.Reference } : _draft.Images,
             };
@@ -1149,7 +1176,10 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
 
     private bool ConfirmTarget()
     {
+        _foregroundActivated = true;
         var target = NormalizeTarget(_target.Text.Trim());
+        string? shortcutPath = null;
+        string? displayName = null;
         if (!string.IsNullOrEmpty(target))
         {
             var local = Path.IsPathFullyQualified(target);
@@ -1170,6 +1200,25 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                 try { if (!RegisteredUrlProtocols.IsSupported(UrlShortcut.ReadUrlLine(File.ReadAllBytes(target)))) { ShowError(T("Entry.InvalidUrl")); _target.Focus(FocusState.Programmatic); return false; } }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ShowError(ex.Message); _target.Focus(FocusState.Programmatic); return false; }
             }
+            if (local && Path.GetExtension(target).ToLowerInvariant() is ".lnk" or ".url" && !Directory.Exists(target))
+            {
+                try
+                {
+                    shortcutPath = target;
+                    displayName = Path.GetFileNameWithoutExtension(target);
+                    if (Path.GetExtension(target).Equals(".url", StringComparison.OrdinalIgnoreCase))
+                        target = UrlShortcut.ReadUrlLine(File.ReadAllBytes(target));
+                    else
+                    {
+                        var fields = _links.Read(target);
+                        target = !string.IsNullOrWhiteSpace(fields.TargetPath) ? fields.TargetPath :
+                            !string.IsNullOrWhiteSpace(fields.ShellParsingName) ? fields.ShellParsingName :
+                            fields.ShellIdListHash is { } hash ? "pidl:" + hash : target;
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException or ArgumentException)
+                { ShowError(ex.Message); _target.Focus(FocusState.Programmatic); return false; }
+            }
         }
         CancelRequest();
         CancelThumbnailRequests();
@@ -1180,9 +1229,12 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _targetRecognitionRequired = !_explicitImageSource;
         _recognitionAppearanceRevision = _appearanceRevision;
         _targetDirty = _titleDirty = false;
-        _draft = _draft with { TargetInput = target, Visual = _draft.Visual with { TitleMode = MemberTitleMode.Automatic, Title = null } };
+        _selectedShortcutPath = shortcutPath;
+        _targetWasConfirmed = true;
+        _draft = _draft with { TargetInput = target, SourceShortcutPath = shortcutPath, TargetDisplayName = displayName,
+            Visual = _draft.Visual with { TitleMode = MemberTitleMode.Automatic, Title = null } };
         Changed(); RefreshFields(); GallerySourceChanged?.Invoke();
-        _pending = ApplyTargetSourceAsync(target);
+        _pending = ApplyTargetSourceAsync(shortcutPath ?? target);
         return true;
     }
 
@@ -1285,6 +1337,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private async Task ApplyTargetSourceAsync(string? target)
     {
         if (_closed || _previewClosing) return;
+        var expectedTarget = _draft.TargetInput;
         // Explicit sources (including an explicitly chosen Automatic source) survive target edits.
         if (_explicitImageSource)
         {
@@ -1303,11 +1356,11 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         catch (OperationCanceledException) { return; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            if (Active(request.Generation) && sourceRevision == _sourceRevision && string.Equals(target, _draft.TargetInput, StringComparison.Ordinal))
+            if (Active(request.Generation) && sourceRevision == _sourceRevision && string.Equals(expectedTarget, _draft.TargetInput, StringComparison.Ordinal))
             { _targetSourceError = ex.Message; _sourceStatus.Text = ex.Message; ShowError(ex.Message); }
             return;
         }
-        if (!Active(request.Generation) || sourceRevision != _sourceRevision || !string.Equals(target, _draft.TargetInput, StringComparison.Ordinal)) return;
+        if (!Active(request.Generation) || sourceRevision != _sourceRevision || !string.Equals(expectedTarget, _draft.TargetInput, StringComparison.Ordinal)) return;
         if (result is null) return;
         _targetRecognition = result; _targetRecognitionRevision = sourceRevision; _verifiedRecognition = null;
         _targetRecognitionRequired = false;
@@ -1320,6 +1373,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
 
     private void MarkExplicitImageSource()
     {
+        _foregroundActivated = true;
+        _draft = _draft with { ResourceOrigin = MemberResourceOrigin.Local };
         _explicitImageSource = true;
         _recognitionAppearanceRevision = _appearanceRevision;
         _targetRecognitionRequired = false;

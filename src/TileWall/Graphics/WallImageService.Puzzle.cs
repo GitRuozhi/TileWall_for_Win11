@@ -33,6 +33,7 @@ public sealed record PuzzleFrame(string CanonicalPath, long SourceBytes, DateTim
 {
     public bool MemoryCacheAllowed { get; init; } = true;
     internal string? AutomaticStamp { get; init; }
+    internal string? AutomaticPackageTarget { get; init; }
     internal DateTimeOffset MemoryValidUntil { get; init; } = DateTimeOffset.MaxValue;
 }
 
@@ -158,7 +159,7 @@ public sealed partial class WallImageService
         ArgumentNullException.ThrowIfNull(source);
         if (ct.IsCancellationRequested)
             return new([], WallImageStatus.Cancelled);
-        if (source.Kind == MemberImageSourceKind.Automatic)
+        if (source.Kind is MemberImageSourceKind.Automatic or MemberImageSourceKind.None)
             return new([], WallImageStatus.None);
         if (source.Kind == MemberImageSourceKind.Folder) return await RefreshGalleryRequestAsync(source, ct);
 
@@ -235,6 +236,11 @@ public sealed partial class WallImageService
         MemberImagePurpose purpose = MemberImagePurpose.Content)
     {
         ArgumentNullException.ThrowIfNull(member);
+        if (member.Images.Kind == MemberImageSourceKind.None) return new(null, WallImageStatus.None);
+        if (member.ResourceOrigin == MemberResourceOrigin.Package &&
+            !(member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is not null ||
+              member.Images.Kind == MemberImageSourceKind.Folder && member.Images.ManagedGallery is not null))
+            return new(null, WallImageStatus.None, "PackageImageSourceUnavailable");
         if (widthPixels is < 1 or > 4096 || heightPixels is < 1 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(widthPixels));
         if (purpose is not (MemberImagePurpose.Content or MemberImagePurpose.Thumbnail))
@@ -263,9 +269,16 @@ public sealed partial class WallImageService
                     selected = candidates.Paths.FirstOrDefault(path =>
                         StringComparer.OrdinalIgnoreCase.Equals(path, member.Carousel?.CurrentImageId)) ?? candidates.Paths.FirstOrDefault();
                 }
+                // A committed current frame can be prepared without enumerating its
+                // gallery (and without selecting or saving a different image).
+                if (selected is not null && !StringComparer.OrdinalIgnoreCase.Equals(
+                    NormalizeImageFilePath(Path.GetDirectoryName(selected)), NormalizeImageFilePath(member.Images.Path)))
+                    return new(null, WallImageStatus.Invalid, "ImageOutsideGallery");
                 var selectedPath = selected;
                 sourceRead = await Task.Run(() => OpenManagedGalleryRead(member.Images, selectedPath), ct);
                 var cached = GalleryReadPath(member.Images, selected);
+                if (cached.Path is null && selected is not null)
+                    return await LoadImageFileFrameAsync(selected, budget, ct, selected);
                 if (cached.Path is not null && !File.Exists(cached.Path))
                     await EnsureGalleryOriginalAsync(member.Images, selected, ct);
                 return await LoadImageFileFrameAsync(cached.Path, budget, ct, selected, cached.Hash);

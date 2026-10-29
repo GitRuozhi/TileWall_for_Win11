@@ -1,10 +1,44 @@
 using TileWall.Core.Imaging;
 using TileWall.Core.Storage;
+using TileWall.Core.Wall;
+using System.Runtime.InteropServices.WindowsRuntime;
+using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Graphics.Imaging;
+using Windows.Storage.Streams;
 
 namespace TileWall.Graphics;
 
 public sealed partial class WallImageService
 {
+    /// <summary>Encode the automatic source plane, before any ImageDisplay, partition, background or blur transform.</summary>
+    internal Task<PreparedMediaAsset?> PrepareAutomaticExportImageAsync(WallMember member, string? entryOrTarget,
+        int width, int height, CancellationToken token) => StartImageRequest<PreparedMediaAsset?>(async requestToken =>
+    {
+        if (member.ResourceOrigin == MemberResourceOrigin.Package || member.Images.Kind != MemberImageSourceKind.Automatic)
+            return null;
+        var result = await LoadAutomaticFrameCoreAsync(entryOrTarget, width, height, false, requestToken, member);
+        requestToken.ThrowIfCancellationRequested();
+        if (result.Frame?.Sharp is not WriteableBitmap bitmap) return null;
+        var pixels = new byte[checked(bitmap.PixelWidth * bitmap.PixelHeight * 4)];
+        using (var input = bitmap.PixelBuffer.AsStream()) input.ReadExactly(pixels);
+        var pixelWidth = bitmap.PixelWidth; var pixelHeight = bitmap.PixelHeight;
+        return await Task.Run(async () =>
+        {
+            using var encoded = new InMemoryRandomAccessStream();
+            var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, encoded).AsTask(requestToken).ConfigureAwait(false);
+            encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied,
+                (uint)pixelWidth, (uint)pixelHeight, 96, 96, pixels);
+            await encoder.FlushAsync().AsTask(requestToken).ConfigureAwait(false);
+            requestToken.ThrowIfCancellationRequested();
+            if (encoded.Size is < 1 or > PreparedMediaAsset.MaximumBytes) throw new IOException("Automatic foreground exceeds its PNG byte budget.");
+            encoded.Seek(0);
+            using var input = encoded.AsStreamForRead();
+            var bytes = new byte[(int)encoded.Size];
+            await input.ReadExactlyAsync(bytes, requestToken).ConfigureAwait(false);
+            return PreparedMediaAsset.FromVerifiedImage(bytes, ".png");
+        }, requestToken);
+    }, token, null);
+
     internal Task<PuzzleFrameResult> LoadPackageFrameAsync(PreparedMediaAsset asset, int width, int height, bool blur,
         CancellationToken token) => StartImageRequest(requestToken => LoadPackageFrameCoreAsync(asset, width, height, blur, requestToken),
             token, new PuzzleFrameResult(null, WallImageStatus.Cancelled));

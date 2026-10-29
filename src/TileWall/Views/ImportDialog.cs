@@ -973,7 +973,7 @@ internal sealed class ImportDialog : IWallDialogSession
             if (result?.Frame is null && source.Package is null)
             {
                 var path = source.StartMenuSources.TryGetValue(row.Candidate.SelectionKey, out var startMenu)
-                    ? startMenu.Candidate.FullPath : row.Candidate.Source.Identity?.Target ?? row.Member.TargetInput;
+                    ? startMenu.Candidate.FullPath : row.Member.SourceShortcutPath ?? row.Candidate.Source.Identity?.Target ?? row.Member.TargetInput;
                 result = await _images.LoadMemberFrameAsync(row.Member, path, width, height,
                     ct: request.Token, purpose: MemberImagePurpose.Content);
             }
@@ -1025,6 +1025,7 @@ internal sealed class ImportDialog : IWallDialogSession
             if (sourceExtension.Equals(".lnk", StringComparison.OrdinalIgnoreCase) ||
                 sourceExtension.Equals(".url", StringComparison.OrdinalIgnoreCase)) return false;
         }
+        if (candidate.Member.SourceShortcutPath is not null) return false;
         var target = candidate.Member.TargetInput;
         // ResolveTargetSourceAsync treats .lnk as opaque and never follows it; the
         // exact path check also excludes URI targets without guessing a link target.
@@ -1033,7 +1034,7 @@ internal sealed class ImportDialog : IWallDialogSession
 
     private static string? AutomaticFrameValidationPath(ImportSourceCandidate candidate) =>
         candidate.SourceKind is ImportPageSourceKind.CurrentWall or ImportPageSourceKind.RecycleBin or ImportPageSourceKind.WallPackage
-            ? null : candidate.Member.TargetInput ?? candidate.Identity?.Target;
+            ? null : candidate.Member.SourceShortcutPath ?? candidate.Member.TargetInput ?? candidate.Identity?.Target;
 
     private void StartOperation()
     {
@@ -1238,7 +1239,7 @@ internal sealed class ImportDialog : IWallDialogSession
         _filter.PlaceholderText = ProductStrings.Get("Import.Filter.Placeholder");
         _selectAll.Content = "";
         _dialog.Title = ProductStrings.Get("Import.Title"); _dialog.CloseButtonText = ProductStrings.Get("Common.Cancel");
-        ActionIcon.SetIcon(_chooseFile, ProductStrings.Get("Import.ChoosePath"), ActionIcon.OpenFile);
+        ActionIcon.SetIcon(_chooseFile, ProductStrings.Get("Import.ChoosePath"), ActionIcon.OpenFolderHorizontal);
         ActionIcon.SetIcon(_small, ProductStrings.Get("Import.Small"), ActionIcon.PresetSmall);
         ActionIcon.SetIcon(_medium, ProductStrings.Get("Import.Medium"), ActionIcon.PresetMedium);
         _small.IsChecked = _tileSize == 1; _medium.IsChecked = _tileSize == 2;

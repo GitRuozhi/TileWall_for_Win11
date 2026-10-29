@@ -26,7 +26,8 @@ public sealed partial class MainWindow
         if (_scrollRegion.Width > 0)
         {
             WindowsSidebarHost.Margin = new Thickness(0);
-            WindowsSidebarHost.Height = Math.Max(1, (AppWindow.Size.Height - _frameHeight) / Scale);
+            WindowsSidebarHost.Height = _sidebarFullScreen
+                ? Math.Max(1, (AppWindow.Size.Height - _frameHeight) / Scale) : _scrollRegion.Height;
             WindowsSidebarHost.VerticalAlignment = VerticalAlignment.Top;
         }
         _windowsSidebar.MaxWidth = Math.Max(48, WallRoot.ActualWidth);

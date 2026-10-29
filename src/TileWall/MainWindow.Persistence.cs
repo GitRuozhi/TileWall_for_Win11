@@ -140,12 +140,18 @@ public sealed partial class MainWindow
         return error;
     }
 
-    private void SettleReleasePersistence(string? error)
+    private void SettleReleasePersistence(string? error, bool automaticHeight = false)
     {
         _performance.End(error is null ? "release" : "commit-rejected", Surface.VisualCreationCount, Surface.GridCreationCount);
         if (error is not null)
         {
-            if (!_viewBlocked) { Surface.Render(Document); ApplyViewport(animateMode: false); }
+            if (!_viewBlocked && !_windowClosing && !ShutdownStarted)
+            {
+                if (automaticHeight && !Settings.FullScreen && Surface.Geometry?.WallHeight != _metrics.WallHeight(Document.Rows))
+                    Surface.BeginAutomaticHeightPresentation();
+                Surface.Render(Document);
+                ApplyViewport(animateMode: false, animateHeight: automaticHeight);
+            }
             Status(error);
         }
     }
@@ -187,6 +193,7 @@ public sealed partial class MainWindow
         _clockTimer.Stop();
         _focusCheckRetry?.Stop();
         _viewportTransition = null;
+        Surface.EndAutomaticHeightPresentation();
         CancelTransientState();
         StopFrameSubscriptionIfIdle();
         await ShutdownInteractionSchedulingAsync();

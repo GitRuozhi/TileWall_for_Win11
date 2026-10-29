@@ -96,11 +96,10 @@ public sealed partial class MainWindow
     }
 
     private Task<PuzzleFrameResult> LoadImportIconAsync(ImportSourceCandidate candidate, int width, int height, CancellationToken token) =>
-        _images.LoadAutomaticFrameAsync(candidate.SourceKind is ImportPageSourceKind.CurrentWall or ImportPageSourceKind.RecycleBin
+        _images.LoadMemberFrameAsync(candidate.Member, candidate.SourceKind is ImportPageSourceKind.CurrentWall or ImportPageSourceKind.RecycleBin
                 ? _session.ManagedEntryPath(candidate.Member) ?? candidate.Member.TargetInput
-                : candidate.SourceKind == ImportPageSourceKind.WallPackage ? candidate.Identity?.Target : candidate.Member.TargetInput ?? candidate.Identity?.Target,
-            width, height,
-            candidate.Member.Visual.BackgroundMode == MemberBackgroundMode.Blur, token);
+                : candidate.SourceKind == ImportPageSourceKind.WallPackage ? null : candidate.Member.SourceShortcutPath ?? candidate.Member.TargetInput ?? candidate.Identity?.Target,
+            width, height, ct: token);
 
     private bool IsImportContextCurrent(ImportPageContext context) => _hasDocument && !_viewBlocked &&
         !_session.ResultUnknown && !_session.RequiresReopen && !_session.RecoveryBlocked &&
@@ -261,7 +260,9 @@ public sealed partial class MainWindow
                     try { identity = ImportIdentities.ResolveMember(member, _session.ManagedEntryPath(member)); }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException) { }
                 }
-                var target = StartMenuImportProjection.ObserveTarget(identity);
+                var target = member.ResourceOrigin == MemberResourceOrigin.Package
+                    ? new StartMenuImportProjection.TargetObservation(ImportTargetAvailability.Unknown, null)
+                    : StartMenuImportProjection.ObserveTarget(identity);
                 rows.Add(new(member.Id, member.Visual.Title ?? member.Id, member)
                 {
                     SourceKind = ImportPageSourceKind.CurrentWall, Policy = ImportSourcePolicy.Attributed,
@@ -283,6 +284,54 @@ public sealed partial class MainWindow
         {
             using var snapshot = await _session.CapturePackageSnapshotAsync(request.Context.Document.Generation,
                 request.SelectedMemberIds, CancellationToken.None);
+            void RequireCurrent()
+            {
+                if (!request.IsCurrent() || !IsImportContextCurrent(request.Context) || PersistenceInteractionBlocked || ShutdownStarted)
+                    throw new ImportSourceChangedException("The export source changed.");
+            }
+            async Task RequireEntryCurrentAsync(WallMember member, string? path)
+            {
+                RequireCurrent();
+                if (snapshot.EntrySha256(member.Id) is not { } expected) return;
+                await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
+                {
+                    var files = new LocalFileStore();
+                    var guarded = new GuardedWallFiles(files, new WallStoragePaths(files, _session.DataRoot));
+                    using var stream = guarded.OpenReadProtected(path ?? throw new IOException("Missing formal export entry."));
+                    if (stream.Length is < 1 or > EntryObservation.MaximumBytes || Convert.ToHexString(SHA256.HashData(stream)) != expected)
+                        throw new ImportSourceChangedException("The export entry changed.");
+                    return true;
+                });
+                RequireCurrent();
+            }
+            var images = new Dictionary<string, PreparedMediaAsset?>(StringComparer.Ordinal);
+            long preparedBytes = 0;
+            var preparedHashes = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var member in snapshot.AutomaticImageMembers)
+            {
+                RequireCurrent();
+                PreparedMediaAsset? image = null;
+                if (member.ResourceOrigin == MemberResourceOrigin.Local)
+                {
+                    var path = _session.ManagedEntryPath(member) ?? member.SourceShortcutPath ?? member.TargetInput;
+                    await RequireEntryCurrentAsync(member, path);
+                    var reserve = member.ImageDisplay.Mode == TileWall.Core.Imaging.ImageDisplayMode.Custom
+                        ? Math.Max(1, member.ImageDisplay.CustomScale) : 1;
+                    image = await _images.PrepareAutomaticExportImageAsync(member, path,
+                        (int)Math.Clamp(Math.Ceiling(_metrics.WidthOf(member.LocalBounds.Width) * Scale * reserve), 1, 4096),
+                        (int)Math.Clamp(Math.Ceiling(_metrics.HeightOf(member.LocalBounds.Height) * Scale * reserve), 1, 4096), CancellationToken.None);
+                    await RequireEntryCurrentAsync(member, path);
+                }
+                if (image is not null && preparedHashes.Add(image.Reference.Sha256))
+                {
+                    preparedBytes = checked(preparedBytes + image.Reference.Length);
+                    if (preparedBytes > new WallPackageLimits().MaximumPreparedMediaBytes)
+                        throw new IOException("Automatic foregrounds exceed the export preparation budget.");
+                }
+                images.Add(member.Id, image);
+            }
+            RequireCurrent();
+            snapshot.CompleteAutomaticImages(images);
             var result = await new WallPackageWriter(CreateWallPackageReader()).WriteAsync(snapshot, request.OutputPath,
                 typeof(ProductVersion).Assembly.GetName().Version!.ToString(), additionalProtectedPaths: _knownImportPackages,
                 token: CancellationToken.None);
@@ -412,7 +461,7 @@ public sealed partial class MainWindow
                     {
                         var source = sourceByKey[accepted.SourceKey];
                         var known = request.RecognizedTargets.GetValueOrDefault(accepted.SourceKey);
-                        return (Member: placed[accepted.MemberId], Input: source.Member.TargetInput,
+                        return (Member: placed[accepted.MemberId], Input: source.Member.SourceShortcutPath ?? source.Member.TargetInput,
                             Inference: known?.Matches(request.Source, source) == true ? known.Result : null);
                     }).ToArray();
                 var prepared = await PrepareAcceptedTargetImagesAsync(inputs, request.Context.Document.Generation, RequireCurrent, CancellationToken.None);
@@ -640,6 +689,7 @@ public sealed partial class MainWindow
         var stamp = FormattableString.Invariant($"{(directory ? "directory" : "file")}|{info.CreationTimeUtc.Ticks}|{info.LastWriteTimeUtc.Ticks}|{(info is FileInfo file ? file.Length : 0)}");
         LaunchIdentity identity;
         string? hash = null;
+        string? shortcutTarget = null;
         if (item.Kind == ExplorerAddKind.CopyShortcut)
         {
             using var stream = new FileStream(item.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -648,13 +698,27 @@ public sealed partial class MainWindow
                 ? ManagedEntryKind.Lnk : ManagedEntryKind.Url;
             var fields = kind == ManagedEntryKind.Lnk ? _session.LinkFiles.Read(item.SourcePath) : null;
             identity = EntryObservation.Observe(identities, kind, item.SourcePath, bytes, fields);
+            shortcutTarget = kind == ManagedEntryKind.Url ? UrlShortcut.ReadUrlLine(bytes)
+                : fields?.TargetPath ?? fields?.ShellParsingName;
             hash = Convert.ToHexString(SHA256.HashData(bytes));
         }
         else identity = LaunchIdentityService.ForPath(item.SourcePath);
         token.ThrowIfCancellationRequested();
         if (identity.IsUrl && (identity.Key.StartsWith("opaque-url:", StringComparison.Ordinal) || !RegisteredUrlProtocols.IsSupported(identity.Target)))
             throw new IOException(ProductStrings.Get("Import.UnsupportedProtocol"));
-        return item with { ExpectedIdentityKey = identity.Key, ExpectedSourceSha256 = hash, ExpectedSourceStamp = stamp };
+        return item with
+        {
+            Member = item.Member with
+            {
+                TargetInput = item.Kind == ExplorerAddKind.CopyShortcut
+                    ? shortcutTarget ?? (identity.Key.StartsWith("opaque", StringComparison.Ordinal) ? item.Member.TargetInput : identity.Target)
+                    : item.Member.TargetInput,
+                SourceShortcutPath = item.Kind == ExplorerAddKind.CopyShortcut ? item.SourcePath : null,
+                TargetDisplayName = MemberPresentationRules.AutomaticTitle(item.SourcePath, directory),
+                ResourceOrigin = MemberResourceOrigin.Local,
+            },
+            ExpectedIdentityKey = identity.Key, ExpectedSourceSha256 = hash, ExpectedSourceStamp = stamp,
+        };
     }
 
     private static byte[] ReadExternalEntryBytes(Stream stream)

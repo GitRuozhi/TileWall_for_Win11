@@ -40,7 +40,7 @@ public sealed class WallPackageReader(
             var manifest = WallPackageJson.Deserialize<WallPackageManifest>(
                 await WallPackageZip.ReadAsync(manifestEntry, limits.MaximumManifestBytes, token).ConfigureAwait(false));
             if (manifest.FormatId != WallPackageManifest.CurrentFormatId ||
-                manifest.FormatVersion != WallPackageManifest.CurrentFormatVersion ||
+                manifest.FormatVersion is not (2 or WallPackageManifest.CurrentFormatVersion) ||
                 manifest.WallSchemaVersion != WallDocument.CurrentSchemaVersion)
                 return new(WallPackageReadStatus.UnsupportedFormat, null, "This wall file requires a supported application version.");
             if (manifest.Files is null || !WallPackageJson.ValidHash(manifest.ContentFingerprint) ||
@@ -60,7 +60,7 @@ public sealed class WallPackageReader(
             if (files.Count + 1 != entries.Count || !files.TryGetValue("wall.json", out var wallFile) || wallFile.Purpose != "wall")
                 throw new InvalidDataException("Missing or additional package files.");
             var wallBytes = await ReadDeclaredAsync(entries["wall.json"], wallFile, limits.MaximumContentBytes, token).ConfigureAwait(false);
-            var content = WallPackageJson.Deserialize<WallPackageContent>(wallBytes);
+            var content = WallPackageJson.Deserialize<WallPackageContent>(wallBytes, manifest.FormatVersion);
             WallPackageJson.ValidateContent(content, limits, token);
             content = WallPackageJson.Freeze(content);
             var expected = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["wall.json"] = "wall" };
@@ -114,7 +114,7 @@ public sealed class WallPackageReader(
                 if (keys.Distinct(StringComparer.Ordinal).Count() != keys.Length)
                     throw new InvalidDataException("Duplicate launch identities in one source group.");
             }
-            if (WallPackageJson.Fingerprint(content, files.Values) != manifest.ContentFingerprint)
+            if (WallPackageJson.Fingerprint(content, files.Values, manifest.FormatVersion) != manifest.ContentFingerprint)
                 throw new InvalidDataException("Content snapshot fingerprint differs.");
             token.ThrowIfCancellationRequested();
             return new(WallPackageReadStatus.Valid, new WallPackagePreview(Path.GetFullPath(packagePath), content,

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
 
@@ -14,12 +15,26 @@ internal static class WallPackageJson
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         MaxDepth = 64,
     };
+    private static readonly JsonSerializerOptions V2Options = CreateV2Options();
+    private static JsonSerializerOptions CreateV2Options()
+    {
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(typeInfo =>
+        {
+            if (typeInfo.Type != typeof(WallPackageMember)) return;
+            foreach (var name in new[] { "sourceShortcutPath", "targetDisplayName" })
+                typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == name));
+        });
+        return new(Options) { TypeInfoResolver = resolver };
+    }
     internal static byte[] Serialize<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value, Options);
-    internal static T Deserialize<T>(byte[] bytes)
+    internal static byte[] Serialize<T>(T value, int formatVersion) =>
+        JsonSerializer.SerializeToUtf8Bytes(value, formatVersion == 2 ? V2Options : Options);
+    internal static T Deserialize<T>(byte[] bytes, int formatVersion = WallPackageManifest.CurrentFormatVersion)
     {
         using var json = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 64 });
         RejectDuplicateProperties(json.RootElement);
-        return JsonSerializer.Deserialize<T>(bytes, Options) ?? throw new InvalidDataException("Empty package JSON.");
+        return JsonSerializer.Deserialize<T>(bytes, formatVersion == 2 ? V2Options : Options) ?? throw new InvalidDataException("Empty package JSON.");
     }
     private static void RejectDuplicateProperties(JsonElement element)
     {
@@ -47,9 +62,10 @@ internal static class WallPackageJson
         Galleries = Array.AsReadOnly(content.Galleries.ToArray()),
     };
 
-    internal static string Fingerprint(WallPackageContent content, IEnumerable<WallPackageFile> files) =>
+    internal static string Fingerprint(WallPackageContent content, IEnumerable<WallPackageFile> files,
+        int formatVersion = WallPackageManifest.CurrentFormatVersion) =>
         Hash(Serialize(new { Content = content, Assets = files.Where(f => f.Path != "wall.json")
-            .OrderBy(f => f.Path, StringComparer.Ordinal).ToArray() }));
+            .OrderBy(f => f.Path, StringComparer.Ordinal).ToArray() }, formatVersion));
 
     internal static string EntryPath(WallPackageMember member) =>
         $"objects/{member.Id}/entry.{(member.EntryKind == ManagedEntryKind.Lnk ? "lnk" : "url")}";
@@ -121,8 +137,13 @@ internal static class WallPackageJson
                 member.Kind != "clock" && (member.TimeFormat is not null || member.DateFormat is not null))
                 throw new InvalidDataException("Invalid member type data.");
             if (member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is null ||
-                member.Images.Media is { } media && !PreparedMediaAsset.IsValidReference(media))
+                member.Images.Media is { } media && (member.Images.Kind != MemberImageSourceKind.Single || !PreparedMediaAsset.IsValidReference(media)))
                 throw new InvalidDataException("Invalid formal image reference.");
+            if (!Enum.IsDefined(member.Images.Kind) || member.Images.Kind == MemberImageSourceKind.None &&
+                (member.Images.Path is not null || member.Images.Media is not null || member.Images.GalleryId is not null))
+                throw new InvalidDataException("Invalid empty image source.");
+            if (member.SourceShortcutPath is { Length: > 32768 } || member.TargetDisplayName is { Length: > 32768 })
+                throw new InvalidDataException("Oversized entry presentation fields.");
             if (member.Images.GalleryId is { } galleryId && (!ValidHash(galleryId) || member.Images.Kind != MemberImageSourceKind.Folder ||
                 member.Images.Path is not null || member.Images.Media is not null))
                 throw new InvalidDataException("A package gallery must use only a logical source ID.");

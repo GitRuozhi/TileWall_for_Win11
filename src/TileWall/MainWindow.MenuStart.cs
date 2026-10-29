@@ -25,14 +25,14 @@ public sealed partial class MainWindow
     private MenuGroupExpansion _menuExpansion = new();
     private MenuStartStateStore? _menuStateStore;
     private Task? _menuStateWrite;
-    private CancellationTokenSource? _menuIconsCancellation;
-    private readonly HashSet<Task> _menuIconWork = [];
+    private readonly Dictionary<string, List<Image>> _menuIcons = new(StringComparer.Ordinal);
     private bool _menuImagesActive;
 
     private void InitializeMenuStart()
     {
         AutomationProperties.SetAutomationId(_menuStart, "menu-start-list");
         WallRoot.Children.Insert(1, _menuStart);
+        _puzzles.FrameChanged += UpdateMenuFrame;
         _menuStateStore = new(new LocalFileStore(), _session.DataRoot);
         try { _menuExpansion = _menuStateStore.Read(); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
@@ -42,10 +42,7 @@ public sealed partial class MainWindow
     private void RenderMenuStart(WallDocument document)
     {
         _menuStart.Visibility = document.Settings.MenuStart ? Visibility.Visible : Visibility.Collapsed;
-        _menuIconsCancellation?.Cancel();
-        _menuIconsCancellation?.Dispose();
-        _menuIconsCancellation = new();
-        var token = _menuIconsCancellation.Token;
+        _menuIcons.Clear();
         if (_menuExpansion.Retain(document.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id))) SaveMenuExpansion();
         if (!document.Settings.MenuStart || !_menuImagesActive) { _menuStart.Content = null; return; }
         var panel = new StackPanel { Spacing = 0 };
@@ -104,6 +101,7 @@ public sealed partial class MainWindow
                 var action = ProductStrings.Get(expanded ? "MenuStart.Collapse" : "MenuStart.Expand");
                 AutomationProperties.SetName(toggle, action + " " + groupTitle);
                 ToolTipService.SetToolTip(toggle, action);
+                foreach (var member in entries) _menuIcons.Remove(member.Id);
                 entryPanel.Children.Clear();
                 if (!expanded) return;
                 foreach (var member in entries)
@@ -111,10 +109,11 @@ public sealed partial class MainWindow
                     var content = new Grid { Margin = new Thickness(16, 0, 0, 0) };
                     content.ColumnDefinitions.Add(new() { Width = new GridLength(44) });
                     content.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-                    var icon = new Image { Width = 24, Height = 24, Stretch = Stretch.Uniform };
+                    var icon = new Image { Width = 24, Height = 24, Stretch = Stretch.Uniform,
+                        Source = _puzzles.FrameFor(member.Id)?.Sharp };
                     content.Children.Add(icon);
-                    _menuIconWork.RemoveWhere(work => work.IsCompleted);
-                    _menuIconWork.Add(LoadMenuIconAsync(member, icon, token));
+                    if (!_menuIcons.TryGetValue(member.Id, out var icons)) _menuIcons[member.Id] = icons = [];
+                    icons.Add(icon);
                     var label = new TextBlock { Text = member.Visual.Title ?? MemberPresentationRules.ResolveTitle(member),
                         VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
                         Margin = new Thickness(0, 0, 12, 0) };
@@ -138,16 +137,10 @@ public sealed partial class MainWindow
         PositionMenuStart(_scrollRegion);
     }
 
-    private async Task LoadMenuIconAsync(WallMember member, Image icon, CancellationToken token)
+    private void UpdateMenuFrame(string memberId, PuzzleFrame? frame, double progress)
     {
-        try
-        {
-            var frame = await _images.LoadMemberFrameAsync(member, _session.ManagedEntryPath(member) ?? member.TargetInput,
-                24, 24, ct: token, purpose: MemberImagePurpose.Thumbnail);
-            if (!token.IsCancellationRequested && !_windowClosing && !ShutdownStarted) icon.Source = frame.Frame?.Sharp;
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { if (!token.IsCancellationRequested) AppLog.Warn("MenuStart", ex.GetType().Name); }
+        if (_windowClosing || ShutdownStarted || !_menuIcons.TryGetValue(memberId, out var icons)) return;
+        foreach (var icon in icons) icon.Source = frame?.Sharp;
     }
 
     private void SaveMenuExpansion()
@@ -165,13 +158,11 @@ public sealed partial class MainWindow
 
     private async Task ShutdownMenuStartAsync()
     {
-        _menuIconsCancellation?.Cancel();
+        _puzzles.FrameChanged -= UpdateMenuFrame;
         if (_menuStateWrite is { } write)
             try { await write; }
             catch (Exception ex) { AppLog.Warn("MenuStart", $"UI preference write did not finish: {ex.GetType().Name}"); }
-        await Task.WhenAll(_menuIconWork);
-        _menuIconWork.Clear(); _menuStart.Content = null;
-        _menuIconsCancellation?.Dispose(); _menuIconsCancellation = null;
+        _menuIcons.Clear(); _menuStart.Content = null;
     }
 
     private void SetMenuImagesActive(bool active)

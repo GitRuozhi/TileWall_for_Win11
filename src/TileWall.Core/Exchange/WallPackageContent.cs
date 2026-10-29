@@ -97,6 +97,8 @@ public sealed record WallPackageMember
     public MemberVisual Visual { get; init; } = new();
     public ManagedEntryKind? EntryKind { get; init; }
     public string? TargetInput { get; init; }
+    public string? SourceShortcutPath { get; init; }
+    public string? TargetDisplayName { get; init; }
     public WallPackageImageSource Images { get; init; } = new();
     public MemberImageDisplay ImageDisplay { get; init; } = new();
     public ImageRotationInterval RotationInterval { get; init; } = ImageRotationInterval.Minute1;
@@ -109,7 +111,9 @@ public sealed record WallPackageMember
         Id = member.Id,
         Kind = member switch { TileMember => "tile", PuzzleMember => "puzzle", ClockMember => "clock", _ => throw new InvalidDataException("Unknown member kind.") },
         LocalBounds = member.LocalBounds, Visual = member.Visual, EntryKind = member.Entry?.Kind,
-        TargetInput = member.TargetInput, Images = WallPackageImageSource.From(member.Images), ImageDisplay = member.ImageDisplay,
+        TargetInput = member.TargetInput, SourceShortcutPath = member.SourceShortcutPath,
+        TargetDisplayName = member.TargetDisplayName ?? MemberPresentationRules.AutomaticTitle(member.SourceShortcutPath ?? member.TargetInput),
+        Images = WallPackageImageSource.From(member.Images), ImageDisplay = member.ImageDisplay,
         RotationInterval = member.RotationInterval,
         Partitions = member is PuzzleMember puzzle ? puzzle.Partitions.Select(part => (WallPackageBounds)part).ToArray() : null,
         TimeFormat = member is ClockMember clock ? clock.TimeFormat : null,
@@ -129,7 +133,10 @@ public sealed record WallPackageMember
         return member with
         {
             Visual = Visual, Entry = EntryKind is { } kind ? new(id, $"Objects/{id}/entry.{(kind == ManagedEntryKind.Lnk ? "lnk" : "url")}", kind) : null,
-            TargetInput = TargetInput, Images = Images.ToSource(), ImageDisplay = ImageDisplay, RotationInterval = RotationInterval,
+            TargetInput = TargetInput, SourceShortcutPath = SourceShortcutPath, TargetDisplayName = TargetDisplayName,
+            ResourceOrigin = MemberResourceOrigin.Package,
+            Images = Images.Kind == MemberImageSourceKind.Automatic ? new() { Kind = MemberImageSourceKind.None } : Images.ToSource(),
+            ImageDisplay = ImageDisplay, RotationInterval = RotationInterval,
         };
     }
 }

@@ -196,7 +196,10 @@ public static class ImportSourcePlanner
                 Source = candidate.Source with
                 {
                     Member = new TileMember { Id = candidate.Source.Member.Id, LocalBounds = new(0, 0, 1, 1),
-                        TargetInput = candidate.Source.Member.TargetInput, Visual = candidate.Source.Member.Visual }, HasRecordedPosition = false, HasRecordedSize = false,
+                        TargetInput = candidate.Source.Member.TargetInput, Visual = candidate.Source.Member.Visual,
+                        ResourceOrigin = candidate.Source.Member.ResourceOrigin,
+                        SourceShortcutPath = candidate.Source.Member.SourceShortcutPath,
+                        TargetDisplayName = candidate.Source.Member.TargetDisplayName }, HasRecordedPosition = false, HasRecordedSize = false,
                 },
             }).ToArray();
             var built = BuildGroup(projectedGroup, rows, defaultSize, null, id, used, preview: true);

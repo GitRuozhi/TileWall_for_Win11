@@ -59,8 +59,11 @@ public sealed partial class WallStore
         var mediaLengths = new Dictionary<string, long>(StringComparer.Ordinal);
         var galleries = new Dictionary<string, WallPackageSnapshotGallery>(StringComparer.Ordinal);
         var additionalHandles = new List<Stream>();
-        var protectedPaths = stored!.EnumerateAllMembers().SelectMany(member => new[] { member.TargetInput, member.Images.Path })
+        var protectedPaths = stored!.EnumerateAllMembers().Where(member => member.ResourceOrigin == MemberResourceOrigin.Local)
+            .SelectMany(member => new[] { member.TargetInput, member.SourceShortcutPath, member.Images.Path })
             .Append(current.Settings.BackgroundImagePath).OfType<string>().ToList();
+        var lexicalProtectedPaths = stored.EnumerateAllMembers().Where(member => member.ResourceOrigin == MemberResourceOrigin.Package)
+            .SelectMany(member => new[] { member.TargetInput, member.SourceShortcutPath, member.Images.Path }).OfType<string>().ToList();
         try
         {
             if (payloadBytes > limits.MaximumContentBytes) throw new InvalidDataException("Export content exceeds its budget.");
@@ -96,7 +99,8 @@ public sealed partial class WallStore
                 if (payloadBytes > limits.MaximumExpandedBytes) throw new InvalidDataException("Export selection exceeds its expanded-byte budget.");
                 var bytes = new byte[(int)source.Length]; source.ReadExactly(bytes);
                 var identity = EntryObservation.Observe(_identities, entry.Kind, path, bytes);
-                entries.Add(member.Id, new(bytes, identity)); protectedPaths.Add(identity.Target);
+                entries.Add(member.Id, new(bytes, identity)); protectedPaths.Add(path);
+                (member.ResourceOrigin == MemberResourceOrigin.Package ? lexicalProtectedPaths : protectedPaths).Add(identity.Target);
             }
             foreach (var group in content.Groups)
             {
@@ -126,7 +130,8 @@ public sealed partial class WallStore
                 throw new InvalidDataException("Export selection exceeds its entry-count budget.");
             token.ThrowIfCancellationRequested();
             if (!CurrentMatchesDisk(current, expectedGeneration, out _, out _, activeView, expectedManifestSha256)) throw new IOException("Committed wall changed during export capture.");
-            var snapshot = new WallPackageSnapshot(_paths.Root, expectedGeneration, content, entries, media, protectedPaths, galleries);
+            var snapshot = new WallPackageSnapshot(_paths.Root, expectedGeneration, content, entries, media, protectedPaths, galleries,
+                members.Where(member => member.Images.Kind == MemberImageSourceKind.Automatic).ToArray(), lexicalProtectedPaths);
             snapshot.AttachResourceLease(new ResourceLease(() =>
             {
                 try { foreach (var handle in additionalHandles) handle.Dispose(); }

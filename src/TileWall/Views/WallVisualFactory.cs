@@ -175,7 +175,9 @@ internal static class WallMemberVisualFactory
     internal static PuzzleMember Project(WallMember member) => member as PuzzleMember ?? new PuzzleMember
     {
         Id = member.Id, LocalBounds = member.LocalBounds, Visual = member.Visual, Entry = member.Entry,
-        TargetInput = member.TargetInput, Images = member.Images, ImageDisplay = member.ImageDisplay,
+        TargetInput = member.TargetInput, SourceShortcutPath = member.SourceShortcutPath,
+        TargetDisplayName = member.TargetDisplayName, ResourceOrigin = member.ResourceOrigin,
+        Images = member.Images, ImageDisplay = member.ImageDisplay,
         RotationInterval = member.RotationInterval, Carousel = member.Carousel,
         ImportSource = member.ImportSource, UserClaimed = member.UserClaimed,
         Partitions = [new GridRect(0, 0, member.LocalBounds.Width, member.LocalBounds.Height)],

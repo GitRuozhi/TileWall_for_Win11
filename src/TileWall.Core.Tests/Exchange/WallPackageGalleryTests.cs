@@ -50,6 +50,7 @@ public sealed class WallPackageGalleryTests : IDisposable
         var (store, document, gallery, root) = Seed();
         var reader = Reader(); var path = Path.Combine(_directory, "selected.zip");
         using var snapshot = store.CapturePackageSnapshot(document, document.Generation, ids);
+        snapshot.CompleteAutomaticImages();
         var result = await new WallPackageWriter(reader).WriteAsync(snapshot, path, "test");
         Assert.Equal(WallPackageWriteStatus.Saved, result.Status);
         return (path, reader, gallery, root);
@@ -62,7 +63,7 @@ public sealed class WallPackageGalleryTests : IDisposable
         Directory.Delete(sender, recursive: true);
         var read = await reader.ReadPreviewAsync(path); Assert.Equal(WallPackageReadStatus.Valid, read.Status);
         var preview = read.Preview!;
-        Assert.Equal(2, preview.Manifest.FormatVersion); Assert.Single(preview.Galleries);
+        Assert.Equal(WallPackageManifest.CurrentFormatVersion, preview.Manifest.FormatVersion); Assert.Single(preview.Galleries);
         Assert.Equal(2, preview.Manifest.Files.Count(file => file.Purpose == "media"));
         Assert.Single(preview.Manifest.Files, file => file.Purpose == "gallery");
         Assert.DoesNotContain(sender, Encoding.UTF8.GetString(WallPackageJson.Serialize(preview.Content)));

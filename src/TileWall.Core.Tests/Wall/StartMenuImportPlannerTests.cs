@@ -118,4 +118,129 @@ public sealed class StartMenuImportPlannerTests
         Assert.Null(result.Proposal); Assert.Equal(WallRejection.NoSpace, result.Rejection);
         Assert.Equal(64, Groups(current).Count());
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TailReusesAdjacentEmptyLaneAndKeepsOldLanes(bool expanded)
+    {
+        var first = Group("first"); var second = Group("second");
+        var current = WallDocument.Empty(3, 8) with
+        {
+            Settings = new() { ExpandColumns = expanded },
+            Lanes = [new() { Groups = [first] }, new() { Groups = [second] }, new() { Groups = [] }],
+        };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")],
+            budget: Budget(4, 8), insertionPosition: ImportInsertionPosition.Tail);
+        Assert.True(result.Success, result.Detail);
+        var proposed = result.Proposal!.Document;
+        Assert.Same(first, Assert.Single(proposed.Lanes[0].Groups));
+        Assert.Same(second, Assert.Single(proposed.Lanes[1].Groups));
+        Assert.Equal("incoming", Assert.Single(proposed.Lanes[2].Groups).Id);
+        Assert.Equal(expanded ? 4 : 3, proposed.Columns);
+        if (expanded) Assert.Empty(proposed.Lanes[^1].Groups);
+    }
+
+    [Fact]
+    public void TailStartsAfterLastContentWithoutFillingItsRemainingHeight()
+    {
+        var first = Group("first"); var second = Group("second");
+        var current = WallDocument.Empty(2, 16) with
+            { Lanes = [new() { Groups = [first] }, new() { Groups = [second] }] };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")],
+            budget: Budget(4, 16), insertionPosition: ImportInsertionPosition.Tail);
+        Assert.True(result.Success, result.Detail);
+        Assert.Equal(3, result.Proposal!.Document.Columns);
+        Assert.Equal(["first", "second", "incoming"], result.Proposal.Document.Lanes.Select(lane => Assert.Single(lane.Groups).Id));
+    }
+
+    [Fact]
+    public void TailPreservesNonExpandedInternalAndSurplusEmptyLanes()
+    {
+        var current = WallDocument.Empty(5, 8) with
+        {
+            Lanes = [new() { Groups = [Group("first")] }, new() { Groups = [] },
+                new() { Groups = [Group("last")] }, new() { Groups = [] }, new() { Groups = [] }],
+        };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")],
+            budget: Budget(5, 8), insertionPosition: ImportInsertionPosition.Tail);
+        Assert.True(result.Success, result.Detail);
+        var lanes = result.Proposal!.Document.Lanes;
+        Assert.Empty(lanes[1].Groups);
+        Assert.Equal("last", Assert.Single(lanes[2].Groups).Id);
+        Assert.Equal("incoming", Assert.Single(lanes[3].Groups).Id);
+        Assert.Empty(lanes[4].Groups);
+    }
+
+    [Fact]
+    public void TailCompactsOnlyNecessaryBlankRowsBeforeRejectingTallGroup()
+    {
+        var old = Group("old", Tile("old-member", 3, 2));
+        var incoming = Group("tall", Tile("upper"), Tile("lower", 4, 20));
+        var current = WallDocument.Empty(2, 4) with
+            { Lanes = [new() { Groups = [old] }, new() { Groups = [] }] };
+        var before = WallJson.Serialize(current);
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [incoming],
+            budget: Budget(2, 12), insertionPosition: ImportInsertionPosition.Tail);
+        Assert.True(result.Success, result.Detail);
+        var proposed = result.Proposal!.Document;
+        Assert.Same(old, Assert.Single(proposed.Lanes[0].Groups));
+        var lower = Assert.Single(proposed.Lanes[1].Groups).Members.Single(member => member.Id == "lower");
+        Assert.Equal(10, lower.LocalBounds.Row);
+        Assert.Equal(12, proposed.Rows);
+        Assert.Equal(before, WallJson.Serialize(current));
+    }
+
+    [Fact]
+    public void TailRemovesSavedBottomWhitespaceWhenEnvironmentRequiresIt()
+    {
+        var current = WallDocument.Empty(1, 16) with { Lanes = [new() { Groups = [Group("old")] }] };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")],
+            budget: Budget(2, 12), insertionPosition: ImportInsertionPosition.Tail);
+        Assert.True(result.Success, result.Detail);
+        Assert.Equal(12, result.Proposal!.Document.Rows);
+        Assert.Equal("old", Assert.Single(result.Proposal.Document.Lanes[0].Groups).Id);
+    }
+
+    [Fact]
+    public void TailReflowsWholeGroupsOnlyWhenAdjacentColumnCannotFit()
+    {
+        var current = WallDocument.Empty(2, 8) with
+            { Lanes = [new() { Groups = [Group("first")] }, new() { Groups = [Group("second")] }] };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")],
+            budget: Budget(2, 8), insertionPosition: ImportInsertionPosition.Tail);
+        Assert.True(result.Success, result.Detail);
+        Assert.Equal(["first", "second", "incoming"], Groups(result.Proposal!.Document).Select(group => group.Id));
+        Assert.Equal(2, result.Proposal.Document.Columns);
+    }
+
+    [Fact]
+    public void TailExpandedColumnLimitStillIncludesTheUniqueEmptyTail()
+    {
+        var current = WallDocument.Empty(64, 2) with
+        {
+            Settings = new() { ExpandColumns = true },
+            Lanes = Enumerable.Range(0, 63).Select(index => new WallLane { Groups = [Group("old-" + index)] })
+                .Append(new WallLane { Groups = [] }).ToArray(),
+        };
+        var before = WallJson.Serialize(current);
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")], insertionPosition: ImportInsertionPosition.Tail);
+        Assert.Null(result.Proposal);
+        Assert.Equal(WallRejection.NoSpace, result.Rejection);
+        Assert.Equal(before, WallJson.Serialize(current));
+    }
+
+    [Fact]
+    public void TailRejectsTheCompleteImportWhenOccupiedRowsCannotFitEvenAfterCompaction()
+    {
+        var current = WallDocument.Empty(2, 4);
+        var before = WallJson.Serialize(current);
+        var incoming = Group("occupied", Tile("one", 0, 0, 4, 4),
+            Tile("two", 0, 8, 4, 4), Tile("three", 0, 16, 4, 4));
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [incoming],
+            budget: Budget(3, 8), insertionPosition: ImportInsertionPosition.Tail);
+        Assert.Null(result.Proposal);
+        Assert.Equal("GROUP_TOO_TALL:occupied", result.Detail);
+        Assert.Equal(before, WallJson.Serialize(current));
+    }
 }

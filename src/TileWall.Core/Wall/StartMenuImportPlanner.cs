@@ -45,9 +45,13 @@ public static class StartMenuImportPlanner
             while (maxRows > 0 && metrics.WallHeight(maxRows) > budget.MaxHeightDip + 1e-8) maxRows--;
             while (maxColumns > 0 && metrics.WallWidth(maxColumns) > budget.MaxWidthDip + 1e-8) maxColumns--;
         }
-        if (maxRows < current.Rows || maxColumns < 1) return Reject(WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE");
+        if (maxRows < 1 || maxColumns < 1 ||
+            insertionPosition == ImportInsertionPosition.Head && maxRows < current.Rows)
+            return Reject(WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE");
         var contentColumns = maxColumns - (current.Settings.ExpandColumns ? 1 : 0);
         if (contentColumns < 1) return Reject(WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE");
+        if (insertionPosition == ImportInsertionPosition.Tail)
+            return TryTail(current, expectedGeneration, groups, involved, maxRows, contentColumns, metrics, budget);
         foreach (var group in ordered)
         {
             var height = metrics.TopMargin + metrics.Margin + metrics.TitleHeight + metrics.TitleToMembersGap +
@@ -82,6 +86,74 @@ public static class StartMenuImportPlanner
             maximumLanes: laneCount, allowOversizedGroups: false);
         lanes = packed?.Select(lane => lane.Groups).ToArray() ?? [];
         return packed is not null;
+    }
+
+    private static WallLayoutResult TryTail(WallDocument current, long generation, StartGroup[] incoming,
+        HashSet<string> involved, int maxRows, int maxColumns, WallMetrics metrics, WallViewportBudget? budget)
+    {
+        var original = current.Lanes.Select(lane => lane with
+            { Groups = lane.Groups.Where(group => !involved.Contains(group.Id)).ToArray() }).ToArray();
+        var lastContent = Array.FindLastIndex(original, lane => lane.Groups.Count != 0);
+        var prefix = original.Take(lastContent + 1).ToArray();
+        var minimumColumns = Math.Max(1, Math.Min(current.Columns, maxColumns));
+        var firstRows = Math.Min(current.Rows, maxRows);
+
+        // Keep all recorded whitespace and every untouched lane first. An empty tail is
+        // reused at lastContent + 1; it is never stranded between the two content blocks.
+        for (var rows = firstRows; rows <= maxRows; rows++)
+        {
+            var appended = WallLayoutEngine.ArrangeSourceLanes(incoming, metrics.WallHeight(rows), metrics,
+                allowOversizedGroups: false);
+            if (appended is null || prefix.Length + appended.Count > maxColumns) continue;
+            var lanes = prefix.Concat(appended.Select(lane => lane with
+                { ImportBatchId = CommonImportBatchId(lane.Groups) })).ToList();
+            var targetCount = Math.Max(minimumColumns, lanes.Count);
+            while (lanes.Count < targetCount) lanes.Add(new WallLane { Groups = [] });
+            var result = Finish(lanes, rows);
+            if (result.Proposal is not null) return result;
+        }
+
+        // Reuse the wall's existing compaction order: necessary empty lanes and complete
+        // blank member rows first, then (only if that fails) continuous whole-group reflow.
+        // Start each probe from immutable input, because the fitter mutates its lane lists.
+        var minimalIncoming = WallLayoutEngine.ArrangeSourceLanes(incoming.Select(WallLayoutEngine.CompactGroupFully).ToArray(),
+            metrics.WallHeight(maxRows), metrics, allowOversizedGroups: false);
+        var incomingById = incoming.ToDictionary(group => group.Id, StringComparer.Ordinal);
+        var incomingLanes = minimalIncoming?.Select(lane => lane.Groups.Select(group => incomingById[group.Id]).ToList())
+            ?? incoming.Select(group => new List<StartGroup> { group });
+        var seed = prefix.Select(lane => lane.Groups.ToList()).Concat(incomingLanes).ToArray();
+        foreach (var reflow in new[] { false, true })
+        for (var columns = minimumColumns; columns <= maxColumns; columns++)
+        {
+            var lanes = seed.Select(lane => lane.ToList()).ToList();
+            if (WallLayoutEngine.FitImportLanes(lanes, columns, maxRows, current.Rows, metrics, reflow) != WallRejection.None)
+                continue;
+            var result = Finish(lanes.Select(lane => new WallLane
+                { Groups = lane.ToArray(), ImportBatchId = CommonImportBatchId(lane) }).ToList(), maxRows, trimHeight: true);
+            if (result.Proposal is not null) return result;
+        }
+        var tooTall = prefix.SelectMany(lane => lane.Groups).Concat(incoming).FirstOrDefault(group =>
+            metrics.TopMargin + metrics.Margin + metrics.TitleHeight + metrics.TitleToMembersGap +
+            metrics.HeightOf(WallLayoutEngine.MinimumGroupRows(group)) > metrics.WallHeight(maxRows) + 1e-8);
+        return tooTall is not null
+            ? Reject(WallRejection.NoSpace, "GROUP_TOO_TALL:" + (string.IsNullOrWhiteSpace(tooTall.Title) ? tooTall.Id : tooTall.Title))
+            : Reject(WallRejection.NoSpace, "CONTENT_TOO_LARGE");
+
+        WallLayoutResult Finish(IReadOnlyList<WallLane> lanes, int rows, bool trimHeight = false)
+        {
+            if (trimHeight)
+            {
+                // Fit against the full physical budget to remove only necessary gaps,
+                // then discard newly introduced wall-tail whitespace without moving content.
+                var required = WallLayoutEngine.MeasureSource(lanes, metrics).WallHeight;
+                rows = Math.Max(firstRows, (int)Math.Ceiling(
+                    (required - metrics.TopMargin - metrics.Margin + metrics.Gap) / metrics.Pitch - 1e-10));
+            }
+            var proposal = current with { Generation = generation + 1, Columns = lanes.Count, Rows = rows, Lanes = lanes.ToArray() };
+            var result = WallLayoutEngine.NormalizeExpanded(proposal, metrics);
+            return result.Proposal is { } normalized && budget is not null
+                ? WallViewportPolicy.Validate(normalized, budget, metrics) : result;
+        }
     }
 
     private static string? CommonImportBatchId(IReadOnlyList<StartGroup> groups)

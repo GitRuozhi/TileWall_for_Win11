@@ -12,6 +12,7 @@ public sealed partial class MainWindow
 {
     private bool _frameSubscribed, _dragInputPending, _resizeInputPending, _dragFrameWakeQueued;
     private Point _latestDragPoint, _latestResizePoint;
+    private Point _lastConsumedDragPoint;
     private Point? _gestureScreenStart;
     private Point _gestureMarginStart, _gesturePointerScrollStart;
     private double _gestureScale;
@@ -103,6 +104,7 @@ public sealed partial class MainWindow
         _processingFrame = true;
         try
         {
+            var advancingHeight = _viewportTransition is { AutomaticHeight: true };
             AdvanceViewportTransition();
             if (_resizing)
             {
@@ -122,6 +124,8 @@ public sealed partial class MainWindow
                 _dragInputPending = false;
                 ConsumeDragSample(_latestDragPoint);
             }
+            else if (advancingHeight && _gesture.Phase == GesturePhase.Dragging)
+                DrawGestureGhost(_lastConsumedDragPoint);
         }
         catch (Exception ex)
         {
@@ -161,25 +165,35 @@ public sealed partial class MainWindow
     {
         if (!GestureSnapshotIsCurrent()) { TerminateGesture(); return; }
         if (!_gesture.Advance(point, 7)) return;
+        _lastConsumedDragPoint = point;
         var proposal = CalculateDrop(point);
         _gesture.SetPreview(proposal);
         if (!ReferenceEquals(_drawnDrop, proposal))
         {
             var start = Stopwatch.GetTimestamp();
             var preview = proposal?.Proposal;
+            var geometry = preview?.Geometry ?? _gestureGeometry!;
+            if (!Settings.FullScreen && Surface.Geometry?.WallHeight != geometry.WallHeight)
+                Surface.BeginAutomaticHeightPresentation();
             Surface.Render(preview?.Document ?? Document, preview?.Geometry ?? _gestureGeometry);
             Surface.RefreshClocks(_clock.UtcNow);
-            ApplyViewport(preview?.Document ?? Document, preview?.Geometry ?? _gestureGeometry, animateMode: false);
+            ApplyViewport(preview?.Document ?? Document, preview?.Geometry ?? _gestureGeometry,
+                animateMode: false, animateHeight: true);
             Surface.ShowDragCue(_gesture.MemberId, preview is not null, _gesture.GroupId);
             _drawnDrop = proposal;
             _performance.View(Stopwatch.GetTimestamp() - start);
         }
         _memberDropSession?.SetDisplayed(proposal?.Proposal is not null ? _memberDropSlot : null);
+        DrawGestureGhost(point);
+    }
+
+    private void DrawGestureGhost(Point point)
+    {
         var origin = AppWindow.Position;
         var originX = _pendingWindowRect?.X ?? origin.X;
         var originY = _pendingWindowRect?.Y ?? origin.Y;
         DrawGhost(new Point(point.X - (originX - _gesture.WindowOrigin.X) / Scale,
-            point.Y - (originY - _gesture.WindowOrigin.Y) / Scale), proposal?.Proposal is not null);
+            point.Y - (originY - _gesture.WindowOrigin.Y) / Scale), _gesture.Preview?.Proposal is not null);
         _performance.Ghost();
     }
 

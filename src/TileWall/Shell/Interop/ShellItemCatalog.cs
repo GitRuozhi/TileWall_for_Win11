@@ -52,7 +52,23 @@ internal static class ShellItemCatalog
         }
     }, null);
 
+    /// <summary>The Shell's target description from the actual managed link, including an AppsFolder AUMID.</summary>
+    internal static string? LinkTargetParsingName(string linkPath) => IconApartment<string?>(() =>
+    {
+        IShellItem? item = null;
+        try { item = Open(linkPath); return ReadLinkedTargetParsingName(item); }
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidCastException)
+        { return null; }
+        finally { if (item is not null) Marshal.ReleaseComObject(item); }
+    }, null);
+
     private static string? ReadLinkedTargetPath(IShellItem item)
+    {
+        var path = ReadLinkedTargetParsingName(item);
+        return path is not null && Path.IsPathFullyQualified(path) ? Path.GetFullPath(path) : null;
+    }
+
+    private static string? ReadLinkedTargetParsingName(IShellItem item)
     {
         object? raw = null;
         var value = new PropertyVariant();
@@ -70,8 +86,7 @@ internal static class ShellItemCatalog
                 8 => Marshal.PtrToStringBSTR(value.Pointer), // VT_BSTR
                 _ => null,
             };
-            return path is { Length: > 0 and < 32768 } && Path.IsPathFullyQualified(path)
-                ? Path.GetFullPath(path) : null;
+            return path is { Length: > 0 and < 32768 } && !path.Contains('\0') ? path : null;
         }
         finally
         {

@@ -12,6 +12,59 @@ namespace TileWall.Core.Tests.Storage;
 public sealed partial class WallStoreTests
 {
     [Fact]
+    public void V2MembersRetainTheirExactHistoricalSnapshotIdentityWithoutNewPresentationFields()
+    {
+        var member = Tile("legacy") with { TargetInput = @"C:\Shortcuts\Legacy.lnk" };
+        var document = Wall(member) with { InactiveMembers = [Tile("retained")] };
+        var current = UserDataSnapshotJson.Prepare(document);
+        var files = current.Files.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        var settings = JsonNode.Parse(files["settings.json"])!; settings["schemaVersion"] = 2;
+        files["settings.json"] = Encoding.UTF8.GetBytes(settings.ToJsonString(UserDataSnapshotJson.Options));
+        foreach (var name in new[] { "wall.json", "recycle-bin.json" })
+        {
+            var json = JsonNode.Parse(files[name])!;
+            var members = name == "wall.json"
+                ? json["lanes"]!.AsArray().SelectMany(lane => lane!["groups"]!.AsArray()).SelectMany(group => group!["members"]!.AsArray())
+                : json["members"]!.AsArray();
+            foreach (var value in members)
+            foreach (var field in new[] { "resourceOrigin", "sourceShortcutPath", "targetDisplayName" }) value!.AsObject().Remove(field);
+            files[name] = Encoding.UTF8.GetBytes(json.ToJsonString(UserDataSnapshotJson.Options));
+        }
+        UserDataFileDigest Digest(string name) => new(files[name].Length, UserDataSnapshotJson.Hash(files[name]));
+        var settingsDigest = Digest("settings.json"); var wallDigest = Digest("wall.json"); var recycleDigest = Digest("recycle-bin.json");
+        var id = UserDataSnapshotJson.Hash(Encoding.UTF8.GetBytes($"TileWall.Snapshot/1\n{document.Generation}\n{settingsDigest.Sha256}\n{wallDigest.Sha256}\n{recycleDigest.Sha256}\n"));
+        var manifest = new UserDataManifest(2, document.Generation, id, settingsDigest, wallDigest, recycleDigest);
+        var restored = UserDataSnapshotJson.Read(manifest, name => files[name], _ => throw new InvalidOperationException());
+        Assert.Equal(member.TargetInput, restored.EnumerateAllMembers().First().TargetInput);
+        Assert.All(restored.EnumerateAllMembers(), item =>
+        { Assert.Equal(MemberResourceOrigin.Local, item.ResourceOrigin); Assert.Null(item.SourceShortcutPath); Assert.Null(item.TargetDisplayName); });
+        var (store, memory, _, root) = Harness();
+        InstallFixture(memory, root, new(manifest, JsonSerializer.SerializeToUtf8Bytes(manifest, UserDataSnapshotJson.Options), files));
+        var before = memory.SnapshotFiles();
+        Assert.Equal(WallOpenStatus.Loaded, store.Open().Status);
+        AssertSameFileBytes(before, memory.SnapshotFiles());
+    }
+
+    [Fact]
+    public void CurrentSnapshotPersistsPackageOriginAndPresentationForActiveAndRetainedMembers()
+    {
+        var member = Tile("package") with { ResourceOrigin = MemberResourceOrigin.Package, TargetInput = @"\\offline\share\app.exe",
+            SourceShortcutPath = @"\\offline\share\app.lnk", TargetDisplayName = "Preserved title",
+            Visual = new() { TitleMode = MemberTitleMode.Automatic }, Images = new() { Kind = MemberImageSourceKind.None } };
+        var document = Wall(member) with { InactiveMembers = [member with { Id = "retained" }] };
+        var snapshot = UserDataSnapshotJson.Prepare(document);
+        Assert.Equal(UserDataManifest.CurrentFormatVersion, snapshot.Manifest.SchemaVersion);
+        var restored = UserDataSnapshotJson.Read(snapshot.Manifest, name => snapshot.Files[name], _ => throw new InvalidOperationException());
+        Assert.All(restored.EnumerateAllMembers(), item =>
+        {
+            Assert.Equal(MemberResourceOrigin.Package, item.ResourceOrigin);
+            Assert.Equal(member.SourceShortcutPath, item.SourceShortcutPath);
+            Assert.Equal("Preserved title", MemberPresentationRules.ResolveTitle(item));
+            Assert.Equal(MemberImageSourceKind.None, item.Images.Kind);
+        });
+    }
+
+    [Fact]
     public void RealV1WriterFixtureKeepsItsCanonicalIdentityAndBytesOnOpen()
     {
         var legacy = ReadV1Fixture();
@@ -47,7 +100,7 @@ public sealed partial class WallStoreTests
     }
 
     [Fact]
-    public void NextJointCommitUpgradesV1ToV2AndReopensBothSavedKeys()
+    public void NextJointCommitUpgradesV1ToCurrentAndReopensBothSavedKeys()
     {
         var (store, files, _, root) = Harness();
         var legacy = ReadV1Fixture("Ctrl+Alt+F9");
@@ -62,9 +115,9 @@ public sealed partial class WallStoreTests
         Assert.Equal(WallCommitStatus.Committed, saved.Status);
         Assert.Equal(legacy.ManifestBytes, files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json")));
         var manifest = UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json")));
-        Assert.Equal(2, manifest.SchemaVersion);
+        Assert.Equal(UserDataManifest.CurrentFormatVersion, manifest.SchemaVersion);
         var directory = Path.Combine(root, "Snapshots", manifest.SnapshotId);
-        foreach (var (name, version) in new[] { ("settings.json", 2), ("wall.json", 1), ("recycle-bin.json", 1) })
+        foreach (var (name, version) in new[] { ("settings.json", UserDataManifest.CurrentFormatVersion), ("wall.json", 1), ("recycle-bin.json", 1) })
         {
             using var json = JsonDocument.Parse(files.ReadAllBytes(Path.Combine(directory, name)));
             Assert.Equal(version, json.RootElement.GetProperty("schemaVersion").GetInt32());
@@ -92,7 +145,7 @@ public sealed partial class WallStoreTests
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
         Assert.Equal("Ctrl+Alt+F9", recovered.Document!.Settings.HotKey);
         Assert.Equal("Win+Ctrl+Oem3", recovered.Document.Settings.SecondaryHotKey);
-        Assert.Equal(2, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).SchemaVersion);
+        Assert.Equal(UserDataManifest.CurrentFormatVersion, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).SchemaVersion);
         Assert.Equal(legacy.ManifestBytes, files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json")));
         var reopened = store.Open();
         Assert.Equal(WallOpenStatus.Loaded, reopened.Status);

@@ -70,6 +70,7 @@ public sealed class WallPackageExportTests : IDisposable
     {
         var (store, document, _, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile", "puzzle", "clock"]);
+        snapshot.CompleteAutomaticImages();
         var path = Path.Combine(_directory, "selected" + extension);
         var saved = await new WallPackageWriter(reader).WriteAsync(snapshot, path, "1.3.8");
         Assert.Equal(WallPackageWriteStatus.Saved, saved.Status);
@@ -102,6 +103,7 @@ public sealed class WallPackageExportTests : IDisposable
     {
         var (store, document, root, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
+        snapshot.CompleteAutomaticImages();
         File.WriteAllBytes(Path.Combine(root, "Objects", "tile", "entry.url"), Encoding.UTF8.GetBytes("[InternetShortcut]\r\nURL=https://example.com/new\r\n"));
         SnapshotTestData.Install(new LocalFileStore(), root, document with { Generation = 6 });
         var original = store.ManagedMediaPath(document.Lanes[1].Groups[0].Members[0].Images.Media!);
@@ -122,6 +124,7 @@ public sealed class WallPackageExportTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(entry)!); File.WriteAllBytes(entry, Shortcut);
         var ids = document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members).Select(member => member.Id);
         using var snapshot = store.CapturePackageSnapshot(document, 5, ids);
+        snapshot.CompleteAutomaticImages();
         var path = Path.Combine(_directory, "all.zip");
         Assert.Equal(WallPackageWriteStatus.Saved, (await new WallPackageWriter(reader).WriteAsync(snapshot, path, "1.3.8")).Status);
         var preview = (await reader.ReadPreviewAsync(path)).Preview!;
@@ -182,6 +185,7 @@ public sealed class WallPackageExportTests : IDisposable
             return Task.FromResult(failure != "validation");
         });
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
+        snapshot.CompleteAutomaticImages();
         var result = await new WallPackageWriter(reader).WriteAsync(snapshot, path, "1.3.8", token: cancel.Token);
         Assert.Equal(failure switch { "cancel" => WallPackageWriteStatus.Cancelled, "validation" => WallPackageWriteStatus.InvalidPackage, _ => WallPackageWriteStatus.IoFailure }, result.Status);
         Assert.Equal(failure == "changed-target" ? "external change" : "original", File.ReadAllText(path));
@@ -193,6 +197,7 @@ public sealed class WallPackageExportTests : IDisposable
     {
         var (store, document, _, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
+        snapshot.CompleteAutomaticImages();
         var path = Path.Combine(_directory, "budget.zip"); File.WriteAllText(path, "keep");
         var result = await new WallPackageWriter(reader).WriteAsync(snapshot, path, "1.3.8", limits: new() { MaximumEntries = 2 });
         Assert.Equal(WallPackageWriteStatus.InvalidPackage, result.Status);
@@ -207,6 +212,7 @@ public sealed class WallPackageExportTests : IDisposable
     {
         var (store, document, _, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
+        snapshot.CompleteAutomaticImages();
         var path = Path.Combine(_directory, "last-instant.zip");
         if (initiallyExists) File.WriteAllText(path, "original");
         var writer = new WallPackageWriter(reader, WallPackageWriter.Publish, () => File.WriteAllText(path, "last instant external write"));
@@ -230,6 +236,7 @@ public sealed class WallPackageExportTests : IDisposable
     {
         var (store, document, _, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
+        snapshot.CompleteAutomaticImages();
         var path = Path.Combine(_directory, "disappeared.zip"); File.WriteAllText(path, "original");
         var writer = new WallPackageWriter(reader, WallPackageWriter.Publish, () => File.Delete(path));
         var result = await writer.WriteAsync(snapshot, path, "1.4.0");
@@ -248,6 +255,7 @@ public sealed class WallPackageExportTests : IDisposable
     {
         var (store, document, _, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
+        snapshot.CompleteAutomaticImages();
         var path = Path.Combine(_directory, "publish.zip"); File.WriteAllText(path, "original");
         using var cancel = new CancellationTokenSource();
         var writer = new WallPackageWriter(reader, (temporary, destination, backup) =>
@@ -277,6 +285,7 @@ public sealed class WallPackageExportTests : IDisposable
     {
         var (store, document, root, reader) = Seed();
         using var snapshot = store.CapturePackageSnapshot(document, 5, ["tile"]);
+        snapshot.CompleteAutomaticImages();
         var path = failure switch
         {
             "data" => Path.Combine(root, "inside.zip"),

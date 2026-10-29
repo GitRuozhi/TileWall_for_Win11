@@ -749,6 +749,12 @@ public static class WallLayoutEngine
         return WallRejection.None;
     }
 
+    // Import first tries the original lane arrangement, before permitting whole-group reflow.
+    internal static WallRejection FitImportLanes(List<List<StartGroup>> lanes, int columns, int rows,
+        int currentRows, WallMetrics metrics, bool allowReflow) => allowReflow
+        ? ResizeLanes(lanes, columns, rows, currentRows, metrics)
+        : ResizeOriginalLanes(lanes, columns, rows, currentRows, metrics);
+
     private static WallRejection ResizeLanes(List<List<StartGroup>> lanes, int columns, int rows,
         int currentRows, WallMetrics metrics)
     {
@@ -788,7 +794,7 @@ public static class WallLayoutEngine
         return WallRejection.None;
     }
 
-    private static StartGroup CompactGroupFully(StartGroup group)
+    internal static StartGroup CompactGroupFully(StartGroup group)
     {
         var occupied = new bool[group.Members.Max(member => member.LocalBounds.Bottom)];
         foreach (var member in group.Members)

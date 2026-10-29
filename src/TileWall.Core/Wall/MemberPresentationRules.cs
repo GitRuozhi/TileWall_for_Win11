@@ -18,6 +18,10 @@ public static class MemberPresentationRules
             images.Kind == MemberImageSourceKind.Single && images.Media is null) && string.IsNullOrWhiteSpace(images.Path))
             return "IMAGE_SOURCE_PATH";
         if (images.Media is not null && images.Kind != MemberImageSourceKind.Single) return "IMAGE_SOURCE_MEDIA";
+        if (!Enum.IsDefined(member.ResourceOrigin)) return "RESOURCE_ORIGIN";
+        if (images.Kind == MemberImageSourceKind.None && (images.Path is not null || images.Media is not null || images.ManagedGallery is not null || member.Carousel is not null))
+            return "EMPTY_IMAGE_SOURCE";
+        if (member.SourceShortcutPath is { Length: > 32768 } || member.TargetDisplayName is { Length: > 32768 }) return "ENTRY_PRESENTATION";
         if (member.ImageDisplay is not { } display || !Enum.IsDefined(display.Mode) ||
             !double.IsFinite(display.CustomScale) || display.CustomScale <= 0 ||
             display.Mode == ImageDisplayMode.Custom && (display.CustomScale < MemberImageGeometry.MinimumCustomScale || display.CustomScale > MemberImageGeometry.MaximumCustomScale)) return "IMAGE_DISPLAY";
@@ -52,7 +56,8 @@ public static class MemberPresentationRules
         ArgumentNullException.ThrowIfNull(replacement);
         if (original.GetType() != replacement.GetType() || original.LocalBounds != replacement.LocalBounds ||
             original.Visual != replacement.Visual || original.Entry != replacement.Entry ||
-            original.TargetInput != replacement.TargetInput || original.Images != replacement.Images ||
+            original.TargetInput != replacement.TargetInput || original.SourceShortcutPath != replacement.SourceShortcutPath ||
+            original.TargetDisplayName != replacement.TargetDisplayName || original.ResourceOrigin != replacement.ResourceOrigin || original.Images != replacement.Images ||
             original.ImageDisplay != replacement.ImageDisplay || original.RotationInterval != replacement.RotationInterval)
             return true;
         return (original, replacement) switch
@@ -65,7 +70,7 @@ public static class MemberPresentationRules
 
     public static string ResolveTitle(WallMember member, bool targetIsFolder = false) =>
         member.Visual.TitleMode == MemberTitleMode.Manual ? member.Visual.Title ?? string.Empty :
-            AutomaticTitle(member.TargetInput, targetIsFolder);
+            member.TargetDisplayName ?? AutomaticTitle(member.SourceShortcutPath ?? member.TargetInput, targetIsFolder);
 
     /// <summary>Uses the selected shortcut's own name, never its resolved executable's name.</summary>
     public static string AutomaticTitle(string? targetInput, bool targetIsFolder = false)

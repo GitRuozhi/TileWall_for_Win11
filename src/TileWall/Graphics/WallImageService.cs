@@ -93,18 +93,20 @@ public sealed partial class WallImageService : IDisposable
     }
 
     private async Task<Prepared> PrepareAutoAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct,
-        bool skipNative = false, bool cacheAllowed = true, MmcIconSource? mmcSource = null, bool followShellTarget = true)
+        bool skipNative = false, bool cacheAllowed = true, MmcIconSource? mmcSource = null, bool followShellTarget = true,
+        string? verifiedPackageTarget = null)
     {
         var policy = new AutomaticMemoryPolicy();
         var prepared = await PrepareAutoCoreAsync(entryOrTargetPath, width, height, ct,
-            skipNative, cacheAllowed, mmcSource, followShellTarget, policy).ConfigureAwait(false);
+            skipNative, cacheAllowed, mmcSource, followShellTarget, policy, verifiedPackageTarget).ConfigureAwait(false);
         return prepared with { MemoryCacheAllowed = prepared.MemoryCacheAllowed && policy.Allowed };
     }
 
     private sealed class AutomaticMemoryPolicy { public bool Allowed = true; }
 
     private async Task<Prepared> PrepareAutoCoreAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct,
-        bool skipNative, bool cacheAllowed, MmcIconSource? mmcSource, bool followShellTarget, AutomaticMemoryPolicy memoryPolicy)
+        bool skipNative, bool cacheAllowed, MmcIconSource? mmcSource, bool followShellTarget, AutomaticMemoryPolicy memoryPolicy,
+        string? verifiedPackageTarget)
     {
         ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(entryOrTargetPath))
@@ -198,7 +200,7 @@ public sealed partial class WallImageService : IDisposable
         // AppsFolder's image factory may plate a tiny legacy logo onto an
         // opaque tile. Resolve this registered package's app-list resource
         // before accepting that composition, while respecting explicit icons.
-        if (!persistedIcon && await TryPreparePackagedAppIconAsync(target, width, height, ct) is { } packaged)
+        if (!persistedIcon && await TryPreparePackagedAppIconAsync(verifiedPackageTarget ?? target, width, height, ct) is { } packaged)
             return packaged;
         if (!independentExplicitIcon && (locationFacts is { CanCache: false } || locationFacts is { CanReadResource: false }))
         {

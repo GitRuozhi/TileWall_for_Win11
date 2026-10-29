@@ -142,7 +142,9 @@ internal sealed partial class MemberEditorPreview : Grid
         {
             Id = member.Id, LocalBounds = member.LocalBounds, Partitions = [new GridRect(0, 0, member.LocalBounds.Width, member.LocalBounds.Height)],
             Visual = member.Visual, Images = member.Images, ImageDisplay = member.ImageDisplay, Entry = member.Entry,
-            TargetInput = member.TargetInput, RotationInterval = member.RotationInterval, Carousel = member.Carousel,
+            TargetInput = member.TargetInput, SourceShortcutPath = member.SourceShortcutPath,
+            TargetDisplayName = member.TargetDisplayName, ResourceOrigin = member.ResourceOrigin,
+            RotationInterval = member.RotationInterval, Carousel = member.Carousel,
         };
         _formal.SetScene(projected, _frame, _metrics, _rasterScale, _visualStyle);
         Canvas.SetLeft(_formal, -_unionX); Canvas.SetTop(_formal, -_unionY); _scene.Children.Add(_formal);

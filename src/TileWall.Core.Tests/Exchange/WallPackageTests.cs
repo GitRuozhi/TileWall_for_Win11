@@ -233,6 +233,36 @@ public sealed class WallPackageTests : IDisposable
         Assert.Equal(WallPackageReadStatus.Cancelled, (await reader.ReadPreviewAsync(path, token: cancel.Token)).Status);
     }
 
+    [Theory]
+    [InlineData(2, MemberImageSourceKind.Automatic)]
+    [InlineData(3, MemberImageSourceKind.Automatic)]
+    [InlineData(3, MemberImageSourceKind.Folder)]
+    [InlineData(3, MemberImageSourceKind.None)]
+    public async Task AValidMediaPayloadAndFingerprintCannotHideAMediaReferenceOnANonSingleSource(int formatVersion,
+        MemberImageSourceKind kind)
+    {
+        var path = Path.Combine(_directory, "wrong-source-kind.zip");
+        CreatePackage(path);
+        Mutate(path, payloads =>
+        {
+            var content = WallPackageJson.Deserialize<WallPackageContent>(payloads["wall.json"]);
+            content = content with { Members = content.Members.Select(member => member.Id == "tile"
+                ? member with { Images = member.Images with { Kind = kind } } : member).ToArray() };
+            payloads["wall.json"] = WallPackageJson.Serialize(content, formatVersion);
+            var manifest = WallPackageJson.Deserialize<WallPackageManifest>(payloads["manifest.json"]);
+            var files = manifest.Files.Select(file => file.Path == "wall.json"
+                ? file with { Length = payloads["wall.json"].Length, Sha256 = WallPackageJson.Hash(payloads["wall.json"]) } : file).ToArray();
+            manifest = manifest with { FormatVersion = formatVersion, Files = files,
+                ContentFingerprint = WallPackageJson.Fingerprint(content, files, formatVersion) };
+            payloads["manifest.json"] = WallPackageJson.Serialize(manifest);
+        });
+        var probes = 0;
+        var read = await Harness((_, _, _) => { probes++; return Task.FromResult(true); }).ReadPreviewAsync(path);
+        Assert.Equal(WallPackageReadStatus.InvalidPackage, read.Status);
+        Assert.Equal("Invalid formal image reference.", read.Diagnostic);
+        Assert.Equal(0, probes);
+    }
+
     [Fact]
     public async Task ContainerBudgetsAndChangedPackageAreRejectedBeforeImportPreparation()
     {

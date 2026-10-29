@@ -563,7 +563,7 @@ public sealed partial class MainWindow : Window
             var dialog = new SharedMemberEditorDialog(DialogOwner, member, _images,
                 _session.ManagedEntryPath(member), _session.LinkFiles, MaxMemberRows(),
                 (replacement, changes, assets) => SaveSharedMember(replacement, changes, isNewPlaceholder,
-                    existing => duplicateToFocus = existing, assets), Settings.VisualStyle);
+                    existing => duplicateToFocus = existing, assets), Settings.VisualStyle, initialFrame: _puzzles.FrameFor(id));
             ActiveDialog = dialog;
             AttachGalleryEditor(dialog);
             await dialog.ShowAsync();
@@ -741,6 +741,7 @@ public sealed partial class MainWindow : Window
         if (PersistenceInteractionBlocked || _modal || _viewBlocked || !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return;
         try
         {
+            if (_viewportTransition is { AutomaticHeight: true }) StopViewportTransition();
             var point = e.GetCurrentPoint(Surface).Position;
             Point? screenStart = e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse &&
                 TryGetResizeScreenPoint(e.GetCurrentPoint(WallRoot).Position, Scale, out var screenPoint)
@@ -850,7 +851,7 @@ public sealed partial class MainWindow : Window
                         ProductStrings.WallRejectionReason(proposal?.Rejection ?? WallRejection.None)));
                 return;
             }
-            _ = CommitProposalAsync(proposal.Proposal, settle: SettleReleasePersistence);
+            _ = CommitProposalAsync(proposal.Proposal, settle: error => SettleReleasePersistence(error, automaticHeight: true));
         }
         catch (Exception ex) { RecoverGestureError(ex); }
     }
@@ -1016,9 +1017,11 @@ public sealed partial class MainWindow : Window
         {
             if (wasDragging && restoreView && !_viewBlocked)
             {
+                if (!Settings.FullScreen && Surface.Geometry?.WallHeight != _metrics.WallHeight(Document.Rows))
+                    Surface.BeginAutomaticHeightPresentation();
                 Surface.Render(Document);
                 Surface.RefreshClocks(_clock.UtcNow);
-                PlaceWall();
+                ApplyViewport(animateMode: false, animateHeight: true);
             }
             Surface.ShowDragCue(null, false);
             ResumeEnvironmentAdaptation();
