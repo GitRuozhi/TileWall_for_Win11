@@ -12,8 +12,13 @@ public sealed partial class WallStore
     }
 
     private static IEnumerable<ManagedMediaReference> MediaReferences(WallDocument document) =>
-        document.EnumerateAllMembers().Select(member => member.Images.Media)
+        document.EnumerateAllMembers().SelectMany(member => ImageMediaReferences(member.Images))
             .Append(document.Settings.BackgroundMedia).OfType<ManagedMediaReference>();
+
+    private static IEnumerable<ManagedMediaReference> ImageMediaReferences(MemberImageSource images) =>
+        (images.Media is { } media ? new[] { media } : [])
+            .Concat(images.IconSeries?.Frames?.Where(frame => frame is not null)
+                .Select(frame => frame.Media).OfType<ManagedMediaReference>() ?? []);
 
     private static Dictionary<string, ManagedMediaReference> MediaById(WallDocument document)
     {
@@ -33,7 +38,8 @@ public sealed partial class WallStore
         foreach (var member in document.EnumerateAllMembers())
         {
             if (member.Images.Kind == MemberImageSourceKind.None &&
-                (member.Images.Path is not null || member.Images.ManagedGallery is not null || member.Carousel is not null))
+                (member.Images.Path is not null || member.Images.ManagedGallery is not null ||
+                 member.Images.IconSeries is not null || member.Carousel is not null))
                 yield return "NONE_IMAGE_SOURCE";
             if (member.ResourceOrigin == MemberResourceOrigin.Package &&
                 !(member.Images.Kind == MemberImageSourceKind.None ||
@@ -44,6 +50,15 @@ public sealed partial class WallStore
                 yield return "SINGLE_MEDIA_REQUIRED";
             if (member.Images.Media is not null && (member.Images.Kind != MemberImageSourceKind.Single ||
                 !PreparedMediaAsset.IsValidReference(member.Images.Media))) yield return "MEDIA_REFERENCE";
+            if (member.Images.IconSeries is { } series &&
+                (member.Images.Kind != MemberImageSourceKind.Automatic || member.ResourceOrigin != MemberResourceOrigin.Local ||
+                 member.Images.Media is not null || member.Images.ManagedGallery is not null || member.Images.Path is not null ||
+                 member.Carousel is not null || string.IsNullOrWhiteSpace(series.Identity) || series.Columns <= 0 || series.Rows <= 0 ||
+                 series.Frames is null || series.Frames.Count == 0 || series.SelectedFrame < 0 || series.SelectedFrame >= series.Frames.Count ||
+                 series.Frames.Any(frame => frame is null || frame.Width <= 0 || frame.Height <= 0 ||
+                     !PreparedMediaAsset.IsValidReference(frame.Media)) ||
+                 series.Frames.Select(frame => (frame.Width, frame.Height)).Distinct().Count() != series.Frames.Count))
+                yield return "AUTOMATIC_ICON_SERIES";
         }
         if (document.Settings.BackgroundMode == WallBackgroundMode.Custom && document.Settings.BackgroundMedia is null)
             yield return "BACKGROUND_MEDIA_REQUIRED";

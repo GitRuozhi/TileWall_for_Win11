@@ -116,7 +116,7 @@ internal sealed class ManagedImageCache(string root)
     internal bool PublishIconPackage(string key, IReadOnlyDictionary<string, byte[]> payload,
         string mappingKey, byte[] mapping, long limit, CancellationToken token)
     {
-        if (!IsKey(key) || !IsKey(mappingKey) || payload.Count is < 2 or > 65 ||
+        if (!IsKey(key) || !IsKey(mappingKey) || payload.Count < 2 ||
             !payload.ContainsKey("manifest.json") || payload.Any(pair =>
                 pair.Value.Length == 0 || pair.Key != "manifest.json" &&
                 !(pair.Key.EndsWith(".ico", StringComparison.Ordinal) && IsKey(pair.Key[..^4]) ||

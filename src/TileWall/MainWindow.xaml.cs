@@ -76,6 +76,7 @@ public sealed partial class MainWindow : Window
         _puzzles = new PuzzlePresentationCoordinator(_images, DispatcherQueue, () => Scale,
             PersistPuzzleCarousel, Status, _traceInput);
         _puzzles.ResolveEntryPath = _session.ManagedEntryPath;
+        _puzzles.PersistAutomaticSeries = PersistAutomaticIconSeries;
         _puzzles.FrameChanged += Surface.UpdatePuzzleFrame;
         WallScroll.ViewChanged += (_, _) => UpdateVisibleWallFrames();
         InitializeMenuStart();
@@ -417,7 +418,8 @@ public sealed partial class MainWindow : Window
         try
         {
             var commitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-            var media = Task.Run(() => PrepareFormalMediaAsync(proposal)).GetAwaiter().GetResult();
+            var scale = Scale;
+            var media = Task.Run(() => PrepareFormalMediaAsync(proposal, changes, scale)).GetAwaiter().GetResult();
             var result = _session.Commit(media.Proposal, changes,
                 AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia), expectedEntrySha256);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - commitStarted);
@@ -563,7 +565,8 @@ public sealed partial class MainWindow : Window
             var dialog = new SharedMemberEditorDialog(DialogOwner, member, _images,
                 _session.ManagedEntryPath(member), _session.LinkFiles, MaxMemberRows(),
                 (replacement, changes, assets) => SaveSharedMember(replacement, changes, isNewPlaceholder,
-                    existing => duplicateToFocus = existing, assets), Settings.VisualStyle, initialFrame: _puzzles.FrameFor(id));
+                    existing => duplicateToFocus = existing, assets), Settings.VisualStyle, initialFrame: _puzzles.FrameFor(id),
+                initialAutomaticSeries: _puzzles.PreparedSeriesFor(id));
             ActiveDialog = dialog;
             AttachGalleryEditor(dialog);
             await dialog.ShowAsync();
@@ -612,7 +615,8 @@ public sealed partial class MainWindow : Window
                     }
                 }
             }
-            if (changes.Count == 0 && !MemberPresentationRules.HasUserPropertyChanges(current, replacement)) return null;
+            if (changes.Count == 0 && AutomaticIconSeriesRules.SameSeries(current.Images.IconSeries, replacement.Images.IconSeries) &&
+                !MemberPresentationRules.HasUserPropertyChanges(current, replacement)) return null;
             return Apply(new ReplaceMemberAction(Document.Generation, replacement.Id, replacement), changes, preparedMedia);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or

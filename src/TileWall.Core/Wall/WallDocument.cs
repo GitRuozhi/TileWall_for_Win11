@@ -8,7 +8,7 @@ namespace TileWall.Core.Wall;
 /// <summary>Wall state. Storage uses a temporary joint document; the session retains only its active view.</summary>
 public sealed record WallDocument
 {
-    public const int CurrentSchemaVersion = 4;
+    public const int CurrentSchemaVersion = 5;
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public long Generation { get; init; }
     public required int Columns { get; init; }
@@ -67,7 +67,7 @@ public sealed record WallSettings
     /// <summary>Last successfully committed manual window width; automatic sizing does not update it.</summary>
     public double? ManualWindowedViewportWidthDip { get; init; }
     public WallVisualStyle VisualStyle { get; init; } = WallVisualStyle.Win10;
-    public WallThemeMode ThemeMode { get; init; } = WallThemeMode.System;
+    public WallThemeMode ThemeMode { get; init; } = WallThemeMode.Dark;
     public WallBackgroundMode BackgroundMode { get; init; } = WallBackgroundMode.Acrylic;
     public int BackgroundTransparency { get; init; } = 5;
     public string? BackgroundImagePath { get; init; }
@@ -87,6 +87,13 @@ public sealed record ManagedEntryReference(string ObjectId, string RelativePath,
 
 /// <summary>An immutable original whose SHA-256 is also its asset directory identity.</summary>
 public sealed record ManagedMediaReference(string Sha256, string Extension, long Length);
+
+/// <summary>A native resolution of one confirmed automatic icon image.</summary>
+public sealed record AutomaticIconFrame(ManagedMediaReference Media, int Width, int Height);
+
+/// <summary>The confirmed image and all its resolutions; only logical tile resizing selects another frame.</summary>
+public sealed record AutomaticIconSeries(string Identity, IReadOnlyList<AutomaticIconFrame> Frames,
+    int SelectedFrame, int Columns, int Rows);
 
 /// <summary>Content-addressed, immutable application-owned gallery. Its path is derived by storage.</summary>
 public sealed record ManagedGalleryReference(string ContentId, string ManifestSha256);
@@ -115,6 +122,8 @@ public sealed record MemberImageSource
     public string? Path { get; init; }
     public ManagedMediaReference? Media { get; init; }
     public ManagedGalleryReference? ManagedGallery { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AutomaticIconSeries? IconSeries { get; init; }
 }
 
 /// <summary>Queue position is persisted only when the asynchronously prepared image is adopted.</summary>

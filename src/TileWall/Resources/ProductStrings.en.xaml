@@ -339,6 +339,7 @@
   <x:String x:Key="Editor.Foreground">Foreground</x:String>
   <x:String x:Key="Editor.AutoTitle">Restore automatic title</x:String>
   <x:String x:Key="Editor.Initial">Default</x:String>
+  <x:String x:Key="Editor.AutomaticIcon">Automatic icon</x:String>
   <x:String x:Key="Editor.Picture">Picture</x:String>
   <x:String x:Key="Editor.Gallery">Gallery</x:String>
   <x:String x:Key="Editor.Blur">Blur</x:String>
@@ -424,7 +425,7 @@
     <x:String x:Key="Sidebar.OpenFailed">Unable to open Windows shortcut: {0}</x:String>
     <x:String x:Key="Common.MinimumReached">Minimum value {0} reached</x:String>
     <x:String x:Key="Common.MaximumReached">Maximum value {0} reached</x:String>
-    <x:String x:Key="Editor.AutomaticSource">The initial foreground comes from the target. Choose Picture or Gallery to browse a source.</x:String>
+    <x:String x:Key="Editor.AutomaticSource">The automatic icon comes from the target. Choose Picture or Gallery to browse a source.</x:String>
     <x:String x:Key="Editor.RequiresColor">Choose Custom color to adjust the background color.</x:String>
     <x:String x:Key="Wall.Open">Open</x:String>
     <x:String x:Key="Settings.ExpandColumns">Extended columns</x:String>

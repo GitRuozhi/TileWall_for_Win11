@@ -57,7 +57,7 @@ public static class MemberPresentationRules
         if (original.GetType() != replacement.GetType() || original.LocalBounds != replacement.LocalBounds ||
             original.Visual != replacement.Visual || original.Entry != replacement.Entry ||
             original.TargetInput != replacement.TargetInput || original.SourceShortcutPath != replacement.SourceShortcutPath ||
-            original.TargetDisplayName != replacement.TargetDisplayName || original.ResourceOrigin != replacement.ResourceOrigin || original.Images != replacement.Images ||
+            original.TargetDisplayName != replacement.TargetDisplayName || original.ResourceOrigin != replacement.ResourceOrigin || HasImageSourceChanges(original.Images, replacement.Images) ||
             original.ImageDisplay != replacement.ImageDisplay || original.RotationInterval != replacement.RotationInterval)
             return true;
         return (original, replacement) switch
@@ -66,6 +66,18 @@ public static class MemberPresentationRules
             (ClockMember a, ClockMember b) => a.TimeFormat != b.TimeFormat || a.DateFormat != b.DateFormat,
             _ => false,
         };
+    }
+
+    private static bool HasImageSourceChanges(MemberImageSource? original, MemberImageSource? replacement)
+    {
+        if (original is null || replacement is null) return original != replacement;
+        if ((original with { IconSeries = null }) != (replacement with { IconSeries = null })) return true;
+        // Binding a legacy automatic source is acquisition bookkeeping. Once bound,
+        // changing the confirmed image is a source edit; selecting its resolution is not.
+        if (original.Kind != MemberImageSourceKind.Automatic || original.IconSeries is null) return false;
+        return replacement.IconSeries is not { } next || original.IconSeries.Identity != next.Identity ||
+            original.IconSeries.Frames is null || next.Frames is null ||
+            !original.IconSeries.Frames.SequenceEqual(next.Frames);
     }
 
     public static string ResolveTitle(WallMember member, bool targetIsFolder = false) =>

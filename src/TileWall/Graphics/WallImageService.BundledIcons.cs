@@ -33,7 +33,7 @@ public sealed partial class WallImageService
         if (!WebsiteIconCatalog.TryGet(uri, out var match)) return null;
         var asset = match.Default;
         if (asset.Sha256.Length != 64 || !asset.Sha256.All(Uri.IsHexDigit) ||
-            asset.Width is < 1 or > 4096 || asset.Height is < 1 or > 4096)
+            asset.Width < 1 || asset.Height < 1)
             return UnavailableWebsiteIcon(match.Id);
 
         ct.ThrowIfCancellationRequested();
@@ -54,7 +54,7 @@ public sealed partial class WallImageService
             if (path is null || !SystemIconCatalog.TryGet(path, SystemIconHostPaths(), out asset)) return null;
         }
         if (asset.Sha256.Length != 64 || !asset.Sha256.All(Uri.IsHexDigit) ||
-            asset.Width is < 1 or > 4096 || asset.Height is < 1 or > 4096)
+            asset.Width < 1 || asset.Height < 1)
             return new Prepared(WallImageStatus.Fallback, null, 0, 0, "BundledSystemUnavailable:" + asset.Id) { CacheAllowed = false };
         var prepared = await TryPrepareBundledFileAsync("System", asset.RelativePath, "system:" + asset.Id,
             asset.Sha256, width, height, ct, asset.Width, asset.Height).ConfigureAwait(false);
@@ -99,7 +99,7 @@ public sealed partial class WallImageService
                 !StringComparer.OrdinalIgnoreCase.Equals(Convert.ToHexString(SHA256.HashData(original)), expectedSha256))
                 return null;
 
-            var budget = CachedIconBudget(width, false, MemberImagePurpose.Thumbnail, height);
+            var budget = new PuzzleDecodeBudget(MemberImagePurpose.Content, width, height, true, int.MaxValue, 512, false);
             var cacheIdentity = identity.StartsWith("website:", StringComparison.Ordinal)
                 ? "website-icon:" + identity["website:".Length..] + ":" + WebsiteIconCatalog.VersionStamp
                 : identity.StartsWith("system:", StringComparison.Ordinal)

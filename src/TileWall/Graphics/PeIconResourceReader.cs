@@ -93,12 +93,6 @@ public sealed record PeIconReadResult(PeIconReadStatus Status, PeIconCatalog? Ca
 /// <summary>Read-only PE resource parser. The target is never loaded as an assembly or executed.</summary>
 public sealed class PeIconResourceReader
 {
-    // The PE is memory-mapped. Large single-file .NET/Electron executables are ordinary inputs.
-    private const long MaxFileBytes = 1024L * 1024 * 1024;
-    private const int MaxGroups = 256;
-    private const int MaxFramesPerGroup = 64;
-    private const int MaxFrameBytes = 4 * 1024 * 1024;
-    private const int MaxTotalFrameBytes = 32 * 1024 * 1024;
     private static ReadOnlySpan<byte> PngSignature => [137, 80, 78, 71, 13, 10, 26, 10];
 
     public PeIconReadResult Read(string? exePath, bool allowResourceModule = false)
@@ -121,22 +115,17 @@ public sealed class PeIconResourceReader
                 return new(PeIconReadStatus.MissingFile, null);
             if (info.Length < 64)
                 return new(PeIconReadStatus.InvalidResource, null, "TooShort");
-            if (info.Length > MaxFileBytes)
-                return new(PeIconReadStatus.FileTooLarge, null);
 
             using var mappedFile = new MemoryMappedInputFile(path);
             var image = PEImage.FromFile(mappedFile);
             var iconResource = image.Resources is null ? null : IconResource.FromDirectory(image.Resources, IconType.Icon);
             if (iconResource is null || iconResource.Groups.Count == 0)
                 return new(PeIconReadStatus.NoIconGroups, null);
-            if (iconResource.Groups.Count > MaxGroups)
-                return new(PeIconReadStatus.InvalidResource, null, "TooManyGroups");
 
-            var totalFrameBytes = 0L;
             var groups = new List<PeIconGroup>(iconResource.Groups.Count);
             foreach (var group in iconResource.Groups)
             {
-                if (group.Icons.Count is 0 or > MaxFramesPerGroup)
+                if (group.Icons.Count == 0)
                     return new(PeIconReadStatus.InvalidResource, null, "InvalidFrameCount");
                 var frames = new List<PeIconFrame>(group.Icons.Count);
                 foreach (var icon in group.Icons)
@@ -144,13 +133,16 @@ public sealed class PeIconResourceReader
                     var width = icon.Width == 0 ? 256 : icon.Width;
                     var height = icon.Height == 0 ? 256 : icon.Height;
                     var segment = icon.PixelData;
-                    if (segment is null || segment.GetPhysicalSize() is 0 or > MaxFrameBytes || width is < 1 or > 256 || height is < 1 or > 256)
+                    if (segment is null)
                         return new(PeIconReadStatus.InvalidResource, null, "InvalidFrame");
-                    totalFrameBytes += (long)segment.GetPhysicalSize();
-                    if (totalFrameBytes > MaxTotalFrameBytes)
-                        return new(PeIconReadStatus.InvalidResource, null, "TooMuchFrameData");
+                    var frameDataSize = checked((long)segment.GetPhysicalSize());
+                    if (frameDataSize <= 0 || frameDataSize > int.MaxValue ||
+                        width is < 1 or > 256 || height is < 1 or > 256)
+                        return new(PeIconReadStatus.InvalidResource, null, "InvalidFrame");
 
                     var raw = segment.WriteIntoArray();
+                    if (raw.LongLength != frameDataSize)
+                        return new(PeIconReadStatus.InvalidResource, null, "InvalidFrameDataLength");
                     var format = DetectFormat(raw, width, height);
                     if (format == PeIconFrameFormat.Unknown)
                         continue;
@@ -194,9 +186,13 @@ public sealed class PeIconResourceReader
     public static byte[] WrapSingleFrameIco(PeIconFrame frame)
     {
         ArgumentNullException.ThrowIfNull(frame);
-        if (frame.Width is < 1 or > 256 || frame.Height is < 1 or > 256 || frame.RawData.Length is < 1 or > MaxFrameBytes)
+        if (frame.Width is < 1 or > 256 || frame.Height is < 1 or > 256 || frame.RawData.Length < 1 ||
+            frame.ColorCount is < 0 or > byte.MaxValue ||
+            frame.Planes is < 0 or > ushort.MaxValue || frame.BitsPerPixel is < 0 or > ushort.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(frame));
-        using var output = new MemoryStream(22 + frame.RawData.Length);
+        const int headerLength = 22;
+        var dataLength = checked((uint)frame.RawData.Length);
+        using var output = new MemoryStream(checked(headerLength + frame.RawData.Length));
         using var writer = new BinaryWriter(output);
         writer.Write((ushort)0);
         writer.Write((ushort)1);
@@ -207,8 +203,8 @@ public sealed class PeIconResourceReader
         writer.Write((byte)0);
         writer.Write((ushort)frame.Planes);
         writer.Write((ushort)frame.BitsPerPixel);
-        writer.Write((uint)frame.RawData.Length);
-        writer.Write((uint)22);
+        writer.Write(dataLength);
+        writer.Write((uint)headerLength);
         writer.Write(frame.RawData.Span);
         return output.ToArray();
     }

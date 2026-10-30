@@ -127,19 +127,6 @@ public sealed partial class WallStore
         }
     }
 
-    private void ValidatePreparedResourceBudget(WallDocument current, IReadOnlyList<PreparedMediaAsset> media,
-        IReadOnlyList<PreparedManagedGallery> galleries)
-    {
-        var existing = MediaById(current).Keys.ToHashSet(StringComparer.Ordinal);
-        foreach (var gallery in GalleryReferences(current))
-            existing.UnionWith(CheckGallery(gallery).Files.Select(file => file.Media.Sha256));
-        var supplied = media.Concat(galleries.SelectMany(gallery => gallery.Files.Select(file => file.Asset)))
-            .GroupBy(asset => asset.Reference.Sha256, StringComparer.Ordinal).Select(group => group.First())
-            .Where(asset => !existing.Contains(asset.Reference.Sha256));
-        if (supplied.Sum(asset => asset.Reference.Length) > PreparedManagedGallery.MaximumTotalBytes)
-            throw new InvalidDataException("Combined prepared original bytes exceed 128 MiB.");
-    }
-
     private string GalleryStagePath(string commitId, string contentId) => _paths.Under("Staging", commitId, "source-" + contentId);
     private sealed record WallJournalGallery(ManagedGalleryReference Reference, bool NewlyInstalled);
 }

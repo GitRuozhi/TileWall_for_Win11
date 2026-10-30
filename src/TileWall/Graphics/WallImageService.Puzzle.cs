@@ -241,15 +241,18 @@ public sealed partial class WallImageService
             !(member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is not null ||
               member.Images.Kind == MemberImageSourceKind.Folder && member.Images.ManagedGallery is not null))
             return new(null, WallImageStatus.None, "PackageImageSourceUnavailable");
-        if (widthPixels is < 1 or > 4096 || heightPixels is < 1 or > 4096)
+        if (widthPixels < 1 || heightPixels < 1)
             throw new ArgumentOutOfRangeException(nameof(widthPixels));
         if (purpose is not (MemberImagePurpose.Content or MemberImagePurpose.Thumbnail))
             throw new ArgumentOutOfRangeException(nameof(purpose));
+        if (member.Images.Kind == MemberImageSourceKind.Automatic && previewImagePath is null)
+            return await LoadAutomaticFrameCoreAsync(entryOrTarget, widthPixels, heightPixels,
+                member.Visual.BackgroundMode == MemberBackgroundMode.Blur, ct, member);
         var thumbnail = purpose == MemberImagePurpose.Thumbnail;
         var reserve = !thumbnail && member.ImageDisplay.Mode == ImageDisplayMode.Custom ? Math.Max(1, member.ImageDisplay.CustomScale) : 1;
-        widthPixels = (int)Math.Clamp(Math.Ceiling(widthPixels * reserve), 1, 4096);
-        heightPixels = (int)Math.Clamp(Math.Ceiling(heightPixels * reserve), 1, 4096);
-        var edge = thumbnail ? Math.Clamp(Math.Max(widthPixels, heightPixels), 64, 256) : 4096;
+        widthPixels = checked((int)Math.Max(1, Math.Ceiling(widthPixels * reserve)));
+        heightPixels = checked((int)Math.Max(1, Math.Ceiling(heightPixels * reserve)));
+        var edge = thumbnail ? Math.Max(1, Math.Max(widthPixels, heightPixels)) : int.MaxValue;
         if (thumbnail) widthPixels = heightPixels = edge;
         var needsBlur = member.Visual.BackgroundMode == MemberBackgroundMode.Blur;
         var budget = new PuzzleDecodeBudget(purpose, widthPixels, heightPixels,
@@ -289,7 +292,7 @@ public sealed partial class WallImageService
             }
         }
         if (previewImagePath is not null) return await LoadImageFileFrameAsync(previewImagePath, budget, ct);
-        if (widthPixels is < 1 or > 4096 || heightPixels is < 1 or > 4096)
+        if (widthPixels < 1 || heightPixels < 1)
             throw new ArgumentOutOfRangeException(nameof(widthPixels));
         return await LoadAutomaticFrameCoreAsync(entryOrTarget, widthPixels, heightPixels, needsBlur, ct, member);
     }

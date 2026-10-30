@@ -58,99 +58,106 @@ public sealed partial class WallImageService
         { return "package-registration-unavailable"; }
     }
 
-    private async Task<Prepared?> TryPreparePackagedAppIconAsync(string? target, int width, int height, CancellationToken token)
+    private async Task<List<IconCandidateSeries>> CollectPackagedIconSeriesAsync(string? target, int priority, CancellationToken token)
     {
-        if (PackagedAppIdentity(target) is not { } identity) return null;
-        var (appId, family, application) = identity;
+        var result = new List<IconCandidateSeries>();
+        if (PackagedAppIdentity(target) is not { } identity) return result;
         try
         {
             token.ThrowIfCancellationRequested();
             var manager = new PackageManager();
-            var packages = manager.FindPackagesForUser(string.Empty, family)
+            var packages = manager.FindPackagesForUser(string.Empty, identity.Family)
                 .Where(item => !item.IsResourcePackage && !item.IsFramework &&
-                    string.Equals(item.Id.FamilyName, family, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
-            if (packages.Length != 1) return null;
+                    string.Equals(item.Id.FamilyName, identity.Family, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
+            if (packages.Length != 1) return result;
             var package = packages[0];
             var fullName = package.Id.FullName;
             var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(package.InstalledLocation.Path));
             var manifest = PackageIconPath(root, "AppxManifest.xml");
-            if (manifest is null) return null;
+            if (manifest is null) return result;
             XDocument document;
             using (var file = new FileStream(manifest, FileMode.Open, FileAccess.Read, FileShare.Read))
-            using (var reader = XmlReader.Create(file, new XmlReaderSettings
-            { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 1024 * 1024 }))
+            using (var reader = XmlReader.Create(file, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null }))
                 document = XDocument.Load(reader);
             XNamespace foundation = "http://schemas.microsoft.com/appx/manifest/foundation/windows10";
             XNamespace uap = "http://schemas.microsoft.com/appx/manifest/uap/windows10";
             var entry = document.Root?.Element(foundation + "Applications")?.Elements(foundation + "Application")
-                .SingleOrDefault(item => string.Equals((string?)item.Attribute("Id"), application, StringComparison.Ordinal));
-            var logo = (string?)entry?.Element(uap + "VisualElements")?.Attribute("Square44x44Logo");
-            if (logo is null || PackageIconPath(root, logo, requireFile: false) is not { } logoPath ||
-                !Path.GetExtension(logoPath).Equals(".png", StringComparison.OrdinalIgnoreCase)) return null;
-            var directory = Path.GetDirectoryName(logoPath)!;
-            var stem = Path.GetFileNameWithoutExtension(logoPath);
-            // Exact neutral unplated targetsize variants preserve the native
-            // icon's own alpha and design padding. No alpha cropping or PRI,
-            // language/theme guessing is applied; unsupported layouts use Shell.
-            var candidates = new List<(string Path, int Width, int Height)>();
-            var examined = 0;
-            foreach (var file in Directory.EnumerateFiles(directory, stem + ".targetsize-*_altform-unplated.png").Take(129))
-            {
-                token.ThrowIfCancellationRequested();
-                if (++examined > 128) return null;
-                var name = Path.GetFileName(file);
-                var prefix = stem + ".targetsize-";
-                if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
-                var number = name.AsSpan(prefix.Length);
-                const string suffix = "_altform-unplated.png";
-                if (!number.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) ||
-                    !int.TryParse(number[..^suffix.Length], NumberStyles.None, CultureInfo.InvariantCulture, out var edge) || edge is < 1 or > 4096)
-                    continue;
-                if (PackageIconPath(root, Path.GetRelativePath(root, file)) is not { } safe) continue;
-                using var headerFile = new FileStream(safe, FileMode.Open, FileAccess.Read, FileShare.Read);
-                if (headerFile.Length is < 1 or > 32 * 1024 * 1024) continue;
-                using var headerStream = headerFile.AsRandomAccessStream();
-                var header = await BitmapDecoder.CreateAsync(headerStream).AsTask(token).ConfigureAwait(false);
-                if (header.PixelWidth is < 1 or > 4096 || header.PixelHeight is < 1 or > 4096) continue;
-                candidates.Add((safe, (int)header.PixelWidth, (int)header.PixelHeight));
-            }
-            if (candidates.Count == 0) return null;
-            var requested = Math.Max(width, height);
-            // targetsize is a resource qualifier, not a promise about decoded
-            // dimensions (PowerShell's 48 resource can actually be 44 pixels).
-            var chosen = candidates.OrderBy(item => Math.Min(item.Width, item.Height) >= requested ? 0 : 1)
-                .ThenBy(item => Math.Min(item.Width, item.Height) >= requested
-                    ? Math.Max(item.Width, item.Height) : -Math.Min(item.Width, item.Height)).First();
-            using var input = new FileStream(chosen.Path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (input.Length is < 1 or > 32 * 1024 * 1024) return null;
-            using var stream = input.AsRandomAccessStream();
-            var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token).ConfigureAwait(false);
-            if (decoder.PixelWidth != chosen.Width || decoder.PixelHeight != chosen.Height) return null;
-            var data = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, new BitmapTransform(),
-                ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(token).ConfigureAwait(false);
-            var pixels = data.DetachPixelData();
-            if (pixels.Length != checked(chosen.Width * chosen.Height * 4)) return null;
-            var visible = false;
-            for (var index = 3; index < pixels.Length; index += 4) visible |= pixels[index] != 0;
-            token.ThrowIfCancellationRequested();
-            // A package update during the read must not publish an old logo as
-            // the current registered application's result. Do not persist this
-            // result under the shortcut's weaker automatic cache stamp.
-            var current = manager.FindPackagesForUser(string.Empty, family)
+                .SingleOrDefault(item => string.Equals((string?)item.Attribute("Id"), identity.Application, StringComparison.Ordinal));
+            var visual = entry?.Element(uap + "VisualElements");
+            if (visual is null) return result;
+            await Collect((string?)visual.Attribute("Square44x44Logo"), 0, true).ConfigureAwait(false);
+            await Collect((string?)visual.Attribute("Square150x150Logo"), 1, false).ConfigureAwait(false);
+            await Collect((string?)visual.Element(uap + "DefaultTile")?.Attribute("Square71x71Logo"), 2, false).ConfigureAwait(false);
+            await Collect((string?)visual.Attribute("Square44x44Logo"), 3, false).ConfigureAwait(false);
+            var current = manager.FindPackagesForUser(string.Empty, identity.Family)
                 .Where(item => !item.IsResourcePackage && !item.IsFramework).Take(2).ToArray();
-            if (!visible || PackageIconPath(root, Path.GetRelativePath(root, chosen.Path)) != chosen.Path ||
-                current.Length != 1 || current[0].Id.FullName != fullName ||
-                !string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(current[0].InstalledLocation.Path)), root, StringComparison.OrdinalIgnoreCase)) return null;
-            return new Prepared(WallImageStatus.Loaded, pixels, chosen.Width, chosen.Height,
-                $"PackageAppList:{appId}:{Path.GetFileName(chosen.Path)}:{chosen.Width}x{chosen.Height}:requested={width}x{height}")
-                { CacheAllowed = false };
+            if (current.Length != 1 || current[0].Id.FullName != fullName ||
+                !string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(current[0].InstalledLocation.Path)), root, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("Application package changed during icon collection.");
+            return result;
+
+            async Task Collect(string? declaration, int role, bool unplatedOnly)
+            {
+                if (declaration is null) return;
+                try
+                {
+                    if (PackageIconPath(root, declaration, requireFile: false) is not { } declared) return;
+                    var extension = Path.GetExtension(declared);
+                    if (!new[] { ".png", ".jpg", ".jpeg" }.Contains(extension, StringComparer.OrdinalIgnoreCase)) return;
+                    var directory = Path.GetDirectoryName(declared)!;
+                    var stem = Path.GetFileNameWithoutExtension(declared);
+                    var planes = new Dictionary<int, List<Prepared>>();
+                    foreach (var file in Directory.EnumerateFiles(directory, stem + "*" + extension))
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var name = Path.GetFileNameWithoutExtension(file);
+                        if (!name.Equals(stem, StringComparison.OrdinalIgnoreCase) && !name.StartsWith(stem + ".", StringComparison.OrdinalIgnoreCase)) continue;
+                        var qualifiers = name.Length == stem.Length ? Array.Empty<string>() : name[(stem.Length + 1)..].Split('_');
+                        var unplated = false; var theme = 0; var valid = true;
+                        foreach (var qualifier in qualifiers)
+                        {
+                            if (qualifier.StartsWith("scale-", StringComparison.OrdinalIgnoreCase) || qualifier.StartsWith("targetsize-", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var dash = qualifier.IndexOf('-');
+                                valid &= int.TryParse(qualifier.AsSpan(dash + 1), NumberStyles.None, CultureInfo.InvariantCulture, out var size) && size > 0;
+                            }
+                            else if (qualifier.Equals("altform-unplated", StringComparison.OrdinalIgnoreCase)) unplated = true;
+                            else if (qualifier.Equals("altform-darkunplated", StringComparison.OrdinalIgnoreCase)) { unplated = true; theme = 1; }
+                            else if (qualifier.Equals("theme-dark", StringComparison.OrdinalIgnoreCase)) theme = 1;
+                            else if (qualifier.Equals("altform-colorful", StringComparison.OrdinalIgnoreCase)) { }
+                            else valid = false; // Light/contrast/language/unknown qualifiers are not guessed.
+                        }
+                        if (!valid || unplatedOnly != unplated) continue;
+                        try
+                        {
+                            if (PackageIconPath(root, Path.GetRelativePath(root, file)) is not { } safe) continue;
+                            using var input = new FileStream(safe, FileMode.Open, FileAccess.Read, FileShare.Read);
+                            using var stream = input.AsRandomAccessStream();
+                            var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token).ConfigureAwait(false);
+                            var width = checked((int)decoder.PixelWidth); var height = checked((int)decoder.PixelHeight);
+                            if (width <= 0 || height <= 0) continue;
+                            var data = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, new BitmapTransform(),
+                                ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(token).ConfigureAwait(false);
+                            var pixels = data.DetachPixelData();
+                            if (pixels.LongLength != (long)width * height * 4 || PackageIconPath(root, Path.GetRelativePath(root, safe)) != safe) continue;
+                            var prepared = new Prepared(WallImageStatus.Loaded, pixels, width, height,
+                                $"PackageNative:{identity.AppId}:role={role}:{Path.GetFileName(safe)}:{width}x{height}") { CacheAllowed = false };
+                            if (!planes.TryGetValue(theme, out var frames)) planes.Add(theme, frames = new());
+                            frames.Add(prepared);
+                        }
+                        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or OverflowException) { }
+                    }
+                    foreach (var item in planes)
+                        result.Add(new IconCandidateSeries($"package:{identity.AppId}:{declaration}:role={role}:theme={item.Key}",
+                            priority, item.Value, item.Key, role));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+            }
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or
-            InvalidOperationException or XmlException or OverflowException or NotSupportedException)
-        { return null; }
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or XmlException or OverflowException or NotSupportedException)
+        { return new(); }
     }
-
     private static (string AppId, string Family, string Application)? PackagedAppIdentity(string? target)
     {
         const string appsFolder = "shell:AppsFolder\\";

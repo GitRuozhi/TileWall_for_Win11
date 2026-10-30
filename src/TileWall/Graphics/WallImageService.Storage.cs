@@ -98,7 +98,7 @@ public sealed partial class WallImageService
             segment.Offset == 0 && segment.Count == segment.Array!.Length ? segment.Array : bytes.ToArray();
         using (var writer = new DataWriter(stream)) { writer.WriteBytes(buffer); await writer.StoreAsync().AsTask(ct).ConfigureAwait(false); writer.DetachStream(); }
         stream.Seek(0); var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(ct).ConfigureAwait(false); ct.ThrowIfCancellationRequested();
-        if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 || (long)decoder.PixelWidth * decoder.PixelHeight > 80_000_000)
+        if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0)
             throw new InvalidDataException("Image dimensions exceed the source budget.");
         var sample = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied,
             new BitmapTransform { ScaledWidth = 1, ScaledHeight = 1 }, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(ct).ConfigureAwait(false);

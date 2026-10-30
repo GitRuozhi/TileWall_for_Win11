@@ -24,15 +24,6 @@ public sealed partial class WallImageService
     private sealed record DiskIconMapping(int Format, string Dependency, string PackageKey);
     public string? SharedIconDirectory => _disk?.Under("Cache", "Images", "Icons", "Packages");
 
-    private static PuzzleDecodeBudget CachedIconBudget(int width, bool needsBlur, MemberImagePurpose purpose, int? height = null)
-    {
-        var thumbnail = purpose == MemberImagePurpose.Thumbnail;
-        var physicalWidth = Math.Clamp(width, 1, thumbnail ? 256 : 4096);
-        var physicalHeight = Math.Clamp(height ?? width, 1, thumbnail ? 256 : 4096);
-        var edge = Math.Max(physicalWidth, physicalHeight);
-        return new(purpose, physicalWidth, physicalHeight, !thumbnail, thumbnail ? edge : 4096, thumbnail ? edge : 512, needsBlur);
-    }
-
     public Task<string?> PrewarmPeIconsAsync(string sourcePath, string? targetPath, string? iconPath,
         int? iconIndex, string sourceSha256, string iconsDirectory, CancellationToken ct = default) =>
         StartImageRequest(token => PrewarmImportIconAsync(sourcePath, targetPath, iconPath, iconIndex,
@@ -87,7 +78,7 @@ public sealed partial class WallImageService
             var chosen = PeIconResourceReader.SelectFrame(group, width, height);
             var frame = manifest.Frames.First(item => item.ResourceId == chosen!.ResourceId && item.NativeSha256 == chosen.Sha256);
             var path = Path.Combine(root, key, frame.File);
-            var budget = new PuzzleDecodeBudget(MemberImagePurpose.Content, width, height, true, 4096, 512, false);
+            var budget = new PuzzleDecodeBudget(MemberImagePurpose.Content, width, height, true, int.MaxValue, 512, false);
             var result = await LoadImageFileFrameAsync(path, budget, ct, "automatic:shared-icon:" + key, frame.FileSha256);
             return result.Frame is { } loaded && (loaded.SourcePixels.Width != frame.Width || loaded.SourcePixels.Height != frame.Height)
                 ? new(null, WallImageStatus.Invalid, "IconCacheDimensionsMismatch") : result;
@@ -103,10 +94,10 @@ public sealed partial class WallImageService
         try
         {
             var directory = disk.Under("Cache", "Images", "Icons", "Packages", key);
-            var manifest = JsonSerializer.Deserialize<DiskIconManifest>(disk.Read(Path.Combine(directory, "manifest.json"), 128 * 1024), CacheJson);
+            var manifest = JsonSerializer.Deserialize<DiskIconManifest>(disk.Read(Path.Combine(directory, "manifest.json"), int.MaxValue), CacheJson);
             // Old Empty manifests have no proof of a stable absence. Never import them.
             if (manifest is null || manifest.Format != 2 || manifest.Key != key || manifest.Empty ||
-                manifest.Frames is not { Count: > 0 and <= 64 }) return null;
+                manifest.Frames is not { Count: > 0 }) return null;
             foreach (var frame in manifest.Frames)
             {
                 if (frame is null || frame.Width is < 1 or > 256 || frame.Height is < 1 or > 256 ||
@@ -114,7 +105,7 @@ public sealed partial class WallImageService
                     frame.FileSha256 is not { Length: 64 } || !frame.FileSha256.All(Uri.IsHexDigit) ||
                     frame.File != frame.NativeSha256 + ".ico") return null;
                 var path = Path.Combine(directory, frame.File);
-                var bytes = disk.Read(path, 4 * 1024 * 1024 + 22);
+                var bytes = disk.Read(path, int.MaxValue);
                 if (Convert.ToHexString(SHA256.HashData(bytes)) != frame.FileSha256) return null;
             }
             return manifest;
@@ -190,11 +181,11 @@ public sealed partial class WallImageService
         try
         {
             using var stream = File.OpenRead(path);
-            if (stream.Length is < 22 or > 32 * 1024 * 1024) return null;
+            if (stream.Length < 22) return null;
             using var reader = new BinaryReader(stream);
             if (reader.ReadUInt16() != 0 || reader.ReadUInt16() != 1) return null;
             var count = reader.ReadUInt16();
-            if (count is < 1 or > 64 || stream.Length < 6 + count * 16) return null;
+            if (count < 1 || stream.Length < 6 + count * 16) return null;
             var entries = new List<(int Width, int Height, int Colors, int Planes, int Bits, uint Bytes, uint Offset)>();
             long total = 0;
             for (var n = 0; n < count; n++)
@@ -203,7 +194,7 @@ public sealed partial class WallImageService
                 _ = reader.ReadByte(); var planes = reader.ReadUInt16(); var bits = reader.ReadUInt16();
                 var bytes = reader.ReadUInt32(); var offset = reader.ReadUInt32();
                 total += bytes;
-                if (bytes is < 1 or > 4 * 1024 * 1024 || total > 32 * 1024 * 1024 ||
+                if (bytes < 1 ||
                     offset < 6 + count * 16 || (long)offset + bytes > stream.Length) return null;
                 entries.Add((width == 0 ? 256 : width, height == 0 ? 256 : height, colors, planes, bits, bytes, offset));
             }

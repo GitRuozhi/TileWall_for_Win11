@@ -61,12 +61,12 @@ public sealed partial class WallImageService
             if (app is null) return new(WallImageStatus.Fallback, null, 0, 0, "NativeSearchIconHandlerUnavailable") { CacheAllowed = false };
             var logo = app.DisplayInfo.GetLogo(new Windows.Foundation.Size(width, height));
             using var stream = await logo.OpenReadAsync().AsTask(token).ConfigureAwait(false);
-            if (stream.Size is < 1 or > 32 * 1024 * 1024)
-                return new(WallImageStatus.Fallback, null, 0, 0, "NativeSearchIconBudget") { CacheAllowed = false };
+            if (stream.Size < 1)
+                return new(WallImageStatus.Fallback, null, 0, 0, "NativeSearchIconEmpty") { CacheAllowed = false };
             var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token).ConfigureAwait(false);
             var actualWidth = checked((int)decoder.PixelWidth); var actualHeight = checked((int)decoder.PixelHeight);
-            if (actualWidth is < 1 or > 4096 || actualHeight is < 1 or > 4096 || (long)actualWidth * actualHeight > 16_777_216)
-                return new(WallImageStatus.Fallback, null, 0, 0, "NativeSearchIconBudget") { CacheAllowed = false };
+            if (actualWidth < 1 || actualHeight < 1 || (long)actualWidth * actualHeight > Array.MaxLength / 4)
+                return new(WallImageStatus.Fallback, null, 0, 0, "NativeSearchIconInvalidDimensions") { CacheAllowed = false };
             var data = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, new BitmapTransform(),
                 ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(token).ConfigureAwait(false);
             var pixels = data.DetachPixelData();
@@ -102,7 +102,7 @@ public sealed partial class WallImageService
     private async Task<Prepared> PrepareAutomaticSharedAsync(string? source, int width, int height,
         AutomaticSourceSnapshot snapshot, CancellationToken token)
     {
-        var key = ManagedImageCache.Key($"automatic-v6|{snapshot.Stamp}|{width}x{height}|BGRA8-premultiplied");
+        var key = ManagedImageCache.Key($"automatic-v9|{snapshot.Stamp}|{width}x{height}|BGRA8-premultiplied");
         if (snapshot.CacheAllowed && TryGetCached(key, out var cached)) return cached;
         if (!snapshot.CacheAllowed)
             return await StartUnsharedAutomaticAsync(source, width, height, snapshot, key, token).ConfigureAwait(false);
@@ -196,8 +196,8 @@ public sealed partial class WallImageService
         {
             var diskHit = allowPixelCache && snapshot.CacheAllowed ? ReadAutomaticPixels(key, snapshot.Stamp) : null;
             if (diskHit is not null && snapshot == AutomaticSourceStamp(source, snapshot.PackageTarget)) return diskHit;
-            var prepared = await PrepareAutoAsync(source, width, height, lifetime,
-                cacheAllowed: allowResultCache, mmcSource: snapshot.MmcSource, verifiedPackageTarget: snapshot.PackageTarget).ConfigureAwait(false);
+            var prepared = await PrepareAutoCoreAsync(source, width, height, lifetime,
+                snapshot.PackageTarget).ConfigureAwait(false);
             lifetime.ThrowIfCancellationRequested();
             if (snapshot != AutomaticSourceStamp(source, snapshot.PackageTarget))
                 return new Prepared(WallImageStatus.Invalid, null, 0, 0, "IconSourceChanged") { CacheAllowed = false };
@@ -225,14 +225,14 @@ public sealed partial class WallImageService
             var map = JsonSerializer.Deserialize<AutomaticDiskMapping>(disk.Read(disk.Under("Cache", "Images", "Icons", "Mappings", key + ".json"), 128 * 1024), CacheJson);
             if (map is null || map.Format != 6 || map.Stamp != stamp || map.PackageKey is not { Length: 64 } ||
                 !map.PackageKey.All(Uri.IsHexDigit) || map.PixelsSha256 is not { Length: 64 } || !map.PixelsSha256.All(Uri.IsHexDigit) ||
-                map.Width is < 1 or > 4096 || map.Height is < 1 or > 4096 || (long)map.Width * map.Height > 8_000_000) return null;
+                map.Width < 1 || map.Height < 1 || (long)map.Width * map.Height > Array.MaxLength / 4) return null;
             var directory = disk.Under("Cache", "Images", "Icons", "Packages", map.PackageKey);
             using var lease = disk.Lease(directory);
             var manifestBytes = disk.Read(Path.Combine(directory, "manifest.json"), 128 * 1024);
             var manifest = JsonSerializer.Deserialize<AutomaticDiskMapping>(manifestBytes, CacheJson);
             if (manifest is null || manifest.PackageKey != map.PackageKey || manifest.PixelsSha256 != map.PixelsSha256 ||
                 manifest.Width != map.Width || manifest.Height != map.Height) return null;
-            var pixels = disk.Read(Path.Combine(directory, map.PixelsSha256 + ".pixels"), 32 * 1024 * 1024);
+            var pixels = disk.Read(Path.Combine(directory, map.PixelsSha256 + ".pixels"), checked(map.Width * map.Height * 4));
             if (pixels.Length != checked(map.Width * map.Height * 4) || Convert.ToHexString(SHA256.HashData(pixels)) != map.PixelsSha256) return null;
             return new(map.Status, pixels, map.Width, map.Height, map.Diagnostic);
         }
@@ -242,7 +242,7 @@ public sealed partial class WallImageService
     private void SaveAutomaticPixels(string key, string? stamp, int requestedWidth, int requestedHeight,
         Prepared prepared, CancellationToken token)
     {
-        if (_disk is not { } disk || prepared.Pixels is not { Length: > 0 and <= 32 * 1024 * 1024 } pixels) return;
+        if (_disk is not { } disk || prepared.Pixels is not { Length: > 0 } pixels) return;
         try
         {
             var hash = Convert.ToHexString(SHA256.HashData(pixels));
@@ -265,7 +265,8 @@ public sealed partial class WallImageService
         CancellationToken token, WallMember? member = null)
     {
         if (member?.ResourceOrigin == MemberResourceOrigin.Package) return new(null, WallImageStatus.None);
-        if (width is < 1 or > 4096 || height is < 1 or > 4096) throw new ArgumentOutOfRangeException(nameof(width));
+        if (member?.Images.IconSeries is not null) return await LoadSavedAutomaticIconFrameAsync(member, token);
+        if (width < 1 || height < 1) throw new ArgumentOutOfRangeException(nameof(width));
         try
         {
             var packageTarget = await Task.Run(() => VerifiedPackageIconTarget(source, member), token);
@@ -379,12 +380,19 @@ public sealed partial class WallImageService
         else association = "folder";
         var mmc = canonical is not null && IsMmcConsolePath(canonical) && string.IsNullOrWhiteSpace(explicitIcon)
             ? ReadMmcIconSource(canonical) : null;
-        var stamp = string.Join("|", "automatic-v6", source, entryStamp, target,
+        // Flags belong to the dependency snapshot before cache lookup as well as
+        // to newly collected Shell pixels. This asks for location metadata only;
+        // the minimum native argument does not extract or resize an image.
+        ShellItemCatalog.IconResourceLocation? shellPolicy = null;
+        try { if (source is not null) shellPolicy = ShellItemCatalog.IconLocation(source, 1); }
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException) { }
+        var stamp = string.Join("|", "automatic-v9", source, entryStamp, target,
             canonical is null ? null : Fingerprint(canonical, "target"), Fingerprint(explicitIcon, "explicit") ?? explicitIcon,
             iconIndex, association, AssociationResourceStamp(associationIcon), Fingerprint(associationExecutable, "association-executable"),
             canonical is not null && Directory.Exists(canonical) ? Fingerprint(Path.Combine(canonical, "desktop.ini"), "folder-customization") : null,
             System.Globalization.CultureInfo.CurrentUICulture.Name, Environment.OSVersion.VersionString,
-            TileWall.Core.Imaging.WebsiteIconCatalog.VersionStamp, TileWall.Core.Imaging.SystemIconCatalog.VersionStamp);
+            TileWall.Core.Imaging.WebsiteIconCatalog.VersionStamp, TileWall.Core.Imaging.SystemIconCatalog.VersionStamp,
+            shellPolicy?.Flags, shellPolicy?.Path, shellPolicy?.Index);
         if (mmc is not null) stamp += "|mmc-icon-v1|" + mmc.Stamp;
         var packagedApp = PackagedAppIdentity(target) is not null;
         var shellIconContext = (path is not null && Path.GetExtension(path).Equals(".lnk", StringComparison.OrdinalIgnoreCase)) ||
@@ -394,13 +402,22 @@ public sealed partial class WallImageService
             target?.StartsWith("::{", StringComparison.Ordinal) == true || packagedApp;
         if (shellIconContext)
             stamp += "|shell-icon-context-v2";
-        if (packagedApp) stamp += "|package-app-list-v1|" + PackageRegistrationStamp(target);
-        if (followLinkedTarget && (shellLink || source?.StartsWith("shell:AppsFolder\\", StringComparison.OrdinalIgnoreCase) == true) &&
-            ShellItemCatalog.LinkedTargetPath(source!) is { } linked &&
-            !string.Equals(source, linked, StringComparison.OrdinalIgnoreCase) &&
-            Path.GetExtension(linked).ToLowerInvariant() is ".lnk" or ".url" && File.Exists(linked))
-            stamp += "|linked-icon-target-v1|" + AutomaticSourceStampCore(linked, followLinkedTarget: false).Stamp;
+        if (packagedApp) stamp += "|package-app-list-v2|" + PackageRegistrationStamp(target);
+        if (followLinkedTarget && LinkedAutomaticIconTarget(source, shellLink) is { } linked &&
+            !string.Equals(linked, canonical, StringComparison.OrdinalIgnoreCase))
+            stamp += "|linked-icon-target-v2|" + AutomaticSourceStampCore(linked, followLinkedTarget: false).Stamp;
         return new(stamp, mmc?.CacheAllowed ?? true, mmc);
+    }
+
+    private static string? LinkedAutomaticIconTarget(string? source, bool nativeLink)
+    {
+        if (source is null || !nativeLink && !source.StartsWith("shell:", StringComparison.OrdinalIgnoreCase)) return null;
+        // This path is a fact supplied by the original Shell item, not a path
+        // inferred from a display name or a command line. Follow it only once.
+        var linked = NormalizePath(ShellItemCatalog.LinkedTargetPath(source));
+        return linked is not null && !string.Equals(linked, NormalizePath(source), StringComparison.OrdinalIgnoreCase) &&
+            Path.GetExtension(linked).ToLowerInvariant() is ".lnk" or ".url" or ".exe" && File.Exists(linked)
+                ? linked : null;
     }
 
     private static string? AssociationResourceStamp(string? descriptor)
@@ -413,36 +430,6 @@ public sealed partial class WallImageService
         return path is null ? descriptor : Fingerprint(path, "association-resource") ?? "missing:" + path;
     }
 
-    private async Task<Prepared> PrepareDefaultBrowserIconAsync(string scheme, int width, int height, CancellationToken token,
-        bool cacheAllowed = true)
-    {
-        var facts = ProtocolAssociationReader(scheme);
-        var identity = ProtocolAssociationIdentity(scheme, facts);
-        var stamp = ProtocolAssociationStamp(scheme, facts);
-        var location = ProtocolIconLocation(facts);
-        if (location is { CanReadResource: true, Path: not null })
-        {
-            var prepared = await PreparePeIconAsync(location.Path, location.Path, location.Index, scheme, width, height, token, cacheAllowed).ConfigureAwait(false);
-            if (stamp != ProtocolAssociationStamp(scheme, ProtocolAssociationReader(scheme)))
-                return new(WallImageStatus.Fallback, null, 0, 0, "ProtocolAssociationChanged") { CacheAllowed = false };
-            if (prepared.Pixels is not null) return prepared with { Diagnostic = "DefaultBrowser:" + scheme + ":" + identity + ":" + prepared.Diagnostic };
-            cacheAllowed &= prepared.CacheAllowed;
-        }
-        var app = !string.IsNullOrWhiteSpace(facts.AppUserModelId)
-            ? await PrepareRegisteredProtocolAppIconAsync(scheme, width, height, token, facts).ConfigureAwait(false)
-            : null;
-        if (stamp != ProtocolAssociationStamp(scheme, ProtocolAssociationReader(scheme)))
-            return new(WallImageStatus.Fallback, null, 0, 0, "ProtocolAssociationChanged") { CacheAllowed = false };
-        if (app?.Pixels is not null) return app;
-        if (app is not null) cacheAllowed &= app.CacheAllowed;
-        var executable = NormalizePath(facts.Executable);
-        if (executable is not null)
-        {
-            var prepared = await PreparePeIconAsync(executable, null, null, scheme, width, height, token, cacheAllowed).ConfigureAwait(false);
-            if (stamp == ProtocolAssociationStamp(scheme, ProtocolAssociationReader(scheme))) return prepared;
-        }
-        return new(WallImageStatus.Fallback, null, 0, 0, "DefaultBrowserUnavailable") { CacheAllowed = cacheAllowed };
-    }
     // Downsample only the blur underfill; the visible sharp plane retains its
     // actual Shell/PE dimensions, alpha, design padding and aspect ratio.
     private static DecodedImageFrame BlurInput(DecodedImageFrame source)

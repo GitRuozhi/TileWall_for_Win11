@@ -3,10 +3,10 @@ namespace TileWall.Core.Exchange;
 public sealed record WallPackageManifest
 {
     public const string CurrentFormatId = "TileWall.WallPackage";
-    public const int CurrentFormatVersion = 3;
+    public const int CurrentFormatVersion = 4;
     public string FormatId { get; init; } = CurrentFormatId;
     public int FormatVersion { get; init; } = CurrentFormatVersion;
-    public int WallSchemaVersion { get; init; } = 4;
+    public int WallSchemaVersion { get; init; } = TileWall.Core.Wall.WallDocument.CurrentSchemaVersion;
     public required string AppVersion { get; init; }
     public DateTimeOffset CreatedUtc { get; init; }
     public required string ContentFingerprint { get; init; }
@@ -26,7 +26,7 @@ public sealed record WallPackageLimits
     public int MaximumGroups { get; init; } = 10_000;
     public int MaximumReferences { get; init; } = 20_000;
     public long MaximumMetadataBytes { get; init; } = 16L * 1024 * 1024;
-    public long MaximumPreparedMediaBytes { get; init; } = 128L * 1024 * 1024;
+    public long MaximumPreparedMediaBytes { get; init; } = long.MaxValue;
     internal void Validate()
     {
         if (MaximumEntries < 1 || MaximumExpandedBytes < 1 || MaximumFileBytes < 1 ||

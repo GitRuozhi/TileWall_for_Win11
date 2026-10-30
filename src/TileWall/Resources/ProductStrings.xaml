@@ -340,6 +340,7 @@
     <x:String x:Key="Editor.Foreground">前景</x:String>
     <x:String x:Key="Editor.AutoTitle">恢复自动标题</x:String>
     <x:String x:Key="Editor.Initial">初始</x:String>
+    <x:String x:Key="Editor.AutomaticIcon">自动图标</x:String>
     <x:String x:Key="Editor.Picture">图片</x:String>
     <x:String x:Key="Editor.Gallery">图集</x:String>
     <x:String x:Key="Editor.Blur">毛玻璃</x:String>
@@ -425,7 +426,7 @@
     <x:String x:Key="Sidebar.OpenFailed">无法打开系统入口：{0}</x:String>
     <x:String x:Key="Common.MinimumReached">已达到最小值 {0}</x:String>
     <x:String x:Key="Common.MaximumReached">已达到最大值 {0}</x:String>
-    <x:String x:Key="Editor.AutomaticSource">初始前景由目标自动提供；选择图片或图集后可浏览来源。</x:String>
+    <x:String x:Key="Editor.AutomaticSource">自动图标由目标提供；选择图片或图集后可浏览来源。</x:String>
     <x:String x:Key="Editor.RequiresColor">选择“自选颜色”后可调整后景颜色。</x:String>
     <x:String x:Key="Wall.Open">打开</x:String>
     <x:String x:Key="Settings.ExpandColumns">拓展栏位</x:String>

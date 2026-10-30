@@ -15,9 +15,9 @@ public enum WallImageStatus { None, Loaded, Fallback, Missing, Invalid, Cancelle
 public sealed record WallImageResult(ImageSource? Source, WallImageStatus Status, string? Diagnostic = null);
 
 /// <summary>
-/// Bounded read-only image resolution for a tile. Call from the XAML thread: file, shell,
+/// Read-only image resolution for a tile. Call from the XAML thread: file, shell,
 /// PE and WIC work runs on a worker, then WriteableBitmap is created back on the caller thread.
-/// Bounded memory decoding and scoped, disposable image/icon caches share verified source identities.
+/// Decoding and capacity-managed disposable image/icon caches share verified source identities.
 /// </summary>
 public sealed partial class WallImageService : IDisposable
 {
@@ -52,8 +52,8 @@ public sealed partial class WallImageService : IDisposable
         Func<CancellationToken, Task<Prepared>> prepare, int widthPixels, int heightPixels,
         CancellationToken ct)
     {
-        if (widthPixels <= 0 || heightPixels <= 0 || widthPixels > 4096 || heightPixels > 4096)
-            throw new ArgumentOutOfRangeException(nameof(widthPixels), "Physical dimensions must be 1..4096.");
+        if (widthPixels <= 0 || heightPixels <= 0)
+            throw new ArgumentOutOfRangeException(nameof(widthPixels), "Physical dimensions must be positive.");
         if (ct.IsCancellationRequested)
             return new(null, WallImageStatus.Cancelled);
 
@@ -92,284 +92,17 @@ public sealed partial class WallImageService : IDisposable
         }
     }
 
-    private async Task<Prepared> PrepareAutoAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct,
-        bool skipNative = false, bool cacheAllowed = true, MmcIconSource? mmcSource = null, bool followShellTarget = true,
+    private async Task<Prepared> PrepareAutoCoreAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct,
         string? verifiedPackageTarget = null)
     {
-        var policy = new AutomaticMemoryPolicy();
-        var prepared = await PrepareAutoCoreAsync(entryOrTargetPath, width, height, ct,
-            skipNative, cacheAllowed, mmcSource, followShellTarget, policy, verifiedPackageTarget).ConfigureAwait(false);
-        return prepared with { MemoryCacheAllowed = prepared.MemoryCacheAllowed && policy.Allowed };
+        var candidates = await CollectIconSeriesAsync(entryOrTargetPath, width, height, verifiedPackageTarget,
+            true, ct).ConfigureAwait(false);
+        var chosen = SelectIconSeries(candidates, width, height);
+        if (chosen is null) return new(WallImageStatus.None, null, 0, 0, "IconSeriesUnavailable");
+        return chosen.Frames.OrderBy(frame => frame.Width >= width && frame.Height >= height ? 0 : 1)
+            .ThenBy(frame => frame.Width >= width && frame.Height >= height ? (long)frame.Width * frame.Height : -(long)frame.Width * frame.Height)
+            .First();
     }
-
-    private sealed class AutomaticMemoryPolicy { public bool Allowed = true; }
-
-    private async Task<Prepared> PrepareAutoCoreAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct,
-        bool skipNative, bool cacheAllowed, MmcIconSource? mmcSource, bool followShellTarget, AutomaticMemoryPolicy memoryPolicy,
-        string? verifiedPackageTarget)
-    {
-        ct.ThrowIfCancellationRequested();
-        if (string.IsNullOrWhiteSpace(entryOrTargetPath))
-            return new(WallImageStatus.None, null, 0, 0, null);
-        var entry = NormalizePath(entryOrTargetPath);
-        var extension = entry is null ? "" : Path.GetExtension(entry);
-        string? target = entry ?? entryOrTargetPath;
-        string? iconPath = null;
-        int? iconIndex = null;
-        var shellLink = false;
-        var shellIdentity = entry ?? entryOrTargetPath;
-        if (extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                var fields = _links.Read(entry!);
-                shellLink = fields.HasIdList;
-                target = !string.IsNullOrWhiteSpace(fields.ShellParsingName) ? fields.ShellParsingName : fields.TargetPath;
-                iconPath = fields.IconPath;
-                iconIndex = fields.IconIndex;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or
-                ArgumentException or InvalidOperationException)
-            {
-                target = null;
-            }
-        }
-        else if (extension.Equals(".url", StringComparison.OrdinalIgnoreCase))
-        {
-            var location = ReadUrlIconLocation(entry!);
-            iconPath = location.Path; iconIndex = location.Index;
-            if (new FileInfo(entry!).Length <= TileWall.Core.Entries.EntryObservation.MaximumBytes)
-                target = TileWall.Core.Entries.UrlShortcut.ReadUrlLine(File.ReadAllBytes(entry!));
-        }
-        var hasPersistedIconLocation = !string.IsNullOrWhiteSpace(iconPath);
-        var targetFile = NormalizePath(target);
-        var protocol = targetFile is null && Uri.TryCreate(target, UriKind.Absolute, out var parsed) && !parsed.IsFile ? parsed : null;
-        var web = protocol?.Scheme is "http" or "https";
-        var registeredSearch = protocol?.Scheme.Equals("ms-search", StringComparison.OrdinalIgnoreCase) == true;
-        var shellNamespace = shellLink || target?.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) == true ||
-            target?.StartsWith("::{", StringComparison.Ordinal) == true;
-        if (!skipNative && !hasPersistedIconLocation && IsMmcConsolePath(targetFile))
-        {
-            var requestCacheAllowed = cacheAllowed;
-            var mmc = mmcSource is not null && string.Equals(mmcSource.ConsolePath, targetFile,
-                StringComparison.OrdinalIgnoreCase) ? mmcSource : ReadMmcIconSource(targetFile!);
-            cacheAllowed &= mmc.CacheAllowed;
-            if (mmc.Declaration is { } declaration && IsSafeExternalFilePath(declaration.Path))
-            {
-                // MMC's XML declaration is authoritative only when the source
-                // shortcut did not persist its own icon location. Parse its
-                // native resource through the same bounded PE/ICO frame path,
-                // but keep the native-package reader request-only; the outer
-                // automatic stamp below includes the exact console and resource
-                // content dependencies before it may persist these pixels.
-                var declared = await PreparePeIconAsync(targetFile!, declaration.Path, declaration.Index,
-                    entryOrTargetPath, width, height, ct, cacheAllowed: false);
-                if (declared.Status == WallImageStatus.Cancelled) return declared;
-                if (declared.Pixels is not null)
-                    return declared with { CacheAllowed = requestCacheAllowed && mmc.CacheAllowed };
-                if (TryPrepareMmcNativeIcon(declaration, width, height, ct) is { Pixels: not null } native)
-                    return native;
-                // Do not persist a Shell/placeholder result when an explicitly
-                // declared native icon could not be read or decoded.
-                cacheAllowed = false;
-            }
-            var knownSystem = await TryPrepareBundledSystemAsync(target, width, height, ct).ConfigureAwait(false);
-            if (knownSystem?.Pixels is not null) return knownSystem;
-            if (knownSystem is not null) cacheAllowed &= knownSystem.CacheAllowed;
-        }
-        // A shortcut's persisted IconFile/IconLocation is a separate authority
-        // from an IExtractIcon handler's potentially opaque location string.
-        var persistedIcon = NormalizePath(iconPath) is not null;
-        // URI shortcuts must resolve the protocol's own icon, rather than the
-        // InternetShortcut association, for system settings and other native URIs.
-        if (protocol is not null && !web && !extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase)) shellIdentity = target!;
-        if (protocol?.Scheme.Equals("ms-settings", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            var settings = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "ImmersiveControlPanel", "SystemSettings.exe");
-            if (File.Exists(settings)) { targetFile = settings; shellIdentity = settings; }
-        }
-        var locationFacts = !skipNative && (!web || entry is not null) ? ShellItemCatalog.IconLocation(shellIdentity, Math.Max(width, height)) : null;
-        if (locationFacts is { CanCache: false })
-        {
-            cacheAllowed = false;
-            memoryPolicy.Allowed = false; // Respect an explicit native GIL_DONTCACHE.
-        }
-        if (shellNamespace || locationFacts is { Flags: var instanceFlags } && (instanceFlags & 2) != 0 ||
-            !web && locationFacts is null) cacheAllowed = false;
-        var independentExplicitIcon = persistedIcon && !(locationFacts is { Flags: var persistedFlags } && (persistedFlags & 2) != 0);
-        // AppsFolder's image factory may plate a tiny legacy logo onto an
-        // opaque tile. Resolve this registered package's app-list resource
-        // before accepting that composition, while respecting explicit icons.
-        if (!persistedIcon && await TryPreparePackagedAppIconAsync(verifiedPackageTarget ?? target, width, height, ct) is { } packaged)
-            return packaged;
-        if (!independentExplicitIcon && (locationFacts is { CanCache: false } || locationFacts is { CanReadResource: false }))
-        {
-            skipNative = true;
-            cacheAllowed = false;
-        }
-        if (iconPath is null && !web &&
-            locationFacts is { CanReadResource: true, Path: not null })
-        { iconPath = locationFacts.Path; iconIndex = locationFacts.Index; }
-        if (iconPath is null && protocol is not null && !web && !shellNamespace && !registeredSearch)
-        {
-            var association = ShellItemCatalog.ProtocolIconLocation(protocol.Scheme);
-            if (association is { CanReadResource: true, Path: not null })
-            { iconPath = association.Path; iconIndex = association.Index; }
-        }
-        var explicitFile = NormalizePath(iconPath);
-        if (!skipNative && (explicitFile is not null || targetFile is not null && Path.GetExtension(targetFile).Equals(".exe", StringComparison.OrdinalIgnoreCase)))
-        {
-            var direct = await PreparePeIconAsync(targetFile ?? explicitFile!, iconPath, iconIndex, entryOrTargetPath, width, height, ct, cacheAllowed);
-            if (direct.Pixels is not null || direct.Status == WallImageStatus.Cancelled)
-                return direct with { CacheAllowed = cacheAllowed && direct.CacheAllowed };
-            // A transient explicit read/decode failure must not become a stable
-            // cached Shell/generic fallback while its metadata remains unchanged.
-            cacheAllowed &= direct.CacheAllowed;
-        }
-        if (web && protocol is not null)
-        {
-            // A per-instance handler remains authoritative. A generic .url type
-            // resource does not stand in for either a website or its browser.
-            if (locationFacts is { Flags: var flags } && (flags & 2) != 0)
-            {
-                (byte[] Pixels, int Width, int Height)? instance = null;
-                try
-                {
-                    instance = ShellItemCatalog.Icon(shellIdentity, Math.Max(width, height));
-                }
-                catch (Exception ex) when (ex is IOException or COMException or ArgumentException or InvalidOperationException) { }
-                if (instance is null)
-                {
-                    try { instance = ShellItemCatalog.ExtractIcon(shellIdentity, Math.Max(width, height), ShellIconPixels.ReadIcon); }
-                    catch (Exception ex) when (ex is IOException or COMException or ArgumentException or InvalidOperationException) { }
-                }
-                if (instance is { } instancePlane) return new(WallImageStatus.Loaded, instancePlane.Pixels, instancePlane.Width, instancePlane.Height,
-                    "WebInstanceIcon") { CacheAllowed = cacheAllowed };
-            }
-            var bundled = await TryPrepareBundledWebsiteAsync(protocol, width, height, ct);
-            if (bundled?.Pixels is not null) return bundled with { CacheAllowed = cacheAllowed && bundled.CacheAllowed };
-            if (bundled is not null) cacheAllowed &= bundled.CacheAllowed;
-            var browser = await PrepareDefaultBrowserIconAsync(protocol.Scheme, width, height, ct, cacheAllowed);
-            if (browser.Pixels is not null) return browser with { CacheAllowed = cacheAllowed && browser.CacheAllowed };
-            cacheAllowed &= browser.CacheAllowed;
-            try
-            {
-                var association = ShellIconPixels.Read(".url", association: true, physicalPixels: Math.Max(width, height));
-                if (association is { } fallback) return new(WallImageStatus.Fallback, fallback.Pixels, fallback.Width,
-                    fallback.Height, "WebAssociation") { CacheAllowed = cacheAllowed };
-            }
-            catch (Exception ex) when (ex is IOException or COMException or ArgumentException or InvalidOperationException) { }
-            return await TryPrepareBundledFallbackAsync(BundledFallbackIcon.Website, width, height, ct) is { } genericWeb
-                ? genericWeb with { CacheAllowed = cacheAllowed }
-                : new(WallImageStatus.Fallback, null, 0, 0, "WebIconUnavailable") { CacheAllowed = cacheAllowed };
-        }
-        // ms-search's URI Shell class can return a valid bitmap of the generic
-        // blank-document icon. Its registered application is the icon authority.
-        if (registeredSearch)
-        {
-            var search = await PrepareRegisteredProtocolAppIconAsync("ms-search", width, height, ct);
-            if (search.Pixels is not null) return search with { CacheAllowed = cacheAllowed && search.CacheAllowed };
-            return await PrepareSystemOrGenericFallbackAsync(target, targetFile, width, height, ct,
-                cacheAllowed && search.CacheAllowed, "NativeProtocolIconUnavailable");
-        }
-        ct.ThrowIfCancellationRequested();
-        (byte[] Pixels, int Width, int Height)? shell = null;
-        if (!web)
-        {
-            try { shell = ShellItemCatalog.Icon(shellIdentity, Math.Max(width, height)); }
-            catch (Exception ex) when (ex is COMException or IOException or ArgumentException or InvalidCastException) { }
-        }
-        // A verified location can recover a larger original frame of this same
-        // item when its Shell factory only returned a small plane.
-        if (!skipNative && locationFacts is { CanReadResource: true, Path: not null } resource &&
-            (shell is null || shell.Value.Width < width || shell.Value.Height < height))
-        {
-            var original = await PreparePeIconAsync(resource.Path, resource.Path, resource.Index, shellIdentity, width, height, ct, cacheAllowed);
-            if (original.Pixels is not null && (shell is null || (long)original.Width * original.Height > (long)shell.Value.Width * shell.Value.Height))
-                return original with { CacheAllowed = cacheAllowed && original.CacheAllowed };
-            cacheAllowed &= original.CacheAllowed;
-        }
-        if (shell is { } plane)
-            return new(WallImageStatus.Loaded, plane.Pixels, plane.Width, plane.Height,
-                $"ShellImageFactory:{plane.Width}x{plane.Height}:requested={width}x{height}:disk-cache={(cacheAllowed ? "allowed" : "disabled")}")
-                { CacheAllowed = cacheAllowed };
-        if (protocol is null || web)
-        {
-            var shellPath = entry is not null && (File.Exists(entry) || Directory.Exists(entry)) ? entry : targetFile;
-            if (shellPath is not null && (File.Exists(shellPath) || Directory.Exists(shellPath)))
-            {
-                try
-                {
-                    var classic = ShellIconPixels.Read(shellPath, physicalPixels: Math.Max(width, height));
-                    if (classic is { } icon) return new(WallImageStatus.Fallback, icon.Pixels, icon.Width, icon.Height,
-                        $"ClassicShell:{icon.Width}x{icon.Height}:requested={width}x{height}") { CacheAllowed = cacheAllowed };
-                }
-                catch (Exception ex) when (ex is IOException or COMException or ArgumentException or InvalidOperationException) { }
-            }
-        }
-        if (!web)
-        {
-            try
-            {
-                if (ShellItemCatalog.ExtractIcon(shellIdentity, Math.Max(width, height), ShellIconPixels.ReadIcon) is { } extracted)
-                    return new(WallImageStatus.Loaded, extracted.Pixels, extracted.Width, extracted.Height,
-                        $"ShellExtractIcon:{extracted.Width}x{extracted.Height}:requested={width}x{height}") { CacheAllowed = cacheAllowed };
-            }
-            catch (Exception ex) when (ex is IOException or COMException or ArgumentException or InvalidOperationException)
-            { cacheAllowed = false; }
-        }
-        if (shellNamespace && followShellTarget && ShellItemCatalog.LinkedTargetPath(shellIdentity) is { } linked &&
-            !string.Equals(linked, entry, StringComparison.OrdinalIgnoreCase) &&
-            Path.GetExtension(linked).ToLowerInvariant() is ".url" or ".lnk" &&
-            File.Exists(linked) && new FileInfo(linked).Length is > 0 and <= EntryObservation.MaximumBytes)
-        {
-            // AppsFolder may expose a link-to-shortcut whose own handler has no
-            // image. Follow only its explicit metadata, never a title/path guess,
-            // and retain the original Shell launch identity. One hop prevents cycles.
-            var linkedIcon = await PrepareAutoAsync(linked, width, height, ct, followShellTarget: false);
-            if (linkedIcon.Pixels is not null)
-                return linkedIcon with { CacheAllowed = false, Diagnostic = "ShellLinkedTarget:" + linkedIcon.Diagnostic };
-        }
-        return await PrepareSystemOrGenericFallbackAsync(target, targetFile, width, height, ct, cacheAllowed,
-            protocol is null ? "GenericPlaceholder" : "NativeProtocolIconUnavailable");
-    }
-
-    private async Task<Prepared> PrepareSystemOrGenericFallbackAsync(string? target, string? targetFile,
-        int width, int height, CancellationToken ct, bool cacheAllowed, string diagnostic)
-    {
-        var system = await TryPrepareBundledSystemAsync(target, width, height, ct);
-        if (system?.Pixels is not null) return system;
-        if (system is not null) cacheAllowed &= system.CacheAllowed;
-        var fallbackKind = targetFile is not null && Directory.Exists(targetFile) ? BundledFallbackIcon.Folder
-            : targetFile is not null && File.Exists(targetFile) ? BundledFallbackIcon.File : BundledFallbackIcon.Unknown;
-        return await TryPrepareBundledFallbackAsync(fallbackKind, width, height, ct) is { } generic
-            ? generic with { CacheAllowed = cacheAllowed }
-            : new(WallImageStatus.Fallback, null, 0, 0, diagnostic) { CacheAllowed = cacheAllowed };
-    }
-
-    private async Task<Prepared> PreparePeIconAsync(string exe, string? iconPath, int? iconIndex,
-        string entry, int width, int height, CancellationToken ct, bool cacheAllowed = true)
-    {
-        var dependency = NativeIconDependency(exe, iconPath, iconIndex);
-        var key = !cacheAllowed || dependency is null ? null : dependency + $":{width}x{height}";
-        if (key is not null && TryGetCached(key, out var cached))
-            return cached;
-        ct.ThrowIfCancellationRequested();
-        if (dependency is null) return new(WallImageStatus.Fallback, null, 0, 0, "PE:MissingFile") { CacheAllowed = false };
-        var package = await NativePackageAsync(exe, iconPath, iconIndex, dependency, cacheAllowed).WaitAsync(ct).ConfigureAwait(false);
-        if (package.Group is null || package.Frames.Count == 0)
-            return new(WallImageStatus.Fallback, null, 0, 0, "PE:NoFrame") { CacheAllowed = cacheAllowed && package.Complete };
-        var available = package.Group with { Frames = package.Frames.Select(frame => frame.Native).ToArray() };
-        ct.ThrowIfCancellationRequested();
-        if (NativeIconDependency(exe, iconPath, iconIndex) != dependency)
-            return new(WallImageStatus.Fallback, null, 0, 0, "PE:ResourceChanged") { CacheAllowed = false };
-        var selected = PeIconResourceReader.SelectFrame(available, width, height);
-        var decoded = package.Frames.First(frame => frame.Native == selected).Decoded;
-        var prepared = decoded with { Diagnostic = decoded.Diagnostic + $":resource={package.ResourcePath ?? exe}:requested={width}x{height}", CacheAllowed = cacheAllowed && package.Complete };
-        if (key is not null) Cache(key, prepared);
-        return prepared;
-    }
-
     private async Task<Prepared> PrepareFileAsync(string? path, string semantic, int width, int height,
         CancellationToken ct, ManagedMediaReference? media = null)
     {
@@ -532,39 +265,61 @@ public sealed partial class WallImageService : IDisposable
         public static (byte[] Pixels, int Width, int Height)? Read(string path, bool association = false, int physicalPixels = 32) =>
             ShellItemCatalog.InApartment(() => ReadCore(path, association, physicalPixels));
 
+        internal static IReadOnlyList<(byte[] Pixels, int Width, int Height)> ReadSeries(string path, bool association = false) =>
+            ShellItemCatalog.InApartment(() =>
+            {
+                var frames = new List<(byte[] Pixels, int Width, int Height)>();
+                var info = new Win32Api.ShFileInfoW { szDisplayName = string.Empty, szTypeName = string.Empty };
+                var size = (uint)Marshal.SizeOf<Win32Api.ShFileInfoW>();
+                const uint useFileAttributes = 0x10, normalFile = 0x80, systemIconIndex = 0x4000;
+                if (Win32Api.SHGetFileInfoW(path, association ? normalFile : 0, ref info, size,
+                    systemIconIndex | (association ? useFileAttributes : 0)) != IntPtr.Zero)
+                {
+                    var extra = ReadImageListIcon(info.iIcon, 2);
+                    // Enumerate actual Windows list kinds, not a fabricated pyramid
+                    // or a fixed requested image resolution.
+                    foreach (var kind in new[] { 4, 2, 0, 1, 3 })
+                    {
+                        if (ReadImageListIcon(info.iIcon, kind) is not { } native) continue;
+                        if (extra is { } small && ShellImageListFrameRules.IsPaddedDuplicate(native.Pixels, native.Width,
+                            native.Height, small.Pixels, small.Width, small.Height)) native = small;
+                        if (!frames.Any(frame => frame.Width == native.Width && frame.Height == native.Height)) frames.Add(native);
+                    }
+                }
+                var result = Win32Api.SHGetFileInfoW(path, association ? normalFile : 0, ref info, size,
+                    Win32Api.ShgfiIcon | Win32Api.ShgfiLargeicon | (association ? useFileAttributes : 0));
+                if (result != IntPtr.Zero && info.hIcon != IntPtr.Zero)
+                    try
+                    {
+                        if (ReadIcon(info.hIcon) is { } native && !frames.Any(frame => frame.Width == native.Width && frame.Height == native.Height))
+                            frames.Add(native);
+                    }
+                    finally { Win32Api.DestroyIcon(info.hIcon); }
+                return (IReadOnlyList<(byte[] Pixels, int Width, int Height)>)frames;
+            });
+
         private static (byte[] Pixels, int Width, int Height)? ReadCore(string path, bool association, int physicalPixels)
         {
-            var info = new Win32Api.ShFileInfoW { szDisplayName = string.Empty, szTypeName = string.Empty };
-            var size = (uint)Marshal.SizeOf<Win32Api.ShFileInfoW>();
-            const uint useFileAttributes = 0x000000010;
-            const uint normalFile = 0x000000080;
-            if (physicalPixels > 32)
+            var frames = ReadSeries(path, association);
+            return frames.Count == 0 ? null : frames.OrderBy(frame => frame.Width >= physicalPixels && frame.Height >= physicalPixels ? 0 : 1)
+                .ThenBy(frame => frame.Width >= physicalPixels && frame.Height >= physicalPixels
+                    ? (long)frame.Width * frame.Height : -(long)frame.Width * frame.Height).First();
+        }
+        private static (byte[] Pixels, int Width, int Height)? ReadImageListIcon(int index, int imageList)
+        {
+            var iid = typeof(IImageList).GUID;
+            IImageList? list = null;
+            IntPtr icon = IntPtr.Zero;
+            try
             {
-                // The list index comes from this exact Shell item, never a guessed
-                // stock icon number. Keep all returned pixels and transparent padding.
-                const uint systemIconIndex = 0x000004000;
-                var indexed = Win32Api.SHGetFileInfoW(path, association ? normalFile : 0, ref info, size,
-                    systemIconIndex | (association ? useFileAttributes : 0));
-                var iid = typeof(IImageList).GUID;
-                IImageList? list = null;
-                IntPtr icon = IntPtr.Zero;
-                try
-                {
-                    if (indexed != IntPtr.Zero && SHGetImageList(physicalPixels > 48 ? 4 : 2, ref iid, out list) >= 0 &&
-                        list is not null && list.GetIcon(info.iIcon, 1, out icon) >= 0 && icon != IntPtr.Zero && ReadIcon(icon) is { } native)
-                        return native;
-                }
-                finally
-                {
-                    if (icon != IntPtr.Zero) Win32Api.DestroyIcon(icon);
-                    if (list is not null) Marshal.ReleaseComObject(list);
-                }
+                return SHGetImageList(imageList, ref iid, out list) >= 0 && list is not null &&
+                    list.GetIcon(index, 1, out icon) >= 0 && icon != IntPtr.Zero ? ReadIcon(icon) : null;
             }
-            var result = Win32Api.SHGetFileInfoW(path, association ? normalFile : 0, ref info, size,
-                Win32Api.ShgfiIcon | Win32Api.ShgfiLargeicon | (association ? useFileAttributes : 0));
-            if (result == IntPtr.Zero || info.hIcon == IntPtr.Zero) return null;
-            try { return ReadIcon(info.hIcon); }
-            finally { _ = Win32Api.DestroyIcon(info.hIcon); }
+            finally
+            {
+                if (icon != IntPtr.Zero) Win32Api.DestroyIcon(icon);
+                if (list is not null) Marshal.ReleaseComObject(list);
+            }
         }
 
         internal static (byte[] Pixels, int Width, int Height)? ReadIcon(IntPtr icon)
@@ -581,7 +336,7 @@ public sealed partial class WallImageService : IDisposable
                 // Monochrome ICONINFO has no color bitmap; its AND and XOR masks
                 // are stacked vertically in a bitmap twice the icon's height.
                 var height = Math.Abs(bitmap.bmHeight) / (info.hbmColor == IntPtr.Zero ? 2 : 1);
-                if (width is < 1 or > 256 || height is < 1 or > 256) return null;
+                if (width < 1 || height < 1 || (long)width * height * 4 > Array.MaxLength) return null;
                 var onBlack = DrawOnColor(icon, width, height, 0);
                 var onWhite = DrawOnColor(icon, width, height, 255);
                 if (onBlack is null || onWhite is null) return null;

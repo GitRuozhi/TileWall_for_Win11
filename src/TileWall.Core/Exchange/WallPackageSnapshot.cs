@@ -73,8 +73,7 @@ public sealed class WallPackageSnapshot : IDisposable
             }).ToArray() };
             WallPackageJson.ValidateContent(content);
             var limits = new WallPackageLimits();
-            if (additions.Values.Sum(stream => stream.Length) > limits.MaximumPreparedMediaBytes ||
-                _media.Values.Sum(stream => stream.Length) + additions.Values.Sum(stream => stream.Length) > limits.MaximumExpandedBytes)
+            if (_media.Values.Sum(stream => stream.Length) + additions.Values.Sum(stream => stream.Length) > limits.MaximumExpandedBytes)
                 throw new InvalidDataException("Automatic foregrounds exceed the export preparation budget.");
             token.ThrowIfCancellationRequested();
             foreach (var (key, stream) in additions) _media.Add(key, stream);

@@ -22,6 +22,7 @@ internal static class ActionIcon
         PresetSmall = "\uE743", PresetMedium = "\uE744", PresetWide = "\uE745", PresetLarge = "\uE747",
         Fit = "\uE799", Fill = "\uE9A6", Original = "\uE91B", Custom = "\uE932",
         Photo2 = "\uEB9F", GallerySet = "\uF5ED", Checkbox = "\uE739", OpenFolderHorizontal = "\uED25", Share = "\uE72D",
+        ImportAllMirrored = "\uEA53", PreviousItem = "\uE892", NextItem = "\uE893",
         BackgroundBlur = "\uED5B", Color = "\uE790", Draw = "\uEC87", Erase = "\uE75C", Clock = "\uE121";
 
     internal static FontIcon Glyph(string glyph, double size = 16) => new()

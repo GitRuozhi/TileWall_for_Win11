@@ -92,6 +92,7 @@ public sealed record ImportSourcePlan(ImportPlanStatus Status, WallProposal? Pro
     public IReadOnlyList<ManagedMediaReference> ReferencedMedia => Proposal is null ? [] :
         Proposal.Document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
             .Where(member => Accepted.Any(item => item.MemberId == member.Id))
-            .Select(member => member.Images.Media).OfType<ManagedMediaReference>()
+            .SelectMany(member => (member.Images.Media is { } media ? new[] { media } : [])
+                .Concat(member.Images.IconSeries?.Frames.Select(frame => frame.Media) ?? []))
             .DistinctBy(media => media.Sha256, StringComparer.OrdinalIgnoreCase).ToArray();
 }

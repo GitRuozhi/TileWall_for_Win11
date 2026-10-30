@@ -203,13 +203,19 @@ internal static class ShellItemCatalog
         try
         {
             var factory = (IShellItemImageFactory)item;
-            factory.GetImage(new Size(Math.Clamp(physicalPixels, 1, 4096), Math.Clamp(physicalPixels, 1, 4096)), 0x5, out bitmap);
+            var requestedPixels = Math.Max(physicalPixels, 1);
+            factory.GetImage(new Size(requestedPixels, requestedPixels), 0x5, out bitmap);
             if (bitmap == IntPtr.Zero || Win32Api.GetObjectW(bitmap, Marshal.SizeOf<Win32Api.BitmapW>(), out var info) == 0)
                 return null;
-            var width = info.bmWidth; var height = Math.Abs(info.bmHeight);
-            if (width is < 1 or > 4096 || height is < 1 or > 4096 || (long)width * height > 16_777_216) return null;
+            var width = info.bmWidth;
+            var heightLong = Math.Abs((long)info.bmHeight);
+            if (width < 1 || heightLong < 1 || heightLong > int.MaxValue) return null;
+            var height = (int)heightLong;
             var bmi = new Win32Api.BitmapInfoW { bmiHeader = Win32Api.BitmapInfoHeaderW.BgraTopDown(width, height) };
-            var pixels = new byte[checked(width * height * 4)];
+            int pixelBytes;
+            try { pixelBytes = checked(width * height * 4); }
+            catch (OverflowException) { return null; }
+            var pixels = new byte[pixelBytes];
             var dc = Win32Api.CreateCompatibleDC(IntPtr.Zero);
             if (dc == IntPtr.Zero) return null;
             try
@@ -249,6 +255,7 @@ internal static class ShellItemCatalog
         IntPtr large = IntPtr.Zero, small = IntPtr.Zero;
         try
         {
+            if (!TryPackExtractIconSize(Math.Max(physicalPixels, 1), out var packedSize)) return null;
             item = Open(parsingName);
             var handler = new Guid("3981E225-F559-11D3-8E3A-00C04F6837D5"); // BHID_SFUIObject
             var iid = typeof(IExtractIconW).GUID;
@@ -259,10 +266,9 @@ internal static class ShellItemCatalog
             if (hr == NoInterface) Marshal.ThrowExceptionForHR(hr);
             if (hr != 0 ||
                 location.Length >= location.Capacity - 1) return null;
-            // Retain a native large plane for the caller's final stretch rather
-            // than asking the Shell to shrink it through an intermediate GDI blit.
-            var pixels = physicalPixels > 48 ? 256u : (uint)Math.Clamp(physicalPixels, 1, 48);
-            hr = extract.Extract(location.ToString(), unchecked((uint)index), out large, out small, pixels | (32u << 16));
+            // Retain the requested native plane for the caller's final stretch
+            // rather than asking the Shell to shrink it through an intermediate GDI blit.
+            hr = extract.Extract(location.ToString(), unchecked((uint)index), out large, out small, packedSize);
             if (hr == NoInterface) Marshal.ThrowExceptionForHR(hr);
             if (hr != 0)
                 return null;
@@ -296,9 +302,10 @@ internal static class ShellItemCatalog
             if (hr == NoInterface) Marshal.ThrowExceptionForHR(hr);
             if (hr != 0 || path.Length >= path.Capacity - 1) return null;
             if ((flags & 0x18) != 0) return new IconResourceLocation(null, index, flags, false); // NOTFILENAME / DONTCACHE
-            var pixels = (uint)Math.Clamp(physicalPixels, 1, 4096);
+            if (!TryPackExtractIconSize(Math.Max(physicalPixels, 1), out var packedSize))
+                return new IconResourceLocation(null, index, flags, false);
             // shlobj_core.h permits direct file extraction only on S_FALSE.
-            hr = extract.Extract(path.ToString(), unchecked((uint)index), out large, out small, pixels | (32u << 16));
+            hr = extract.Extract(path.ToString(), unchecked((uint)index), out large, out small, packedSize);
             if (hr == NoInterface) Marshal.ThrowExceptionForHR(hr);
             var expanded = Environment.ExpandEnvironmentVariables(path.ToString().Trim().Trim('"'));
             return new IconResourceLocation(Path.IsPathFullyQualified(expanded) ? Path.GetFullPath(expanded) : null,
@@ -350,6 +357,19 @@ internal static class ShellItemCatalog
             failure?.Throw();
             return result;
         }
+    }
+
+    private static bool TryPackExtractIconSize(int physicalPixels, out uint packedSize)
+    {
+        if (physicalPixels is < 1 or > ushort.MaxValue)
+        {
+            packedSize = 0;
+            return false;
+        }
+        // IExtractIcon::Extract places the desired pixel edge in the low word
+        // and the requested 32bpp depth in the high word.
+        packedSize = (uint)physicalPixels | (32u << 16);
+        return true;
     }
 
     /// <summary>Read a registered protocol's icon identity without navigating or launching its URI.</summary>

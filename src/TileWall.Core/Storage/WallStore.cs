@@ -395,7 +395,6 @@ public sealed partial class WallStore
             using (timings?.Measure("store.media.plan"))
                 media = PlanMedia(commitId, current, proposed, mediaAssets ?? []);
             galleries = PlanGalleries(commitId, current, proposed, managedGalleries ?? []);
-            ValidatePreparedResourceBudget(current, mediaAssets ?? [], managedGalleries ?? []);
         }
         catch (CurrentMediaInvalidException ex)
         { return CommitResult(WallCommitStatus.RecoveryBlocked, null, ex.Message); }
@@ -1509,7 +1508,7 @@ public sealed partial class WallStore
         // Historical journals share long prefixes. Deduplicate metadata only within
         // this validation; guarded file/link operations still recheck at every IO.
         var guardPath = _paths.CreateValidationGuard();
-        if (journal.SchemaVersion != WallDocument.CurrentSchemaVersion || !ValidCommitId(journal.CommitId) ||
+        if (journal.SchemaVersion is not (4 or WallDocument.CurrentSchemaVersion) || !ValidCommitId(journal.CommitId) ||
             journal.OldGeneration < 0 || journal.NewGeneration != journal.OldGeneration + 1 ||
             journal.OldHash is not null && !ValidHash(journal.OldHash) ||
             !ValidHash(journal.NewHash) || journal.Ops is null || journal.Observed is null || journal.Media is null || journal.Galleries is null)

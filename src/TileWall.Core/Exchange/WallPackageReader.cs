@@ -40,8 +40,8 @@ public sealed class WallPackageReader(
             var manifest = WallPackageJson.Deserialize<WallPackageManifest>(
                 await WallPackageZip.ReadAsync(manifestEntry, limits.MaximumManifestBytes, token).ConfigureAwait(false));
             if (manifest.FormatId != WallPackageManifest.CurrentFormatId ||
-                manifest.FormatVersion is not (2 or WallPackageManifest.CurrentFormatVersion) ||
-                manifest.WallSchemaVersion != WallDocument.CurrentSchemaVersion)
+                manifest.FormatVersion is not (2 or 3 or WallPackageManifest.CurrentFormatVersion) ||
+                manifest.WallSchemaVersion != (manifest.FormatVersion < 4 ? 4 : WallDocument.CurrentSchemaVersion))
                 return new(WallPackageReadStatus.UnsupportedFormat, null, "This wall file requires a supported application version.");
             if (manifest.Files is null || !WallPackageJson.ValidHash(manifest.ContentFingerprint) ||
                 string.IsNullOrWhiteSpace(manifest.AppVersion) || manifest.CreatedUtc.Offset != TimeSpan.Zero)
@@ -359,7 +359,7 @@ public sealed class WallPackagePreview
 public static class WallPackageMediaBudget
 {
     public static IReadOnlyList<ManagedMediaReference> Plan(IEnumerable<ManagedMediaReference> required,
-        IEnumerable<ManagedMediaReference> reusable, long maximumBytes = 128L * 1024 * 1024)
+        IEnumerable<ManagedMediaReference> reusable, long maximumBytes = long.MaxValue)
     {
         if (maximumBytes < 0) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
         var all = new Dictionary<string, ManagedMediaReference>(StringComparer.Ordinal);

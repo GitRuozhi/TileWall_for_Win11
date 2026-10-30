@@ -252,7 +252,7 @@ public sealed class WallPackageTests : IDisposable
             var manifest = WallPackageJson.Deserialize<WallPackageManifest>(payloads["manifest.json"]);
             var files = manifest.Files.Select(file => file.Path == "wall.json"
                 ? file with { Length = payloads["wall.json"].Length, Sha256 = WallPackageJson.Hash(payloads["wall.json"]) } : file).ToArray();
-            manifest = manifest with { FormatVersion = formatVersion, Files = files,
+            manifest = manifest with { FormatVersion = formatVersion, WallSchemaVersion = formatVersion < 4 ? 4 : WallDocument.CurrentSchemaVersion, Files = files,
                 ContentFingerprint = WallPackageJson.Fingerprint(content, files, formatVersion) };
             payloads["manifest.json"] = WallPackageJson.Serialize(manifest);
         });
@@ -282,10 +282,11 @@ public sealed class WallPackageTests : IDisposable
     [Fact]
     public void MediaPreparationBudgetDeduplicatesChecksConflictsAndExcludesReusedAssets()
     {
-        static ManagedMediaReference Image(char c, long length = PreparedMediaAsset.MaximumBytes) => new(new string(c, 64), ".png", length);
+        static ManagedMediaReference Image(char c, long length = 32 * 1024 * 1024) => new(new string(c, 64), ".png", length);
         var four = new[] { Image('A'), Image('B'), Image('C'), Image('D') };
         Assert.Equal(4, WallPackageMediaBudget.Plan(four.Concat(four), []).Count);
-        Assert.Throws<InvalidDataException>(() => WallPackageMediaBudget.Plan(four.Append(Image('E', 1)), []));
+        Assert.Equal(5, WallPackageMediaBudget.Plan(four.Append(Image('E', 1)), []).Count);
+        Assert.Throws<InvalidDataException>(() => WallPackageMediaBudget.Plan(four.Append(Image('E', 1)), [], 128L * 1024 * 1024));
         Assert.Single(WallPackageMediaBudget.Plan(four.Append(Image('E', 1)), four));
         Assert.Throws<InvalidDataException>(() => WallPackageMediaBudget.Plan([Image('A', 1)], [Image('A', 2)]));
         Assert.Empty(WallPackageMediaBudget.Plan([], [], 0));

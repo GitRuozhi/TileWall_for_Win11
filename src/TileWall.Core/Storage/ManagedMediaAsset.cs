@@ -9,7 +9,9 @@ namespace TileWall.Core.Storage;
 /// </summary>
 public sealed class PreparedMediaAsset
 {
-    public const int MaximumBytes = 32 * 1024 * 1024;
+    // Managed payloads are represented by byte arrays. This is a format/runtime limit,
+    // not an image acquisition quota.
+    public const int MaximumBytes = int.MaxValue;
     private readonly byte[] _bytes;
 
     private PreparedMediaAsset(byte[] bytes, string extension)
@@ -22,7 +24,7 @@ public sealed class PreparedMediaAsset
 
     public static PreparedMediaAsset FromVerifiedImage(ReadOnlyMemory<byte> originalBytes, string extension)
     {
-        if (originalBytes.Length is < 1 or > MaximumBytes)
+        if (originalBytes.Length < 1)
             throw new ArgumentOutOfRangeException(nameof(originalBytes));
         extension = NormalizeExtension(extension);
         return new(originalBytes.ToArray(), extension);
@@ -49,7 +51,7 @@ public sealed class PreparedMediaAsset
 
     public static bool IsValidReference(ManagedMediaReference? media) => media is not null &&
         media.Sha256 is { Length: 64 } hash && hash.All(Uri.IsHexDigit) &&
-        hash == hash.ToUpperInvariant() && media.Length is > 0 and <= MaximumBytes &&
+        hash == hash.ToUpperInvariant() && media.Length > 0 &&
         ValidExtension(media.Extension);
 
     private static bool ValidExtension(string? extension)

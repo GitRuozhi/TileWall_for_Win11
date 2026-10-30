@@ -138,16 +138,18 @@ public sealed class WallPackageForegroundTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task FormatTwoIsValidatedInItsOriginalShapeBeforeItsAutomaticImageIsMadeEmpty(bool corruptFingerprint)
+    [InlineData(2, false)]
+    [InlineData(2, true)]
+    [InlineData(3, false)]
+    [InlineData(3, true)]
+    public async Task HistoricalFormatIsValidatedInItsOriginalShapeBeforeItsAutomaticImageIsMadeEmpty(int formatVersion, bool corruptFingerprint)
     {
         var content = WallPackageContent.FromSelection(Source(), ["image", "empty"]);
-        var bytes = WallPackageJson.Serialize(content, 2);
-        Assert.DoesNotContain("targetDisplayName", System.Text.Encoding.UTF8.GetString(bytes));
+        var bytes = WallPackageJson.Serialize(content, formatVersion);
+        if (formatVersion == 2) Assert.DoesNotContain("targetDisplayName", System.Text.Encoding.UTF8.GetString(bytes));
         var files = new[] { new WallPackageFile("wall.json", bytes.Length, WallPackageJson.Hash(bytes), "wall") };
-        var manifest = new WallPackageManifest { FormatVersion = 2, AppVersion = "1.4.1", CreatedUtc = DateTimeOffset.UtcNow,
-            ContentFingerprint = corruptFingerprint ? new string('A', 64) : WallPackageJson.Fingerprint(content, files, 2), Files = files };
+        var manifest = new WallPackageManifest { FormatVersion = formatVersion, WallSchemaVersion = 4, AppVersion = "1.4.1", CreatedUtc = DateTimeOffset.UtcNow,
+            ContentFingerprint = corruptFingerprint ? new string('A', 64) : WallPackageJson.Fingerprint(content, files, formatVersion), Files = files };
         var path = Path.Combine(_directory, "legacy.zip");
         using (var zip = ZipFile.Open(path, ZipArchiveMode.Create))
         {
@@ -160,5 +162,29 @@ public sealed class WallPackageForegroundTests : IDisposable
         Assert.All(read.Preview!.Content.Members, member => Assert.Equal(MemberImageSourceKind.Automatic, member.Images.Kind));
         Assert.All(read.Preview.Content.ToDocument().EnumerateAllMembers(), member =>
         { Assert.Equal(MemberResourceOrigin.Package, member.ResourceOrigin); Assert.Equal(MemberImageSourceKind.None, member.Images.Kind); });
+    }
+
+    [Fact]
+    public async Task ExportingAStoredSeriesProjectsOnlyItsPngAndNeverLeaksOtherNativeFrames()
+    {
+        var files = new LocalFileStore(); var root = Path.Combine(_directory, "series");
+        var store = new WallStore(files, new FakeLinkFileService(files), root);
+        var empty = WallDocument.Empty(1, 8); store.InitializeFresh(empty);
+        var assets = new[] { PreparedMediaAsset.FromVerifiedImage(Png, ".png"),
+            PreparedMediaAsset.FromVerifiedImage(new byte[] { 1 }, ".png"), PreparedMediaAsset.FromVerifiedImage(new byte[] { 2 }, ".png") };
+        var series = new AutomaticIconSeries("confirmed", assets.Select((asset, index) =>
+            new AutomaticIconFrame(asset.Reference, 1 << index, 1 << index)).ToArray(), 0, 2, 2);
+        var source = Source(); source = source with { Generation = 1, Lanes = source.Lanes.Select(lane => lane with
+            { Groups = lane.Groups.Select(group => group with { Members = group.Members.Select(member => member.Id == "image"
+                ? member with { Images = new() { IconSeries = series } } : member).ToArray() }).ToArray() }).ToArray() };
+        var saved = store.Commit(empty, new(0, source, [], assets));
+        Assert.Equal(WallCommitStatus.Committed, saved.Status);
+        using var snapshot = store.CapturePackageSnapshot(saved.CommittedDocument!, 1, ["image", "empty"]);
+        snapshot.CompleteAutomaticImages(new Dictionary<string, PreparedMediaAsset?> { ["image"] = assets[0], ["empty"] = null });
+        var preview = await WriteAndReadAsync(snapshot, Path.Combine(_directory, "series.zip"));
+        var exportedMedia = Assert.Single(preview.Manifest.Files, file => file.Purpose == "media");
+        Assert.Equal(assets[0].Reference.Sha256, exportedMedia.Sha256);
+        Assert.All(preview.Content.ToDocument().EnumerateAllMembers(), member => Assert.Null(member.Images.IconSeries));
+        Assert.Equal(3, store.Open().Document!.EnumerateAllMembers().First().Images.IconSeries!.Frames.Count);
     }
 }

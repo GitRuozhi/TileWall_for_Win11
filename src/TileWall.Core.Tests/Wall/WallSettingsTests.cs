@@ -54,7 +54,7 @@ public sealed class WallSettingsTests
         foreach (var name in new[] { "themeMode", "backgroundMode", "backgroundTransparency", "backgroundImagePath", "languageMode", "menuStart" })
             json["settings"]!.AsObject().Remove(name);
         var settings = WallJson.Deserialize(Encoding.UTF8.GetBytes(json.ToJsonString())).Settings;
-        Assert.Equal(WallThemeMode.System, settings.ThemeMode);
+        Assert.Equal(WallThemeMode.Dark, settings.ThemeMode);
         Assert.Equal(WallBackgroundMode.Acrylic, settings.BackgroundMode);
         Assert.Equal(5, settings.BackgroundTransparency);
         Assert.True(settings.MenuStart);

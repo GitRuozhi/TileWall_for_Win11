@@ -33,7 +33,7 @@ public sealed partial class WallImageService
     private const long DerivedLimit = 128L * 1024 * 1024;
     private const int MaximumDerivedBytes = 2 * 1024 * 1024;
     private string DerivedPath(string hash, PuzzleDecodeBudget budget) => _disk!.Under("Cache", "Images", "Derived",
-        ManagedImageCache.Key($"derived-v3|{hash}|{budget.Purpose}|{budget.Width}x{budget.Height}|" +
+        ManagedImageCache.Key($"derived-v4|{hash}|{budget.Purpose}|{budget.Width}x{budget.Height}|" +
             $"{budget.PreserveSourceResolution}|{budget.SharpMaxEdge}|{budget.BlurMaxEdge}|{budget.NeedsBlur}|BGRA8-premultiplied") + ".pixels");
 
     private PuzzleDecodedPair? ReadDerived(string hash, PuzzleDecodeBudget budget, string identity)
@@ -47,8 +47,9 @@ public sealed partial class WallImageService
             using var reader = new BinaryReader(stream);
             if (reader.ReadInt32() != 0x54574431) return null;
             var sourceWidth = reader.ReadInt32(); var sourceHeight = reader.ReadInt32();
-            if (sourceWidth < 1 || sourceHeight < 1 || (long)sourceWidth * sourceHeight > 80_000_000) return null;
-            var sharp = ReadPlane(reader, identity, sourceWidth, sourceHeight, budget.Purpose == MemberImagePurpose.Thumbnail ? 256 : 0);
+            if (sourceWidth < 1 || sourceHeight < 1) return null;
+            var sharp = ReadPlane(reader, identity, sourceWidth, sourceHeight,
+                budget.Purpose == MemberImagePurpose.Thumbnail ? budget.SharpMaxEdge : 0);
             var blur = ReadPlane(reader, identity, sourceWidth, sourceHeight, 512);
             if (stream.Position != stream.Length || budget.Purpose == MemberImagePurpose.Thumbnail && sharp is null || budget.NeedsBlur && blur is null) return null;
             return new(sharp ?? new DecodedImageFrame(identity, 0, DateTime.MinValue, sourceWidth, sourceHeight, 0, 0, ReadOnlyMemory<byte>.Empty), blur);

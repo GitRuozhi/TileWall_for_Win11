@@ -51,7 +51,8 @@ public sealed partial class WallStore
             .Where(member => selected.Contains(member.Id)).ToArray();
         var references = members.Select(member => member.Images.Media).OfType<ManagedMediaReference>().Distinct().ToArray();
         var galleryReferences = members.Select(member => member.Images.ManagedGallery).OfType<ManagedGalleryReference>().Distinct().ToArray();
-        var resourceLease = AcquireResourceLeases(references.Select(reference => "media:" + reference.Sha256)
+        var resourceLease = AcquireResourceLeases(members.SelectMany(member => ImageMediaReferences(member.Images))
+            .Select(reference => "media:" + reference.Sha256)
             .Concat(galleryReferences.Select(reference => "source:" + reference.ContentId)));
         long payloadBytes = WallPackageJson.Serialize(content).LongLength;
         var entries = new Dictionary<string, WallPackageSnapshotEntry>(StringComparer.Ordinal);

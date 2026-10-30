@@ -106,6 +106,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private long _targetRecognitionRevision;
     private TargetImageSourceResult? _verifiedRecognition;
     private PreparedMediaAsset? _preparedSourceAsset;
+    private PreparedAutomaticIconSeries? _preparedAutomaticSeries;
+    private AutomaticIconSeries? _previewIconSeries;
     private string? _galleryVersion;
     private MemberImageSource? _galleryVersionSource;
     private (MemberImageSource Source, PuzzleCandidateResult Snapshot, long Revision)? _deferredGallerySnapshot;
@@ -122,17 +124,21 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     internal SharedMemberEditorDialog(Window owner, WallMember original, WallImageService images,
         string? managedEntryPath, ILnkFileService links, int maxRows,
         Func<WallMember, IReadOnlyList<EntryChange>, IReadOnlyList<PreparedMediaAsset>, string?> save,
-        WallVisualStyle visualStyle = WallVisualStyle.Win10, PuzzleFrame? initialFrame = null)
+        WallVisualStyle visualStyle = WallVisualStyle.Win10, PuzzleFrame? initialFrame = null,
+        PreparedAutomaticIconSeries? initialAutomaticSeries = null)
     {
         if (original is not (TileMember or PuzzleMember)) throw new ArgumentException("A tile or puzzle is required.", nameof(original));
         _owner = owner; _original = original; _draft = original; _images = images;
         _frame = initialFrame;
+        _preparedAutomaticSeries = initialAutomaticSeries;
+        _previewIconSeries = initialAutomaticSeries?.Series ?? original.Images.IconSeries;
         _explicitImageSource = original.Images.Kind != MemberImageSourceKind.Automatic;
         _managedEntryPath = managedEntryPath; _links = links; _save = save;
         _visualStyle = visualStyle;
         _maxRows = Math.Clamp(maxRows, 0, WallViewportPolicy.MaximumMemberRows);
         _originalInput = original.TargetInput ?? (original.ResourceOrigin == MemberResourceOrigin.Local ? ReadManagedTarget() : null);
-        _draft = original with { TargetInput = _originalInput };
+        _draft = original with { TargetInput = _originalInput,
+            Images = initialAutomaticSeries is { } prepared ? original.Images with { IconSeries = prepared.Series } : original.Images };
         if (original is PuzzleMember puzzle) _layout = new(puzzle.LocalBounds.Size, puzzle.Partitions);
         if (original is PuzzleMember)
         {
@@ -507,7 +513,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         ActionIcon.SetIcon(_sourceBrowse, T("Entry.Browse"), ActionIcon.OpenFile); ActionIcon.SetIcon(_colorButton, T("Tile.CustomColor"), ActionIcon.Color);
         ActionIcon.SetIcon(_undo, T("Layout.Undo"), ActionIcon.Undo); ActionIcon.SetIcon(_redo, T("Layout.Redo"), ActionIcon.Redo);
         ActionIcon.SetIcon(_draw, T("Layout.Draw"), ActionIcon.Draw); ActionIcon.SetIcon(_erase, T("Layout.Erase"), ActionIcon.Erase);
-        _source.SetItems(new[] { "Editor.Initial", "Editor.Picture", "Editor.Gallery" }.Select(T)); _background.SetItems(new[] { "Editor.Initial", "Tile.CustomColor", "Editor.Blur", "Editor.None" }.Select(T));
+        _source.SetItems(new[] { "Editor.AutomaticIcon", "Editor.Picture", "Editor.Gallery" }.Select(T)); _background.SetItems(new[] { "Editor.Initial", "Tile.CustomColor", "Editor.Blur", "Editor.None" }.Select(T));
         _width.SetNames(T("Editor.Width"), T("Layout.RemoveColumn"), T("Layout.AddColumn"));
         _height.SetNames(T("Editor.Height"), T("Layout.RemoveRow"), T("Layout.AddRow"));
         _toolIntro.Text = T("Layout.GestureHint"); _scaleHint.Text = T("Editor.ImageScaleHint");
@@ -602,22 +608,49 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             _preview.IsGestureActive || _generation == _candidateEnumerationGeneration || _frame is not { } frame)
             return;
         if (_previewPath is not null && !StringComparer.OrdinalIgnoreCase.Equals(_previewPath, frame.CanonicalPath)) return;
+        if (_draft.Images.Kind == MemberImageSourceKind.Automatic)
+        {
+            if (SelectDraftIconFrame() || !AutomaticIconSeriesRules.SameSelectedFrame(_previewIconSeries, _draft.Images.IconSeries))
+                _pending = LoadPreviewAsync();
+            else if (_draft.Visual.BackgroundMode == MemberBackgroundMode.Blur && frame.BlurredUnderfill is null)
+                _pending = EnsureAutomaticPreviewBlurAsync(frame);
+            return;
+        }
         var source = frame.SourcePixels;
         var metrics = new WallMetrics();
         var placement = MemberImageGeometry.Calculate(metrics.WidthOf(_draft.LocalBounds.Width),
             metrics.HeightOf(_draft.LocalBounds.Height), source.Width, source.Height,
             PreviewRasterizationScale, _draft.ImageDisplay);
-        // Compare the complete sharp plane with the physical display requirement,
-        // retaining the body's source, longest-edge and decoded-pixel ceilings.
+        // Compare the complete sharp plane with the physical display requirement.
         var scale = Math.Min(1, placement.Scale * PreviewRasterizationScale);
-        scale = Math.Min(scale, 4096d / Math.Max(source.Width, source.Height));
-        scale = Math.Min(scale, Math.Sqrt(16_000_000d / ((long)source.Width * source.Height)));
         var width = Math.Max(1, (int)Math.Round(source.Width * scale));
         var height = Math.Max(1, (int)Math.Round(source.Height * scale));
-        // One pixel of rounding tolerance avoids retrying an already capped plane.
+        // One pixel of rounding tolerance avoids retrying the same decoded plane.
         var blurMissing = _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur && frame.BlurredUnderfill is null;
         if (!blurMissing && frame.SharpDecodedPixels.Width + 1 >= width && frame.SharpDecodedPixels.Height + 1 >= height) return;
         _pending = LoadPreviewAsync();
+    }
+
+    private bool SelectDraftIconFrame()
+    {
+        if (_draft.Images.Kind != MemberImageSourceKind.Automatic || _draft.Images.IconSeries is not { } series) return false;
+        var metrics = new WallMetrics();
+        var selected = AutomaticIconSeriesRules.SelectForSize(series, _draft.LocalBounds.Width, _draft.LocalBounds.Height,
+            metrics.WidthOf(_draft.LocalBounds.Width) * PreviewRasterizationScale,
+            metrics.HeightOf(_draft.LocalBounds.Height) * PreviewRasterizationScale);
+        if (ReferenceEquals(series, selected)) return false;
+        _draft = _draft with { Images = _draft.Images with { IconSeries = selected } };
+        if (_preparedAutomaticSeries is { } prepared) _preparedAutomaticSeries = prepared with { Series = selected };
+        return !AutomaticIconSeriesRules.SameSelectedFrame(series, selected);
+    }
+
+    private async Task EnsureAutomaticPreviewBlurAsync(PuzzleFrame retained)
+    {
+        var request = BeginRequest();
+        var blurred = await _images.EnsureFrameBlurAsync(retained, request.Token);
+        if (!Active(request.Generation) || !ReferenceEquals(_frame, retained)) return;
+        _frame = blurred;
+        RefreshPreview();
     }
     private void Changed()
     {
@@ -836,7 +869,9 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private async Task LoadPreviewAsync()
     {
         if (_closed || _previewClosing) return;
-        if (!_foregroundActivated && _draft.Images.Kind is MemberImageSourceKind.Automatic or MemberImageSourceKind.None)
+        SelectDraftIconFrame();
+        if (!_foregroundActivated && (_draft.Images.Kind is MemberImageSourceKind.Automatic or MemberImageSourceKind.None) &&
+            AutomaticIconSeriesRules.SameSelectedFrame(_previewIconSeries, _draft.Images.IconSeries) && _frame is not null)
         {
             var retained = _frame;
             if (retained is not null && _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur && retained.BlurredUnderfill is null)
@@ -855,14 +890,30 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             var requestedMember = _draft;
             var requestedScale = PreviewRasterizationScale;
             var metrics = new WallMetrics();
-            var width = Math.Clamp((int)Math.Ceiling(metrics.WidthOf(requestedMember.LocalBounds.Width) * requestedScale), 1, 4096);
-            var height = Math.Clamp((int)Math.Ceiling(metrics.HeightOf(requestedMember.LocalBounds.Height) * requestedScale), 1, 4096);
-            var result = await _images.LoadMemberFrameAsync(requestedMember, target, width, height, _previewPath, request.Token);
+            var width = Math.Max(1, (int)Math.Ceiling(metrics.WidthOf(requestedMember.LocalBounds.Width) * requestedScale));
+            var height = Math.Max(1, (int)Math.Ceiling(metrics.HeightOf(requestedMember.LocalBounds.Height) * requestedScale));
+            if (requestedMember.Images.Kind == MemberImageSourceKind.Automatic && requestedMember.Images.IconSeries is null &&
+                requestedMember.ResourceOrigin == MemberResourceOrigin.Local)
+            {
+                var prepared = await _images.PrepareAutomaticIconSeriesAsync(requestedMember, target, width, height, request.Token);
+                if (!Active(request.Generation)) return;
+                if (prepared is not null)
+                {
+                    _preparedAutomaticSeries = prepared;
+                    _draft = _draft with { Images = _draft.Images with { IconSeries = prepared.Series } };
+                    SelectDraftIconFrame();
+                    requestedMember = _draft;
+                }
+            }
+            var result = requestedMember.Images.Kind == MemberImageSourceKind.Automatic && _preparedAutomaticSeries is { } draftSeries
+                ? await _images.LoadPreparedAutomaticIconFrameAsync(requestedMember, draftSeries, width, height, request.Token)
+                : await _images.LoadMemberFrameAsync(requestedMember, target, width, height, _previewPath, request.Token);
             TraceImage($"PreviewResult request={request.Generation} status={result.Status} frame={result.Frame is not null} active={Active(request.Generation)} diagnostic={result.Diagnostic}");
             if (!Active(request.Generation)) return;
             if (result.Frame is not null || result.Status == WallImageStatus.None)
             {
                 _frame = result.Frame;
+                _previewIconSeries = requestedMember.Images.IconSeries;
                 if (_draft.Images.Kind == MemberImageSourceKind.Automatic) _sourceStatus.Text = string.Empty;
                 RefreshPreview();
                 // A mode, size, DPI, or blur-demand edit can land while this frame
@@ -890,7 +941,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
 
     private void RestartThumbnailBatch()
     {
-        var edge = (int)Math.Clamp(Math.Ceiling(48 * PreviewRasterizationScale), 64, 256);
+        var edge = Math.Max(1, (int)Math.Ceiling(48 * PreviewRasterizationScale));
         var needsBlur = _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur;
         if (_thumbnailRequest is not null && _thumbnailEdge == edge && _thumbnailNeedsBlur == needsBlur) return;
         CancelThumbnailRequests(resetCandidates: false);
@@ -969,6 +1020,10 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             return ShowError(T("Settings.Saving"));
         }
         if (!_pending.IsCompleted) return ShowError(T("Settings.Saving"));
+        if (_draft.Images.Kind == MemberImageSourceKind.Automatic && _draft.Images.IconSeries is { } selectedSeries &&
+            (_preparedAutomaticSeries is not null || !AutomaticIconSeriesRules.SameSelectedFrame(_original.Images.IconSeries, selectedSeries)) &&
+            (_frame is null || !AutomaticIconSeriesRules.SameSelectedFrame(_previewIconSeries, selectedSeries)))
+            return ShowError(T("Puzzle.UnavailableImage"));
         if (_targetRecognitionRequired) return ShowError(_targetSourceError ?? T("Settings.Saving"));
         if (_targetRecognition is not null && !ReferenceEquals(_verifiedRecognition, _targetRecognition))
             return ShowError(_targetSourceError ?? T("Settings.Saving"));
@@ -1031,7 +1086,9 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                     ? _draft.Images with { Media = frozen.Reference } : _draft.Images,
             };
             if (MemberPresentationRules.Validate(candidate) is { } validation) return ShowError(validation);
-            var error = _save(candidate, changes, _preparedSourceAsset is { } asset ? [asset] : []);
+            IReadOnlyList<PreparedMediaAsset> assets = (_preparedSourceAsset is { } asset ? new[] { asset } : [])
+                .Concat(_preparedAutomaticSeries?.Assets ?? []).DistinctBy(asset => asset.Reference.Sha256).ToArray();
+            var error = _save(candidate, changes, assets);
             if (error is not null) return ShowError(error);
             _saved = true; _draft = candidate; return null;
         }
@@ -1231,7 +1288,10 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _targetDirty = _titleDirty = false;
         _selectedShortcutPath = shortcutPath;
         _targetWasConfirmed = true;
+        _preparedAutomaticSeries = null;
         _draft = _draft with { TargetInput = target, SourceShortcutPath = shortcutPath, TargetDisplayName = displayName,
+            ResourceOrigin = MemberResourceOrigin.Local,
+            Images = _draft.Images.Kind == MemberImageSourceKind.Automatic ? _draft.Images with { IconSeries = null } : _draft.Images,
             Visual = _draft.Visual with { TitleMode = MemberTitleMode.Automatic, Title = null } };
         Changed(); RefreshFields(); GallerySourceChanged?.Invoke();
         _pending = ApplyTargetSourceAsync(shortcutPath ?? target);
@@ -1380,6 +1440,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _targetRecognitionRequired = false;
         _targetRecognition = null;
         _verifiedRecognition = null; _preparedSourceAsset = null;
+        _preparedAutomaticSeries = null;
         _targetSourceError = null;
     }
 

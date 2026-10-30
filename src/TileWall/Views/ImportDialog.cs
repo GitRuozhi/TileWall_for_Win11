@@ -65,7 +65,9 @@ internal sealed class ImportDialog : IWallDialogSession
     private PackagePreviewSource? _packageSource;
     private IReadOnlyList<ImportSourceCandidate>? _projectedCandidates;
     private IReadOnlyDictionary<string, string>? _projectedIdentities;
-    private readonly ComboBox _mode = new(), _source = new(), _position = new();
+    private readonly ComboBox _source = new();
+    private readonly IconSelector _mode = new(ActionIcon.ImportAllMirrored, ActionIcon.Share),
+        _position = new(ActionIcon.PreviousItem, ActionIcon.NextItem);
     private readonly CheckBox _selectAll = new() { IsThreeState = true };
     private readonly TextBox _filter = new() { MinWidth = 0, FontSize = 12 };
     private readonly ToggleSwitch _autoFilter = new() { IsOn = true, OnContent = "", OffContent = "" },
@@ -1124,7 +1126,7 @@ internal sealed class ImportDialog : IWallDialogSession
         _autoFilter.IsEnabled = !Attributed;
         _recognizeGroups.IsEnabled = !Attributed && SourceKind != ImportPageSourceKind.SystemFeatures;
         _small.IsEnabled = _medium.IsEnabled = !Attributed && (_sourceData?.Candidates.Any(candidate => !candidate.HasRecordedSize) ?? true);
-        _position.IsEnabled = !export && !IsRecycle;
+        _position.SetEnabled(!export && !IsRecycle);
         var reason = ProductStrings.Get(export ? "Import.Option.ImportOnly" : "Import.Option.RecordedAttributes");
         AutomationProperties.SetHelpText(_autoFilter, _autoFilter.IsEnabled ? "" : reason);
         AutomationProperties.SetHelpText(_recognizeGroups, _recognizeGroups.IsEnabled ? "" :
@@ -1132,6 +1134,8 @@ internal sealed class ImportDialog : IWallDialogSession
         AutomationProperties.SetHelpText(_small, _small.IsEnabled ? "" : reason);
         AutomationProperties.SetHelpText(_medium, _medium.IsEnabled ? "" : reason);
         AutomationProperties.SetHelpText(_position, export || IsRecycle ? reason : "");
+        foreach (var button in _position.Children.OfType<ToggleButton>())
+            AutomationProperties.SetHelpText(button, export || IsRecycle ? reason : "");
         var addable = FilteredAddableCandidates();
         var count = addable.Count(IsSelected);
         _selectAll.IsEnabled = idle && !_reading && addable.Length > 0;
@@ -1225,11 +1229,15 @@ internal sealed class ImportDialog : IWallDialogSession
         try
         {
             var mode = _mode.SelectedIndex; var source = _source.SelectedIndex; var position = _position.SelectedIndex;
-            _mode.Items.Clear(); _mode.Items.Add(ProductStrings.Get("Import.Mode.Import")); _mode.Items.Add(ProductStrings.Get("Import.Mode.Export"));
+            _mode.SetItems([ProductStrings.Get("Import.Mode.Import"), ProductStrings.Get("Import.Mode.Export")],
+                showLabels: true, notifyOnReselect: false);
+            Id(_mode.Children[0], "mode-import"); Id(_mode.Children[1], "mode-export");
             _mode.SelectedIndex = mode < 0 || mode == 1 ? 1 : 0;
             _source.Items.Clear(); foreach (var key in SourceLabels) _source.Items.Add(new ComboBoxItem { Content = ProductStrings.Get(key) });
             _source.SelectedIndex = source >= 0 && source < SourceKinds.Length ? source : Mode == ImportPageMode.Export ? 5 : 0;
-            _position.Items.Clear(); _position.Items.Add(ProductStrings.Get("Import.Position.Head")); _position.Items.Add(ProductStrings.Get("Import.Position.Tail"));
+            _position.SetItems([ProductStrings.Get("Import.Position.Head"), ProductStrings.Get("Import.Position.Tail")],
+                showLabels: true, notifyOnReselect: false);
+            Id(_position.Children[0], "position-head"); Id(_position.Children[1], "position-tail");
             _position.SelectedIndex = position == 1 ? 1 : 0;
         }
         finally { _refreshingStrings = false; }

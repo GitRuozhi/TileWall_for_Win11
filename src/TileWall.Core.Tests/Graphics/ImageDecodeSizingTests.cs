@@ -6,9 +6,9 @@ namespace TileWall.Core.Tests.Graphics;
 public sealed class ImageDecodeSizingTests
 {
     [Theory]
-    [InlineData(5000, 4900, 4040, 3960)]
-    [InlineData(5120, 5000, 4047, 3953)]
-    public void OriginalResolutionRequests_RoundedDimensionsStayWithinBudgets(
+    [InlineData(5000, 4900, 5000, 4900)]
+    [InlineData(5120, 5000, 5120, 5000)]
+    public void OriginalResolutionRequests_KeepNativeDimensionsAboveFormerCeilings(
         int sourceWidth, int sourceHeight, int expectedWidth, int expectedHeight)
     {
         var dimensions = ImageDecodeSizing.Calculate(
@@ -18,7 +18,6 @@ public sealed class ImageDecodeSizingTests
         Assert.Equal(expectedWidth, dimensions.Width);
         Assert.Equal(expectedHeight, dimensions.Height);
         Assert.InRange(Math.Max(dimensions.Width, dimensions.Height), 1, ImageDecodeSizing.MaxDecodedEdge);
-        Assert.InRange((long)dimensions.Width * dimensions.Height, 1, ImageDecodeSizing.MaxDecodedPixels);
     }
 
     [Fact]
@@ -32,10 +31,10 @@ public sealed class ImageDecodeSizingTests
     }
 
     [Fact]
-    public void EdgeBudget_LimitsTheLongSideTo4096()
+    public void ExplicitRequestedEdge_LimitsTheLongSide()
     {
         var dimensions = ImageDecodeSizing.Calculate(8000, 4000, 8000, 4000, 8000, 4000,
-            ImageDecodeSizing.MaxDecodedEdge);
+            4096);
 
         Assert.Equal(4096, dimensions.Width);
         Assert.Equal(2048, dimensions.Height);
@@ -47,9 +46,9 @@ public sealed class ImageDecodeSizingTests
         var dimensions = ImageDecodeSizing.Calculate(5120, 5000, 5000, 5120, 5000, 5120,
             ImageDecodeSizing.MaxDecodedEdge);
 
-        Assert.Equal(4047, dimensions.ScaledRawWidth);
-        Assert.Equal(3953, dimensions.ScaledRawHeight);
-        Assert.Equal(3953, dimensions.Width);
-        Assert.Equal(4047, dimensions.Height);
+        Assert.Equal(5120, dimensions.ScaledRawWidth);
+        Assert.Equal(5000, dimensions.ScaledRawHeight);
+        Assert.Equal(5000, dimensions.Width);
+        Assert.Equal(5120, dimensions.Height);
     }
 }

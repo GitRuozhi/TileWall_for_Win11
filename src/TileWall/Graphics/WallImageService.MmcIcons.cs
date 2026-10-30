@@ -10,8 +10,8 @@ namespace TileWall.Graphics;
 
 public sealed partial class WallImageService
 {
-    private const int MaximumMmcConsoleFileBytes = 4 * 1024 * 1024;
-    private const int MaximumMmcResourceStampBytes = 32 * 1024 * 1024;
+    private const int MaximumMmcConsoleFileBytes = int.MaxValue;
+    private const int MaximumMmcResourceStampBytes = int.MaxValue;
 
     private sealed record MmcIconDeclaration(string Path, int Index);
 
@@ -82,7 +82,7 @@ public sealed partial class WallImageService
         if (!IsSafeExternalFilePath(declaration.Path)) return null;
 
         var requestedPixels = Math.Max(width, height);
-        var edge = requestedPixels <= 48 ? 48 : requestedPixels <= 100 ? 100 : 256;
+        var edge = requestedPixels;
         IntPtr icon = IntPtr.Zero;
         try
         {
@@ -95,7 +95,7 @@ public sealed partial class WallImageService
             // resources. Ask Windows to extract only the explicitly declared
             // file/index, then use the existing dual-background alpha recovery.
             var decoded = ShellIconPixels.ReadIcon(icon);
-            if (decoded is not { } plane || plane.Width is < 1 or > 256 || plane.Height is < 1 or > 256 ||
+            if (decoded is not { } plane || plane.Width < 1 || plane.Height < 1 ||
                 plane.Pixels.Length != checked(plane.Width * plane.Height * 4)) return null;
             var visible = false;
             for (var offset = 3; offset < plane.Pixels.Length; offset += 4)

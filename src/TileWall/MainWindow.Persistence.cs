@@ -92,7 +92,7 @@ public sealed partial class MainWindow
         string? error = null;
         try
         {
-            var media = await PrepareFormalMediaAsync(proposal);
+            var media = await PrepareFormalMediaAsync(proposal, changes, Scale);
             var result = await _session.CommitAsync(media.Proposal, changes,
                 AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia), expectedEntrySha256, managedGalleries);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);

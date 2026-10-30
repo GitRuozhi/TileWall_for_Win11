@@ -20,12 +20,10 @@ public sealed record ImageDecodeResult(ImageDecodeStatus Status, DecodedImageFra
 public sealed record PuzzleDecodedPair(DecodedImageFrame Sharp, DecodedImageFrame? BlurSource);
 public sealed record PuzzleDecodeResult(ImageDecodeStatus Status, PuzzleDecodedPair? Pair, string? ErrorType = null);
 
-/// <summary>Bounded, orientation-correct WIC decode. Safe to call away from the XAML UI thread.</summary>
+/// <summary>Orientation-correct WIC decode. Safe to call away from the XAML UI thread.</summary>
 public sealed class ImageFrameDecoder
 {
-    private const long MaxSourceBytes = 32L * 1024 * 1024;
-    private const long MaxSourcePixels = 80_000_000;
-    private const int MaxDecodedEdge = ImageDecodeSizing.MaxDecodedEdge;
+    private const int MaxDecodedEdge = int.MaxValue;
     /// <summary>Discover format support through WIC itself, including installed codecs and extensionless files.</summary>
     public async Task<bool> ProbeAsync(string path, CancellationToken ct = default)
     {
@@ -33,18 +31,18 @@ public sealed class ImageFrameDecoder
         {
             ct.ThrowIfCancellationRequested();
             var info = new FileInfo(path);
-            if (!info.Exists || info.Length is < 1 or > MaxSourceBytes) return false;
+            if (!info.Exists || info.Length < 1) return false;
             using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var stream = file.AsRandomAccessStream();
             var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(ct).ConfigureAwait(false);
+            var frame = await SelectSourceFrameAsync(decoder, ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
-            if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 ||
-                (long)decoder.PixelWidth * decoder.PixelHeight > MaxSourcePixels) return false;
-            // A valid header alone is not a usable gallery candidate. Decode a bounded
-            // sample before counting this file toward the shared 99-image limit.
-            return await DecodePlaneAsync(decoder, path, info.Length, info.LastWriteTimeUtc,
-                checked((int)decoder.PixelWidth), checked((int)decoder.PixelHeight),
-                checked((int)decoder.OrientedPixelWidth), checked((int)decoder.OrientedPixelHeight),
+            if (frame.PixelWidth == 0 || frame.PixelHeight == 0) return false;
+            // A valid header alone is not a usable gallery candidate. Decode a sample
+            // before counting this file toward the shared image list.
+            return await DecodePlaneAsync(frame, path, info.Length, info.LastWriteTimeUtc,
+                checked((int)frame.PixelWidth), checked((int)frame.PixelHeight),
+                checked((int)frame.OrientedPixelWidth), checked((int)frame.OrientedPixelHeight),
                 1, 1, ct, maxEdge: 1) is not null;
         }
         catch (OperationCanceledException) { throw; }
@@ -59,13 +57,13 @@ public sealed class ImageFrameDecoder
     public async Task<PuzzleDecodeResult> DecodePuzzlePairAsync(
         string? sourcePath, int requiredWidthPx, int requiredHeightPx,
         CancellationToken cancellationToken = default, bool preserveSourceResolution = false,
-        int sharpMaxEdge = MaxDecodedEdge, int blurMaxEdge = 512, bool needsBlur = true)
+        int sharpMaxEdge = MaxDecodedEdge, int blurMaxEdge = MaxDecodedEdge, bool needsBlur = true)
     {
         if (string.IsNullOrWhiteSpace(sourcePath))
             return new(ImageDecodeStatus.MissingFile, null);
         if (requiredWidthPx <= 0 || requiredHeightPx <= 0)
             throw new ArgumentOutOfRangeException(nameof(requiredWidthPx));
-        if (sharpMaxEdge is < 1 or > MaxDecodedEdge || blurMaxEdge is < 1 or > 512)
+        if (sharpMaxEdge < 1 || blurMaxEdge < 1)
             throw new ArgumentOutOfRangeException(nameof(sharpMaxEdge));
 
         string path;
@@ -79,7 +77,7 @@ public sealed class ImageFrameDecoder
             var info = new FileInfo(path);
             if (!info.Exists)
                 return new(ImageDecodeStatus.MissingFile, null);
-            if (info.Length is < 1 or > MaxSourceBytes)
+            if (info.Length < 1)
                 return new(ImageDecodeStatus.SourceTooLarge, null);
             var fileBytes = info.Length;
             var lastWriteUtc = info.LastWriteTimeUtc;
@@ -88,17 +86,17 @@ public sealed class ImageFrameDecoder
             cancellationToken.ThrowIfCancellationRequested();
             using var stream = file.AsRandomAccessStream();
             var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(cancellationToken).ConfigureAwait(false);
+            var source = await SelectSourceFrameAsync(decoder, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            var rawWidth = checked((int)decoder.PixelWidth);
-            var rawHeight = checked((int)decoder.PixelHeight);
-            var orientedWidth = checked((int)decoder.OrientedPixelWidth);
-            var orientedHeight = checked((int)decoder.OrientedPixelHeight);
+            var rawWidth = checked((int)source.PixelWidth);
+            var rawHeight = checked((int)source.PixelHeight);
+            var orientedWidth = checked((int)source.OrientedPixelWidth);
+            var orientedHeight = checked((int)source.OrientedPixelHeight);
             if (rawWidth <= 0 || rawHeight <= 0 ||
-                (long)rawWidth * rawHeight > MaxSourcePixels ||
                 (long)orientedWidth * orientedHeight != (long)rawWidth * rawHeight)
                 return new(ImageDecodeStatus.SourceTooLarge, null);
 
-            var sharp = await DecodePlaneAsync(decoder, path, fileBytes, lastWriteUtc,
+            var sharp = await DecodePlaneAsync(source, path, fileBytes, lastWriteUtc,
                 rawWidth, rawHeight, orientedWidth, orientedHeight,
                 preserveSourceResolution ? orientedWidth : requiredWidthPx,
                 preserveSourceResolution ? orientedHeight : requiredHeightPx, cancellationToken, maxEdge: sharpMaxEdge);
@@ -106,7 +104,7 @@ public sealed class ImageFrameDecoder
             if (needsBlur)
             {
                 // A second WIC read uses the same open stream and decoder, never a second file version.
-                blur = await DecodePlaneAsync(decoder, path, fileBytes, lastWriteUtc,
+                blur = await DecodePlaneAsync(source, path, fileBytes, lastWriteUtc,
                     rawWidth, rawHeight, orientedWidth, orientedHeight,
                     blurMaxEdge, blurMaxEdge, cancellationToken, maxEdge: blurMaxEdge);
             }
@@ -129,8 +127,40 @@ public sealed class ImageFrameDecoder
         }
     }
 
+    private static async Task<BitmapFrame> SelectSourceFrameAsync(BitmapDecoder decoder, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        // WIC's default ICO frame can be 16px even when a native 256px image
+        // exists. Size alternatives are specific to ICO; GIF/TIFF retain their
+        // first-frame behavior. Content and thumbnail use one stable source plane.
+        if (decoder.DecoderInformation.CodecId != BitmapDecoder.IcoDecoderId)
+            return await decoder.GetFrameAsync(0).AsTask(ct).ConfigureAwait(false);
+        // ICO stores its frame count in a 16-bit directory field. This is a
+        // format validation, not a TileWall frame-count quota.
+        if (decoder.FrameCount is < 1 or > ushort.MaxValue)
+            throw new InvalidOperationException("ICO frame count is outside its native representation.");
+        BitmapFrame? best = null;
+        long bestArea = 0;
+        for (uint index = 0; index < decoder.FrameCount; index++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var candidate = await decoder.GetFrameAsync(index).AsTask(ct).ConfigureAwait(false);
+                // ICO's byte-sized dimensions encode 256 as zero.
+                if (candidate.PixelWidth is < 1 or > 256 || candidate.PixelHeight is < 1 or > 256) continue;
+                var area = (long)candidate.PixelWidth * candidate.PixelHeight;
+                if (area <= bestArea) continue;
+                best = candidate;
+                bestArea = area;
+            }
+            catch (COMException) { /* One unreadable size alternative does not hide the others. */ }
+        }
+        return best ?? throw new InvalidOperationException("ICO has no usable image frame.");
+    }
+
     private static async Task<DecodedImageFrame?> DecodePlaneAsync(
-        BitmapDecoder decoder, string path, long fileBytes, DateTime lastWriteUtc,
+        BitmapFrame decoder, string path, long fileBytes, DateTime lastWriteUtc,
         int rawWidth, int rawHeight, int orientedWidth, int orientedHeight,
         int requiredWidthPx, int requiredHeightPx, CancellationToken ct, int maxEdge = MaxDecodedEdge)
     {
@@ -150,16 +180,22 @@ public sealed class ImageFrameDecoder
             ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         var pixels = pixelData.DetachPixelData();
-        return pixels.LongLength == (long)dimensions.Width * dimensions.Height * 4
+        long expectedByteCount;
+        try { expectedByteCount = checked((long)dimensions.Width * dimensions.Height * 4); }
+        catch (OverflowException) { return null; }
+        return pixels.LongLength == expectedByteCount
             ? new(path, fileBytes, lastWriteUtc, orientedWidth, orientedHeight,
                 dimensions.Width, dimensions.Height, pixels)
             : null;
     }
 
-    /// <summary>Bounded thumbnail decode of a verified package original, without writing a temporary file.</summary>
+    /// <summary>Decode a verified package thumbnail without writing a temporary file.</summary>
     internal Task<ImageDecodeResult> DecodePackageThumbnailAsync(byte[] bytes, string identity,
-        int edge, CancellationToken token) => DecodePackageFrameCoreAsync(bytes, identity,
-            Math.Clamp(edge, 64, 256), Math.Clamp(edge, 64, 256), Math.Clamp(edge, 64, 256), token);
+        int edge, CancellationToken token)
+    {
+        if (edge < 1) throw new ArgumentOutOfRangeException(nameof(edge));
+        return DecodePackageFrameCoreAsync(bytes, identity, edge, edge, edge, token);
+    }
 
     internal Task<ImageDecodeResult> DecodePackageFrameAsync(byte[] bytes, string identity,
         int width, int height, CancellationToken token, int maximumEdge = MaxDecodedEdge) => DecodePackageFrameCoreAsync(bytes, identity,
@@ -168,19 +204,20 @@ public sealed class ImageFrameDecoder
     private static async Task<ImageDecodeResult> DecodePackageFrameCoreAsync(byte[] bytes, string identity,
         int requiredWidth, int requiredHeight, int maximumEdge, CancellationToken token)
     {
-        if (bytes.LongLength is < 1 or > MaxSourceBytes) return new(ImageDecodeStatus.SourceTooLarge, null);
-        if (requiredWidth is < 1 or > MaxDecodedEdge || requiredHeight is < 1 or > MaxDecodedEdge)
+        if (bytes.LongLength < 1) return new(ImageDecodeStatus.SourceTooLarge, null);
+        if (requiredWidth < 1 || requiredHeight < 1)
             throw new ArgumentOutOfRangeException(nameof(requiredWidth));
-        if (maximumEdge is < 1 or > MaxDecodedEdge) throw new ArgumentOutOfRangeException(nameof(maximumEdge));
+        if (maximumEdge < 1) throw new ArgumentOutOfRangeException(nameof(maximumEdge));
         token.ThrowIfCancellationRequested();
         using var file = new MemoryStream(bytes, writable: false);
         using var stream = file.AsRandomAccessStream();
         var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token).ConfigureAwait(false);
-        var rawWidth = checked((int)decoder.PixelWidth); var rawHeight = checked((int)decoder.PixelHeight);
-        var width = checked((int)decoder.OrientedPixelWidth); var height = checked((int)decoder.OrientedPixelHeight);
-        if (rawWidth <= 0 || rawHeight <= 0 || (long)rawWidth * rawHeight > MaxSourcePixels ||
+        var source = await SelectSourceFrameAsync(decoder, token).ConfigureAwait(false);
+        var rawWidth = checked((int)source.PixelWidth); var rawHeight = checked((int)source.PixelHeight);
+        var width = checked((int)source.OrientedPixelWidth); var height = checked((int)source.OrientedPixelHeight);
+        if (rawWidth <= 0 || rawHeight <= 0 ||
             (long)width * height != (long)rawWidth * rawHeight) return new(ImageDecodeStatus.SourceTooLarge, null);
-        var frame = await DecodePlaneAsync(decoder, identity, bytes.Length, DateTime.MinValue,
+        var frame = await DecodePlaneAsync(source, identity, bytes.Length, DateTime.MinValue,
             rawWidth, rawHeight, width, height, requiredWidth, requiredHeight, token, maximumEdge).ConfigureAwait(false);
         return new(frame is null ? ImageDecodeStatus.InvalidImage : ImageDecodeStatus.Success, frame);
     }
@@ -206,7 +243,7 @@ public sealed class ImageFrameDecoder
             var info = new FileInfo(path);
             if (!info.Exists)
                 return new(ImageDecodeStatus.MissingFile, null);
-            if (info.Length is < 1 or > MaxSourceBytes)
+            if (info.Length < 1)
                 return new(ImageDecodeStatus.SourceTooLarge, null);
             var fileBytes = info.Length;
             var lastWriteUtc = info.LastWriteTimeUtc;
@@ -215,18 +252,18 @@ public sealed class ImageFrameDecoder
             cancellationToken.ThrowIfCancellationRequested();
             using var stream = file.AsRandomAccessStream();
             var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(cancellationToken).ConfigureAwait(false);
+            var source = await SelectSourceFrameAsync(decoder, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
-            var rawWidth = checked((int)decoder.PixelWidth);
-            var rawHeight = checked((int)decoder.PixelHeight);
-            var orientedWidth = checked((int)decoder.OrientedPixelWidth);
-            var orientedHeight = checked((int)decoder.OrientedPixelHeight);
+            var rawWidth = checked((int)source.PixelWidth);
+            var rawHeight = checked((int)source.PixelHeight);
+            var orientedWidth = checked((int)source.OrientedPixelWidth);
+            var orientedHeight = checked((int)source.OrientedPixelHeight);
             if (rawWidth <= 0 || rawHeight <= 0 ||
-                (long)rawWidth * rawHeight > MaxSourcePixels ||
                 (long)orientedWidth * orientedHeight != (long)rawWidth * rawHeight)
                 return new(ImageDecodeStatus.SourceTooLarge, null);
 
-            var frame = await DecodePlaneAsync(decoder, path, fileBytes, lastWriteUtc,
+            var frame = await DecodePlaneAsync(source, path, fileBytes, lastWriteUtc,
                 rawWidth, rawHeight, orientedWidth, orientedHeight,
                 requiredWidthPx, requiredHeightPx, cancellationToken);
             if (frame is null)

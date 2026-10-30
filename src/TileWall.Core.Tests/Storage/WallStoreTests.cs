@@ -274,7 +274,7 @@ public sealed partial class WallStoreTests
         };
         var request = Plan(store, current, candidate);
 
-        var external = current with { Settings = current.Settings with { ThemeMode = WallThemeMode.Dark } };
+        var external = current with { Settings = current.Settings with { ThemeMode = WallThemeMode.Light } };
         var configPath = Path.Combine(root, "state.json");
         SnapshotTestData.Install(files, root, external);
         var baseline = files.SnapshotFiles();

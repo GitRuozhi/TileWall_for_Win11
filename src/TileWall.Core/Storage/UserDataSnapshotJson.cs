@@ -9,8 +9,8 @@ namespace TileWall.Core.Storage;
 public sealed record UserDataManifest(int SchemaVersion, long Generation, string SnapshotId,
     UserDataFileDigest Settings, UserDataFileDigest Wall, UserDataFileDigest RecycleBin)
 {
-    public const int CurrentFormatVersion = 3;
-    internal static bool IsSupportedFormatVersion(int? version) => version is 1 or 2 or CurrentFormatVersion;
+    public const int CurrentFormatVersion = 4;
+    internal static bool IsSupportedFormatVersion(int? version) => version is 1 or 2 or 3 or CurrentFormatVersion;
 }
 public sealed record UserDataFileDigest(long Length, string Sha256);
 internal sealed record UserSettingsData(int SchemaVersion, WallSettings Value);
@@ -32,15 +32,18 @@ internal static class UserDataSnapshotJson
     // initializes the newly introduced second shortcut when that field is absent.
     private static readonly JsonSerializerOptions V1Options = CreateHistoricalOptions(1);
     private static readonly JsonSerializerOptions V2Options = CreateHistoricalOptions(2);
+    private static readonly JsonSerializerOptions V3Options = CreateHistoricalOptions(3);
 
     private static JsonSerializerOptions CreateHistoricalOptions(int version)
     {
         var resolver = new DefaultJsonTypeInfoResolver();
         resolver.Modifiers.Add(typeInfo =>
         {
+            if (typeInfo.Type == typeof(MemberImageSource))
+                typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "iconSeries"));
             if (version == 1 && typeInfo.Type == typeof(WallSettings))
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "secondaryHotKey"));
-            if (!typeof(WallMember).IsAssignableFrom(typeInfo.Type)) return;
+            if (version >= 3 || !typeof(WallMember).IsAssignableFrom(typeInfo.Type)) return;
             foreach (var name in new[] { "resourceOrigin", "sourceShortcutPath", "targetDisplayName" })
             {
                 var property = typeInfo.Properties.SingleOrDefault(property => property.Name == name);
@@ -49,7 +52,8 @@ internal static class UserDataSnapshotJson
         });
         return new(Options) { TypeInfoResolver = resolver };
     }
-    private static JsonSerializerOptions OptionsFor(int version) => version switch { 1 => V1Options, 2 => V2Options, _ => Options };
+    private static JsonSerializerOptions OptionsFor(int version) => version switch
+        { 1 => V1Options, 2 => V2Options, 3 => V3Options, _ => Options };
 
     public static PreparedUserDataSnapshot Prepare(WallDocument document) => Prepare(document, UserDataManifest.CurrentFormatVersion);
 
