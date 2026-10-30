@@ -145,7 +145,7 @@ public sealed partial class WallImageService
     {
         if (_disk is not { } disk || package.Group is null || package.Frames.Count == 0 || !package.Complete) return null;
         var group = package.Group;
-        var key = ManagedImageCache.Key("native-resource-v4|" + Fingerprint(package.ResourcePath, "resource") + "|" +
+        var key = ManagedImageCache.Key("native-resource-v5|" + PeIconResourceReader.ResourceDependencyStamp(package.ResourcePath) + "|" +
             group.ResourceId + "|" + group.ResourceName + "|" + group.LanguageId + "|" +
             string.Join("|", package.Frames.Select(frame => frame.Native.Sha256)));
         var frames = package.Frames.Select(frame => new DiskIconFrame(frame.Native.ResourceId, frame.Native.LanguageId,
@@ -168,11 +168,11 @@ public sealed partial class WallImageService
     private static string? NativeIconDependency(string exe, string? iconPath, int? iconIndex, string? language = null)
     {
         var icon = NormalizePath(iconPath);
-        var iconDependency = icon is not null ? Fingerprint(icon, "explicit-icon") ?? "missing:" + icon
+        var iconDependency = icon is not null ? PeIconResourceReader.ResourceDependencyStamp(icon)
             : string.IsNullOrWhiteSpace(iconPath) ? "none" : "invalid:" + iconPath;
-        var target = Fingerprint(exe, "target") ?? "non-file:" + exe;
+        var target = PeIconResourceReader.ResourceDependencyStamp(exe);
         if (icon is null && !File.Exists(exe)) return null;
-        return "native-icon-v4:" + (language ?? CultureInfo.CurrentUICulture.Name) + ":" + iconIndex + ":" + iconDependency + "|" + target;
+        return "native-icon-v5:" + (language ?? CultureInfo.CurrentUICulture.Name) + ":" + iconIndex + ":" + iconDependency + "|" + target;
     }
     private static PeIconGroup? ReadExplicitIco(string path, int? index)
     {

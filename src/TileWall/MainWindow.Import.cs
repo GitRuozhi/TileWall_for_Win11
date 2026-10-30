@@ -124,6 +124,18 @@ public sealed partial class MainWindow
             throw new ImportSourceChangedException("The import source changed.");
         // Availability filtering can move surviving candidates to different groups.
         source = await sourceProjection.PrepareAvailabilityAsync(source, token);
+        // Restore the actual raw keys before considering any source-specific overlay.
+        // In particular an AppsFolder match must not leak into a later package/source page.
+        Dictionary<string, string>? restored = null;
+        foreach (var (memberId, native) in context.ObservedNativeLinks)
+        {
+            var key = LaunchIdentityService.ForShellIdList(native.Fields.ShellIdListHash!, null,
+                native.Fields.Arguments, native.Fields.WorkingDirectory).Key;
+            if (context.ExistingIdentities.GetValueOrDefault(memberId) == key) continue;
+            restored ??= new(context.ExistingIdentities, StringComparer.Ordinal);
+            restored[memberId] = key;
+        }
+        if (restored is not null) context = context with { ExistingIdentities = restored };
         projection = ImportSourcePlanner.Project(context.Document, source.Candidates, projection.RecognizeGroups,
             projection.AutoFilter, context.ExistingIdentities);
         var current = context.Document;
@@ -140,6 +152,7 @@ public sealed partial class MainWindow
                 var identities = ImportIdentities;
                 var result = new Dictionary<string, string>(context.ExistingIdentities, StringComparer.Ordinal);
                 var hashes = new Dictionary<string, string>(context.ExistingEntrySha256, StringComparer.Ordinal);
+                var nativeLinks = new Dictionary<string, (LinkFields Fields, ReadOnlyMemory<byte> IdList)>(context.ObservedNativeLinks, StringComparer.Ordinal);
                 foreach (var member in current.Lanes.SelectMany(lane => lane.Groups)
                              .Where(group => destinationIds.Contains(group.Id)).SelectMany(group => group.Members))
                 {
@@ -149,17 +162,24 @@ public sealed partial class MainWindow
                     using var stream = guarded.OpenReadProtected(path);
                     if (stream.Length is < 1 or > EntryObservation.MaximumBytes) throw new InvalidDataException("Invalid formal entry length.");
                     var bytes = new byte[checked((int)stream.Length)]; stream.ReadExactly(bytes);
-                    var fields = entry.Kind == ManagedEntryKind.Lnk ? _session.LinkFiles.Read(path) : null;
+                    ReadOnlyMemory<byte> idList = default;
+                    var fields = entry.Kind == ManagedEntryKind.Lnk ? _session.LinkFiles.ReadWithIdList(path, out idList) : null;
                     result[member.Id] = EntryObservation.Observe(identities, entry.Kind, path, bytes, fields).Key;
                     hashes[member.Id] = Convert.ToHexString(SHA256.HashData(bytes));
+                    if (member.ResourceOrigin != MemberResourceOrigin.Package && fields is { HasIdList: true, ShellIdListHash: not null } && !idList.IsEmpty)
+                        nativeLinks[member.Id] = (fields, idList);
                 }
-                return (Identities: result, Hashes: hashes);
+                return (Identities: result, Hashes: hashes, NativeLinks: nativeLinks);
             });
             token.ThrowIfCancellationRequested();
             var observedGroups = context.ObservedDestinationGroups.Concat(destinationIds).ToHashSet(StringComparer.Ordinal);
             context = context with { ExistingIdentities = observations.Identities, ExistingEntrySha256 = observations.Hashes,
-                ObservedDestinationGroups = observedGroups };
+                ObservedDestinationGroups = observedGroups, ObservedNativeLinks = observations.NativeLinks };
         }
+        var matched = source.Candidates.FirstOrDefault()?.SourceKind == ImportPageSourceKind.InstalledApplications
+            ? NativeImports.MatchStoredBackgroundVariants(source, context.ExistingIdentities, context.ObservedNativeLinks)
+            : context.ExistingIdentities;
+        if (!ReferenceEquals(matched, context.ExistingIdentities)) context = context with { ExistingIdentities = matched };
         token.ThrowIfCancellationRequested();
         if (!IsImportContextCurrent(context)) throw new ImportSourceChangedException("The import source changed.");
         return new(context, source);
@@ -414,7 +434,7 @@ public sealed partial class MainWindow
                             NativeImportTarget.Shortcut => new EntryChange.CopyShortcut(accepted.MemberId, source.SourcePath!, source.Sha256),
                             NativeImportTarget.Path => new EntryChange.CreateLink(accepted.MemberId, source.Target),
                             NativeImportTarget.Shell => new EntryChange.CreateShellLink(accepted.MemberId, source.Target,
-                                (source.Identity ?? LaunchIdentityService.ForShell(source.Target)).Key),
+                                (source.Identity ?? LaunchIdentityService.ForShell(source.Target)).Key) { NativeTarget = source.NativeTarget },
                             NativeImportTarget.Uri => new EntryChange.CreateUrl(accepted.MemberId, source.Target),
                             _ => throw new IOException("Unsupported native source."),
                         });

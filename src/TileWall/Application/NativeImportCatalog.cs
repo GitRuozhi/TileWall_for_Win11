@@ -6,6 +6,7 @@ using TileWall.Core.Shell;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using TileWall.Core.Entries;
 using TileWall.Core.Configuration;
 using TileWall.Core.Grid;
@@ -35,6 +36,10 @@ internal sealed record NativeImportEntry(string Key, string Name, string Target,
     public string? CompanyStamp { get; init; }
     /// <summary>Explicit Shell link metadata, used only for availability; never a shortcut source or launch identity.</summary>
     public string? LinkedTargetPath { get; init; }
+    public string? PackageFullName { get; init; }
+    public string? PackageInstallPath { get; init; }
+    [JsonIgnore]
+    public NativeShellTargetSnapshot? NativeTarget { get; init; }
 }
 
 /// <summary>Disposable source facts. Cache contents never authorize an import or contain user selection.</summary>
@@ -291,6 +296,36 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
 
     internal static string Facts(NativeImportEntry entry) => JsonSerializer.Serialize(entry);
 
+    internal IReadOnlyDictionary<string, string> MatchStoredBackgroundVariants(ImportPageSource source,
+        IReadOnlyDictionary<string, string> rawIdentities,
+        IReadOnlyDictionary<string, (LinkFields Fields, ReadOnlyMemory<byte> IdList)> storedLinks)
+    {
+        // This overlay belongs only to the current local AppsFolder projection.
+        // No persisted identity, source hint or parsing property supplies trust.
+        if (source.Refreshing || !source.AvailabilityPrepared || source.Candidates.Count == 0 ||
+            source.Candidates.Any(candidate => candidate.SourceKind != ImportPageSourceKind.InstalledApplications))
+            return rawIdentities;
+        var selected = source.Candidates.Where(candidate => candidate.ErrorCode is null)
+            .Select(candidate => candidate.SourceKey).ToHashSet(StringComparer.Ordinal);
+        var targets = Snapshot(ImportPageSourceKind.InstalledApplications)
+            .Where(entry => selected.Contains(entry.Key) && !entry.Stale && entry.Error is null && entry.NativeTarget is not null &&
+                source.AvailabilityFacts.GetValueOrDefault(entry.Key) == Facts(entry)).ToArray();
+        Dictionary<string, string>? overlay = null;
+        foreach (var (memberId, stored) in storedLinks)
+        {
+            if (!rawIdentities.TryGetValue(memberId, out var rawKey)) continue;
+            foreach (var target in targets)
+            {
+                var native = target.NativeTarget!;
+                if (native.Identity.Key == rawKey || !native.MatchesStoredBackgroundVariant(stored.Fields, stored.IdList.Span)) continue;
+                overlay ??= new(rawIdentities, StringComparer.Ordinal);
+                overlay[memberId] = native.Identity.Key;
+                break;
+            }
+        }
+        return overlay ?? rawIdentities;
+    }
+
     internal NativeImportEntry Find(ImportPageSourceKind kind, string key)
     { lock (_sync) return (_snapshots.GetValueOrDefault(kind) ?? []).SingleOrDefault(entry => entry.Key == key)
         ?? throw new ImportSourceChangedException("The selected source no longer exists."); }
@@ -326,7 +361,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             {
                 var item = items[key];
                 if (item != old.AppSource) throw new IOException("The app source changed.");
-                var current = ObserveCompany(ObserveTarget(AppEntry(item, CancellationToken.None), kind, CancellationToken.None, targets),
+                var current = ObserveCompany(ObserveTarget(AppEntry(item, CancellationToken.None, old), kind, CancellationToken.None, targets),
                     CancellationToken.None, companies);
                 if (Facts(current) != Facts(old)) throw new IOException("The app facts changed.");
                 result.Add(key, current);
@@ -457,17 +492,30 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                     Kind = shortcut ? NativeImportTarget.Shortcut : NativeImportTarget.Path, SourcePath = shortcut ? target : null };
                 if (shortcut)
                 {
-                    var observed = ObserveShortcut(target, token, prior, path => ValidateAppPath(path, item));
-                    entry = entry with { Identity = observed.Identity, Sha256 = observed.Hash };
+                    var shortcutObservation = ObserveShortcut(target, token, prior, path => ValidateAppPath(path, item));
+                    entry = entry with { Identity = shortcutObservation.Identity, Sha256 = shortcutObservation.Hash };
                 }
                 else entry = entry with { Identity = LaunchIdentityService.ForPath(target) };
                 if (Stamp(target) != stamp) throw new IOException("The app source changed while reading.");
                 token.ThrowIfCancellationRequested(); ValidateAppPath(target, item);
                 return entry;
             }
-            var (_, identity) = ShellItemCatalog.ReadForLink(target);
+            var observed = ShellItemCatalog.ReadNativeLink(target);
             token.ThrowIfCancellationRequested();
-            return entry with { Identity = identity, LinkedTargetPath = ShellItemCatalog.LinkedTargetPath(target) };
+            var identity = observed.Identity;
+            var nativeTarget = observed.Target;
+            // A cached digest cannot authorize a PIDL. Only a live snapshot can
+            // be retained after a new native observation proves canonical equality.
+            if (prior is { Error: null, NativeTarget: { } previousTarget } && nativeTarget is not null &&
+                prior.PackageFullName == observed.PackageFullName && prior.PackageInstallPath == observed.PackageInstallPath &&
+                ShellItemCatalog.SameNativeTarget(previousTarget, nativeTarget))
+            {
+                identity = previousTarget.Identity;
+                nativeTarget = previousTarget;
+            }
+            return entry with { Identity = identity, NativeTarget = nativeTarget,
+                PackageFullName = observed.PackageFullName, PackageInstallPath = observed.PackageInstallPath,
+                LinkedTargetPath = ShellItemCatalog.LinkedTargetPath(target) };
         }
         catch (Exception ex) when ((ex is FileNotFoundException or DirectoryNotFoundException) &&
             kind == NativeImportTarget.Path && EntryNames.KindOfRelativePath(target) == EntryKind.None)
@@ -737,6 +785,8 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         (entry.Error is null || entry.Error.Length <= 1024) &&
         (entry.Company is null || entry.Company.Length <= 32768) &&
         (entry.CompanyStamp is null || entry.CompanyStamp.Length <= 32768) &&
+        (entry.PackageFullName is null || entry.PackageFullName.Length <= 32768) &&
+        (entry.PackageInstallPath is null || entry.PackageInstallPath.Length <= 32768) &&
         (entry.LinkedTargetPath is null || entry.LinkedTargetPath.Length is > 0 and < 32768 && Path.IsPathFullyQualified(entry.LinkedTargetPath)) &&
         (entry.AppSource is null || entry.AppSource.Name is { Length: > 0 and <= 32768 } &&
             entry.AppSource.ParsingName is { Length: > 0 and <= 32768 } &&

@@ -157,7 +157,8 @@ public sealed partial class WallImageService
         if (!TryReadMmcFile(path, MaximumMmcResourceStampBytes, out var bytes))
             return new($"mmc-resource=unreadable|{path}|{length}|{lastWriteUtc.Ticks}", false, false);
 
-        return new($"mmc-resource=sha256|{path}|{Convert.ToHexString(SHA256.HashData(bytes))}", true, true);
+        return new($"mmc-resource=sha256|{path}|{Convert.ToHexString(SHA256.HashData(bytes))}|" +
+            PeIconResourceReader.ResourceDependencyStamp(path), true, true);
     }
 
     private static string SafeFileMetadata(string path) => TryGetSafeFileInfo(path, out var length, out var lastWriteUtc)

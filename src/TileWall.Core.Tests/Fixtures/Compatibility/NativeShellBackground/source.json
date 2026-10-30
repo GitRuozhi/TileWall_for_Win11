@@ -1,0 +1,9 @@
+{
+  "source": "Windows 11 10.0.26300 native Shell AppsFolder PIDLs, captured 2026-10-31",
+  "method": "SHParseDisplayName / SHGetIDListFromObject / IShellLink.GetIDList; native paths agreed byte for byte",
+  "beforeCapture": "6ae0b038006d4057a7f9f2d66245856d",
+  "afterCapture": "53056cfa132e497d8100f4c3b8cd99ee",
+  "settings": "Only System.Tile.Background (VT_UI4) changed; canonical equality was confirmed by Windows",
+  "store": "Background plus package 22609.1401.7.0 to 22609.1401.8.0 registration changed; must not match the color-only rule",
+  "scope": "Data-only comparison fixtures. Never pass these persisted bytes to a namespace handler or trusted snapshot factory."
+}

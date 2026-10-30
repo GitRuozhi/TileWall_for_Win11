@@ -1,5 +1,7 @@
 using TileWall.Core.Entries;
 using TileWall.Core.Import;
+using TileWall.Core.Grid;
+using TileWall.Core.Wall;
 using Xunit;
 
 namespace TileWall.Core.Tests.Import;
@@ -41,13 +43,15 @@ public sealed class StartMenuSourceCacheTests
         Assert.Empty(changed.Sources);
     }
 
-    [Fact]
-    public void KnownRejectedSubtreeDisablesItsCachedRowsDuringIncompleteRoot()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void KnownRejectedSubtreeDisablesItsCachedRowsDuringIncompleteRoot(bool refreshing)
     {
         var old = Source("app");
         var root = new StartMenuRootScan(SourceKind.User, Root(SourceKind.User), false)
             { RejectedPaths = [Root(SourceKind.User)] };
-        var result = StartMenuSourceCache.Merge(new() { Sources = [old] }, Scan(root), []);
+        var result = StartMenuSourceCache.Merge(new() { Sources = [old] }, Scan(root), [], refreshing: refreshing);
         var retained = Assert.Single(result.Sources);
         Assert.True(retained.Stale); Assert.Equal("UnsafeSource", retained.ErrorCode);
     }
@@ -75,13 +79,82 @@ public sealed class StartMenuSourceCacheTests
     }
 
     [Fact]
-    public void IncompleteFactRefreshRetainsUnseenRowsAsStaleIndependentlyOfIconState()
+    public void IncompleteFactRefreshPreservesFreshRowsWithoutAuthorizingColdCache()
     {
-        var old = Source("cached"); var observed = Source("verified");
-        var result = StartMenuSourceCache.Merge(new() { Sources = [old] },
+        var cold = Source("cached") with { Stale = true }; var fresh = Source("fresh"); var observed = Source("verified");
+        var result = StartMenuSourceCache.Merge(new() { Sources = [cold, fresh] },
             Scan(new StartMenuRootScan(SourceKind.User, Root(SourceKind.User), false)), [observed], refreshing: true);
         Assert.True(result.Refreshing); Assert.False(result.IconPreparing);
         Assert.True(result.Sources.Single(source => source.Candidate.DisplayName == "cached").Stale);
+        Assert.False(result.Sources.Single(source => source.Candidate.DisplayName == "fresh").Stale);
         Assert.False(result.Sources.Single(source => source.Candidate.DisplayName == "verified").Stale);
+        Assert.False(Projection(result).Candidates.Single(candidate => candidate.Source.DisplayName == "cached").CanAdd);
     }
+
+    [Fact]
+    public void FreshSelectionSurvivesOneRowProgressAndTheCompleted51RowRefresh()
+    {
+        var sources = Enumerable.Range(0, 51).Select(index => Source("app" + index)).ToArray();
+        var previous = new StartMenuCatalogSnapshot { Sources = sources };
+        var selected = sources.ToDictionary(source => source.Candidate.SourceKey, source => source.Identity!.Key, StringComparer.Ordinal);
+        var progress = StartMenuSourceCache.Merge(previous,
+            Scan(new StartMenuRootScan(SourceKind.User, Root(SourceKind.User), false)),
+            [sources[0] with { Company = "Updated metadata", TargetAvailability = ImportTargetAvailability.Available }], refreshing: true);
+
+        var pendingSelection = ImportSourcePlanner.MigrateSelection(selected, Projection(progress));
+
+        Assert.True(progress.Refreshing);
+        Assert.Equal(51, pendingSelection.Selected.Count);
+        Assert.Equal(0, pendingSelection.RemovedCount);
+        var completed = StartMenuSourceCache.Merge(previous,
+            Scan(new StartMenuRootScan(SourceKind.User, Root(SourceKind.User), true)), sources);
+        var finalSelection = ImportSourcePlanner.MigrateSelection(pendingSelection.Selected, Projection(completed));
+        Assert.False(completed.Refreshing);
+        Assert.Equal(51, finalSelection.Selected.Count);
+        Assert.Equal(0, finalSelection.RemovedCount);
+    }
+
+    [Fact]
+    public void CompletedDeletionAndChangedIdentityStillRemoveTheirSelections()
+    {
+        var kept = Source("kept"); var removed = Source("removed"); var changed = Source("changed");
+        var previous = new StartMenuCatalogSnapshot { Sources = [kept, removed, changed] };
+        var selected = previous.Sources.ToDictionary(source => source.Candidate.SourceKey, source => source.Identity!.Key, StringComparer.Ordinal);
+        var progress = StartMenuSourceCache.Merge(previous,
+            Scan(new StartMenuRootScan(SourceKind.User, Root(SourceKind.User), false)), [kept], refreshing: true);
+        var pending = ImportSourcePlanner.MigrateSelection(selected, Projection(progress));
+        Assert.Equal(3, pending.Selected.Count);
+
+        var completed = StartMenuSourceCache.Merge(previous,
+            Scan(new StartMenuRootScan(SourceKind.User, Root(SourceKind.User), true)),
+            [kept, changed with { SourceSha256 = new string('B', 64), Identity = LaunchIdentityService.ForPath(Path.Combine(Path.GetTempPath(), "new-target.exe")) }]);
+        var final = ImportSourcePlanner.MigrateSelection(pending.Selected, Projection(completed));
+
+        Assert.DoesNotContain(completed.Sources, source => source.Candidate.SourceKey == removed.Candidate.SourceKey);
+        Assert.Equal(kept.Candidate.SourceKey, Assert.Single(final.Selected).Key);
+        Assert.Equal(2, final.RemovedCount);
+    }
+
+    [Fact]
+    public void AFailedRootDisablesPriorFreshFactsWhenTheRefreshSettles()
+    {
+        var source = Source("known"); var previous = new StartMenuCatalogSnapshot { Sources = [source] };
+        var scan = Scan(new StartMenuRootScan(SourceKind.User, null, false, "RootUnavailable"));
+        var progress = StartMenuSourceCache.Merge(previous, scan, [], refreshing: true);
+        Assert.True(progress.Refreshing);
+        var completed = StartMenuSourceCache.Merge(previous, scan, []);
+        Assert.True(Assert.Single(completed.Sources).Stale);
+        Assert.False(completed.Refreshing);
+        Assert.False(Assert.Single(Projection(completed).Candidates).CanAdd);
+    }
+
+    private static ImportSourceProjection Projection(StartMenuCatalogSnapshot snapshot) => ImportSourcePlanner.Project(
+        WallDocument.Empty(1, 12), snapshot.Sources.Select(source => new ImportSourceCandidate(
+            source.Candidate.SourceKey, source.Candidate.DisplayName,
+            new TileMember { Id = "source-" + source.Candidate.SourceKey, LocalBounds = new GridRect(0, 0, 1, 1) })
+        {
+            SourceKind = ImportPageSourceKind.StartMenu, Policy = ImportSourcePolicy.Shortcut,
+            Identity = source.Identity, RequiresIdentity = true, Company = source.Company,
+            ErrorCode = source.ErrorCode ?? (source.Stale ? "SourceChanged" : null),
+        }).ToArray(), recognizeGroups: false, autoFilter: false);
 }

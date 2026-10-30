@@ -1,5 +1,6 @@
 using TileWall.Core.Wall;
 using TileWall.Core.Exchange;
+using TileWall.Core.Entries;
 
 namespace TileWall.Core.Storage;
 
@@ -23,7 +24,10 @@ public abstract record EntryChange(string MemberId)
     public sealed record CopyShortcut(string MemberId, string SourcePath, string? ExpectedSourceSha256 = null) : EntryChange(MemberId);
     public sealed record FromPackage(string MemberId, VerifiedPackageEntry Source) : EntryChange(MemberId);
     public sealed record CreateLink(string MemberId, string TargetPath) : EntryChange(MemberId);
-    public sealed record CreateShellLink(string MemberId, string ParsingName, string ExpectedIdentityKey) : EntryChange(MemberId);
+    public sealed record CreateShellLink(string MemberId, string ParsingName, string ExpectedIdentityKey) : EntryChange(MemberId)
+    {
+        public NativeShellTargetSnapshot? NativeTarget { get; init; }
+    }
     public sealed record CreateUrl(string MemberId, string Url) : EntryChange(MemberId);
     public sealed record ChangeTarget(string MemberId, string TargetPathOrUrl) : EntryChange(MemberId);
     public sealed record Rename(string MemberId) : EntryChange(MemberId);

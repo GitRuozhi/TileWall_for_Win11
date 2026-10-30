@@ -48,6 +48,8 @@ internal sealed record ImportPageContext(WallDocument Document, WallViewportBudg
     IReadOnlyDictionary<string, string> ExistingIdentities, IReadOnlyDictionary<string, string> ExistingEntrySha256)
 {
     public IReadOnlySet<string> ObservedDestinationGroups { get; init; } = new HashSet<string>(StringComparer.Ordinal);
+    public IReadOnlyDictionary<string, (LinkFields Fields, ReadOnlyMemory<byte> IdList)> ObservedNativeLinks { get; init; } =
+        new Dictionary<string, (LinkFields, ReadOnlyMemory<byte>)>(StringComparer.Ordinal);
 
     public bool Covers(ImportSourceProjection projection) => projection.Generation == Document.Generation &&
         projection.Groups.All(group => group.DestinationGroupId is null || ObservedDestinationGroups.Contains(group.DestinationGroupId));

@@ -66,7 +66,9 @@ public static class StartMenuSourceCache
             var rejected = root?.RejectedPaths.Any(path => Within(path, old.Candidate.FullPath)) == true;
             sources.Add(old.Candidate.SourceKey, old with
             {
-                Stale = true,
+                // A progress batch has not disproved previously verified facts.
+                // Refreshing still blocks confirmation; cold/unsafe data never gains trust.
+                Stale = old.Stale || !refreshing || rejected,
                 ErrorCode = rejected ? "UnsafeSource" : old.ErrorCode,
             });
         }

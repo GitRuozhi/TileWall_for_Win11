@@ -613,7 +613,13 @@ public sealed partial class WallStore
                 _links.Create(staged, link.TargetPath, "", "");
                 break;
             case EntryChange.CreateShellLink shell:
-                _links.CreateShell(staged, shell.ParsingName);
+                if (shell.NativeTarget is { } native)
+                {
+                    if (native.Identity.Key != shell.ExpectedIdentityKey || native.ParsingName != shell.ParsingName)
+                        throw new IOException("The native Shell identity changed during preparation.");
+                    _links.CreateShell(staged, native);
+                }
+                else _links.CreateShell(staged, shell.ParsingName);
                 break;
             case EntryChange.CreateUrl url:
                 _files.WriteAllBytes(staged, UrlShortcut.CreateContent(url.Url));
@@ -643,9 +649,14 @@ public sealed partial class WallStore
             (stagedBytes.Length != packageSource.Source.Length || Hash(stagedBytes) != packageSource.Source.Sha256 ||
              EntryObservation.Observe(_identities, newEntry.Kind, staged, stagedBytes).Key != packageSource.Source.Identity.Key))
             throw new IOException("Package shortcut differs from verified entry bytes or identity.");
-        if (replacement is EntryChange.CreateShellLink shellSource &&
-            EntryObservation.Observe(_identities, newEntry.Kind, staged, stagedBytes).Key != shellSource.ExpectedIdentityKey)
-            throw new IOException("The native Shell identity changed during preparation.");
+        if (replacement is EntryChange.CreateShellLink shellSource)
+        {
+            var fields = _links.Read(staged);
+            var observedKey = EntryObservation.Observe(_identities, newEntry.Kind, staged, stagedBytes, fields).Key;
+            if (observedKey != shellSource.ExpectedIdentityKey || shellSource.NativeTarget is { } frozen &&
+                fields.ShellIdListHash != frozen.IdListSha256)
+                throw new IOException("The native Shell identity changed during preparation.");
+        }
         return stagedBytes;
     }
 

@@ -131,6 +131,12 @@ public sealed partial class WallImageService
         var uri = targetFile is null && Uri.TryCreate(target, UriKind.Absolute, out var parsed) && !parsed.IsFile ? parsed : null;
         var web = uri?.Scheme is "http" or "https";
         var shellIdentity = uri is not null && !web && !extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase) ? target! : source;
+        var appsParsingName = AppsFolderIconParsingName(shellIdentity);
+        // A URI registered as an AppsFolder instance can have its own factory/
+        // IExtractIcon artwork while its generic system-list slot is a document.
+        // Only the newly added virtual list path is ineligible for that input.
+        var namespaceListAllowed = !IsAppsFolderIconSource(shellIdentity) ||
+            appsParsingName is not null && !IsUriIconInstance(appsParsingName);
         var edge = Math.Max(width, height);
         token.ThrowIfCancellationRequested();
         if (NormalizePath(explicitIcon) is { } explicitFile)
@@ -188,11 +194,12 @@ public sealed partial class WallImageService
                         "shell-factory:" + shellIdentity, shellPriority);
                 await Task.CompletedTask;
             });
-            if (entry is not null && (File.Exists(entry) || Directory.Exists(entry)) ||
+            if (ShellIconPixels.IsNamespace(shellIdentity) && namespaceListAllowed || entry is not null && (File.Exists(entry) || Directory.Exists(entry)) ||
                 targetFile is not null && (File.Exists(targetFile) || Directory.Exists(targetFile)))
                 await Attempt(async () =>
                 {
-                    var path = entry is not null && (File.Exists(entry) || Directory.Exists(entry)) ? entry : targetFile!;
+                    var path = ShellIconPixels.IsNamespace(shellIdentity) ? shellIdentity :
+                        entry is not null && (File.Exists(entry) || Directory.Exists(entry)) ? entry : targetFile!;
                     var frames = ShellIconPixels.ReadSeries(path).Select(frame => new Prepared(WallImageStatus.Fallback,
                         frame.Pixels, frame.Width, frame.Height, "ClassicShell")
                         { CacheAllowed = shellCacheAllowed, MemoryCacheAllowed = shellCacheAllowed }).ToArray();
@@ -251,12 +258,12 @@ public sealed partial class WallImageService
         {
             await Attempt(async () =>
             {
-                var before = Fingerprint(path, "icon-series");
+                var before = PeIconResourceReader.ResourceDependencyStamp(path);
                 var group = Path.GetExtension(path).Equals(".ico", StringComparison.OrdinalIgnoreCase)
                     ? ReadExplicitIco(path, index) : new PeIconResourceReader().Read(path, allowResourceModule: true).Catalog?
                         .SelectGroup(index is null ? null : path, index, fallbackToDefault: index is null);
                 var frames = await DecodeIconGroupAsync(group, token).ConfigureAwait(false);
-                if (group is not null && frames.Count != 0 && before == Fingerprint(path, "icon-series"))
+                if (group is not null && frames.Count != 0 && before == PeIconResourceReader.ResourceDependencyStamp(path))
                     result.Add(new("resource:" + path + ":" + group.ResourceId + ":" + group.ResourceName + ":" + group.LanguageId,
                         priority, frames.OrderByDescending(frame => frame.Native.BitsPerPixel).Select(frame => frame.Decoded).ToArray()));
             });

@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Exchange;
@@ -145,6 +147,99 @@ public sealed class NativeShellIdentityIntegrationTests : IDisposable
         var reopened = new WallStore(new LocalFileStore(), new ShellLinkFileService(), root).Open();
         Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
         Assert.Equal(WallJson.Serialize(current), WallJson.Serialize(reopened.Document!));
+    }
+
+    [Fact]
+    public void TrustedFrozenPidlIsConfirmedAtStorePreparationAndReopensWithExactIdentity()
+    {
+        var confirmations = 0;
+        var target = CaptureTarget(Computer, () => confirmations++);
+        var root = Path.Combine(_fixture, "frozen-native-wall");
+        var store = new WallStore(new LocalFileStore(), _links, root);
+        var empty = Wall();
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(empty).Status);
+        var plan = store.PlanEntries(empty, Wall(Tile("native")) with { Generation = 1 },
+            [new EntryChange.CreateShellLink("native", Computer, target.Identity.Key) { NativeTarget = target }]);
+
+        var committed = store.Commit(empty, plan.Request!);
+
+        Assert.Equal(WallCommitStatus.Committed, committed.Status);
+        Assert.Equal(1, confirmations);
+        var reopened = new WallStore(new LocalFileStore(), new ShellLinkFileService(), root).Open();
+        Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
+        var entry = Assert.Single(reopened.Document!.EnumerateAllMembers()).Entry!;
+        var path = Path.Combine(root, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+        var guardedLinks = new GuardedWallLinks(_links, new WallStoragePaths(new LocalFileStore(), root));
+        var fields = guardedLinks.ReadWithIdList(path, out var actualIdList);
+        Assert.Equal(target.IdListSha256, fields.ShellIdListHash);
+        Assert.Equal(fields.ShellIdListHash, Convert.ToHexString(SHA256.HashData(actualIdList.Span)));
+        Assert.Equal(target.Identity.Key, new LaunchIdentityService(new LocalFileStore(), _links).ResolveInput(path)!.Key);
+        Assert.Throws<NotSupportedException>(() => JsonSerializer.Deserialize<NativeShellTargetSnapshot>(JsonSerializer.Serialize(target)));
+    }
+
+    [Fact]
+    public void ChangedFrozenNativeSourceRejectsWholeBatchBeforeFormalMutation()
+    {
+        var first = CaptureTarget(Computer);
+        var changed = CaptureTarget(Recycle, () => throw new IOException("The native package registration changed."));
+        var root = Path.Combine(_fixture, "changed-frozen-wall");
+        var files = new RecordingLocalFiles(root);
+        var store = new WallStore(files, _links, root);
+        var empty = Wall();
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(empty).Status);
+        var before = FormalBytes(root);
+        files.FormalMutations.Clear();
+        var plan = store.PlanEntries(empty, Wall(Tile("first"), Tile("changed")) with { Generation = 1 },
+        [
+            new EntryChange.CreateShellLink("first", Computer, first.Identity.Key) { NativeTarget = first },
+            new EntryChange.CreateShellLink("changed", Recycle, changed.Identity.Key) { NativeTarget = changed },
+        ]);
+
+        var result = store.Commit(empty, plan.Request!);
+
+        Assert.Equal(WallCommitStatus.Rejected, result.Status);
+        Assert.Contains(result.Diagnostics, message => message.Contains("native package registration changed", StringComparison.Ordinal));
+        Assert.Empty(files.FormalMutations);
+        var after = FormalBytes(root);
+        Assert.Equal(before.Keys.Order(StringComparer.Ordinal), after.Keys.Order(StringComparer.Ordinal));
+        foreach (var (path, bytes) in before) Assert.Equal(bytes, after[path]);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(root, "Staging")));
+        Assert.Empty(store.Open().Document!.EnumerateAllMembers());
+    }
+
+    [Theory]
+    [InlineData("--profile different", "")]
+    [InlineData("", @"C:\different-working-directory")]
+    public void FrozenPidlCannotAuthorizeDifferentArgumentsOrWorkingDirectory(string arguments, string workingDirectory)
+    {
+        var target = CaptureTarget(Computer, arguments: arguments, workingDirectory: workingDirectory);
+        var root = Path.Combine(_fixture, "different-frozen-fields-" + Guid.NewGuid().ToString("N"));
+        var files = new RecordingLocalFiles(root);
+        var store = new WallStore(files, _links, root);
+        var empty = Wall();
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(empty).Status);
+        files.FormalMutations.Clear();
+        var plan = store.PlanEntries(empty, Wall(Tile("native")) with { Generation = 1 },
+            [new EntryChange.CreateShellLink("native", Computer, target.Identity.Key) { NativeTarget = target }]);
+
+        var result = store.Commit(empty, plan.Request!);
+
+        Assert.Equal(WallCommitStatus.Rejected, result.Status);
+        Assert.Empty(files.FormalMutations);
+        Assert.Empty(store.Open().Document!.EnumerateAllMembers());
+    }
+
+    private static NativeShellTargetSnapshot CaptureTarget(string parsingName, Action? confirmCurrent = null,
+        string arguments = "", string workingDirectory = "")
+    {
+        var result = SHParseDisplayName(parsingName, IntPtr.Zero, out var pidl, 0, out _);
+        try
+        {
+            Marshal.ThrowExceptionForHR(result);
+            var identity = LaunchIdentityService.ForShellIdList(ShellLinkFileService.IdListHash(pidl), parsingName, arguments, workingDirectory);
+            return NativeShellTargetSnapshot.Capture(pidl, identity, parsingName, confirmCurrent);
+        }
+        finally { if (pidl != IntPtr.Zero) Marshal.FreeCoTaskMem(pidl); }
     }
 
     [Fact]

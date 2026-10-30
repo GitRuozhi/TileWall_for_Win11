@@ -16,10 +16,22 @@ internal sealed class GuardedWallLinks(ILnkFileService inner, WallStoragePaths p
         inner.CreateShell(path, parsingName);
     }
 
+    public void CreateShell(string path, NativeShellTargetSnapshot target)
+    {
+        paths.Guard(path);
+        inner.CreateShell(path, target);
+    }
+
     public LinkFields Read(string path)
     {
         paths.Guard(path);
         return inner.Read(path);
+    }
+
+    public LinkFields ReadWithIdList(string path, out ReadOnlyMemory<byte> idList)
+    {
+        paths.Guard(path);
+        return inner.ReadWithIdList(path, out idList);
     }
 
     public void EditTargetOnly(string path, string newTarget)

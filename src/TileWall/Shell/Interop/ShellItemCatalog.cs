@@ -10,6 +10,8 @@ namespace TileWall.Shell.Interop;
 internal static class ShellItemCatalog
 {
     internal sealed record Item(string Name, string ParsingName, string? Path, bool IsFolder);
+    internal sealed record NativeLinkObservation(Item Item, LaunchIdentity Identity,
+        NativeShellTargetSnapshot? Target, string? PackageFullName, string? PackageInstallPath);
     internal sealed record IconResourceLocation(string? Path, int Index, uint Flags, bool CanReadResource)
     {
         internal bool CanCache => (Flags & 0x10) == 0; // GIL_DONTCACHE
@@ -96,7 +98,13 @@ internal static class ShellItemCatalog
     }
 
     /// <summary>Observe the identity that a standard PIDL Shell link will persist.</summary>
-    internal static (Item Item, LaunchIdentity Identity) ReadForLink(string parsingName) => InApartment(() =>
+    internal static (Item Item, LaunchIdentity Identity) ReadForLink(string parsingName)
+    {
+        var observed = ReadNativeLink(parsingName, observeRegistration: false);
+        return (observed.Item, observed.Identity);
+    }
+
+    internal static NativeLinkObservation ReadNativeLink(string parsingName, bool observeRegistration = true) => InApartment(() =>
     {
         var item = Open(parsingName);
         IntPtr pidl = IntPtr.Zero;
@@ -116,6 +124,7 @@ internal static class ShellItemCatalog
             link.GetPath(path, path.Capacity, IntPtr.Zero, 4); // SLGP_RAWPATH
             if (path.Length == path.Capacity - 1) throw new IOException("The Shell link target path is incomplete.");
             LaunchIdentity identity;
+            NativeShellTargetSnapshot? target = null;
             if (path.Length != 0) identity = LaunchIdentityService.ForPath(path.ToString());
             else
             {
@@ -126,7 +135,22 @@ internal static class ShellItemCatalog
                 var hash = ShellLinkFileService.IdListHash(linkPidl);
                 identity = LaunchIdentityService.ForShellIdList(hash, actual.ParsingName);
             }
-            return (actual, identity);
+            var registration = observeRegistration ? ReadPackageRegistration(item) : (FullName: (string?)null, InstallPath: (string?)null);
+            if (observeRegistration && linkPidl != IntPtr.Zero)
+            {
+                NativeShellTargetSnapshot? frozen = null;
+                frozen = NativeShellTargetSnapshot.Capture(linkPidl, identity, parsingName, () =>
+                {
+                    // Store preparation is a separate observation boundary as well.
+                    // The captured delegate contains managed facts, never an RCW.
+                    var current = ReadNativeLink(parsingName);
+                    if (current.Target is null || current.PackageFullName != registration.FullName ||
+                        current.PackageInstallPath != registration.InstallPath || !SameNativeTarget(frozen!, current.Target))
+                        throw new IOException("The native Shell source changed during preparation.");
+                });
+                target = frozen;
+            }
+            return new NativeLinkObservation(actual, identity, target, registration.FullName, registration.InstallPath);
         }
         finally
         {
@@ -136,6 +160,75 @@ internal static class ShellItemCatalog
             Marshal.ReleaseComObject(item);
         }
     });
+
+    /// <summary>Only process-local PIDLs freshly returned by Windows may enter this namespace comparison.</summary>
+    internal static bool SameNativeTarget(NativeShellTargetSnapshot expected, NativeShellTargetSnapshot current) => InApartment(() =>
+    {
+        if (expected.Identity.Arguments != current.Identity.Arguments ||
+            !string.Equals(expected.Identity.WorkingDirectory, current.Identity.WorkingDirectory, StringComparison.OrdinalIgnoreCase)) return false;
+        if (expected.IdListSha256 == current.IdListSha256) return true;
+        var left = expected.CopyIdList(); var right = current.CopyIdList();
+        var a = Marshal.AllocCoTaskMem(left.Length); var b = IntPtr.Zero;
+        IShellItem? x = null, y = null;
+        try
+        {
+            b = Marshal.AllocCoTaskMem(right.Length);
+            Marshal.Copy(left, 0, a, left.Length); Marshal.Copy(right, 0, b, right.Length);
+            var iid = typeof(IShellItem).GUID;
+            Marshal.ThrowExceptionForHR(SHCreateItemFromIDList(a, ref iid, out x));
+            Marshal.ThrowExceptionForHR(SHCreateItemFromIDList(b, ref iid, out y));
+            if (x is null || y is null) throw new IOException("The native Shell snapshot is unavailable.");
+            var result = x.Compare(y, 0x10000000, out var order); // SICHINT_CANONICAL; excludes presentation metadata.
+            Marshal.ThrowExceptionForHR(result);
+            return result == 0 && order == 0;
+        }
+        finally
+        {
+            if (x is not null) Marshal.ReleaseComObject(x);
+            if (y is not null) Marshal.ReleaseComObject(y);
+            Marshal.FreeCoTaskMem(a); Marshal.FreeCoTaskMem(b);
+        }
+    });
+
+    private static (string? FullName, string? InstallPath) ReadPackageRegistration(IShellItem item)
+    {
+        object? raw = null;
+        try
+        {
+            var handler = new Guid("0384E1A4-1523-439C-A4C8-AB911052F586"); // BHID_PropertyStore
+            var iid = typeof(IPropertyStore).GUID;
+            item.BindToHandler(IntPtr.Zero, ref handler, ref iid, out raw);
+            var store = (IPropertyStore)raw;
+            var fullName = Read("System.AppUserModel.PackageFullName");
+            var installPath = Read("System.AppUserModel.PackageInstallPath");
+            if ((fullName is null) != (installPath is null)) throw new IOException("The native package registration is incomplete.");
+            return (fullName, installPath);
+
+            string? Read(string name)
+            {
+                Marshal.ThrowExceptionForHR(PSGetPropertyKeyFromName(name, out var key));
+                var value = new PropertyVariant();
+                try
+                {
+                    var result = store.GetValue(in key, out value);
+                    Marshal.ThrowExceptionForHR(result);
+                    if (result != 0) throw new IOException("The native package registration was not returned completely.");
+                    var text = value.Type switch
+                    {
+                        0 => null,
+                        31 when value.Pointer != IntPtr.Zero => Marshal.PtrToStringUni(value.Pointer),
+                        8 when value.Pointer != IntPtr.Zero => Marshal.PtrToStringBSTR(value.Pointer),
+                        _ => throw new IOException("The native package registration is not a complete string."),
+                    };
+                    if (text is not null && (text.Length > 32768 || text.Contains('\0')))
+                        throw new IOException("The native package registration is invalid.");
+                    return string.IsNullOrEmpty(text) ? null : text;
+                }
+                finally { Marshal.ThrowExceptionForHR(PropVariantClear(ref value)); }
+            }
+        }
+        finally { if (raw is not null) Marshal.ReleaseComObject(raw); }
+    }
 
     internal static IReadOnlyList<Item> Enumerate(string parsingName, CancellationToken token)
     {
@@ -446,7 +539,7 @@ internal static class ShellItemCatalog
         void GetParent(out IShellItem parent);
         void GetDisplayName(uint kind, out IntPtr name);
         void GetAttributes(uint mask, out uint attributes);
-        void Compare(IShellItem other, uint hint, out int order);
+        [PreserveSig] int Compare(IShellItem other, uint hint, out int order);
     }
     [ComImport, Guid("70629033-E363-4A28-A567-0DB78006E6D7"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IEnumShellItems
@@ -497,6 +590,10 @@ internal static class ShellItemCatalog
     }
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int SHCreateItemFromParsingName(string name, IntPtr context, ref Guid iid, out IShellItem? item);
+    [DllImport("shell32.dll", ExactSpelling = true)]
+    private static extern int SHCreateItemFromIDList(IntPtr pidl, ref Guid iid, out IShellItem? item);
+    [DllImport("propsys.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int PSGetPropertyKeyFromName(string name, out PropertyKey key);
     [DllImport("shell32.dll")]
     private static extern int SHGetIDListFromObject([MarshalAs(UnmanagedType.IUnknown)] object unknown, out IntPtr pidl);
     [DllImport("ole32.dll")] private static extern int CoInitializeEx(IntPtr reserved, uint flags);

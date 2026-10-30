@@ -272,31 +272,48 @@ public sealed partial class WallImageService : IDisposable
                 var info = new Win32Api.ShFileInfoW { szDisplayName = string.Empty, szTypeName = string.Empty };
                 var size = (uint)Marshal.SizeOf<Win32Api.ShFileInfoW>();
                 const uint useFileAttributes = 0x10, normalFile = 0x80, systemIconIndex = 0x4000;
-                if (Win32Api.SHGetFileInfoW(path, association ? normalFile : 0, ref info, size,
-                    systemIconIndex | (association ? useFileAttributes : 0)) != IntPtr.Zero)
+                IntPtr pidl = IntPtr.Zero;
+                try
                 {
-                    var extra = ReadImageListIcon(info.iIcon, 2);
-                    // Enumerate actual Windows list kinds, not a fabricated pyramid
-                    // or a fixed requested image resolution.
-                    foreach (var kind in new[] { 4, 2, 0, 1, 3 })
+                    if (!association && IsNamespace(path))
                     {
-                        if (ReadImageListIcon(info.iIcon, kind) is not { } native) continue;
-                        if (extra is { } small && ShellImageListFrameRules.IsPaddedDuplicate(native.Pixels, native.Width,
-                            native.Height, small.Pixels, small.Width, small.Height)) native = small;
-                        if (!frames.Any(frame => frame.Width == native.Width && frame.Height == native.Height)) frames.Add(native);
+                        // This is the same Shell object, not its linked filesystem target.
+                        Marshal.ThrowExceptionForHR(SHParseDisplayName(path, IntPtr.Zero, out pidl, 0, out _));
+                        if (pidl == IntPtr.Zero) throw new IOException("The Shell icon item is unavailable.");
                     }
+                    if (ReadInfo(systemIconIndex) != IntPtr.Zero)
+                    {
+                        var extra = ReadImageListIcon(info.iIcon, 2);
+                        // Enumerate actual list kinds. A padded Jumbo slot still
+                        // falls back only on the existing exact-pixel proof.
+                        foreach (var kind in new[] { 4, 2, 0, 1, 3 })
+                        {
+                            if (ReadImageListIcon(info.iIcon, kind) is not { } native) continue;
+                            if (extra is { } small && ShellImageListFrameRules.IsPaddedDuplicate(native.Pixels, native.Width,
+                                native.Height, small.Pixels, small.Width, small.Height)) native = small;
+                            if (!frames.Any(frame => frame.Width == native.Width && frame.Height == native.Height)) frames.Add(native);
+                        }
+                    }
+                    var result = ReadInfo(Win32Api.ShgfiIcon | Win32Api.ShgfiLargeicon);
+                    if (result != IntPtr.Zero && info.hIcon != IntPtr.Zero)
+                        try
+                        {
+                            if (ReadIcon(info.hIcon) is { } native && !frames.Any(frame => frame.Width == native.Width && frame.Height == native.Height))
+                                frames.Add(native);
+                        }
+                        finally { Win32Api.DestroyIcon(info.hIcon); }
+                    return (IReadOnlyList<(byte[] Pixels, int Width, int Height)>)frames;
+
+                    IntPtr ReadInfo(uint flags) => pidl != IntPtr.Zero
+                        ? SHGetFileInfoPidlW(pidl, 0, ref info, size, flags | 0x8) // SHGFI_PIDL
+                        : Win32Api.SHGetFileInfoW(path, association ? normalFile : 0, ref info, size,
+                            flags | (association ? useFileAttributes : 0));
                 }
-                var result = Win32Api.SHGetFileInfoW(path, association ? normalFile : 0, ref info, size,
-                    Win32Api.ShgfiIcon | Win32Api.ShgfiLargeicon | (association ? useFileAttributes : 0));
-                if (result != IntPtr.Zero && info.hIcon != IntPtr.Zero)
-                    try
-                    {
-                        if (ReadIcon(info.hIcon) is { } native && !frames.Any(frame => frame.Width == native.Width && frame.Height == native.Height))
-                            frames.Add(native);
-                    }
-                    finally { Win32Api.DestroyIcon(info.hIcon); }
-                return (IReadOnlyList<(byte[] Pixels, int Width, int Height)>)frames;
+                finally { if (pidl != IntPtr.Zero) Marshal.FreeCoTaskMem(pidl); }
             });
+
+        internal static bool IsNamespace(string path) => path.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("::{", StringComparison.Ordinal);
 
         private static (byte[] Pixels, int Width, int Height)? ReadCore(string path, bool association, int physicalPixels)
         {
@@ -428,5 +445,9 @@ public sealed partial class WallImageService : IDisposable
         }
         [DllImport("shell32.dll", ExactSpelling = true)]
         private static extern int SHGetImageList(int imageList, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IImageList? list);
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        private static extern int SHParseDisplayName(string name, IntPtr bindContext, out IntPtr pidl, uint attributes, out uint returnedAttributes);
+        [DllImport("shell32.dll", EntryPoint = "SHGetFileInfoW", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        private static extern IntPtr SHGetFileInfoPidlW(IntPtr pidl, uint attributes, ref Win32Api.ShFileInfoW info, uint size, uint flags);
     }
 }

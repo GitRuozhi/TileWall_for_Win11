@@ -361,6 +361,7 @@ public sealed partial class WallImageService
             else entryStamp = Fingerprint(path, "automatic-source");
         }
         var canonical = NormalizePath(target);
+        var appsParsingName = AppsFolderIconParsingName(source);
         var uri = canonical is null && Uri.TryCreate(target, UriKind.Absolute, out var parsed) && !parsed.IsFile ? parsed : null;
         string? associationIcon = null, associationExecutable = null;
         string association;
@@ -378,7 +379,7 @@ public sealed partial class WallImageService
             association = ShellItemCatalog.AssociationValue(extension, false, 20) + "|" + associationIcon;
         }
         else association = "folder";
-        var mmc = canonical is not null && IsMmcConsolePath(canonical) && string.IsNullOrWhiteSpace(explicitIcon)
+        var mmc = canonical is not null && IsMmcConsolePath(canonical)
             ? ReadMmcIconSource(canonical) : null;
         // Flags belong to the dependency snapshot before cache lookup as well as
         // to newly collected Shell pixels. This asks for location metadata only;
@@ -386,14 +387,19 @@ public sealed partial class WallImageService
         ShellItemCatalog.IconResourceLocation? shellPolicy = null;
         try { if (source is not null) shellPolicy = ShellItemCatalog.IconLocation(source, 1); }
         catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException) { }
-        var stamp = string.Join("|", "automatic-v9", source, entryStamp, target,
+        var stamp = string.Join("|", "automatic-v10", source, entryStamp, target,
             canonical is null ? null : Fingerprint(canonical, "target"), Fingerprint(explicitIcon, "explicit") ?? explicitIcon,
             iconIndex, association, AssociationResourceStamp(associationIcon), Fingerprint(associationExecutable, "association-executable"),
+            PeIconResourceReader.ResourceDependencyStamp(explicitIcon),
+            canonical is not null && Path.GetExtension(canonical).Equals(".exe", StringComparison.OrdinalIgnoreCase)
+                ? PeIconResourceReader.ResourceDependencyStamp(canonical) : null,
+            PeIconResourceReader.ResourceDependencyStamp(associationExecutable),
+            shellPolicy is { CanReadResource: true, Path: not null } ? PeIconResourceReader.ResourceDependencyStamp(shellPolicy.Path) : null,
             canonical is not null && Directory.Exists(canonical) ? Fingerprint(Path.Combine(canonical, "desktop.ini"), "folder-customization") : null,
             System.Globalization.CultureInfo.CurrentUICulture.Name, Environment.OSVersion.VersionString,
             TileWall.Core.Imaging.WebsiteIconCatalog.VersionStamp, TileWall.Core.Imaging.SystemIconCatalog.VersionStamp,
             shellPolicy?.Flags, shellPolicy?.Path, shellPolicy?.Index);
-        if (mmc is not null) stamp += "|mmc-icon-v1|" + mmc.Stamp;
+        if (mmc is not null) stamp += "|mmc-icon-v2|" + mmc.Stamp;
         var packagedApp = PackagedAppIdentity(target) is not null;
         var shellIconContext = (path is not null && Path.GetExtension(path).Equals(".lnk", StringComparison.OrdinalIgnoreCase)) ||
             source?.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) == true ||
@@ -401,13 +407,27 @@ public sealed partial class WallImageService
             source?.StartsWith("::{", StringComparison.Ordinal) == true ||
             target?.StartsWith("::{", StringComparison.Ordinal) == true || packagedApp;
         if (shellIconContext)
-            stamp += "|shell-icon-context-v2";
+            stamp += "|shell-icon-context-v4|apps-list-parsing=" + appsParsingName;
         if (packagedApp) stamp += "|package-app-list-v2|" + PackageRegistrationStamp(target);
         if (followLinkedTarget && LinkedAutomaticIconTarget(source, shellLink) is { } linked &&
             !string.Equals(linked, canonical, StringComparison.OrdinalIgnoreCase))
             stamp += "|linked-icon-target-v2|" + AutomaticSourceStampCore(linked, followLinkedTarget: false).Stamp;
-        return new(stamp, mmc?.CacheAllowed ?? true, mmc);
+        return new(stamp, (mmc?.CacheAllowed ?? true) && (!IsAppsFolderIconSource(source) || appsParsingName is not null), mmc);
     }
+
+    private static bool IsAppsFolderIconSource(string? source) =>
+        source?.StartsWith("shell:AppsFolder\\", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static string? AppsFolderIconParsingName(string? source)
+    {
+        if (!IsAppsFolderIconSource(source)) return null;
+        try { return ShellItemCatalog.Read(source!).ParsingName; }
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        { return null; }
+    }
+
+    private static bool IsUriIconInstance(string parsingName) => Uri.TryCreate(parsingName, UriKind.Absolute, out var uri) &&
+        !uri.IsFile && !uri.Scheme.Equals("shell", StringComparison.OrdinalIgnoreCase);
 
     private static string? LinkedAutomaticIconTarget(string? source, bool nativeLink)
     {
@@ -427,7 +447,7 @@ public sealed partial class WallImageService
         var comma = value.LastIndexOf(',');
         if (comma >= 0 && int.TryParse(value[(comma + 1)..].Trim(), out _)) value = value[..comma];
         var path = NormalizePath(value.Trim().Trim('"'));
-        return path is null ? descriptor : Fingerprint(path, "association-resource") ?? "missing:" + path;
+        return path is null ? descriptor : PeIconResourceReader.ResourceDependencyStamp(path);
     }
 
     // Downsample only the blur underfill; the visible sharp plane retains its

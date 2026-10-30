@@ -44,8 +44,29 @@ public sealed class ShellLinkFileService : ILnkFileService
         finally { Marshal.FreeCoTaskMem(pidl); }
     }
 
-    public LinkFields Read(string path)
+    public void CreateShell(string path, NativeShellTargetSnapshot target)
     {
+        ArgumentNullException.ThrowIfNull(target);
+        target.ConfirmCurrent();
+        var bytes = target.CopyIdList();
+        if (Convert.ToHexString(SHA256.HashData(bytes)) != target.IdListSha256)
+            throw new InvalidDataException("The native Shell snapshot is corrupt.");
+        var pidl = Marshal.AllocCoTaskMem(bytes.Length);
+        try
+        {
+            Marshal.Copy(bytes, 0, pidl, bytes.Length);
+            var link = (IShellLinkW)(object)new ShellLink();
+            link.SetIDList(pidl);
+            Save(link, path);
+        }
+        finally { Marshal.FreeCoTaskMem(pidl); }
+    }
+
+    public LinkFields Read(string path) => ReadWithIdList(path, out _);
+
+    public LinkFields ReadWithIdList(string path, out ReadOnlyMemory<byte> idList)
+    {
+        idList = default;
         // Keep COM and persisted path fields on the same read-only file snapshot.
         using var source = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         var link = Load(path);
@@ -76,7 +97,9 @@ public sealed class ShellLinkFileService : ILnkFileService
                 // arbitrary package PIDLs to namespace handlers to request a name.
                 if (hasIdList)
                 {
-                    idListHash = IdListHash(pidl);
+                    var bytes = CopyIdList(pidl);
+                    idList = bytes;
+                    idListHash = Convert.ToHexString(SHA256.HashData(bytes));
                     shellName = ReadStringProperty(link, in LinkTargetParsingPath);
                 }
             }
@@ -98,6 +121,9 @@ public sealed class ShellLinkFileService : ILnkFileService
 
     /// <summary>Fingerprint a valid PIDL returned by Shell, without resolving a namespace name.</summary>
     internal static string IdListHash(IntPtr pidl)
+        => Convert.ToHexString(SHA256.HashData(CopyIdList(pidl)));
+
+    internal static byte[] CopyIdList(IntPtr pidl)
     {
         // GetIDList/SHGetIDListFromObject supply valid, Shell-owned PIDLs. ILGetSize
         // is not a validator for arbitrary pointers. The LNK IDListSize field is UInt16;
@@ -108,7 +134,7 @@ public sealed class ShellLinkFileService : ILnkFileService
             throw new InvalidDataException("The Shell IDList exceeds the shortcut budget.");
         var bytes = new byte[size];
         Marshal.Copy(pidl, bytes, 0, checked((int)size));
-        return Convert.ToHexString(SHA256.HashData(bytes));
+        return bytes;
     }
 
     public void EditTargetOnly(string path, string newTarget)

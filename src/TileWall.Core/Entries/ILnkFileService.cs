@@ -28,8 +28,18 @@ public interface ILnkFileService
     /// <summary>Create a native Shell PIDL link without launching its target.</summary>
     void CreateShell(string path, string parsingName) => throw new NotSupportedException("Shell targets are unavailable.");
 
+    /// <summary>Create from a trusted, process-local native observation without reparsing mutable presentation metadata.</summary>
+    void CreateShell(string path, NativeShellTargetSnapshot target) => throw new NotSupportedException("Native Shell snapshots are unavailable.");
+
     /// <summary>属性窗显示 + 启动预检 + 编辑基线读取。</summary>
     LinkFields Read(string path);
+
+    /// <summary>Return data-only persisted IDList bytes from the same read; these are never a trusted native snapshot.</summary>
+    LinkFields ReadWithIdList(string path, out ReadOnlyMemory<byte> idList)
+    {
+        idList = default;
+        return Read(path);
+    }
 
     /// <summary>Load→SetPath→Save：只改目标，其余字段原样（[R12][R13]；探针 C 实测）。</summary>
     void EditTargetOnly(string path, string newTarget);

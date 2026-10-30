@@ -91,7 +91,7 @@ public sealed record PeIconCatalog(string ExePath, long FileBytes, DateTime Last
 public sealed record PeIconReadResult(PeIconReadStatus Status, PeIconCatalog? Catalog, string? ErrorType = null);
 
 /// <summary>Read-only PE resource parser. The target is never loaded as an assembly or executed.</summary>
-public sealed class PeIconResourceReader
+public sealed partial class PeIconResourceReader
 {
     private static ReadOnlySpan<byte> PngSignature => [137, 80, 78, 71, 13, 10, 26, 10];
 
@@ -115,12 +115,13 @@ public sealed class PeIconResourceReader
                 return new(PeIconReadStatus.MissingFile, null);
             if (info.Length < 64)
                 return new(PeIconReadStatus.InvalidResource, null, "TooShort");
+            if (OperatingSystem.IsWindows()) _ = ResourceFileStamp(path);
 
             using var mappedFile = new MemoryMappedInputFile(path);
             var image = PEImage.FromFile(mappedFile);
             var iconResource = image.Resources is null ? null : IconResource.FromDirectory(image.Resources, IconType.Icon);
             if (iconResource is null || iconResource.Groups.Count == 0)
-                return new(PeIconReadStatus.NoIconGroups, null);
+                return OperatingSystem.IsWindows() ? ReadWindowsResources(path, info) : new(PeIconReadStatus.NoIconGroups, null);
 
             var groups = new List<PeIconGroup>(iconResource.Groups.Count);
             foreach (var group in iconResource.Groups)
