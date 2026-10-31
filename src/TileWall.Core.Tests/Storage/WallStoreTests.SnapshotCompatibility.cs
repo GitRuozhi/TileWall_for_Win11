@@ -175,7 +175,7 @@ public sealed partial class WallStoreTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void FutureManifestBlocksBeforeStagingSweepOrPreviousRecovery(bool futureIsPrevious)
+    public void UninterpretableFutureManifestBlocksBeforeStagingSweepOrPreviousRecovery(bool futureIsPrevious)
     {
         var (store, files, _, root) = Harness();
         var legacy = ReadV1Fixture();
@@ -184,8 +184,8 @@ public sealed partial class WallStoreTests
         files.WriteAllBytes(Path.Combine(root, "Recovery", "state.prev.json"), legacy.ManifestBytes);
         var futurePath = futureIsPrevious ? Path.Combine(root, "Recovery", "state.prev.json") : Path.Combine(root, "state.json");
         files.WriteAllBytes(futurePath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion + 1}}}"));
-        // An ordinary Sweep would delete this unjournaled stage. Future state must
-        // block before that first mutation, even when a valid V1 fallback exists.
+        // This future manifest has no basic structure. It must remain untouched,
+        // even when a valid V1 fallback exists.
         var stage = Path.Combine(root, "Staging", new string('a', 32));
         files.CreateDirectory(Path.Combine(root, "Staging"));
         files.CreateDirectory(stage);

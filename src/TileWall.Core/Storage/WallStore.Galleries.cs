@@ -121,7 +121,7 @@ public sealed partial class WallStore
             var directory = _paths.Gallery(operation.Reference);
             if (!_files.GetPathInfo(directory).Exists) continue;
             using var protection = CaptureProtectedResourceSet(journal.CommitId);
-            if (protection.Sources.Contains(operation.Reference.ContentId)) continue;
+            if (!protection.Complete || protection.Sources.Contains(operation.Reference.ContentId)) continue;
             _ = CheckGallery(operation.Reference);
             _files.DeleteDirectory(directory);
         }

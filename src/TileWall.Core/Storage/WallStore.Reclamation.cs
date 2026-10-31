@@ -51,6 +51,7 @@ public sealed partial class WallStore
         internal HashSet<string> Snapshots { get; } = new(StringComparer.Ordinal);
         internal List<Stream> Handles { get; } = [];
         internal string CurrentFingerprint { get; set; } = "";
+        internal bool Complete { get; set; } = true;
         internal Action? ReleaseGate { get; init; }
         public void Dispose()
         {
@@ -74,6 +75,7 @@ public sealed partial class WallStore
             }
             void ProtectDocument(WallDocument document)
             {
+                result.Complete &= !ForwardDataCompatibility.HasUnknownData(document);
                 foreach (var member in document.EnumerateAllMembers())
                 {
                     result.Objects.Add(member.Id);
@@ -142,6 +144,7 @@ public sealed partial class WallStore
                     var formal = _paths.Under("Snapshots", manifest.SnapshotId);
                     var snapshotDirectory = _files.GetPathInfo(formal).Exists ? formal : Path.Combine(directory, "snapshot");
                     var document = UserDataSnapshotJson.Read(manifest, name => Read(Path.Combine(snapshotDirectory, name)), _paths.Gallery);
+                    result.Complete &= !ForwardDataCompatibility.HasUnknownData(document);
                     // Pending newly staged galleries may not be formally installed yet; their journal roots are protected above.
                     result.Objects.UnionWith(document.EnumerateAllMembers().Select(member => member.Id));
                     result.Media.UnionWith(MediaById(document).Keys);
@@ -166,6 +169,7 @@ public sealed partial class WallStore
             lock (_resourceGate)
                 if (expectedFingerprint is not null && _lastReclamationState == expectedFingerprint) return;
             using var protection = CaptureProtectedResourceSet();
+            if (!protection.Complete) return;
             var fingerprint = protection.CurrentFingerprint;
             if (_lastReclamationState == fingerprint) return;
             var candidates = new List<(string Kind, string Directory)>();
@@ -228,7 +232,7 @@ public sealed partial class WallStore
                 using var json = JsonDocument.Parse(_files.ReadAllBytes(file));
                 if (json.RootElement.ValueKind != JsonValueKind.Object || !json.RootElement.TryGetProperty("schemaVersion", out var version) ||
                     version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var schema) ||
-                    (Path.GetFileName(file) == "settings.json" ? !UserDataManifest.IsSupportedFormatVersion(schema) : schema != 1))
+                    (Path.GetFileName(file) == "settings.json" ? !UserDataManifest.IsSupportedFormatVersion(schema) : schema < 1))
                     throw new InvalidDataException("Unsupported orphan snapshot.");
             }
         }

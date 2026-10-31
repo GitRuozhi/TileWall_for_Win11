@@ -203,21 +203,12 @@ public sealed partial class WallStore
 
     private HashSet<string>? ProtectedMediaIds(string excludedCommitId)
     {
-        var result = new HashSet<string>(StringComparer.Ordinal);
-        var snapshots = new List<string> { _paths.Config, _paths.Previous };
-        foreach (var directory in _files.ListDirectories(_paths.RecoveryEntries))
+        try
         {
-            if (Path.GetFileName(directory) == excludedCommitId) continue;
-            snapshots.Add(Path.Combine(directory, "old.snapshot.json"));
-            snapshots.Add(Path.Combine(directory, "new.snapshot.json"));
+            using var protection = CaptureProtectedResourceSet(excludedCommitId);
+            return protection.Complete ? new HashSet<string>(protection.Media, StringComparer.Ordinal) : null;
         }
-        foreach (var path in snapshots)
-        {
-            if (!_files.Exists(path)) continue;
-            if (!TryReadDocument(path, out var document, out _)) return null;
-            result.UnionWith(MediaById(document!).Keys);
-        }
-        return result;
+        catch (Exception ex) when (IsStorageError(ex)) { return null; }
     }
 
     private string MediaStagePath(string commitId, string sha256) =>

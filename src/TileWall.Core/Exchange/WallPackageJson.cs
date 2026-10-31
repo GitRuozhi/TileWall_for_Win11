@@ -9,18 +9,32 @@ namespace TileWall.Core.Exchange;
 
 internal static class WallPackageJson
 {
-    internal static readonly JsonSerializerOptions Options = new()
+    internal static readonly JsonSerializerOptions Options = CreateOptions();
+    private static JsonSerializerOptions CreateOptions()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        MaxDepth = 64,
-    };
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(typeInfo =>
+        {
+            // Runtime forward data is not part of the wall-package contract.
+            foreach (var property in typeInfo.Properties.Where(property => property.IsExtensionData).ToArray())
+                typeInfo.Properties.Remove(property);
+        });
+        return new()
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+            MaxDepth = 64,
+            TypeInfoResolver = resolver,
+        };
+    }
     private static readonly JsonSerializerOptions V2Options = CreateV2Options();
     private static JsonSerializerOptions CreateV2Options()
     {
         var resolver = new DefaultJsonTypeInfoResolver();
         resolver.Modifiers.Add(typeInfo =>
         {
+            foreach (var property in typeInfo.Properties.Where(property => property.IsExtensionData).ToArray())
+                typeInfo.Properties.Remove(property);
             if (typeInfo.Type != typeof(WallPackageMember)) return;
             foreach (var name in new[] { "sourceShortcutPath", "targetDisplayName" })
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == name));

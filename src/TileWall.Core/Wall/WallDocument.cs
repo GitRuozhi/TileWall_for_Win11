@@ -1,4 +1,6 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
+using TileWall.Core.Storage;
 using TileWall.Core.Components;
 using TileWall.Core.Grid;
 using TileWall.Core.Imaging;
@@ -8,6 +10,12 @@ namespace TileWall.Core.Wall;
 /// <summary>Wall state. Storage uses a temporary joint document; the session retains only its active view.</summary>
 public sealed record WallDocument
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
+    [JsonIgnore]
+    internal UserDataFormatMetadata? StorageMetadata { get; init; }
+
     public const int CurrentSchemaVersion = 5;
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public long Generation { get; init; }
@@ -35,12 +43,18 @@ public sealed record WallDocument
 
 public sealed record WallLane
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public required IReadOnlyList<StartGroup> Groups { get; init; }
     public string? ImportBatchId { get; init; }
 }
 
 public sealed record StartGroup
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public required string Id { get; init; }
     public string? Title { get; init; }
     public required IReadOnlyList<WallMember> Members { get; init; }
@@ -56,6 +70,9 @@ public enum WallBackgroundMode { Acrylic = 0, Mica = 1, Custom = 2 }
 
 public sealed record WallSettings
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public AnchorCorner AnchorCorner { get; init; } = AnchorCorner.BottomLeft;
     public bool FullScreen { get; init; }
     public bool ExpandColumns { get; init; }
@@ -83,23 +100,52 @@ public sealed record WallSettings
 }
 
 public enum ManagedEntryKind { Lnk, Url }
-public sealed record ManagedEntryReference(string ObjectId, string RelativePath, ManagedEntryKind Kind);
+public sealed record ManagedEntryReference(string ObjectId, string RelativePath, ManagedEntryKind Kind)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+    public bool Equals(ManagedEntryReference? other) => other is not null && ObjectId == other.ObjectId && RelativePath == other.RelativePath && Kind == other.Kind;
+    public override int GetHashCode() => HashCode.Combine(ObjectId, RelativePath, Kind);
+}
 
 /// <summary>An immutable original whose SHA-256 is also its asset directory identity.</summary>
-public sealed record ManagedMediaReference(string Sha256, string Extension, long Length);
+public sealed record ManagedMediaReference(string Sha256, string Extension, long Length)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+    public bool Equals(ManagedMediaReference? other) => other is not null && Sha256 == other.Sha256 && Extension == other.Extension && Length == other.Length;
+    public override int GetHashCode() => HashCode.Combine(Sha256, Extension, Length);
+}
 
 /// <summary>A native resolution of one confirmed automatic icon image.</summary>
-public sealed record AutomaticIconFrame(ManagedMediaReference Media, int Width, int Height);
+public sealed record AutomaticIconFrame(ManagedMediaReference Media, int Width, int Height)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+}
 
 /// <summary>The confirmed image and all its resolutions; only logical tile resizing selects another frame.</summary>
 public sealed record AutomaticIconSeries(string Identity, IReadOnlyList<AutomaticIconFrame> Frames,
-    int SelectedFrame, int Columns, int Rows);
+    int SelectedFrame, int Columns, int Rows)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+}
 
 /// <summary>Content-addressed, immutable application-owned gallery. Its path is derived by storage.</summary>
-public sealed record ManagedGalleryReference(string ContentId, string ManifestSha256);
+public sealed record ManagedGalleryReference(string ContentId, string ManifestSha256)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+    public bool Equals(ManagedGalleryReference? other) => other is not null && ContentId == other.ContentId && ManifestSha256 == other.ManifestSha256;
+    public override int GetHashCode() => HashCode.Combine(ContentId, ManifestSha256);
+}
 
 public sealed record MemberVisual
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public MemberTitleMode TitleMode { get; init; } = MemberTitleMode.Automatic;
     public string? Title { get; init; }
     public bool ShowTitle { get; init; } = true;
@@ -118,6 +164,9 @@ public enum ImageRotationInterval { Seconds5 = 5, Seconds15 = 15, Seconds30 = 30
 /// <summary>One source and display policy for a complete tile or puzzle canvas.</summary>
 public sealed record MemberImageSource
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public MemberImageSourceKind Kind { get; init; } = MemberImageSourceKind.Automatic;
     public string? Path { get; init; }
     public ManagedMediaReference? Media { get; init; }
@@ -129,6 +178,9 @@ public sealed record MemberImageSource
 /// <summary>Queue position is persisted only when the asynchronously prepared image is adopted.</summary>
 public sealed record ImageCarouselState
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public string? CurrentImageId { get; init; }
     public DateTimeOffset? LastSwitchUtc { get; init; }
     public IReadOnlyList<string> CandidateIds { get; init; } = [];
@@ -140,6 +192,9 @@ public sealed record ImageCarouselState
 public enum ImportSourceKind { StartMenu }
 public sealed record ImportSourceMetadata
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public ImportSourceKind Kind { get; init; } = ImportSourceKind.StartMenu;
     public required string BatchId { get; init; }
     public required string GroupBucketKey { get; init; }
@@ -155,6 +210,9 @@ public sealed record ImportSourceMetadata
 [JsonDerivedType(typeof(ClockMember), "clock")]
 public abstract record WallMember
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public required string Id { get; init; }
     public required GridRect LocalBounds { get; init; }
     public MemberVisual Visual { get; init; } = new();

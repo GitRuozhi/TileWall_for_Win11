@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Wall;
@@ -15,7 +16,17 @@ public sealed partial class WallStore
     private readonly WallStoragePaths _paths;
     private readonly LaunchIdentityService _identities;
     private readonly Dictionary<string, LaunchIdentity?> _identityFacts = new(StringComparer.Ordinal);
-    private static readonly JsonSerializerOptions JournalJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    private static readonly JsonSerializerOptions JournalJson = CreateJournalJsonOptions();
+    private static JsonSerializerOptions CreateJournalJsonOptions()
+    {
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(typeInfo =>
+        {
+            foreach (var property in typeInfo.Properties.Where(property => property.IsExtensionData).ToArray())
+                typeInfo.Properties.Remove(property);
+        });
+        return new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, TypeInfoResolver = resolver };
+    }
     private const string JournalName = "commit.json";
     private const string IntentName = "install.intent";
 
@@ -49,6 +60,7 @@ public sealed partial class WallStore
                 return OpenResult(WallOpenStatus.RecoveryBlocked, null,
                     $"Unjournaled initialization file requires inspection: {initTemp}");
 
+            CheckSnapshotStructuresBeforeSweep();
             var recover = Sweep(primary, previous);
             if (recover is not null) return recover;
             primary = Classify(_paths.Config);
@@ -75,6 +87,10 @@ public sealed partial class WallStore
             if (UserDataManifest.IsSupportedFormatVersion(previous.Schema) && TryReadDocument(_paths.Previous, out var backup, out _))
                 return RecoverPrevious(backup!);
             return OpenResult(WallOpenStatus.CorruptBlocked, null, "No valid primary or previous document.");
+        }
+        catch (UnsupportedSnapshotStructureException ex)
+        {
+            return OpenResult(WallOpenStatus.UnsupportedFormatBlocked, null, ex.Message);
         }
         catch (Exception ex) when (IsStorageError(ex))
         {
@@ -316,6 +332,7 @@ public sealed partial class WallStore
                     .Select(member => (EntryChange)new EntryChange.Remove(member.Id));
                 request = request with { Proposed = proposed, EntryChanges = request.EntryChanges.Concat(removedEntries).ToArray() };
             }
+            request = request with { Proposed = ForwardDataCompatibility.Merge(storedCurrent!, request.Proposed) };
             WallPlanResult plan;
             using (timings?.Measure("store.planning"))
                 plan = PlanEntries(current, request.Proposed, request.EntryChanges, request.MediaAssets, request.ExpectedEntrySha256, request.ManagedGalleries);
@@ -361,11 +378,13 @@ public sealed partial class WallStore
         var previous = Classify(_paths.Previous);
         if (previous.Present && !UserDataManifest.IsSupportedFormatVersion(previous.Schema))
             return CommitResult(WallCommitStatus.RecoveryBlocked, null, "Previous format is unsupported, missing or ambiguous.");
+        if (previous.Present) _ = TryReadDocument(_paths.Previous, out _, out _);
         var initTemp = _paths.Under("state.init.tmp");
         _paths.Guard(initTemp);
         if (_files.Exists(initTemp))
             return CommitResult(WallCommitStatus.RecoveryBlocked, null,
                 $"Unjournaled initialization file requires inspection: {initTemp}");
+        CheckSnapshotStructuresBeforeSweep();
         var recover = Sweep(new FileClass(true, UserDataManifest.CurrentFormatVersion), previous);
         if (recover is not null)
             return CommitResult(WallCommitStatus.RecoveryBlocked, null,
@@ -908,6 +927,21 @@ public sealed partial class WallStore
         }
     }
 
+    private void CheckSnapshotStructuresBeforeSweep()
+    {
+        _paths.Guard(_paths.Staging);
+        if (_files.ListDirectories(_paths.Staging).Count == 0) return;
+        // A newer but readable snapshot uses the normal transaction path. If its
+        // structure cannot be interpreted, do not sweep its pending materials.
+        foreach (var path in new[] { _paths.Config, _paths.Previous })
+        {
+            if (!_files.Exists(path)) continue;
+            try { _ = TryReadDocument(path, out _, out _); }
+            catch (UnsupportedSnapshotStructureException) { throw; }
+            catch (Exception ex) when (IsStorageError(ex)) { }
+        }
+    }
+
     private WallOpenResult? Sweep(FileClass primary, FileClass previous)
     {
         _paths.Guard(_paths.Staging);
@@ -1310,7 +1344,7 @@ public sealed partial class WallStore
             manifestSha256 = Hash(bytes);
             return true;
         }
-        catch (Exception ex) when (IsStorageError(ex))
+        catch (Exception ex) when (ex is not UnsupportedSnapshotStructureException && IsStorageError(ex))
         {
             error = ex.Message;
             document = null;
@@ -1325,9 +1359,14 @@ public sealed partial class WallStore
             document = ReadSnapshotDocument(bytes);
             var issues = Validate(document);
             if (issues.Count == 0) { error = ""; return true; }
+            var metadata = document.StorageMetadata;
+            if (metadata is not null && (metadata.ManifestVersion > UserDataManifest.CurrentFormatVersion ||
+                metadata.SettingsVersion > UserDataManifest.CurrentFormatVersion || metadata.WallVersion > 1 ||
+                metadata.RecycleBinVersion > 1) || ForwardDataCompatibility.HasUnknownData(document))
+                throw new UnsupportedSnapshotStructureException("Snapshot structure cannot be interpreted: " + string.Join("; ", issues));
             error = string.Join("; ", issues);
         }
-        catch (Exception ex) when (IsStorageError(ex))
+        catch (Exception ex) when (ex is not UnsupportedSnapshotStructureException && IsStorageError(ex))
         { error = ex.Message; }
         document = null;
         return false;
@@ -1571,7 +1610,8 @@ public sealed partial class WallStore
     private static bool ValidHash(string? hash) => hash is { Length: 64 } && hash.All(Uri.IsHexDigit);
     private static bool ValidCommitId(string? id) => id is { Length: 32 } && id.All(Uri.IsHexDigit);
     private static bool DocumentEqual(WallDocument a, WallDocument b) =>
-        WallJson.Serialize(a).AsSpan().SequenceEqual(WallJson.Serialize(b));
+        WallJson.Serialize(a).AsSpan().SequenceEqual(WallJson.Serialize(b)) &&
+        ForwardDataCompatibility.MetadataEqual(a.StorageMetadata, b.StorageMetadata);
     private static bool IsStorageError(Exception ex) =>
         ex is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or
             ArgumentException or NotSupportedException or System.Security.SecurityException or
