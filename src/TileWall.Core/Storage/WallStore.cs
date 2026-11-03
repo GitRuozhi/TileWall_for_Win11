@@ -40,6 +40,7 @@ public sealed partial class WallStore
 
     public WallOpenResult Open()
     {
+        var blockedDuring = WallOpenBlockReason.StorageAccess;
         try
         {
             _paths.Guard(_paths.Root);
@@ -58,8 +59,9 @@ public sealed partial class WallStore
             _paths.Guard(initTemp);
             if (_files.Exists(initTemp))
                 return OpenResult(WallOpenStatus.RecoveryBlocked, null,
-                    $"Unjournaled initialization file requires inspection: {initTemp}");
+                    $"Unjournaled initialization file requires inspection: {initTemp}", WallOpenBlockReason.InitializationInterrupted);
 
+            blockedDuring = WallOpenBlockReason.RecoveryMaterials;
             CheckSnapshotStructuresBeforeSweep();
             var recover = Sweep(primary, previous);
             if (recover is not null) return recover;
@@ -68,7 +70,7 @@ public sealed partial class WallStore
             if (!primary.Present && !previous.Present)
             {
                 if (HasAnyManagedResidue()) return OpenResult(WallOpenStatus.RecoveryBlocked, null,
-                    "Unattributed files remain in the app data root.");
+                    "Unattributed files remain in the app data root.", WallOpenBlockReason.UnattributedFiles);
                 return OpenResult(WallOpenStatus.Fresh, null);
             }
             if (primary.Present)
@@ -76,6 +78,7 @@ public sealed partial class WallStore
                 if (TryReadDocument(_paths.Config, out var document, out var error, out var manifestSha256))
                 {
                     AuditRecoveryMaterials();
+                    blockedDuring = WallOpenBlockReason.ReferencedAssets;
                     CheckActiveEntries(document!);
                     TryReclaimUnreferencedResources();
                     return OpenResult(WallOpenStatus.Loaded, document) with { ManifestSha256 = manifestSha256 };
@@ -94,8 +97,16 @@ public sealed partial class WallStore
         }
         catch (Exception ex) when (IsStorageError(ex))
         {
-            return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message);
+            return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message, OpenBlockReason(ex, blockedDuring));
         }
+    }
+
+    internal string ValidatedDataRoot()
+    {
+        _paths.Guard(_paths.Root);
+        var info = _files.GetPathInfo(_paths.Root);
+        if (!info.Exists || !info.IsDirectory) throw new DirectoryNotFoundException(_paths.Root);
+        return _paths.Root;
     }
 
     public WallOpenResult InitializeFresh(WallDocument initial)
@@ -134,7 +145,7 @@ public sealed partial class WallStore
                 return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; cleanup remains: " + ex.Message) with { ManifestSha256 = Hash(snapshot.ManifestBytes) };
             try
             {
-                if (_files.Exists(_paths.Config)) return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message);
+                if (_files.Exists(_paths.Config)) return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message, OpenBlockReason(ex, WallOpenBlockReason.RecoveryMaterials));
                 if (stage is not null) _files.DeleteDirectory(stage);
                 if (ownsSnapshot && snapshot is not null)
                 {
@@ -1031,7 +1042,7 @@ public sealed partial class WallStore
         }
         catch (Exception ex) when (IsStorageError(ex))
         {
-            return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message);
+            return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message, OpenBlockReason(ex, WallOpenBlockReason.RecoveryMaterials));
         }
     }
 
@@ -1344,7 +1355,7 @@ public sealed partial class WallStore
             manifestSha256 = Hash(bytes);
             return true;
         }
-        catch (Exception ex) when (ex is not UnsupportedSnapshotStructureException && IsStorageError(ex))
+        catch (Exception ex) when (ex is not UnsupportedSnapshotStructureException && !WallStoragePaths.IsUnsafePath(ex) && IsStorageError(ex))
         {
             error = ex.Message;
             document = null;
@@ -1366,7 +1377,7 @@ public sealed partial class WallStore
                 throw new UnsupportedSnapshotStructureException("Snapshot structure cannot be interpreted: " + string.Join("; ", issues));
             error = string.Join("; ", issues);
         }
-        catch (Exception ex) when (ex is not UnsupportedSnapshotStructureException && IsStorageError(ex))
+        catch (Exception ex) when (ex is not UnsupportedSnapshotStructureException && !WallStoragePaths.IsUnsafePath(ex) && IsStorageError(ex))
         { error = ex.Message; }
         document = null;
         return false;
@@ -1617,8 +1628,23 @@ public sealed partial class WallStore
             ArgumentException or NotSupportedException or System.Security.SecurityException or
             System.Runtime.InteropServices.COMException;
 
-    private static WallOpenResult OpenResult(WallOpenStatus status, WallDocument? document, string? diagnostic = null) =>
-        new(status, document, diagnostic is null ? [] : [diagnostic]);
+    private static WallOpenBlockReason OpenBlockReason(Exception error, WallOpenBlockReason fallback) =>
+        WallStoragePaths.IsUnsafePath(error) ? WallOpenBlockReason.UnsafePath :
+        error is UnauthorizedAccessException or System.Security.SecurityException ? WallOpenBlockReason.StorageAccess : fallback;
+
+    private static WallOpenResult OpenResult(WallOpenStatus status, WallDocument? document, string? diagnostic = null,
+        WallOpenBlockReason? reason = null) =>
+        new(status, document, diagnostic is null ? [] : [diagnostic])
+        {
+            BlockReason = reason ?? status switch
+            {
+                WallOpenStatus.CorruptBlocked => WallOpenBlockReason.InvalidSnapshot,
+                WallOpenStatus.UnsupportedFormatBlocked => WallOpenBlockReason.UnsupportedFormat,
+                WallOpenStatus.RecoveryBlocked => WallOpenBlockReason.RecoveryMaterials,
+                WallOpenStatus.OpenFailed => WallOpenBlockReason.StorageAccess,
+                _ => WallOpenBlockReason.None
+            }
+        };
     private static WallCommitResult CommitResult(WallCommitStatus status, WallDocument? document,
         string? diagnostic = null) =>
         new(status, document, diagnostic is null ? [] : [diagnostic]);

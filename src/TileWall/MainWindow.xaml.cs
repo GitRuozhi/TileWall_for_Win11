@@ -38,6 +38,8 @@ public sealed partial class MainWindow : Window
     private bool _viewBlocked;
     private bool _carouselCommit;
     private bool _hasDocument;
+    private bool _initialOpenBlocked;
+    private string? _openFailureMessage;
     private bool _resizing;
     private readonly IClock _clock = SystemClock.Instance;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _clockTimer;
@@ -60,6 +62,8 @@ public sealed partial class MainWindow : Window
         _images = new WallImageService(_session.LinkFiles);
         InitializeComponent();
         ActionIcon.Set(RetryViewButton, ProductStrings.Get("Wall.Retry"), ActionIcon.Refresh);
+        ActionIcon.Set(RetryOpenButton, ProductStrings.Get("Wall.RetryOpen"), ActionIcon.Refresh);
+        ActionIcon.Set(OpenDataFolderButton, ProductStrings.Get("Wall.OpenDataFolder"), ActionIcon.OpenFolderHorizontal);
         CreateWindowsSidebar();
         _statusTimer = DispatcherQueue.CreateTimer();
         _statusTimer.IsRepeating = false;
@@ -224,9 +228,16 @@ public sealed partial class MainWindow : Window
         var height = WorkHeightDip;
         var (columns, rows) = ChooseInitialGrid(width, height);
         var result = _session.Open(columns, rows);
+        AcceptOpenedWall(result);
+    }
+
+    private void AcceptOpenedWall(WallOpenResult result)
+    {
         if (result.Document is null)
         {
-            BlockView(string.Format(ProductStrings.Get("Wall.OpenFailed"), result.Status, string.Join("；", result.Diagnostics)));
+            var reason = ProductStrings.Get("Wall.OpenReason." + result.BlockReason);
+            _openFailureMessage = reason + "\n" + _session.DataRoot + "\n" + string.Join("；", result.Diagnostics);
+            BlockView(_openFailureMessage, initialOpen: true);
             return;
         }
         _hasDocument = true;
@@ -293,6 +304,9 @@ public sealed partial class MainWindow : Window
         ClearStatus();
         if (_environmentOverflow) Status(ProductStrings.Get("Wall.EnvironmentScroll"));
         RetryViewButton.Visibility = Visibility.Collapsed;
+        RetryOpenButton.Visibility = OpenDataFolderButton.Visibility = Visibility.Collapsed;
+        _initialOpenBlocked = false;
+        _openFailureMessage = null;
         if (!_carouselCommit) PlaceWall();
         RestoreCommittedScrollAnchor(document, scrollAnchor);
         UpdatePuzzleGate();
@@ -300,8 +314,9 @@ public sealed partial class MainWindow : Window
         QueueEnvironmentAdaptation();
     }
 
-    private void BlockView(string message, bool retry = false)
+    private void BlockView(string message, bool retry = false, bool initialOpen = false)
     {
+        _initialOpenBlocked = initialOpen && !_hasDocument;
         if (_session.ResultUnknown)
         {
             message = WithDiagnostic(ProductStrings.Get("Wall.ResultUnknown"), message);
@@ -312,7 +327,7 @@ public sealed partial class MainWindow : Window
             message = WithDiagnostic(ProductStrings.Get("Wall.RequiresReopen"), message);
             retry = false;
         }
-        else if (_session.RecoveryBlocked)
+        else if (_session.RecoveryBlocked && !_initialOpenBlocked)
         {
             message = WithDiagnostic(ProductStrings.Get("Wall.RecoveryBlocked"), message);
             retry = false;
@@ -323,8 +338,78 @@ public sealed partial class MainWindow : Window
         Surface.IsHitTestVisible = false;
         Surface.Visibility = Visibility.Collapsed;
         RetryViewButton.Visibility = retry ? Visibility.Visible : Visibility.Collapsed;
+        RetryOpenButton.Visibility = _initialOpenBlocked && !_session.ResultUnknown && !_session.RequiresReopen
+            ? Visibility.Visible : Visibility.Collapsed;
+        OpenDataFolderButton.Visibility = _initialOpenBlocked ? Visibility.Visible : Visibility.Collapsed;
         DisplayStatus(message, transient: false);
-        AppWindow.MoveAndResize(new RectInt32(_workArea.Left, _workArea.Top, 560, 120));
+        AppWindow.MoveAndResize(new RectInt32(_workArea.Left, _workArea.Top,
+            Math.Min(_workArea.Right - _workArea.Left, (int)(640 * Scale)),
+            Math.Min(_workArea.Bottom - _workArea.Top, (int)(360 * Scale))));
+    }
+
+    private async void OnRetryOpenClicked(object sender, RoutedEventArgs e)
+    {
+        if (!_initialOpenBlocked || _hasDocument || PersistenceInteractionBlocked || ShutdownStarted || _windowClosing ||
+            _session.ResultUnknown || _session.RequiresReopen) return;
+        _openingWall = true;
+        RetryOpenButton.IsEnabled = OpenDataFolderButton.IsEnabled = false;
+        var operation = RetryOpenWallCoreAsync();
+        _pendingInitialOpen = operation.IsCompleted ? null : operation;
+        await operation;
+    }
+
+    private async Task RetryOpenWallCoreAsync()
+    {
+        try
+        {
+            var (columns, rows) = ChooseInitialGrid(WorkWidthDip, WorkHeightDip);
+            var result = await _session.RetryInitialOpenAsync(columns, rows);
+            if (_windowClosing || ShutdownStarted) return;
+            AcceptOpenedWall(result);
+            // Fresh initialization uses the same welcome path as the first Open.
+            _openingWall = false;
+            if (_welcomeInitializationPending)
+            {
+                var error = await InitializeWelcomeWallAsync(fresh: true);
+                if (error is not null && !_viewBlocked) Status(error);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!_windowClosing && !ShutdownStarted)
+                BlockView(WithDiagnostic(_openFailureMessage ?? ProductStrings.Get("Wall.OpenReason.StorageAccess"), ex.Message), initialOpen: true);
+        }
+        finally
+        {
+            _openingWall = false;
+            _pendingInitialOpen = null;
+            if (!_windowClosing && !ShutdownStarted)
+            {
+                RetryOpenButton.IsEnabled = OpenDataFolderButton.IsEnabled = true;
+                Surface.IsHitTestVisible = !_viewBlocked && !PersistenceInteractionBlocked;
+                UpdateWallHitTesting();
+                UpdateResizeZones();
+                ImportReadinessChanged?.Invoke();
+            }
+        }
+    }
+
+    private void OnOpenDataFolderClicked(object sender, RoutedEventArgs e)
+    {
+        if (!_initialOpenBlocked || PersistenceInteractionBlocked || ShutdownStarted || _windowClosing) return;
+        try
+        {
+            // This path comes only from the session's fixed application root;
+            // recheck every existing component immediately before Shell dispatch.
+            var root = _session.ValidatedDataRoot();
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(root)
+                { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            DisplayStatus(WithDiagnostic(_openFailureMessage ?? string.Empty,
+                string.Format(ProductStrings.Get("Wall.OpenDataFolderFailed"), ex.Message)), transient: false);
+        }
     }
 
     private static string WithDiagnostic(string summary, string detail) =>

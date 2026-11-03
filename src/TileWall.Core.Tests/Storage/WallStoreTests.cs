@@ -235,7 +235,9 @@ public sealed partial class WallStoreTests
         var (store, files, _, root) = Harness();
         files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion + 1}}}"));
         var unchanged = files.SnapshotFiles();
-        Assert.Equal(WallOpenStatus.UnsupportedFormatBlocked, store.Open().Status);
+        var unsupported = store.Open();
+        Assert.Equal(WallOpenStatus.UnsupportedFormatBlocked, unsupported.Status);
+        Assert.Equal(WallOpenBlockReason.UnsupportedFormat, unsupported.BlockReason);
         AssertSameFileBytes(unchanged, files.SnapshotFiles());
         files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes("{\"generation\":0}"));
         Assert.Equal(WallOpenStatus.CorruptBlocked, store.Open().Status);
@@ -1055,6 +1057,7 @@ public sealed partial class WallStoreTests
         files.WriteAllBytes(path, WallJson.Serialize(Wall()));
         var opened = store.Open();
         Assert.Equal(WallOpenStatus.RecoveryBlocked, opened.Status);
+        Assert.Equal(WallOpenBlockReason.InitializationInterrupted, opened.BlockReason);
         Assert.Contains("state.init.tmp", Assert.Single(opened.Diagnostics), StringComparison.Ordinal);
         Assert.True(files.Exists(path));
         Assert.Equal(WallOpenStatus.RecoveryBlocked, store.InitializeFresh(Wall()).Status);
@@ -1232,6 +1235,7 @@ public sealed partial class WallStoreTests
 
         var blockedOpen = store.Open();
         Assert.Equal(WallOpenStatus.RecoveryBlocked, blockedOpen.Status);
+        Assert.Equal(WallOpenBlockReason.RecoveryMaterials, blockedOpen.BlockReason);
         Assert.Contains("Committed cleanup remains", string.Join(" ", blockedOpen.Diagnostics), StringComparison.Ordinal);
         Assert.Equal(config, files.ReadAllBytes(configPath));
         Assert.Equal(stages, files.ListDirectories(Path.Combine(root, "Staging")).Order(StringComparer.Ordinal).ToArray());
@@ -1250,6 +1254,7 @@ public sealed partial class WallStoreTests
         files.Sticky.Clear();
         var loaded = store.Open();
         Assert.Equal(WallOpenStatus.Loaded, loaded.Status);
+        Assert.Equal(WallOpenBlockReason.None, loaded.BlockReason);
         Assert.Equal(recovered.Generation, loaded.Document!.Generation);
         Assert.Empty(files.ListDirectories(Path.Combine(root, "Staging")));
         Assert.Equal(config, files.ReadAllBytes(configPath));

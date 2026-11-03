@@ -36,8 +36,8 @@
   <x:String x:Key="Settings.LanguageFallback">Chinese system languages use Chinese; all other system languages use English.</x:String>
   <x:String x:Key="Settings.HotKey">Hotkey 1</x:String>
   <x:String x:Key="Settings.SecondaryHotKey">Hotkey 2</x:String>
-  <x:String x:Key="Settings.ReplaceStartMenu">Replace system Start</x:String>
-  <x:String x:Key="Settings.StartReplacementHelp">When enabled, TileWall takes over the Win key and taskbar Start button. Ctrl+Esc still opens system Start.</x:String>
+  <x:String x:Key="Settings.ReplaceStartMenu">Replace system Start (experimental)</x:String>
+  <x:String x:Key="Settings.StartReplacementHelp">When enabled, pressing Win alone or left-clicking taskbar Start toggles TileWall. Both configured hotkeys and Ctrl+Esc open Windows Start.</x:String>
   <x:String x:Key="Settings.StartReplacementOff">Off. System Start entry points retain their native behavior.</x:String>
   <x:String x:Key="Settings.StartReplacementActive">Replacing system Start.</x:String>
   <x:String x:Key="Settings.StartReplacementSuspended">Replacement is paused while recording a hotkey.</x:String>
@@ -46,6 +46,7 @@
   <x:String x:Key="Settings.StartReplacementUnavailable">System Start replacement is currently unavailable.</x:String>
   <x:String x:Key="Settings.StartReplacementRetry">Retry replacement</x:String>
   <x:String x:Key="Settings.HotKeyOpensTileWall">Both hotkeys show or hide TileWall. Press Ctrl+Esc to open system Start.</x:String>
+  <x:String x:Key="Settings.HotKeyOpensSystemStart">Both hotkeys open Windows Start. Press Win alone or left-click Start to toggle TileWall.</x:String>
   <x:String x:Key="Settings.HotKeyHint">For example, Win+Oem3. Press the desired key combination to save, or Esc to cancel.</x:String>
   <x:String x:Key="Settings.HotKeyDuplicate">The two hotkeys must be different.</x:String>
   <x:String x:Key="Settings.RegisteredHotKey">Registered: {0}</x:String>
@@ -203,6 +204,18 @@
   <x:String x:Key="Wall.Clock">Time and date</x:String>
   <x:String x:Key="Wall.ReadWorkAreaFailed">Cannot read the primary display work area.</x:String>
   <x:String x:Key="Wall.OpenFailed">Cannot open wall data ({0}): {1}</x:String>
+  <x:String x:Key="Wall.RetryOpen">Try opening again</x:String>
+  <x:String x:Key="Wall.OpenDataFolder">Open data folder</x:String>
+  <x:String x:Key="Wall.OpenDataFolderFailed">Cannot open the data folder: {0}</x:String>
+  <x:String x:Key="Wall.OpenReason.InitializationInterrupted">First initialization was interrupted and a complete commit cannot be verified. Files are preserved; the wall will not be cleared or recreated automatically.</x:String>
+  <x:String x:Key="Wall.OpenReason.UnattributedFiles">The data folder contains files whose ownership cannot be verified. Files are preserved and the wall cannot be opened safely.</x:String>
+  <x:String x:Key="Wall.OpenReason.InvalidSnapshot">The wall snapshot is missing, damaged or fails verification, and a complete previous snapshot cannot be verified. Existing files are preserved.</x:String>
+  <x:String x:Key="Wall.OpenReason.UnsupportedFormat">This data contains a format or required structure this version cannot read. Use a newer version that supports it. Existing data will not be downgraded or cleared.</x:String>
+  <x:String x:Key="Wall.OpenReason.RecoveryMaterials">Recovery materials could not be verified, or cleanup from a previous commit is incomplete. Files are preserved. Release file locks or restore access, then try opening again.</x:String>
+  <x:String x:Key="Wall.OpenReason.ReferencedAssets">A referenced entry, original image or gallery is missing, damaged or fails verification. Files are preserved to avoid loading an incomplete wall.</x:String>
+  <x:String x:Key="Wall.OpenReason.UnsafePath">The data path contains a junction, reparse point or unsafe change. Restore the application's normal data folder before retrying.</x:String>
+  <x:String x:Key="Wall.OpenReason.StorageAccess">Wall data could not be read or initialized safely. Check folder permissions, disk state and file locks before retrying. Existing files are preserved.</x:String>
+  <x:String x:Key="Wall.OpenReason.None">Cannot open wall data. Existing files are preserved.</x:String>
   <x:String x:Key="Wall.ViewFailed">Wall data opened, but the view could not be built.</x:String>
   <x:String x:Key="Wall.RebuildFailed">Rebuild failed. Saved data is unchanged. Try again or restart.</x:String>
   <x:String x:Key="Wall.ViewBlocked">The wall view is blocked. Please restart.</x:String>

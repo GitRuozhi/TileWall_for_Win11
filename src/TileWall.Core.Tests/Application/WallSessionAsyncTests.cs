@@ -14,6 +14,186 @@ namespace TileWall.Core.Tests.Application;
 public sealed class WallSessionAsyncTests
 {
     [Fact]
+    public async Task StartupRetryIsSingleFlightAndRepeatedInterruptionPreservesData()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-retry-" + Guid.NewGuid().ToString("N")));
+        files.WriteAllBytes(Path.Combine(root, "state.init.tmp"), Encoding.UTF8.GetBytes("interrupted"));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        Assert.Equal(WallOpenBlockReason.InitializationInterrupted, session.Open(1, 6).BlockReason);
+        var executor = new Executor();
+        var acceptance = new AcceptanceQueue();
+        session.ConfigureAsyncExecution(executor, acceptance.AcceptAsync);
+        var before = files.SnapshotFiles();
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var operation = session.RetryInitialOpenAsync(1, 6);
+            Assert.True(session.WritePending);
+            Assert.Throws<InvalidOperationException>(() => { _ = session.RetryInitialOpenAsync(1, 6); });
+            Assert.Throws<InvalidOperationException>(() => session.Open(1, 6));
+            Assert.Equal(1, executor.Count);
+            await executor.RunNextAsync();
+            (await acceptance.TakeAsync())();
+            var result = await operation;
+            Assert.Equal(WallOpenBlockReason.InitializationInterrupted, result.BlockReason);
+            Assert.Null(result.Document);
+            Assert.True(session.RecoveryBlocked);
+            Assert.False(session.WritePending);
+            Assert.False(session.RefreshViewFromCurrent());
+        }
+        Assert.Equal(before.Keys.Order(), files.SnapshotFiles().Keys.Order());
+        foreach (var (path, bytes) in before) Assert.Equal(bytes, files.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public async Task StartupRetryAcceptsOnUiThenAllowsSaveAndReopen()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-success-" + Guid.NewGuid().ToString("N")));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        files.ReparsePaths.Add(root);
+        Assert.Equal(WallOpenBlockReason.UnsafePath, session.Open(1, 6).BlockReason);
+        files.ReparsePaths.Clear();
+        var executor = new Executor();
+        var acceptance = new AcceptanceQueue();
+        session.ConfigureAsyncExecution(executor, acceptance.AcceptAsync);
+
+        var operation = session.RetryInitialOpenAsync(1, 6);
+        await executor.RunNextAsync();
+        var accept = await acceptance.TakeAsync();
+        Assert.Throws<InvalidOperationException>(() => session.Current);
+        Assert.True(session.RecoveryBlocked);
+        accept();
+        var opened = await operation;
+
+        Assert.True(opened.InitializedFresh);
+        Assert.False(session.RecoveryBlocked);
+        Assert.False(session.WritePending);
+        Assert.True(session.RefreshViewFromCurrent());
+        Assert.True(session.Commit(Add(session)).Committed);
+        var restarted = new WallSession(root, files, new FakeLinkFileService(files));
+        Assert.Equal(WallOpenStatus.Loaded, restarted.Open(1, 6).Status);
+        Assert.Equal(1, restarted.Current.Generation);
+        Assert.Single(restarted.Current.EnumerateAllMembers());
+        Assert.Throws<InvalidOperationException>(() => { _ = session.RetryInitialOpenAsync(1, 6); });
+    }
+
+    [Fact]
+    public async Task UncertainStartupRetryRequiresFullReopen()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-unknown-" + Guid.NewGuid().ToString("N")));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        session.ConfigureAsyncExecution(new UncertainExecutor(), _ => Task.CompletedTask);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.RetryInitialOpenAsync(1, 6));
+
+        Assert.True(session.ResultUnknown);
+        Assert.False(session.WritePending);
+        Assert.False(session.RefreshViewFromCurrent());
+        Assert.Throws<InvalidOperationException>(() => { _ = session.RetryInitialOpenAsync(1, 6); });
+        Assert.Empty(files.FilePaths);
+    }
+
+    [Fact]
+    public async Task StartupDispatcherWithoutAcceptanceCannotPublishLateResult()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-late-" + Guid.NewGuid().ToString("N")));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        var executor = new Executor();
+        Action? lateAcceptance = null;
+        session.ConfigureAsyncExecution(executor, accept => { lateAcceptance = accept; return Task.CompletedTask; });
+
+        var operation = session.RetryInitialOpenAsync(1, 6);
+        await executor.RunNextAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await operation);
+
+        Assert.True(session.RequiresReopen);
+        Assert.False(session.WritePending);
+        Assert.Throws<InvalidOperationException>(() => session.Current);
+        lateAcceptance!();
+        Assert.Throws<InvalidOperationException>(() => session.Current);
+        Assert.False(session.RefreshViewFromCurrent());
+        Assert.Throws<InvalidOperationException>(() => { _ = session.RetryInitialOpenAsync(1, 6); });
+        Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
+        Assert.False(session.RequiresReopen);
+    }
+
+    [Fact]
+    public async Task StartupDispatcherDuplicateCallbackAndPostAcceptanceFailureKeepAcceptedSnapshot()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-accepted-" + Guid.NewGuid().ToString("N")));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        var executor = new Executor();
+        Action? savedAcceptance = null;
+        session.ConfigureAsyncExecution(executor, accept =>
+        {
+            savedAcceptance = accept;
+            accept();
+            accept();
+            return Task.FromException(new InvalidOperationException("dispatcher failed after acceptance"));
+        });
+
+        var operation = session.RetryInitialOpenAsync(1, 6);
+        await executor.RunNextAsync();
+        var result = await operation;
+
+        Assert.True(result.InitializedFresh);
+        Assert.False(session.RequiresReopen);
+        Assert.False(session.ResultUnknown);
+        Assert.False(session.WritePending);
+        Assert.True(session.Commit(Add(session)).Committed);
+        var current = session.Current;
+        savedAcceptance!();
+        Assert.Same(current, session.Current);
+        Assert.Equal(1, session.Current.Generation);
+    }
+
+    [Fact]
+    public async Task StartupRetryOnDiskPreservesInterruptionThenSavesAndRestarts()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-disk-" + Guid.NewGuid().ToString("N")));
+        var files = new LocalFileStore();
+        files.CreateDirectory(root);
+        var marker = Path.Combine(root, "state.init.tmp");
+        var interrupted = Encoding.UTF8.GetBytes("disk interruption fixture");
+        files.WriteAllBytes(marker, interrupted);
+        try
+        {
+            var session = new WallSession(root, files, new FakeLinkFileService(files));
+            Assert.Equal(WallOpenBlockReason.InitializationInterrupted, session.Open(1, 6).BlockReason);
+            var executor = new Executor();
+            var acceptance = new AcceptanceQueue();
+            session.ConfigureAsyncExecution(executor, acceptance.AcceptAsync);
+            var refused = session.RetryInitialOpenAsync(1, 6);
+            await executor.RunNextAsync();
+            (await acceptance.TakeAsync())();
+            Assert.Equal(WallOpenBlockReason.InitializationInterrupted, (await refused).BlockReason);
+            Assert.Equal(interrupted, files.ReadAllBytes(marker));
+            Assert.False(files.Exists(Path.Combine(root, "state.json")));
+
+            // This fixture explicitly removes its own marker to model a corrected
+            // directory. The product retry never removes unproven init material.
+            files.Delete(marker);
+            var retried = session.RetryInitialOpenAsync(1, 6);
+            await executor.RunNextAsync();
+            (await acceptance.TakeAsync())();
+            Assert.True((await retried).InitializedFresh);
+            Assert.True(session.Commit(Add(session), [new EntryChange.CreateUrl("tile1", "https://disk.example/")]).Committed);
+
+            var restarted = new WallSession(root, files, new FakeLinkFileService(files));
+            Assert.Equal(WallOpenStatus.Loaded, restarted.Open(1, 6).Status);
+            Assert.Equal(1, restarted.Current.Generation);
+            var member = Assert.Single(restarted.Current.EnumerateAllMembers());
+            Assert.Contains("https://disk.example/", Encoding.UTF8.GetString(files.ReadAllBytes(restarted.ManagedEntryPath(member)!)));
+        }
+        finally { files.DeleteDirectory(root); }
+    }
+
+    [Fact]
     public async Task AsyncEntryPreconditionsFreezeBeforeQueueAndRejectWithoutLatchingRecovery()
     {
         var (session, files, _, executor, _) = Harness();

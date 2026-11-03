@@ -19,7 +19,7 @@ internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
 
     public string Gallery(ManagedGalleryReference gallery)
     {
-        if (!PreparedManagedGallery.IsValidReference(gallery)) throw new IOException("Unsafe managed gallery reference.");
+        if (!PreparedManagedGallery.IsValidReference(gallery)) throw UnsafePath("Unsafe managed gallery reference.");
         return Under("Sources", gallery.ContentId);
     }
 
@@ -36,23 +36,23 @@ internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
     {
         if (segments.Length == 0 || segments.Any(s => string.IsNullOrEmpty(s) || s is "." or ".." ||
             s.IndexOfAny(['/', '\\', ':', '\0']) >= 0 || s.EndsWith('.') || s.EndsWith(' ')))
-            throw new IOException("Invalid managed path segment.");
+            throw UnsafePath("Invalid managed path segment.");
         var path = Path.GetFullPath(Path.Combine([Root, .. segments]));
         if (!path.StartsWith(Root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            throw new IOException("Managed path escapes data root.");
+            throw UnsafePath("Managed path escapes data root.");
         return path;
     }
 
     public string Entry(ManagedEntryReference entry)
     {
-        if (!ValidId(entry.ObjectId) || !ValidEntry(entry)) throw new IOException("Unsafe managed entry reference.");
+        if (!ValidId(entry.ObjectId) || !ValidEntry(entry)) throw UnsafePath("Unsafe managed entry reference.");
         var parts = entry.RelativePath.Split('/');
         return Under(parts);
     }
 
     public string Media(ManagedMediaReference media)
     {
-        if (!PreparedMediaAsset.IsValidReference(media)) throw new IOException("Unsafe managed media reference.");
+        if (!PreparedMediaAsset.IsValidReference(media)) throw UnsafePath("Unsafe managed media reference.");
         return Under("Media", media.Sha256, "original" + media.Extension);
     }
 
@@ -70,6 +70,12 @@ internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
             EntryNames.Validate(parts[2][..^ext.Length]).Count == 0;
     }
 
+    private static IOException UnsafePath(string message) => new(message)
+    { Data = { [nameof(WallOpenBlockReason)] = WallOpenBlockReason.UnsafePath } };
+
+    internal static bool IsUnsafePath(Exception error) =>
+        error.Data[nameof(WallOpenBlockReason)] is WallOpenBlockReason.UnsafePath;
+
     public void Guard(string path, bool allowExternalRead = false)
         => GuardCore(path, allowExternalRead, null);
 
@@ -84,10 +90,11 @@ internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
         Dictionary<string, FileStorePathInfo>? inspected)
     {
         if (!Path.IsPathFullyQualified(path) || Path.GetFullPath(path) != path)
-            throw new IOException($"Unnormalized path: {path}");
-        if (!allowExternalRead && path != Root &&
-            !path.StartsWith(Root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            throw new IOException($"Path escapes data root: {path}");
+            throw UnsafePath($"Unnormalized path: {path}");
+        var isManagedPath = path.Equals(Root, StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith(Root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        if (!allowExternalRead && !isManagedPath)
+            throw UnsafePath($"Path escapes data root: {path}");
 
         var full = path;
         var cursor = Path.GetPathRoot(full)!;
@@ -100,9 +107,10 @@ internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
                 info = _files.GetPathInfo(cursor);
                 inspected?.Add(cursor, info);
             }
-            if (info.IsReparsePoint) throw new IOException($"Reparse point in managed path: {cursor}");
+            if (info.IsReparsePoint && !(allowExternalRead && !isManagedPath))
+                throw UnsafePath($"Reparse point in managed path: {cursor}");
             if (info.Exists && cursor != full && !info.IsDirectory)
-                throw new IOException($"File in directory path: {cursor}");
+                throw UnsafePath($"File in directory path: {cursor}");
         }
     }
 
@@ -111,7 +119,7 @@ internal sealed class WallStoragePaths(IFileStore files, string dataRoot)
         Guard(path);
         var info = _files.GetPathInfo(path);
         if (!info.Exists) return;
-        if (!info.IsDirectory) throw new IOException($"Expected directory: {path}");
+        if (!info.IsDirectory) throw UnsafePath($"Expected directory: {path}");
         foreach (var file in _files.ListFiles(path)) Guard(file);
         foreach (var child in _files.ListDirectories(path)) GuardTree(child);
     }

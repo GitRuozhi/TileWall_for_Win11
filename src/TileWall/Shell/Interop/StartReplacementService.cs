@@ -31,6 +31,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
     private long _generation;
     private long _locatorGeneration;
     private volatile bool _admission;
+    private volatile bool _stopRequested;
     private bool _stopping, _quit, _prepared;
     private volatile bool _desktopRecoveryPending;
     private bool _desktopRecoveryQueued;
@@ -38,7 +39,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
 
     internal string? Fault => Volatile.Read(ref _fault);
     internal bool IsActive => _admission && !_desktopRecoveryPending;
-    internal bool HasRetainedResources => _thread is not null
+    internal bool HasRetainedResources => _locator.HasRetainedResources || _thread is not null
         && (!_finished.Task.IsCompletedSuccessfully || _keyboardHook != 0 || _mouseHook != 0 || _desktopHook != 0);
     internal bool IsCurrentActivation(long generation) => IsActive && Interlocked.Read(ref _generation) == generation;
     internal StartButtonSnapshot ButtonSnapshot => _locator.CurrentSnapshot;
@@ -47,11 +48,14 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
     internal async Task PrepareAsync(CancellationToken cancellationToken = default)
     {
         await _transition.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var preparationStarted = false;
         try
         {
-            if (_prepared) return;
-            if (_thread is not null && (!_finished.Task.IsCompletedSuccessfully || _keyboardHook != 0 || _mouseHook != 0 || _desktopHook != 0))
+            if (_prepared && !_stopRequested) return;
+            if (HasRetainedResources)
                 throw new InvalidOperationException("Previous input resources have not finished stopping.");
+            preparationStarted = true;
+            _stopRequested = false;
             await _locator.DisposeAsync().ConfigureAwait(false);
             _locator = new StartButtonLocator();
             _locator.Faulted += LocatorFaulted;
@@ -59,6 +63,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
             Volatile.Write(ref _fault, null);
             await _locator.StartAsync(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
+            if (_stopRequested) throw new InvalidOperationException("Input preparation was superseded by stop.");
             if (!_locator.CurrentSnapshot.IsReady) throw new InvalidOperationException("Start buttons are not all recognized.");
             _ready = Completion();
             _finished = Completion();
@@ -70,26 +75,20 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
             _thread.Start();
             await _ready.Task.ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            if (!_locator.CurrentSnapshot.IsReady || Fault is not null)
+            if (_stopRequested || !_locator.CurrentSnapshot.IsReady || Fault is not null)
                 throw new InvalidOperationException("Input preparation became unavailable.");
             _prepared = true;
         }
-        catch (Exception preparationError)
+        catch (Exception preparationError) when (preparationStarted)
         {
-            await _locator.StopAsync().ConfigureAwait(false);
-            if (_thread is not null && !_finished.Task.IsCompletedSuccessfully)
+            _stopRequested = true;
+            _prepared = false;
+            using var cleanupBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try { await StopCoreAsync(cleanupBudget.Token).ConfigureAwait(false); }
+            catch (Exception cleanupError)
             {
-                if (_threadId != 0)
-                {
-                    try { Post(BeginStop); }
-                    catch (InvalidOperationException) { }
-                }
-                try { await _finished.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
-                catch (Exception cleanupError)
-                {
-                    throw new AggregateException("Input preparation failed and cleanup is incomplete; retain this service.",
-                        preparationError, cleanupError);
-                }
+                throw new AggregateException("Input preparation failed and cleanup is incomplete; retain this service.",
+                    preparationError, cleanupError);
             }
             throw;
         }
@@ -101,14 +100,14 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
         await _transition.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (!_prepared || Fault is not null) throw new InvalidOperationException("Input preparation is not healthy.");
+            if (!_prepared || _stopRequested || Fault is not null) throw new InvalidOperationException("Input preparation is not healthy.");
             var expectedGeneration = Interlocked.Read(ref _generation);
             var completed = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
             Post(() =>
             {
                 try
                 {
-                    if (_stopping || Fault is not null)
+                    if (_stopRequested || _stopping || Fault is not null)
                         throw new InvalidOperationException("Activation was superseded by stop or failure.");
                     if (_admission && _desktopRecoveryPending)
                     {
@@ -141,33 +140,59 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
         finally { _transition.Release(); }
     }
 
-    /// <summary>
-    /// Await genuine releases and Unhook success. A caller may time out its WAIT, but must keep this service alive
-    /// and may not tear down the application or start another hook owner while this task is incomplete.
-    /// No guessed key-up is injected to manufacture a successful shutdown.
-    /// </summary>
-    internal async Task StopAsync()
+    // Close capture even when the lifetime owner is still waiting for its transition semaphore.
+    internal void CloseAdmissionForStop()
     {
+        _stopRequested = true;
         _admission = false;
         Interlocked.Increment(ref _generation);
-        await _transition.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            _prepared = false;
-            if (_thread is not null && !_finished.Task.IsCompletedSuccessfully)
-            {
-                if (_finished.Task.IsFaulted) await _finished.Task.ConfigureAwait(false);
-                var stopped = Completion();
-                Post(() => { _stopAttempt = stopped; BeginStop(); });
-                await stopped.Task.ConfigureAwait(false);
-                await _finished.Task.ConfigureAwait(false);
-            }
-            await _locator.StopAsync().ConfigureAwait(false);
-        }
-        finally { _transition.Release(); }
     }
 
-    internal Task SuspendAsync() => StopAsync();
+    /// <summary>
+    /// Await genuine releases and Unhook success within one five-second budget, including transition and UIA waits.
+    /// Failure retains the owner and its real completion tasks; it never means cleanup completed.
+    /// No guessed key-up is injected to manufacture a successful shutdown.
+    /// </summary>
+    internal async Task StopAsync(CancellationToken stopDeadline = default)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(stopDeadline);
+        budget.CancelAfter(TimeSpan.FromSeconds(5));
+        CloseAdmissionForStop();
+        var entered = false;
+        try
+        {
+            await _transition.WaitAsync(budget.Token).ConfigureAwait(false);
+            entered = true;
+            _prepared = false;
+            await StopCoreAsync(budget.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (budget.IsCancellationRequested)
+        {
+            throw new TimeoutException("Start input did not finish stopping within the five-second budget; resources are retained.", ex);
+        }
+        finally { if (entered) _transition.Release(); }
+    }
+
+    private async Task StopCoreAsync(CancellationToken stopDeadline)
+    {
+        // UIA can be blocked in COM. Request its stop before waiting for input, and retain its worker until it really ends.
+        var locatorStopped = _locator.StopAsync();
+        if (_thread is not null && !_finished.Task.IsCompletedSuccessfully)
+        {
+            if (_finished.Task.IsFaulted) await _finished.Task.ConfigureAwait(false);
+            // A pending native attempt survives callers timing out. A reported native failure is terminal for
+            // its callers, so a later request may create a new attempt and retry the retained Unhook handles.
+            if (_stopAttempt is null || _stopAttempt.Task.IsFaulted || _stopAttempt.Task.IsCanceled)
+                _stopAttempt = Completion();
+            if (!_stopAttempt.Task.IsCompletedSuccessfully) Post(BeginStop);
+            await _stopAttempt.Task.WaitAsync(stopDeadline).ConfigureAwait(false);
+            await _finished.Task.WaitAsync(stopDeadline).ConfigureAwait(false);
+        }
+        await locatorStopped.WaitAsync(stopDeadline).ConfigureAwait(false);
+        if (HasRetainedResources) throw new InvalidOperationException("Input resources have not finished stopping.");
+    }
+
+    internal Task SuspendAsync(CancellationToken stopDeadline = default) => StopAsync(stopDeadline);
     internal async Task<long> ResumeAsync()
     {
         await PrepareAsync().ConfigureAwait(false);
@@ -449,7 +474,14 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
         throw new InvalidOperationException("Could not dispatch to the input thread.");
     }
 
-    private static TaskCompletionSource Completion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static TaskCompletionSource Completion()
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // A timeout ends only the caller's wait. Faults reported later by the native owner still need an observer.
+        _ = completion.Task.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return completion;
+    }
     public async ValueTask DisposeAsync()
     {
         await StopAsync().ConfigureAwait(false);

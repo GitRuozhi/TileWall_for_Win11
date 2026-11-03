@@ -5,6 +5,8 @@ internal static class NativeStartMenu
 {
     // WM_SYSCOMMAND / SC_TASKLIST: DefWindowProc activates the native Start menu.
     // No synthetic modifier releases: the caller may still physically hold its hotkey.
-    internal static bool TryOpen(nint ownerWindow) => ownerWindow != 0
-        && Win32Api.PostMessageW(ownerWindow, 0x0112, 0xF130, 0);
+    internal static bool TryOpen(nint ownerWindow) => TryOpen(ownerWindow, Win32Api.PostMessageW);
+
+    internal static bool TryOpen(nint ownerWindow, Func<nint, uint, nint, nint, bool> postMessage) => ownerWindow != 0
+        && postMessage(ownerWindow, 0x0112, 0xF130, 0);
 }

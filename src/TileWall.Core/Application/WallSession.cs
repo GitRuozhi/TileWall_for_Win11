@@ -202,41 +202,108 @@ internal sealed class WallSession
         lock (_gate)
         {
             if (_writePending) throw new InvalidOperationException("A storage operation is pending.");
-            var result = _store.Open();
-            if (result.Status == WallOpenStatus.Fresh)
-            {
-                result = _store.InitializeFresh(WallDocument.Empty(initialColumns, initialRows));
-                if (result.Status == WallOpenStatus.Loaded && result.Document is not null)
-                    result = result with { InitializedFresh = true };
-            }
-            if (result.Document is not null && result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious)
-            {
-                result = result with { Document = result.Document.ActiveView() };
-                _manifestSha256 = result.ManifestSha256 ?? throw new InvalidOperationException("The opened manifest fingerprint is unavailable.");
-                _current = result.Document;
-                RequiresReopen = false;
-                _storeRecoveryBlocked = false;
-                _resultUnknown = false;
-                ViewBlocked = false;
-            }
-            else if (result.Status == WallOpenStatus.RecoveryBlocked)
-            {
-                MarkStoreRecoveryBlocked();
-            }
-            else if (result.Status == WallOpenStatus.OpenFailed)
-            {
-                // No recovery latch. An existing document or latch stays blocked.
-                if (RequiresReopen || _storeRecoveryBlocked || _resultUnknown || _current is not null)
-                    ViewBlocked = true;
-            }
-            else if (RequiresReopen || _storeRecoveryBlocked || _resultUnknown)
-            {
-                // A failed attempt to read the committed snapshot must not unlock the
-                // old in-memory document or make it look current again.
-                ViewBlocked = true;
-            }
-            return result;
+            return AcceptOpenResult(ReadOpenResult(initialColumns, initialRows));
         }
+    }
+
+    // Only the startup error page may retry in-process. A loaded session must obey
+    // the existing exit/reopen contract, including after an uncertain commit.
+    public Task<WallOpenResult> RetryInitialOpenAsync(int initialColumns, int initialRows)
+    {
+        lock (_gate)
+        {
+            if (_writePending || _current is not null || RequiresReopen || _resultUnknown)
+                throw new InvalidOperationException("The current session requires a full reopen or has pending storage work.");
+            if (_executor is null || _acceptOnUi is null)
+                throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            _writePending = true;
+            return RetryInitialOpenReservedAsync(initialColumns, initialRows, _executor, _acceptOnUi);
+        }
+    }
+
+    private async Task<WallOpenResult> RetryInitialOpenReservedAsync(int columns, int rows,
+        IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
+    {
+        WallOpenResult? stored = null, accepted = null;
+        var live = true;
+        try
+        {
+            stored = await executor.ExecuteAsync(() => ReadOpenResult(columns, rows)).ConfigureAwait(false);
+            await acceptOnUi(() =>
+            {
+                lock (_gate)
+                {
+                    if (!live || accepted is not null) return;
+                    accepted = AcceptOpenResult(stored);
+                }
+            }).ConfigureAwait(false);
+            lock (_gate)
+            {
+                live = false;
+                if (accepted is null)
+                    throw new InvalidOperationException("The UI dispatcher completed without accepting the opened snapshot.");
+                return accepted;
+            }
+        }
+        catch
+        {
+            // Initialization/recovery may have published a manifest before an
+            // executor or acceptance failure. Never offer another in-process try.
+            lock (_gate)
+            {
+                live = false;
+                if (accepted is not null) return accepted;
+                if (stored?.Document is not null) MarkRequiresReopen();
+                else MarkResultUnknown();
+            }
+            throw;
+        }
+        finally { lock (_gate) { live = false; _writePending = false; } }
+    }
+
+    public string ValidatedDataRoot() => _store.ValidatedDataRoot();
+
+    private WallOpenResult ReadOpenResult(int initialColumns, int initialRows)
+    {
+        var result = _store.Open();
+        if (result.Status == WallOpenStatus.Fresh)
+        {
+            result = _store.InitializeFresh(WallDocument.Empty(initialColumns, initialRows));
+            if (result.Status == WallOpenStatus.Loaded && result.Document is not null)
+                result = result with { InitializedFresh = true };
+        }
+        return result;
+    }
+
+    private WallOpenResult AcceptOpenResult(WallOpenResult result)
+    {
+        if (result.Document is not null && result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious)
+        {
+            result = result with { Document = result.Document.ActiveView() };
+            _manifestSha256 = result.ManifestSha256 ?? throw new InvalidOperationException("The opened manifest fingerprint is unavailable.");
+            _current = result.Document;
+            RequiresReopen = false;
+            _storeRecoveryBlocked = false;
+            _resultUnknown = false;
+            ViewBlocked = false;
+        }
+        else if (result.Status == WallOpenStatus.RecoveryBlocked)
+        {
+            MarkStoreRecoveryBlocked();
+        }
+        else if (result.Status == WallOpenStatus.OpenFailed)
+        {
+            // No recovery latch. An existing document or latch stays blocked.
+            if (RequiresReopen || _storeRecoveryBlocked || _resultUnknown || _current is not null)
+                ViewBlocked = true;
+        }
+        else if (RequiresReopen || _storeRecoveryBlocked || _resultUnknown)
+        {
+            // A failed attempt to read the committed snapshot must not unlock the
+            // old in-memory document or make it look current again.
+            ViewBlocked = true;
+        }
+        return result;
     }
 
     public WallLayoutResult Propose(WallAction action, double workWidthDip, double workHeightDip,

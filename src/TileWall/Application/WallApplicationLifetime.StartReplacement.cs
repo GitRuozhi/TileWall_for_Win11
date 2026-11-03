@@ -20,6 +20,12 @@ internal sealed partial class WallApplicationLifetime
     {
         if (_hotKeyRecording || _settingsBusy || !_started || _exitPending || _tearingDown) return;
         if (slot == 1 ? !_hotKey.IsRegistered : slot != 2 || !_secondaryHotKey.IsRegistered) return;
+        if (_startReplacement.IsActive)
+        {
+            if (!NativeStartMenu.TryOpen(_host.Hwnd))
+                _window.ShowStatus(ProductStrings.Get("Settings.StartReplacementUnavailable"));
+            return;
+        }
         Request(_show.State == TileWall.Core.Shell.WallShowState.Hidden || !_window.IsForegroundWallSession()
             ? TileWall.Core.Shell.WallShowTrigger.Show : TileWall.Core.Shell.WallShowTrigger.Toggle);
     }
@@ -69,12 +75,12 @@ internal sealed partial class WallApplicationLifetime
     private static string StartReplacementFailure(string failure) =>
         string.Format(ProductStrings.Get("Settings.StartReplacementFailed"), failure);
 
-    private async Task<bool> StopStartReplacementAsync(bool suspend = false)
+    private async Task<bool> StopStartReplacementAsync(bool suspend = false, CancellationToken stopDeadline = default)
     {
         try
         {
-            if (suspend) await _startReplacement.SuspendAsync();
-            else await _startReplacement.StopAsync();
+            if (suspend) await _startReplacement.SuspendAsync(stopDeadline);
+            else await _startReplacement.StopAsync(stopDeadline);
             return true;
         }
         catch (Exception ex)
@@ -239,7 +245,16 @@ internal sealed partial class WallApplicationLifetime
         // the saved preference after uninstall or an external startup change.
         var displayedLoginEnabled = _loginEnabled ?? _window.Settings.RunAtLogin;
         _settingsBusy = true;
-        await _inputTransition.WaitAsync();
+        using var replacementStopBudget = !proposed.ReplaceStartMenu && _window.Settings.ReplaceStartMenu
+            ? new CancellationTokenSource(TimeSpan.FromSeconds(5)) : null;
+        try { await _inputTransition.WaitAsync(replacementStopBudget?.Token ?? CancellationToken.None); }
+        catch (OperationCanceledException) when (replacementStopBudget?.IsCancellationRequested == true)
+        {
+            _settingsBusy = false;
+            _startReplacementError = StartReplacementFailure("Input owner did not stop within the five-second budget; resources are retained.");
+            TileWall.Core.Shell.AppLog.Warn("StartReplacement", "Stop incomplete: settings input transition timed out.");
+            return CurrentSettingsState() with { Error = _startReplacementError };
+        }
         var old = _window.Settings;
         var oldGeneration = _window.SettingsGeneration;
         var oldRegisteredKey = _hotKey.CurrentGesture;
@@ -272,11 +287,6 @@ internal sealed partial class WallApplicationLifetime
                 var duplicate = ProductStrings.Get("Settings.HotKeyDuplicate");
                 return CurrentSettingsState() with { Error = duplicate, SecondaryHotKeyError = duplicate };
             }
-            var oldLogin = await _login.ReadAsync();
-            oldLoginEnabled = oldLogin.Enabled;
-            var loginChanged = proposed.RunAtLogin != displayedLoginEnabled ||
-                restoreDefaults && proposed.RunAtLogin != (oldLogin.Enabled ?? old.RunAtLogin);
-            if (!loginChanged) _loginEnabled = oldLogin.Enabled;
             if (proposed.ReplaceStartMenu != old.ReplaceStartMenu)
             {
                 replacementTouched = true;
@@ -286,9 +296,14 @@ internal sealed partial class WallApplicationLifetime
                         return await RejectAsync(ProductStrings.Get("Wall.SettingsBlocked"));
                     await _startReplacement.PrepareAsync();
                 }
-                else if (!await StopStartReplacementAsync())
+                else if (!await StopStartReplacementAsync(stopDeadline: replacementStopBudget?.Token ?? CancellationToken.None))
                     return CurrentSettingsState() with { Error = _startReplacementError };
             }
+            var oldLogin = await _login.ReadAsync();
+            oldLoginEnabled = oldLogin.Enabled;
+            var loginChanged = proposed.RunAtLogin != displayedLoginEnabled ||
+                restoreDefaults && proposed.RunAtLogin != (oldLogin.Enabled ?? old.RunAtLogin);
+            if (!loginChanged) _loginEnabled = oldLogin.Enabled;
             if (hotKeyChanged)
             {
                 hotKeyTouched = true;
@@ -409,23 +424,49 @@ internal sealed partial class WallApplicationLifetime
 
     private async Task<bool> StopInputForExitAsync()
     {
-        await _inputTransition.WaitAsync();
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        _startReplacementSuspended |= _startReplacement.IsActive;
+        _startReplacement.CloseAdmissionForStop();
+        var entered = false;
         try
         {
-            _startReplacementSuspended |= _startReplacement.IsActive;
-            if (await StopStartReplacementAsync()) return true;
+            // Include the lifetime owner in the same budget passed into the native service.
+            await _inputTransition.WaitAsync(budget.Token);
+            entered = true;
+            if (await StopStartReplacementAsync(stopDeadline: budget.Token)) return true;
             _window.ShowStatus(_startReplacementError!);
             return false;
         }
-        finally { _inputTransition.Release(); }
+        catch (OperationCanceledException) when (budget.IsCancellationRequested)
+        {
+            _startReplacementError = StartReplacementFailure("Input owner did not stop within the five-second budget; resources are retained.");
+            TileWall.Core.Shell.AppLog.Warn("StartReplacement", "Stop incomplete: input owner transition timed out.");
+            _window.ShowStatus(_startReplacementError);
+            return false;
+        }
+        finally { if (entered) _inputTransition.Release(); }
     }
 
     private async Task RestoreInputAfterCanceledExitAsync()
     {
-        await _inputTransition.WaitAsync();
+        // A failed stop returns to the application immediately. Do not append another owner wait in exit's finally,
+        // or restore registrations while an older hook/worker is still retained or its failure is unresolved.
+        if (_startReplacementError is not null || _startReplacement.HasRetainedResources && !_startReplacement.IsActive)
+        {
+            _startReplacementSuspended = false;
+            return;
+        }
+        if (!await _inputTransition.WaitAsync(TimeSpan.FromSeconds(5)))
+        {
+            _startReplacementError = StartReplacementFailure("Input owner is still busy; input restoration is incomplete.");
+            TileWall.Core.Shell.AppLog.Warn("StartReplacement", "Canceled-exit input restoration timed out; registrations were retained.");
+            _window.ShowStatus(_startReplacementError);
+            return;
+        }
         try
         {
-            if (_tearingDown || _hotKeyRecording) return;
+            if (_tearingDown || _hotKeyRecording || _startReplacementError is not null ||
+                _startReplacement.HasRetainedResources && !_startReplacement.IsActive) return;
             var needResume = _startReplacementSuspended && _startReplacementError is null;
             _startReplacementSuspended = false;
             RestorePausedHotKeys();

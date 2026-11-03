@@ -11,13 +11,15 @@ public sealed partial class MainWindow
 {
     private StaStorageExecutor? _storageExecutor;
     private Task<string?>? _pendingPersistence;
+    private Task? _pendingInitialOpen;
+    private bool _openingWall;
     private Task? _shutdown;
     private bool _shutdownStarted;
     private bool ShutdownStarted => _shutdownStarted;
     private bool _persistencePending, _persistenceAdmissionClosed, _pendingCarouselCommit;
     private bool _environmentAfterPersistence;
     private readonly ExitDraftSavePermission _exitDraftSave = new();
-    private bool PersistenceInteractionBlocked => _persistencePending || _persistenceAdmissionClosed;
+    private bool PersistenceInteractionBlocked => _persistencePending || _persistenceAdmissionClosed || _openingWall;
     internal bool PersistenceBusy => PersistenceInteractionBlocked;
     internal void TraceExit(string stage) => TraceInput("Exit " + stage);
     internal bool PersistenceMutationBlocked =>
@@ -179,6 +181,7 @@ public sealed partial class MainWindow
 
     internal async Task DrainPersistenceAsync()
     {
+        while (_pendingInitialOpen is { } opening) await opening;
         while (_pendingPersistence is { } pending) await pending;
     }
 

@@ -219,6 +219,17 @@ internal sealed class SettingsDialog : IWallDialogSession
         Id(_replaceStartMenu, "replace-start-menu"); Id(_startReplacementStatus, "start-replacement-state");
         Id(_retryStart, "start-replacement-retry");
         Id(_confirmContextTransfer, "context-menu-confirm-transfer"); Id(_cancelContextTransfer, "context-menu-cancel-transfer");
+        // A switch has no separate double-tap action. Treat two quick clicks as
+        // two taps rather than letting the second click disappear into DoubleTapped.
+        var toggles = new[] { _showGrid, _runAtLogin, _topmost, _stayVisible, _menuStart,
+            _fullScreen, _expandColumns, _replaceStartMenu, _contextMenu };
+        foreach (var toggle in toggles)
+        {
+            toggle.IsDoubleTapEnabled = false;
+            // Hit testing lands on template children, which own their gesture
+            // flags independently of the ToggleSwitch itself.
+            toggle.Loaded += (_, _) => DisableDoubleTap(toggle);
+        }
         if (_traceInput)
         {
             body.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, e) =>
@@ -227,10 +238,7 @@ internal sealed class SettingsDialog : IWallDialogSession
             body.AddHandler(UIElement.DoubleTappedEvent, new DoubleTappedEventHandler((_, e) =>
                 TraceSettings("DoubleTapped", $"source={e.OriginalSource?.GetType().Name}")), true);
             body.SizeChanged += (_, _) => TraceSettings("BodySize", $"size={body.ActualWidth:F2},{body.ActualHeight:F2}");
-            foreach (var toggle in new[] { _showGrid, _runAtLogin, _topmost, _stayVisible, _menuStart,
-                _fullScreen, _expandColumns, _replaceStartMenu,
-                _contextMenu,
-            })
+            foreach (var toggle in toggles)
             {
                 toggle.Toggled += (_, _) => TraceSettings("Toggled",
                     $"{AutomationProperties.GetAutomationId(toggle)} isOn={toggle.IsOn}");
@@ -608,7 +616,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         ToolTipService.SetToolTip(diagnostic, error);
         AutomationProperties.SetHelpText(diagnostic, actualState);
 
-        var help = ProductStrings.Get("Settings.HotKeyOpensTileWall") + "\n" +
+        var help = ProductStrings.Get(_state.StartReplacementActive
+            ? "Settings.HotKeyOpensSystemStart" : "Settings.HotKeyOpensTileWall") + "\n" +
             ProductStrings.Get("Settings.HotKeyHint") + "\n" + actualState;
         SetHelp(rowKey, recorder, help);
     }
@@ -1027,6 +1036,13 @@ internal sealed class SettingsDialog : IWallDialogSession
         var point = args.GetCurrentPoint(toggle);
         return $"{AutomationProperties.GetAutomationId(toggle)} point={point.Position.X:F2},{point.Position.Y:F2} " +
             $"left={point.Properties.IsLeftButtonPressed} handled={args.Handled} source={args.OriginalSource?.GetType().Name}";
+    }
+
+    private static void DisableDoubleTap(DependencyObject node)
+    {
+        if (node is UIElement element) element.IsDoubleTapEnabled = false;
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(node); index++)
+            DisableDoubleTap(VisualTreeHelper.GetChild(node, index));
     }
 
     private void TraceThumbs(DependencyObject node, ToggleSwitch toggle)

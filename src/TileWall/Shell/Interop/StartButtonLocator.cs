@@ -58,6 +58,7 @@ internal sealed class StartButtonLocator : IAsyncDisposable
     private CancellationTokenRegistration _startupCancellation;
 
     public StartButtonSnapshot CurrentSnapshot => Volatile.Read(ref _snapshot);
+    internal bool HasRetainedResources => Volatile.Read(ref _thread) is not null && !_finished.Task.IsCompletedSuccessfully;
     public event Action<StartButtonSnapshot>? SnapshotChanged;
     public event Action<StartButtonLocatorException>? Faulted;
 

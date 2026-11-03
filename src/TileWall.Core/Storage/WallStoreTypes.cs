@@ -10,9 +10,16 @@ public enum WallOpenStatus
     CorruptBlocked, UnsupportedFormatBlocked, RecoveryBlocked, OpenFailed
 }
 
+public enum WallOpenBlockReason
+{
+    None, InitializationInterrupted, UnattributedFiles, InvalidSnapshot,
+    UnsupportedFormat, RecoveryMaterials, ReferencedAssets, UnsafePath, StorageAccess
+}
+
 public sealed record WallOpenResult(WallOpenStatus Status, WallDocument? Document,
     IReadOnlyList<string> Diagnostics)
 {
+    public WallOpenBlockReason BlockReason { get; init; }
     // A fact about this Open call, never persisted or inferred from an empty wall.
     public bool InitializedFresh { get; init; }
     public string? ManifestSha256 { get; init; }

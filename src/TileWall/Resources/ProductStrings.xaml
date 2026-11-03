@@ -37,8 +37,8 @@
     <x:String x:Key="Settings.LanguageFallback">中文系统语言使用中文，其他系统语言使用英文。</x:String>
     <x:String x:Key="Settings.HotKey">快捷键 1</x:String>
     <x:String x:Key="Settings.SecondaryHotKey">快捷键 2</x:String>
-    <x:String x:Key="Settings.ReplaceStartMenu">替换系统开始</x:String>
-    <x:String x:Key="Settings.StartReplacementHelp">打开后 TileWall 将接管键盘 Win 键和任务栏按钮；按 Ctrl+Esc 仍可打开系统开始菜单。</x:String>
+    <x:String x:Key="Settings.ReplaceStartMenu">替换系统开始（实验）</x:String>
+    <x:String x:Key="Settings.StartReplacementHelp">启用后，单按 Win 键或左击任务栏开始按钮切换 TileWall；两组快捷键及 Ctrl+Esc 打开 Windows 开始。</x:String>
     <x:String x:Key="Settings.StartReplacementOff">已关闭，系统开始入口保持原生行为。</x:String>
     <x:String x:Key="Settings.StartReplacementActive">正在替换系统开始。</x:String>
     <x:String x:Key="Settings.StartReplacementSuspended">录制快捷键期间暂时停止替换。</x:String>
@@ -47,6 +47,7 @@
     <x:String x:Key="Settings.StartReplacementUnavailable">当前无法替换系统开始。</x:String>
     <x:String x:Key="Settings.StartReplacementRetry">重试替换</x:String>
     <x:String x:Key="Settings.HotKeyOpensTileWall">两组快捷键均显示或隐藏 TileWall；按 Ctrl+Esc 打开系统开始菜单。</x:String>
+    <x:String x:Key="Settings.HotKeyOpensSystemStart">两组快捷键均打开 Windows 开始；单按 Win 或左击开始按钮切换 TileWall。</x:String>
     <x:String x:Key="Settings.HotKeyHint">例如 Win+Oem3；按下所需组合键即可保存，按 Esc 取消。</x:String>
     <x:String x:Key="Settings.HotKeyDuplicate">两组快捷键不能相同。</x:String>
     <x:String x:Key="Settings.RegisteredHotKey">当前注册：{0}</x:String>
@@ -204,6 +205,18 @@
     <x:String x:Key="Wall.Clock">时间日期</x:String>
     <x:String x:Key="Wall.ReadWorkAreaFailed">无法读取主屏工作区。</x:String>
     <x:String x:Key="Wall.OpenFailed">墙面数据无法打开（{0}）：{1}</x:String>
+    <x:String x:Key="Wall.RetryOpen">重新尝试打开</x:String>
+    <x:String x:Key="Wall.OpenDataFolder">打开数据目录</x:String>
+    <x:String x:Key="Wall.OpenDataFolderFailed">无法打开数据目录：{0}</x:String>
+    <x:String x:Key="Wall.OpenReason.InitializationInterrupted">首次初始化曾被中断，现有文件无法证明完整提交。数据已保留，不会自动清空或新建墙面。</x:String>
+    <x:String x:Key="Wall.OpenReason.UnattributedFiles">数据目录中有无法确认归属的残留文件。数据已保留，暂时无法安全打开墙面。</x:String>
+    <x:String x:Key="Wall.OpenReason.InvalidSnapshot">墙面快照缺失、损坏或校验不符，且无法验证完整的前一份数据。现有数据已保留。</x:String>
+    <x:String x:Key="Wall.OpenReason.UnsupportedFormat">这些数据含当前版本无法读取的格式或必要结构。请使用支持该格式的更新版本；现有数据不会被降级或清空。</x:String>
+    <x:String x:Key="Wall.OpenReason.RecoveryMaterials">恢复材料无法通过校验，或上次提交的清理尚未完成。数据已保留；解除文件占用或访问限制后可重新尝试打开。</x:String>
+    <x:String x:Key="Wall.OpenReason.ReferencedAssets">墙面引用的入口、原图或图库缺失、损坏或校验不符。为避免加载不完整的墙面，现有数据已保留。</x:String>
+    <x:String x:Key="Wall.OpenReason.UnsafePath">数据路径包含联接、重解析点或发生了不安全的变化。请恢复本应用的正常数据目录后重试。</x:String>
+    <x:String x:Key="Wall.OpenReason.StorageAccess">无法安全读取或初始化墙面数据。请检查目录权限、磁盘状态和文件占用后重试；现有数据已保留。</x:String>
+    <x:String x:Key="Wall.OpenReason.None">无法打开墙面数据。现有数据已保留。</x:String>
     <x:String x:Key="Wall.ViewFailed">墙面数据已打开，但视图构建失败。</x:String>
     <x:String x:Key="Wall.RebuildFailed">重建失败；磁盘状态未更改，可再次尝试或重启。</x:String>
     <x:String x:Key="Wall.ViewBlocked">墙面视图已阻断，请重新启动。</x:String>
