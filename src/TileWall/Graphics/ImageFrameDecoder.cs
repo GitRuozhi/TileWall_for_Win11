@@ -23,6 +23,8 @@ public sealed record PuzzleDecodeResult(ImageDecodeStatus Status, PuzzleDecodedP
 /// <summary>Orientation-correct WIC decode. Safe to call away from the XAML UI thread.</summary>
 public sealed class ImageFrameDecoder
 {
+    private static long _decodedPlaneCount;
+    internal static long DecodedPlaneCount => Interlocked.Read(ref _decodedPlaneCount);
     private const int MaxDecodedEdge = int.MaxValue;
     /// <summary>Discover format support through WIC itself, including installed codecs and extensionless files.</summary>
     public async Task<bool> ProbeAsync(string path, CancellationToken ct = default)
@@ -175,6 +177,7 @@ public sealed class ImageFrameDecoder
                 InterpolationMode = BitmapInterpolationMode.Fant,
             }
             : new BitmapTransform();
+        Interlocked.Increment(ref _decodedPlaneCount);
         var pixelData = await decoder.GetPixelDataAsync(
             BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, transform,
             ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(ct).ConfigureAwait(false);

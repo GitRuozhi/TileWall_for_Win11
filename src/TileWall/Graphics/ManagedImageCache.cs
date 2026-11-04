@@ -8,6 +8,12 @@ internal sealed class ManagedImageCache(string root)
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, int> _leases = new(StringComparer.OrdinalIgnoreCase);
+    // Capacity accounting for this instance's sole cache writer, never path or
+    // content validation. Unknown/near-capacity state requires a fresh disk census.
+    private long? _iconBytes;
+    private readonly Dictionary<string, long> _iconFileBytes = new(StringComparer.OrdinalIgnoreCase);
+    private long _iconBudgetCensuses;
+    internal long IconBudgetCensusCount => Interlocked.Read(ref _iconBudgetCensuses);
     internal string Root { get; } = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
     internal string Under(params string[] segments)
     {
@@ -17,6 +23,15 @@ internal sealed class ManagedImageCache(string root)
         RequireUnder(result); return result;
     }
     internal void Guard(string path)
+    {
+        try { GuardPath(path); }
+        catch
+        {
+            if (TouchesIcons(path)) lock (_gate) ForgetIconBudget();
+            throw;
+        }
+    }
+    private void GuardPath(string path)
     {
         RequireUnder(path);
         var cursor = Path.GetPathRoot(path)!;
@@ -39,7 +54,12 @@ internal sealed class ManagedImageCache(string root)
     }
     internal void CreateDirectory(string path)
     {
-        Guard(path); Directory.CreateDirectory(path); Guard(path);
+        try { Guard(path); Directory.CreateDirectory(path); Guard(path); }
+        catch
+        {
+            if (TouchesIcons(path)) lock (_gate) ForgetIconBudget();
+            throw;
+        }
     }
     internal async Task<string> StageAsync(ReadOnlyMemory<byte> bytes, CancellationToken ct)
     {
@@ -52,20 +72,59 @@ internal sealed class ManagedImageCache(string root)
     }
     internal void Publish(string staged, string destination)
     {
+        if (!TouchesIcons(staged) && !TouchesIcons(destination)) { PublishFile(staged, destination); return; }
+        lock (_gate)
+        {
+            if (TouchesIcons(staged) || TouchesIcons(destination)) ForgetIconBudget();
+            PublishFile(staged, destination);
+        }
+    }
+    private void PublishFile(string staged, string destination)
+    {
         Guard(staged); CreateDirectory(Path.GetDirectoryName(destination)!); Guard(destination);
         File.Move(staged, destination, overwrite: true); Guard(destination);
     }
     internal void Delete(string path)
     {
-        Guard(path); if (File.Exists(path)) File.Delete(path);
+        if (!TouchesIcons(path)) { Guard(path); if (File.Exists(path)) File.Delete(path); return; }
+        lock (_gate)
+        {
+            try
+            {
+                Guard(path);
+                if (File.Exists(path))
+                {
+                    if (TouchesIcons(path)) ForgetIconBudget();
+                    File.Delete(path);
+                }
+                else ObserveIconFile(path, null);
+            }
+            catch { if (TouchesIcons(path)) ForgetIconBudget(); throw; }
+        }
     }
     internal byte[] Read(string path, int maximumBytes)
     {
-        Guard(path); var info = new FileInfo(path);
-        if (!info.Exists || info.Length < 1 || info.Length > maximumBytes) throw new IOException("Missing or oversized image cache file.");
-        var bytes = File.ReadAllBytes(path);
-        if (bytes.Length > maximumBytes) throw new IOException("Image cache file grew while being read.");
-        return bytes;
+        var missing = false;
+        try
+        {
+            Guard(path); var info = new FileInfo(path);
+            if (!info.Exists)
+            {
+                ObserveIconFile(path, null);
+                missing = true;
+                throw new IOException("Missing image cache file.");
+            }
+            ObserveIconFile(path, info.Length);
+            if (info.Length < 1 || info.Length > maximumBytes) throw new IOException("Oversized image cache file.");
+            var bytes = File.ReadAllBytes(path);
+            if (bytes.Length > maximumBytes) throw new IOException("Image cache file grew while being read.");
+            return bytes;
+        }
+        catch
+        {
+            if (!missing && TouchesIcons(path)) lock (_gate) ForgetIconBudget();
+            throw;
+        }
     }
     internal IDisposable Lease(string path)
     {
@@ -97,6 +156,7 @@ internal sealed class ManagedImageCache(string root)
     {
         lock (_gate)
         {
+            if (TouchesIcons(directory)) ForgetIconBudget();
             var files = SafeFiles(directory).Where(path => path.EndsWith(pattern, StringComparison.OrdinalIgnoreCase))
                 .Select(path => new FileInfo(path)).OrderBy(info => info.LastAccessTimeUtc).ToArray();
             var bytes = files.Sum(info => info.Length);
@@ -126,6 +186,8 @@ internal sealed class ManagedImageCache(string root)
         if (required > limit || required > 33L * 1024 * 1024) return false;
         lock (_gate)
         {
+          try
+          {
             token.ThrowIfCancellationRequested();
             var root = Under("Cache", "Images", "Icons");
             var packages = Path.Combine(root, "Packages");
@@ -139,12 +201,25 @@ internal sealed class ManagedImageCache(string root)
             // plane forever even after the producer successfully rebuilt it.
             if (exists && !IconPackageMatches(destination, payload, token))
             {
+                ForgetIconBudget();
                 if (IsLeased(destination)) return false;
                 DeleteIconTree(destination); exists = false;
             }
-            var previousMappingBytes = File.Exists(mappingPath) ? new FileInfo(mappingPath).Length : 0;
+            Guard(mappingPath);
+            var mappingExists = File.Exists(mappingPath);
+            var previousMappingBytes = mappingExists ? new FileInfo(mappingPath).Length : 0;
+            if (_iconBytes is not null &&
+                (mappingExists ? !_iconFileBytes.TryGetValue(mappingPath, out var accountedMapping) || accountedMapping != previousMappingBytes
+                    : _iconFileBytes.ContainsKey(mappingPath))) ForgetIconBudget();
+            if (_iconBytes is not null && (exists
+                ? payload.Any(pair => !_iconFileBytes.TryGetValue(Path.Combine(destination, pair.Key), out var length) || length != pair.Value.LongLength)
+                : _iconFileBytes.ContainsKey(Path.Combine(destination, "manifest.json"))))
+                ForgetIconBudget();
             var additional = checked((exists ? 0 : payload.Sum(pair => (long)pair.Value.Length)) + mapping.LongLength - previousMappingBytes);
-            if (!MakeIconSpace(root, packages, mappings, additional, limit, destination, mappingPath)) return false;
+            if (!MakeIconSpace(root, packages, mappings, additional, limit, destination, mappingPath, out var reservedBytes)) return false;
+            // The existing gate reserves this entire publication. Do not publish
+            // its accounted result until all staging cleanup has also succeeded.
+            _iconBytes = null;
             var staging = Path.Combine(root, "Staging", Guid.NewGuid().ToString("N"));
             try
             {
@@ -165,11 +240,16 @@ internal sealed class ManagedImageCache(string root)
                 }
                 token.ThrowIfCancellationRequested();
                 var mapStage = Path.Combine(staging, "mapping.json"); Guard(mapStage);
-                File.WriteAllBytes(mapStage, mapping); Publish(mapStage, mappingPath);
+                File.WriteAllBytes(mapStage, mapping); PublishFile(mapStage, mappingPath);
                 Guard(destination); Directory.SetLastAccessTimeUtc(destination, DateTime.UtcNow);
-                return true;
             }
             finally { DeleteIconTree(staging); }
+            foreach (var pair in payload) _iconFileBytes[Path.Combine(destination, pair.Key)] = pair.Value.LongLength;
+            _iconFileBytes[mappingPath] = mapping.LongLength;
+            _iconBytes = reservedBytes;
+            return true;
+          }
+          catch { ForgetIconBudget(); throw; }
         }
     }
 
@@ -194,15 +274,31 @@ internal sealed class ManagedImageCache(string root)
         lock (_gate)
         {
             var directory = Under("Cache", "Images", "Icons", "Packages", key);
-            if (!IsLeased(directory)) DeleteIconTree(directory);
+            try
+            {
+                Guard(directory);
+                if (!Directory.Exists(directory))
+                {
+                    ObserveIconFile(Path.Combine(directory, "manifest.json"), null);
+                    return;
+                }
+                ForgetIconBudget();
+                if (!IsLeased(directory)) DeleteIconTree(directory);
+            }
+            catch { ForgetIconBudget(); throw; }
         }
     }
 
-    private bool MakeIconSpace(string root, string packages, string mappings, long additional, long limit, string keep, string keepMapping)
+    private bool MakeIconSpace(string root, string packages, string mappings, long additional, long limit, string keep, string keepMapping,
+        out long reservedBytes)
     {
-        var files = SafeFiles(root).Select(path => new FileInfo(path)).ToArray();
-        var bytes = files.Sum(file => file.Length);
-        if (bytes + additional <= limit) return true;
+        var headroom = Math.Min(8L * 1024 * 1024, Math.Max(1, limit / 16));
+        if (_iconBytes is { } accounted && checked(accounted + additional) is var planned &&
+            planned >= 0 && planned < limit - headroom)
+        { reservedBytes = planned; return true; }
+        var bytes = ReadIconBudget(root);
+        reservedBytes = checked(bytes + additional);
+        if (reservedBytes >= 0 && reservedBytes <= limit) return true;
         var candidates = new List<(string Path, DateTime Used, bool Directory)>();
         Guard(mappings);
         if (Directory.Exists(mappings))
@@ -228,7 +324,7 @@ internal sealed class ManagedImageCache(string root)
             }
         foreach (var candidate in candidates.OrderBy(item => item.Used))
         {
-            if (bytes + additional <= limit) return true;
+            if (bytes + additional <= limit) break;
             if (IsLeased(candidate.Path)) continue;
             try
             {
@@ -239,7 +335,49 @@ internal sealed class ManagedImageCache(string root)
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
-        return bytes + additional <= limit;
+        // A failed tree delete may have removed only part of its payload. Never
+        // grant capacity from an assumed whole-tree deletion or a stale length.
+        bytes = ReadIconBudget(root);
+        reservedBytes = checked(bytes + additional);
+        if (reservedBytes >= 0 && reservedBytes <= limit) return true;
+        ForgetIconBudget();
+        return false;
+    }
+
+    private long ReadIconBudget(string root)
+    {
+        ForgetIconBudget();
+        Interlocked.Increment(ref _iconBudgetCensuses);
+        var files = SafeFiles(root).Select(path => new FileInfo(path)).ToArray();
+        var bytes = files.Sum(file => file.Length);
+        foreach (var file in files) _iconFileBytes.Add(file.FullName, file.Length);
+        _iconBytes = bytes;
+        return bytes;
+    }
+
+    private void ForgetIconBudget()
+    {
+        _iconBytes = null;
+        _iconFileBytes.Clear();
+    }
+
+    private void ObserveIconFile(string path, long? length)
+    {
+        if (!TouchesIcons(path)) return;
+        lock (_gate)
+        {
+            if (_iconBytes is null) return;
+            var known = _iconFileBytes.TryGetValue(path, out var accounted);
+            // An ordinary unrecorded miss is zero bytes, not a failed census.
+            if (length is null ? known : !known || accounted != length) ForgetIconBudget();
+        }
+    }
+
+    private bool TouchesIcons(string path)
+    {
+        var icons = Path.Combine(Root, "Cache", "Images", "Icons");
+        return path.Equals(icons, StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith(icons + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     private bool IsLeased(string path) => _leases.Keys.Any(lease =>

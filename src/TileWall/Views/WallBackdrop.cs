@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
+using TileWall.Graphics;
 using Windows.UI;
 using Windows.UI.ViewManagement;
 
@@ -29,6 +30,12 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
     private (bool HighContrast, Color? Background)? _lastMaterialPolicy;
 
     internal Func<Task<bool>>? WaitForFallbackCommit { get; set; }
+
+    internal AcrylicSnapshotRecipe? SnapshotRecipe(bool dark) =>
+        _materials.TryGetValue(WallBackgroundMode.Acrylic, out var slot) &&
+        slot.Configuration.Theme == (dark ? SystemBackdropTheme.Dark : SystemBackdropTheme.Light) &&
+        slot.Controller is DesktopAcrylicController acrylic
+            ? new(acrylic.TintColor, acrylic.TintOpacity, acrylic.LuminosityOpacity) : null;
 
     private sealed class MaterialSlot(WallBackgroundMode mode, ISystemBackdropControllerWithTargets controller,
         AlphaBackdropTarget proxy)
@@ -189,6 +196,11 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             // Keep the outgoing brush until its replacement has committed.
             var effectiveActive = _active && _defaultConfiguration.IsInputActive;
             var reduced = !_uiSettings.AdvancedEffectsEnabled || _defaultConfiguration.IsHighContrast;
+            // A hidden first show also needs the resolved recipe. Creating the
+            // disabled proxy does not attach its brush to the window; selection
+            // and the existing committed handoff still own that transition.
+            if (!reduced && _mode == WallBackgroundMode.Acrylic && DesktopAcrylicController.IsSupported())
+                _ = GetMaterial(WallBackgroundMode.Acrylic);
             var useSnapshot = !reduced && _snapshotAvailable && _mode == WallBackgroundMode.Acrylic && !effectiveActive;
             var selected = useSnapshot ? WallBackgroundMode.Custom : _mode == WallBackgroundMode.Acrylic && (!effectiveActive || _acrylicFailed || !DesktopAcrylicController.IsSupported())
                 ? WallBackgroundMode.Mica : _mode;
@@ -206,10 +218,8 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             if (!ReferenceEquals(material, _selectedMaterial)) DisableSelectedMaterial();
             foreach (var slot in _materials.Values)
             {
-                // Offset only the material that really is Acrylic. Mica and the XAML
-                // fallback plane retain the setting's original transparency.
-                var transparency = slot.Mode == WallBackgroundMode.Acrylic ? Math.Clamp(_transparency - 6, 0, 94) : _transparency;
-                slot.Proxy.Opacity = reduced ? 1f : (100 - transparency) / 100f;
+                slot.Proxy.Opacity = reduced ? 1f : slot.Mode == WallBackgroundMode.Acrylic
+                    ? (float)AcrylicSnapshotRecipe.BackgroundOpacity(_transparency) : (100 - _transparency) / 100f;
                 UpdateConfiguration(slot, ReferenceEquals(slot, material) && effectiveActive);
             }
             if (material is { Available: true })

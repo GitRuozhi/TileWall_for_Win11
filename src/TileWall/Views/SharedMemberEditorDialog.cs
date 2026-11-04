@@ -610,7 +610,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         if (_previewPath is not null && !StringComparer.OrdinalIgnoreCase.Equals(_previewPath, frame.CanonicalPath)) return;
         if (_draft.Images.Kind == MemberImageSourceKind.Automatic)
         {
-            if (SelectDraftIconFrame() || !AutomaticIconSeriesRules.SameSelectedFrame(_previewIconSeries, _draft.Images.IconSeries))
+            if (SelectDraftIconFrame() || !AutomaticIconSeriesRules.SameSelectedFrame(_previewIconSeries, _draft.Images.IconSeries) ||
+                !AutomaticPreviewDemandMatches(frame))
                 _pending = LoadPreviewAsync();
             else if (_draft.Visual.BackgroundMode == MemberBackgroundMode.Blur && frame.BlurredUnderfill is null)
                 _pending = EnsureAutomaticPreviewBlurAsync(frame);
@@ -629,6 +630,16 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         var blurMissing = _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur && frame.BlurredUnderfill is null;
         if (!blurMissing && frame.SharpDecodedPixels.Width + 1 >= width && frame.SharpDecodedPixels.Height + 1 >= height) return;
         _pending = LoadPreviewAsync();
+    }
+
+    private bool AutomaticPreviewDemandMatches(PuzzleFrame frame)
+    {
+        var metrics = new WallMetrics();
+        var size = ImageDecodeSizing.ForDisplay(checked((int)frame.SourcePixels.Width), checked((int)frame.SourcePixels.Height),
+            Math.Max(1, checked((int)Math.Ceiling(metrics.WidthOf(_draft.LocalBounds.Width) * PreviewRasterizationScale))),
+            Math.Max(1, checked((int)Math.Ceiling(metrics.HeightOf(_draft.LocalBounds.Height) * PreviewRasterizationScale))), _draft.ImageDisplay);
+        return Math.Abs(frame.SharpDecodedPixels.Width - size.Width) <= 1 &&
+            Math.Abs(frame.SharpDecodedPixels.Height - size.Height) <= 1;
     }
 
     private bool SelectDraftIconFrame()
@@ -871,7 +882,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         if (_closed || _previewClosing) return;
         SelectDraftIconFrame();
         if (!_foregroundActivated && (_draft.Images.Kind is MemberImageSourceKind.Automatic or MemberImageSourceKind.None) &&
-            AutomaticIconSeriesRules.SameSelectedFrame(_previewIconSeries, _draft.Images.IconSeries) && _frame is not null)
+            AutomaticIconSeriesRules.SameSelectedFrame(_previewIconSeries, _draft.Images.IconSeries) && _frame is not null &&
+            AutomaticPreviewDemandMatches(_frame))
         {
             var retained = _frame;
             if (retained is not null && _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur && retained.BlurredUnderfill is null)

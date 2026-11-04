@@ -190,17 +190,23 @@ public sealed partial class WallImageService
     private Task<Prepared> ProduceAutomaticAsync(string? source, int width, int height,
         AutomaticSourceSnapshot snapshot, string key, bool allowPixelCache, bool allowResultCache) => Task.Run(async () =>
     {
+        using var trace = ImageCandidateTrace.Start("automatic-producer", source, width, height);
         var lifetime = _cacheLifetime.Token;
-        await _automaticSlots.WaitAsync(lifetime).ConfigureAwait(false);
+        using (trace?.Measure("automatic.slot-wait")) await _automaticSlots.WaitAsync(lifetime).ConfigureAwait(false);
         try
         {
-            var diskHit = allowPixelCache && snapshot.CacheAllowed ? ReadAutomaticPixels(key, snapshot.Stamp) : null;
+            Prepared? diskHit;
+            using (trace?.Measure("automatic.disk-read"))
+                diskHit = allowPixelCache && snapshot.CacheAllowed ? ReadAutomaticPixels(key, snapshot.Stamp) : null;
             if (diskHit is not null && snapshot == AutomaticSourceStamp(source, snapshot.PackageTarget)) return diskHit;
-            var prepared = await PrepareAutoCoreAsync(source, width, height, lifetime,
-                snapshot.PackageTarget).ConfigureAwait(false);
+            Prepared prepared;
+            using (trace?.Measure("automatic.collect-select"))
+                prepared = await PrepareAutoCoreAsync(source, width, height, lifetime,
+                    snapshot.PackageTarget).ConfigureAwait(false);
             lifetime.ThrowIfCancellationRequested();
-            if (snapshot != AutomaticSourceStamp(source, snapshot.PackageTarget))
-                return new Prepared(WallImageStatus.Invalid, null, 0, 0, "IconSourceChanged") { CacheAllowed = false };
+            using (trace?.Measure("automatic.dependency-after"))
+                if (snapshot != AutomaticSourceStamp(source, snapshot.PackageTarget))
+                    return new Prepared(WallImageStatus.Invalid, null, 0, 0, "IconSourceChanged") { CacheAllowed = false };
             prepared = prepared with
             {
                 MemoryCacheAllowed = prepared.MemoryCacheAllowed && snapshot.CacheAllowed && allowResultCache,
@@ -208,9 +214,10 @@ public sealed partial class WallImageService
             };
             if (allowPixelCache && prepared.Pixels is not null && prepared.MemoryCacheAllowed)
             {
-                Cache(key, prepared, allowMemoryOnly: true);
+                using (trace?.Measure("automatic.memory-publish")) Cache(key, prepared, allowMemoryOnly: true);
                 if (prepared.CacheAllowed)
-                    SaveAutomaticPixels(key, snapshot.Stamp, width, height, prepared, lifetime);
+                    using (trace?.Measure("automatic.pixel-serialize-publish"))
+                        SaveAutomaticPixels(key, snapshot.Stamp, width, height, prepared, lifetime);
             }
             return prepared;
         }
@@ -262,27 +269,43 @@ public sealed partial class WallImageService
     }
 
     private async Task<PuzzleFrameResult> LoadAutomaticFrameCoreAsync(string? source, int width, int height, bool blur,
-        CancellationToken token, WallMember? member = null)
+        CancellationToken token, WallMember? member = null, bool nativePlane = false,
+        MemberImagePurpose purpose = MemberImagePurpose.Content)
     {
+        using var trace = ImageCandidateTrace.Start("automatic-display", source, width, height);
         if (member?.ResourceOrigin == MemberResourceOrigin.Package) return new(null, WallImageStatus.None);
-        if (member?.Images.IconSeries is not null) return await LoadSavedAutomaticIconFrameAsync(member, token);
+        if (member?.Images.IconSeries is not null)
+            return await LoadSavedAutomaticIconFrameAsync(member, width, height, token, nativePlane, purpose);
         if (width < 1 || height < 1) throw new ArgumentOutOfRangeException(nameof(width));
         try
         {
-            var packageTarget = await Task.Run(() => VerifiedPackageIconTarget(source, member), token);
-            var before = await Task.Run(() => AutomaticSourceStamp(source, packageTarget), token);
-            if (packageTarget is not null && packageTarget != await Task.Run(() => VerifiedPackageIconTarget(source, member), token))
-                return new(null, WallImageStatus.Invalid, "IconSourceChanged");
-            var prepared = await PrepareAutomaticSharedAsync(source, width, height, before, token);
+            string? packageTarget;
+            AutomaticSourceSnapshot before;
+            using (trace?.Measure("before"))
+            {
+                packageTarget = await Task.Run(() => VerifiedPackageIconTarget(source, member), token);
+                before = await Task.Run(() => AutomaticSourceStamp(source, packageTarget), token);
+                if (packageTarget is not null && packageTarget != await Task.Run(() => VerifiedPackageIconTarget(source, member), token))
+                    return new(null, WallImageStatus.Invalid, "IconSourceChanged");
+            }
+            Prepared prepared;
+            using (trace?.Measure("produce-wait")) prepared = await PrepareAutomaticSharedAsync(source, width, height, before, token);
             token.ThrowIfCancellationRequested();
-            if (before != await Task.Run(() => AutomaticSourceStamp(source, packageTarget), token)) return new(null, WallImageStatus.Invalid, "IconSourceChanged");
-            if (packageTarget is not null && packageTarget != await Task.Run(() => VerifiedPackageIconTarget(source, member), token))
-                return new(null, WallImageStatus.Invalid, "IconSourceChanged");
+            using (trace?.Measure("after"))
+            {
+                if (before != await Task.Run(() => AutomaticSourceStamp(source, packageTarget), token)) return new(null, WallImageStatus.Invalid, "IconSourceChanged");
+                if (packageTarget is not null && packageTarget != await Task.Run(() => VerifiedPackageIconTarget(source, member), token))
+                    return new(null, WallImageStatus.Invalid, "IconSourceChanged");
+            }
             if (prepared.Pixels is null) return new(null, prepared.Status, prepared.Diagnostic)
                 { CacheAllowed = prepared.CacheAllowed, MemoryCacheAllowed = false };
             var sharp = new DecodedImageFrame(source ?? "automatic", 0, DateTime.MinValue, prepared.Width, prepared.Height,
                 prepared.Width, prepared.Height, prepared.Pixels);
             var blurred = blur ? await Task.Run(() => LowResolutionBlur.Apply(BlurInput(sharp)), token) : null;
+            if (!nativePlane)
+                using (trace?.Measure("display"))
+                    sharp = await PrepareAutomaticDisplayPlaneAsync(sharp, width, height, member?.ImageDisplay ?? new(),
+                        prepared.MemoryCacheAllowed, token);
             token.ThrowIfCancellationRequested();
             return new(new PuzzleFrame(sharp.SourcePath, 0, DateTime.MinValue,
                 new PixelSize(sharp.SourceWidth, sharp.SourceHeight), new PixelSize(sharp.Width, sharp.Height),
@@ -323,8 +346,23 @@ public sealed partial class WallImageService
         };
     }
 
-    private AutomaticSourceSnapshot AutomaticSourceStampCore(string? source, bool followLinkedTarget)
+    private AutomaticSourceSnapshot AutomaticSourceStampCore(string? source, bool followLinkedTarget) =>
+        AutomaticSourceStampObserved(source, followLinkedTarget, new(StringComparer.OrdinalIgnoreCase));
+
+    private AutomaticSourceSnapshot AutomaticSourceStampObserved(string? source, bool followLinkedTarget,
+        Dictionary<string, string> resourceObservations)
     {
+        string ResourceStamp(string? resource)
+        {
+            var normalized = NormalizePath(resource);
+            if (normalized is null) return PeIconResourceReader.ResourceDependencyStamp(resource);
+            Interlocked.Increment(ref _resourceStampRequests);
+            if (resourceObservations.TryGetValue(normalized, out var observed)) return observed;
+            Interlocked.Increment(ref _resourceStampUnique);
+            var stamp = PeIconResourceReader.ResourceDependencyStamp(normalized);
+            resourceObservations.Add(normalized, stamp);
+            return stamp;
+        }
         var path = NormalizePath(source);
         string? target = source, explicitIcon = null; int? iconIndex = null;
         var entryStamp = source;
@@ -380,7 +418,7 @@ public sealed partial class WallImageService
         }
         else association = "folder";
         var mmc = canonical is not null && IsMmcConsolePath(canonical)
-            ? ReadMmcIconSource(canonical) : null;
+            ? ReadMmcIconSourceObserved(canonical, ResourceStamp) : null;
         // Flags belong to the dependency snapshot before cache lookup as well as
         // to newly collected Shell pixels. This asks for location metadata only;
         // the minimum native argument does not extract or resize an image.
@@ -389,12 +427,12 @@ public sealed partial class WallImageService
         catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException) { }
         var stamp = string.Join("|", "automatic-v10", source, entryStamp, target,
             canonical is null ? null : Fingerprint(canonical, "target"), Fingerprint(explicitIcon, "explicit") ?? explicitIcon,
-            iconIndex, association, AssociationResourceStamp(associationIcon), Fingerprint(associationExecutable, "association-executable"),
-            PeIconResourceReader.ResourceDependencyStamp(explicitIcon),
+            iconIndex, association, AssociationResourceStamp(associationIcon, ResourceStamp), Fingerprint(associationExecutable, "association-executable"),
+            ResourceStamp(explicitIcon),
             canonical is not null && Path.GetExtension(canonical).Equals(".exe", StringComparison.OrdinalIgnoreCase)
-                ? PeIconResourceReader.ResourceDependencyStamp(canonical) : null,
-            PeIconResourceReader.ResourceDependencyStamp(associationExecutable),
-            shellPolicy is { CanReadResource: true, Path: not null } ? PeIconResourceReader.ResourceDependencyStamp(shellPolicy.Path) : null,
+                ? ResourceStamp(canonical) : null,
+            ResourceStamp(associationExecutable),
+            shellPolicy is { CanReadResource: true, Path: not null } ? ResourceStamp(shellPolicy.Path) : null,
             canonical is not null && Directory.Exists(canonical) ? Fingerprint(Path.Combine(canonical, "desktop.ini"), "folder-customization") : null,
             System.Globalization.CultureInfo.CurrentUICulture.Name, Environment.OSVersion.VersionString,
             TileWall.Core.Imaging.WebsiteIconCatalog.VersionStamp, TileWall.Core.Imaging.SystemIconCatalog.VersionStamp,
@@ -411,7 +449,7 @@ public sealed partial class WallImageService
         if (packagedApp) stamp += "|package-app-list-v2|" + PackageRegistrationStamp(target);
         if (followLinkedTarget && LinkedAutomaticIconTarget(source, shellLink) is { } linked &&
             !string.Equals(linked, canonical, StringComparison.OrdinalIgnoreCase))
-            stamp += "|linked-icon-target-v2|" + AutomaticSourceStampCore(linked, followLinkedTarget: false).Stamp;
+            stamp += "|linked-icon-target-v2|" + AutomaticSourceStampObserved(linked, followLinkedTarget: false, resourceObservations).Stamp;
         return new(stamp, (mmc?.CacheAllowed ?? true) && (!IsAppsFolderIconSource(source) || appsParsingName is not null), mmc);
     }
 
@@ -440,18 +478,18 @@ public sealed partial class WallImageService
                 ? linked : null;
     }
 
-    private static string? AssociationResourceStamp(string? descriptor)
+    private static string? AssociationResourceStamp(string? descriptor, Func<string?, string>? resourceStamp = null)
     {
         if (string.IsNullOrWhiteSpace(descriptor)) return null;
         var value = Environment.ExpandEnvironmentVariables(descriptor.Trim());
         var comma = value.LastIndexOf(',');
         if (comma >= 0 && int.TryParse(value[(comma + 1)..].Trim(), out _)) value = value[..comma];
         var path = NormalizePath(value.Trim().Trim('"'));
-        return path is null ? descriptor : PeIconResourceReader.ResourceDependencyStamp(path);
+        return path is null ? descriptor : (resourceStamp ?? PeIconResourceReader.ResourceDependencyStamp)(path);
     }
 
-    // Downsample only the blur underfill; the visible sharp plane retains its
-    // actual Shell/PE dimensions, alpha, design padding and aspect ratio.
+    // Limit the blur input independently of the consumer's sharp display plane;
+    // both retain the native source's alpha, design padding and aspect ratio.
     private static DecodedImageFrame BlurInput(DecodedImageFrame source)
     {
         if (source.Width <= 512 && source.Height <= 512) return source;

@@ -6,6 +6,22 @@ namespace TileWall.Core.Tests.Graphics;
 public sealed class ImageDecodeSizingTests
 {
     [Theory]
+    [InlineData(512, 512, 48, 48, ImageDisplayMode.Fill, 1, 48, 48)]
+    [InlineData(512, 512, 100, 100, ImageDisplayMode.Fill, 1, 100, 100)]
+    [InlineData(600, 200, 48, 48, ImageDisplayMode.Fit, 1, 48, 16)]
+    [InlineData(600, 200, 48, 48, ImageDisplayMode.Fill, 1, 144, 48)]
+    [InlineData(512, 512, 48, 48, ImageDisplayMode.Custom, 2, 96, 96)]
+    [InlineData(512, 512, 48, 48, ImageDisplayMode.Original, 1, 512, 512)]
+    [InlineData(16, 16, 100, 100, ImageDisplayMode.Fill, 1, 16, 16)]
+    public void DisplayPlaneFollowsFinalPhysicalGeometryWithoutUpscalingTheSource(int sourceWidth, int sourceHeight,
+        int width, int height, ImageDisplayMode mode, double customScale, int expectedWidth, int expectedHeight)
+    {
+        var actual = ImageDecodeSizing.ForDisplay(sourceWidth, sourceHeight, width, height,
+            new() { Mode = mode, CustomScale = customScale });
+        Assert.Equal((expectedWidth, expectedHeight), actual);
+    }
+
+    [Theory]
     [InlineData(5000, 4900, 5000, 4900)]
     [InlineData(5120, 5000, 5120, 5000)]
     public void OriginalResolutionRequests_KeepNativeDimensionsAboveFormerCeilings(

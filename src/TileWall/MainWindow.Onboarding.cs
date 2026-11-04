@@ -153,6 +153,8 @@ public sealed partial class MainWindow
             targets.Add(key, new(path));
         }
         var applications = ShellItemCatalog.Enumerate("shell:AppsFolder", token);
+        var calculator = applications.FirstOrDefault(item => AppId(item).Equals(
+            "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", StringComparison.OrdinalIgnoreCase));
         var store = applications.FirstOrDefault(item => AppId(item).StartsWith("Microsoft.WindowsStore_", StringComparison.OrdinalIgnoreCase));
         var edge = applications.Where(item => AppId(item).Equals("MSEdge", StringComparison.OrdinalIgnoreCase) ||
                 AppId(item).StartsWith("MSEdge.UserData.", StringComparison.OrdinalIgnoreCase))
@@ -160,6 +162,7 @@ public sealed partial class MainWindow
             .ThenBy(AppId, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
         AddApplication("Store", store);
         AddApplication("Edge", edge);
+        if (calculator is not null) AddApplication("Calculator", calculator);
         foreach (var url in WelcomeWallBuilder.WebsiteUrls.Concat(
             [WelcomeWallBuilder.SettingsUrl, WelcomeWallBuilder.ProjectUrl, WelcomeWallBuilder.DiscussionsUrl]))
         {
@@ -179,7 +182,7 @@ public sealed partial class MainWindow
                 item.ParsingName.StartsWith("shell:", StringComparison.OrdinalIgnoreCase)
                     ? item.ParsingName : "shell:AppsFolder\\" + item.ParsingName;
             var (_, identity) = ShellItemCatalog.ReadForLink(parsingName);
-            targets.Add(key, new(parsingName, identity.Key));
+            targets[key] = new(parsingName, identity.Key);
         }
     }
 }

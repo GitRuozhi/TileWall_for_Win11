@@ -43,7 +43,12 @@ public sealed partial class WallImageService
             if (target is null) return null;
             var dependency = NativeIconDependency(target, iconPath, iconIndex);
             if (dependency is null) return null;
-            var package = await NativePackageAsync(target, iconPath, iconIndex, dependency).WaitAsync(ct).ConfigureAwait(false);
+            var resource = NormalizePath(iconPath) ?? target;
+            int? resourceIndex = NormalizePath(iconPath) is null ? null : iconIndex ?? 0;
+            var resourceDependency = NativeIconDependency(resource, resourceIndex is null ? null : resource, resourceIndex);
+            if (resourceDependency is null) return null;
+            var package = await NativePackageAsync(resource, resourceIndex is null ? null : resource, resourceIndex,
+                resourceDependency, exactResource: true).WaitAsync(ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
             return FileContentHash(sourcePath) == sourceSha256 &&
                 dependency == NativeIconDependency(target, iconPath, iconIndex) ? package.Key : null;
@@ -113,7 +118,8 @@ public sealed partial class WallImageService
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or JsonException) { return null; }
     }
 
-    private async Task<NativeIconPackage?> ReadSharedNativePackageAsync(string dependency, CancellationToken token)
+    private async Task<NativeIconPackage?> ReadSharedNativePackageAsync(string dependency, CancellationToken token,
+        ImageCandidateTrace? trace = null)
     {
         if (_disk is not { } disk) return null;
         try
@@ -135,7 +141,8 @@ public sealed partial class WallImageService
                 native.Add(single with { ResourceId = item.ResourceId, LanguageId = item.LanguageId });
             }
             var group = new PeIconGroup(manifest.GroupId, manifest.GroupName, manifest.LanguageId, native);
-            var frames = await DecodeIconGroupAsync(group, token).ConfigureAwait(false);
+            IReadOnlyList<NativeIconFrame> frames;
+            using (trace?.Measure("native.disk-decode-group")) frames = await DecodeIconGroupAsync(group, token).ConfigureAwait(false);
             return frames.Count == native.Count ? new(group, frames, false, Key: mapping.PackageKey) : null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or JsonException or InvalidOperationException) { return null; }
@@ -170,7 +177,8 @@ public sealed partial class WallImageService
         var icon = NormalizePath(iconPath);
         var iconDependency = icon is not null ? PeIconResourceReader.ResourceDependencyStamp(icon)
             : string.IsNullOrWhiteSpace(iconPath) ? "none" : "invalid:" + iconPath;
-        var target = PeIconResourceReader.ResourceDependencyStamp(exe);
+        var target = string.Equals(icon, NormalizePath(exe), StringComparison.OrdinalIgnoreCase)
+            ? iconDependency : PeIconResourceReader.ResourceDependencyStamp(exe);
         if (icon is null && !File.Exists(exe)) return null;
         return "native-icon-v5:" + (language ?? CultureInfo.CurrentUICulture.Name) + ":" + iconIndex + ":" + iconDependency + "|" + target;
     }
@@ -229,8 +237,9 @@ public sealed partial class WallImageService
     }
 
     private Task<NativeIconPackage> NativePackageAsync(string exe, string? iconPath, int? iconIndex, string dependency,
-        bool cacheAllowed = true)
+        bool cacheAllowed = true, bool exactResource = false)
     {
+        var producerKey = exactResource ? "exact:" + dependency : dependency;
         lock (_workGate)
         {
             if (_cacheStopping || _disposed)
@@ -238,63 +247,82 @@ public sealed partial class WallImageService
             // DONTCACHE may still name an independently persisted explicit icon.
             // Parse/decode it through the same bounded producer without touching
             // any reusable native result, mapping, or package.
-            if (!cacheAllowed) return TrackCacheWork(ProduceNativePackageAsync(exe, iconPath, iconIndex, dependency, false));
-            if (_nativePackages.TryGetValue(dependency, out var task))
+            if (!cacheAllowed) return TrackCacheWork(ProduceNativePackageAsync(exe, iconPath, iconIndex, dependency, false, exactResource, producerKey));
+            if (_nativePackages.TryGetValue(producerKey, out var task))
             {
                 // Share the current producer and retain verified native results.
                 // A transient read/decode failure is not a durable "no icon" fact;
                 // only a later real request retries it, without background polling.
                 if (!task.IsCompleted || task.IsCompletedSuccessfully &&
-                    task.Result.Complete && (task.Result.Frames.Count != 0 || task.Result.CacheEmpty)) return task;
-                _nativePackages.Remove(dependency);
+                    task.Result.Complete && (task.Result.Frames.Count != 0 || task.Result.CacheEmpty))
+                { Interlocked.Increment(ref _nativePackageMemoryHits); return task; }
+                _nativePackages.Remove(producerKey);
             }
-            task = ProduceNativePackageAsync(exe, iconPath, iconIndex, dependency, true);
-            _nativePackages.Add(dependency, task); return TrackCacheWork(task);
+            task = ProduceNativePackageAsync(exe, iconPath, iconIndex, dependency, true, exactResource, producerKey);
+            _nativePackages.Add(producerKey, task); return TrackCacheWork(task);
         }
     }
 
     private Task<NativeIconPackage> ProduceNativePackageAsync(string exe, string? iconPath, int? iconIndex,
-        string dependency, bool cacheAllowed) => Task.Run(async () =>
+        string dependency, bool cacheAllowed, bool exactResource, string producerKey) => Task.Run(async () =>
     {
-        await _nativeSlots.WaitAsync(_cacheLifetime.Token).ConfigureAwait(false);
+        using var trace = ImageCandidateTrace.Start("native-package", iconPath ?? exe, 0, 0);
+        using (trace?.Measure("native.slot-wait")) await _nativeSlots.WaitAsync(_cacheLifetime.Token).ConfigureAwait(false);
         try
         {
             var language = CultureInfo.CurrentUICulture.Name;
-            var shared = cacheAllowed ? await ReadSharedNativePackageAsync(dependency, _cacheLifetime.Token).ConfigureAwait(false) : null;
-            if (shared is not null && NativeIconDependency(exe, iconPath, iconIndex, language) == dependency) return shared;
+            NativeIconPackage? shared;
+            using (trace?.Measure("native.disk-restore"))
+                shared = cacheAllowed ? await ReadSharedNativePackageAsync(dependency, _cacheLifetime.Token, trace).ConfigureAwait(false) : null;
+            if (shared is not null && NativeIconDependency(exe, iconPath, iconIndex, language) == dependency)
+            { Interlocked.Increment(ref _nativePackageDiskHits); return shared; }
             var reader = cacheAllowed ? _peReader : new PeIconResourceReader();
             var explicitPath = NormalizePath(iconPath);
             var resourcePath = explicitPath;
             PeIconGroup? group = null;
             if (explicitPath is not null)
-                group = Path.GetExtension(explicitPath).Equals(".ico", StringComparison.OrdinalIgnoreCase)
-                    ? ReadExplicitIco(explicitPath, iconIndex)
-                    : reader.Read(explicitPath, allowResourceModule: true).Catalog?
-                        .SelectGroup(explicitPath, iconIndex ?? 0, fallbackToDefault: false);
-            var frames = await DecodeIconGroupAsync(group, _cacheLifetime.Token).ConfigureAwait(false);
+                using (trace?.Measure("native.resource-read", explicitPath))
+                    group = Path.GetExtension(explicitPath).Equals(".ico", StringComparison.OrdinalIgnoreCase)
+                        ? ReadExplicitIco(explicitPath, iconIndex)
+                        : ReadNativeResource(reader, explicitPath, allowResourceModule: true).Catalog?
+                            .SelectGroup(explicitPath, iconIndex ?? 0, fallbackToDefault: false);
+            IReadOnlyList<NativeIconFrame> frames;
+            using (trace?.Measure("native.decode-group")) frames = await DecodeIconGroupAsync(group, _cacheLifetime.Token).ConfigureAwait(false);
             var explicitFailure = explicitPath is not null && frames.Count == 0;
             PeIconReadResult? fallback = null;
-            if (frames.Count == 0)
+            if (frames.Count == 0 && !exactResource)
             {
                 resourcePath = exe;
-                fallback = reader.Read(exe);
-                group = fallback.Catalog?.SelectGroup();
-                frames = await DecodeIconGroupAsync(group, _cacheLifetime.Token).ConfigureAwait(false);
+                using (trace?.Measure("native.resource-read", exe))
+                { fallback = ReadNativeResource(reader, exe); group = fallback.Catalog?.SelectGroup(); }
+                using (trace?.Measure("native.decode-group")) frames = await DecodeIconGroupAsync(group, _cacheLifetime.Token).ConfigureAwait(false);
+            }
+            else if (frames.Count == 0 && explicitPath is null)
+            {
+                resourcePath = exe;
+                using (trace?.Measure("native.resource-read", exe))
+                { fallback = ReadNativeResource(reader, exe, allowResourceModule: true); group = fallback.Catalog?.SelectGroup(); }
+                using (trace?.Measure("native.decode-group")) frames = await DecodeIconGroupAsync(group, _cacheLifetime.Token).ConfigureAwait(false);
             }
             _cacheLifetime.Token.ThrowIfCancellationRequested();
             // The parsed resource and its cache identity must describe the same file generation.
-            if (NativeIconDependency(exe, iconPath, iconIndex, language) != dependency)
-                return new NativeIconPackage(null, [], false, Complete: false);
+            using (trace?.Measure("native.dependency-after"))
+                if (NativeIconDependency(exe, iconPath, iconIndex, language) != dependency)
+                    return new NativeIconPackage(null, [], false, Complete: false);
             var cacheEmpty = group is null && fallback?.Status is PeIconReadStatus.NoIconGroups or PeIconReadStatus.NotExe or PeIconReadStatus.FileTooLarge;
             var complete = !explicitFailure && (group is null ? cacheEmpty : frames.Count == group.Frames.Count);
             var result = new NativeIconPackage(group, frames, cacheEmpty, resourcePath, Complete: complete);
-            if (cacheAllowed && NativeIconDependency(exe, iconPath, iconIndex, language) == dependency)
-                result = result with { Key = PublishSharedNativePackage(result, dependency, _cacheLifetime.Token) };
+            trace?.Mark("native.group", $"index={iconIndex} declared={group?.Frames.Count ?? 0} decoded={frames.Count} complete={complete}");
+            if (cacheAllowed)
+                using (trace?.Measure("native.verify-publish"))
+                    if (NativeIconDependency(exe, iconPath, iconIndex, language) == dependency)
+                        using (trace?.Measure("native.serialize-publish"))
+                            result = result with { Key = PublishSharedNativePackage(result, dependency, _cacheLifetime.Token) };
             if (cacheAllowed)
             {
                 lock (_workGate)
                 {
-                    var completed = _nativePackages.Where(pair => pair.Key != dependency && pair.Value.IsCompletedSuccessfully).ToArray();
+                    var completed = _nativePackages.Where(pair => pair.Key != producerKey && pair.Value.IsCompletedSuccessfully).ToArray();
                     var bytes = completed.Sum(pair => pair.Value.Result.Frames.Sum(frame => (long)frame.Ico.Length + (frame.Decoded.Pixels?.LongLength ?? 0))) +
                         frames.Sum(frame => (long)frame.Ico.Length + (frame.Decoded.Pixels?.LongLength ?? 0));
                     foreach (var pair in completed)
@@ -316,6 +344,7 @@ public sealed partial class WallImageService
             writer.WriteBytes(PeIconResourceReader.WrapSingleFrameIco(frame));
             await writer.StoreAsync().AsTask(ct).ConfigureAwait(false); stream.Seek(0);
             var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(ct).ConfigureAwait(false);
+            Interlocked.Increment(ref _nativeDecodedFrames);
             var data = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, new BitmapTransform(),
                 ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(ct).ConfigureAwait(false);
             var pixels = data.DetachPixelData();

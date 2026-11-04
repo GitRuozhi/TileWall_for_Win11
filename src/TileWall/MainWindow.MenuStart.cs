@@ -6,6 +6,7 @@ using TileWall.Core.Application;
 using TileWall.Core.Configuration;
 using TileWall.Core.Shell;
 using TileWall.Core.Storage;
+using TileWall.Core.Imaging;
 using TileWall.Core.Wall;
 using TileWall.Graphics;
 using TileWall.Resources;
@@ -27,6 +28,15 @@ public sealed partial class MainWindow
     private Task? _menuStateWrite;
     private readonly Dictionary<string, List<Image>> _menuIcons = new(StringComparer.Ordinal);
     private bool _menuImagesActive;
+    private sealed class MenuImageRequest(PuzzleFrame frame, int edge)
+    {
+        public PuzzleFrame Frame { get; } = frame;
+        public int Edge { get; } = edge;
+        public ImageSource? Display;
+    }
+    private readonly Dictionary<string, MenuImageRequest> _menuImageRequests = new(StringComparer.Ordinal);
+    private readonly HashSet<Task> _menuImageLoads = [];
+    private CancellationTokenSource _menuImageCancellation = new();
 
     private void InitializeMenuStart()
     {
@@ -42,6 +52,9 @@ public sealed partial class MainWindow
     private void RenderMenuStart(WallDocument document)
     {
         _menuStart.Visibility = document.Settings.MenuStart ? Visibility.Visible : Visibility.Collapsed;
+        _menuImageCancellation.Cancel(); _menuImageCancellation.Dispose();
+        _menuImageCancellation = new();
+        _menuImageRequests.Clear();
         _menuIcons.Clear();
         if (_menuExpansion.Retain(document.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id))) SaveMenuExpansion();
         if (!document.Settings.MenuStart || !_menuImagesActive) { _menuStart.Content = null; return; }
@@ -114,6 +127,7 @@ public sealed partial class MainWindow
                     content.Children.Add(icon);
                     if (!_menuIcons.TryGetValue(member.Id, out var icons)) _menuIcons[member.Id] = icons = [];
                     icons.Add(icon);
+                    UpdateMenuFrame(member.Id, _puzzles.FrameFor(member.Id), 1);
                     var label = new TextBlock { Text = member.Visual.Title ?? MemberPresentationRules.ResolveTitle(member),
                         VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
                         Margin = new Thickness(0, 0, 12, 0) };
@@ -140,7 +154,34 @@ public sealed partial class MainWindow
     private void UpdateMenuFrame(string memberId, PuzzleFrame? frame, double progress)
     {
         if (_windowClosing || ShutdownStarted || !_menuIcons.TryGetValue(memberId, out var icons)) return;
-        foreach (var icon in icons) icon.Source = frame?.Sharp;
+        if (frame is null) { foreach (var icon in icons) icon.Source = null; _menuImageRequests.Remove(memberId); return; }
+        var edge = Math.Max(1, checked((int)Math.Ceiling(24 * Scale)));
+        if (_menuImageRequests.TryGetValue(memberId, out var existing) && ReferenceEquals(existing.Frame, frame) && existing.Edge == edge)
+        {
+            if (existing.Display is { } display) foreach (var icon in icons) icon.Source = display;
+            return;
+        }
+        var request = new MenuImageRequest(frame, edge);
+        _menuImageRequests[memberId] = request;
+        var work = PrepareMenuImageAsync(memberId, request, _menuImageCancellation.Token);
+        _menuImageLoads.Add(work);
+        _ = work.ContinueWith(_ => DispatcherQueue.TryEnqueue(() => _menuImageLoads.Remove(work)),
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private async Task PrepareMenuImageAsync(string memberId, MenuImageRequest request, CancellationToken token)
+    {
+        try
+        {
+            var result = await _images.PrepareDisplayFrameAsync(request.Frame, request.Edge, request.Edge,
+                new() { Mode = ImageDisplayMode.Fit }, token);
+            if (token.IsCancellationRequested || _windowClosing || ShutdownStarted ||
+                !_menuImageRequests.TryGetValue(memberId, out var current) || !ReferenceEquals(current, request)) return;
+            request.Display = result.Sharp;
+            if (_menuIcons.TryGetValue(memberId, out var icons)) foreach (var icon in icons) icon.Source = result.Sharp;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { AppLog.Warn("MenuImages", ex.Message); }
     }
 
     private void SaveMenuExpansion()
@@ -159,6 +200,10 @@ public sealed partial class MainWindow
     private async Task ShutdownMenuStartAsync()
     {
         _puzzles.FrameChanged -= UpdateMenuFrame;
+        _menuImageCancellation.Cancel();
+        if (_menuImageLoads.Count != 0) await Task.WhenAll(_menuImageLoads.ToArray());
+        _menuImageLoads.Clear(); _menuImageRequests.Clear();
+        _menuImageCancellation.Dispose();
         if (_menuStateWrite is { } write)
             try { await write; }
             catch (Exception ex) { AppLog.Warn("MenuStart", $"UI preference write did not finish: {ex.GetType().Name}"); }

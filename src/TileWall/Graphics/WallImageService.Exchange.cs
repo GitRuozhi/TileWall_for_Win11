@@ -16,7 +16,16 @@ public sealed partial class WallImageService
     {
         if (member.ResourceOrigin == MemberResourceOrigin.Package || member.Images.Kind != MemberImageSourceKind.Automatic)
             return null;
-        var result = await LoadAutomaticFrameCoreAsync(entryOrTarget, width, height, false, requestToken, member);
+        if (member.Images.IconSeries is not null)
+        {
+            var native = await LoadSavedAutomaticIconPixelsAsync(member, width, height, requestToken,
+                nativePlane: true, purpose: MemberImagePurpose.Content);
+            requestToken.ThrowIfCancellationRequested();
+            if (native.Pair?.Sharp is not { } plane) return null;
+            return await EncodeIconFrameAsync(new Prepared(WallImageStatus.Loaded,
+                plane.BgraPremultiplied.ToArray(), plane.Width, plane.Height, null), requestToken);
+        }
+        var result = await LoadAutomaticFrameCoreAsync(entryOrTarget, width, height, false, requestToken, member, nativePlane: true);
         requestToken.ThrowIfCancellationRequested();
         if (result.Frame?.Sharp is not WriteableBitmap bitmap) return null;
         var pixels = new byte[checked(bitmap.PixelWidth * bitmap.PixelHeight * 4)];

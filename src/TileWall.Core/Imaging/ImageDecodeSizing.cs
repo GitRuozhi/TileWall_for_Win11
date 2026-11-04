@@ -11,6 +11,17 @@ internal static class ImageDecodeSizing
 {
     internal const int MaxDecodedEdge = int.MaxValue;
 
+    // Physical canvas dimensions are supplied by the consumer. This chooses a
+    // display plane from the same source, never another native icon frame.
+    internal static (int Width, int Height) ForDisplay(int sourceWidth, int sourceHeight,
+        int canvasWidthPixels, int canvasHeightPixels, MemberImageDisplay display)
+    {
+        var placed = MemberImageGeometry.Calculate(canvasWidthPixels, canvasHeightPixels,
+            sourceWidth, sourceHeight, 1, display);
+        return (checked((int)Math.Max(1, Math.Min(sourceWidth, Math.Ceiling(placed.Bounds.Width)))),
+            checked((int)Math.Max(1, Math.Min(sourceHeight, Math.Ceiling(placed.Bounds.Height)))));
+    }
+
     internal static ImageDecodeDimensions Calculate(
         int rawWidth, int rawHeight, int orientedWidth, int orientedHeight,
         int requiredWidthPx, int requiredHeightPx, int maxEdge)

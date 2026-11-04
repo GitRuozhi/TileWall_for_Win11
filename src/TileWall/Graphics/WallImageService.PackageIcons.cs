@@ -136,6 +136,7 @@ public sealed partial class WallImageService
                             var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token).ConfigureAwait(false);
                             var width = checked((int)decoder.PixelWidth); var height = checked((int)decoder.PixelHeight);
                             if (width <= 0 || height <= 0) continue;
+                            Interlocked.Increment(ref _packageIconDecodedFrames);
                             var data = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, new BitmapTransform(),
                                 ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(token).ConfigureAwait(false);
                             var pixels = data.DetachPixelData();

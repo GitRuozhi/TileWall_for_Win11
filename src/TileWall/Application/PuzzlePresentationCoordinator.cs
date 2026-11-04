@@ -261,9 +261,8 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                     state.Member.Images.Kind == MemberImageSourceKind.Automatic &&
                     (state.Member.TargetInput != member.TargetInput || state.Member.Entry != member.Entry ||
                      state.Member.SourceShortcutPath != member.SourceShortcutPath);
-                var automatic = member.Images.Kind == MemberImageSourceKind.Automatic;
-                var qualityChanged = !automatic && state.Member.ImageDisplay != member.ImageDisplay;
-                var sizeChanged = !automatic && (state.TargetWidth != width || state.TargetHeight != height);
+                var qualityChanged = state.Member.ImageDisplay != member.ImageDisplay;
+                var sizeChanged = state.TargetWidth != width || state.TargetHeight != height;
                 var partitionsChanged = state.Member is PuzzleMember previousPuzzle && member is PuzzleMember puzzle &&
                     !previousPuzzle.Partitions.SequenceEqual(puzzle.Partitions);
                 state.TargetWidth = width;
@@ -800,8 +799,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         var key = new CurrentFrameKey(state.Member.Images with { IconSeries = null }, state.Member.ResourceOrigin, boundAutomatic ? null : entry,
             state.Member.Images.Kind == MemberImageSourceKind.Automatic ? state.Member.TargetInput : null,
             state.Member.Images.Kind == MemberImageSourceKind.Automatic ? state.Member.SourceShortcutPath : null,
-            boundAutomatic ? 0 : state.TargetWidth, boundAutomatic ? 0 : state.TargetHeight,
-            boundAutomatic ? new MemberImageDisplay() : state.Member.ImageDisplay,
+            state.TargetWidth, state.TargetHeight, state.Member.ImageDisplay,
             state.Member.Visual.BackgroundMode == MemberBackgroundMode.Blur, image, state.SourceVersion,
             series?.Identity, series is null ? null : series.Frames[series.SelectedFrame]);
         foreach (var other in _states.Values)

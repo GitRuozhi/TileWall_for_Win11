@@ -89,6 +89,124 @@ public sealed class NativeIconPackageCacheTests : IDisposable
             .Sum(path => new FileInfo(path).Length));
     }
 
+    [Fact]
+    public void RepeatedColdMissesAndNewPackagesNeedOnlyOneCapacityCensus()
+    {
+        var cache = new ManagedImageCache(_root);
+        for (var index = 0; index < 12; index++)
+        {
+            var package = ManagedImageCache.Key("package-" + index);
+            var mapping = ManagedImageCache.Key("mapping-" + index);
+            Assert.Throws<IOException>(() => cache.Read(cache.Under("Cache", "Images", "Icons", "Mappings", mapping + ".json"), 128));
+            Assert.Throws<IOException>(() => cache.Read(cache.Under("Cache", "Images", "Icons", "Packages", package, "manifest.json"), 128));
+            cache.DiscardIconPackage(package); // Production's ordinary absent-manifest path.
+            Assert.True(cache.PublishIconPackage(package, Payload, mapping, new byte[40], 4096, default));
+            Assert.Equal((index + 1) * 160L, IconBytes(cache));
+        }
+        Assert.Equal(1L, cache.IconBudgetCensusCount);
+    }
+
+    [Fact]
+    public void MappingGrowthAndShrinkAreChargedAsNetBytes()
+    {
+        var cache = new ManagedImageCache(_root);
+        Assert.True(cache.PublishIconPackage(First, Payload, First, new byte[20], 512, default));
+        Assert.True(cache.PublishIconPackage(First, Payload, Second, new byte[20], 512, default));
+        Assert.True(cache.PublishIconPackage(First, Payload, First, new byte[120], 512, default));
+        Assert.Equal(260L, IconBytes(cache));
+        Assert.True(cache.PublishIconPackage(First, Payload, First, new byte[20], 512, default));
+        Assert.Equal(160L, IconBytes(cache));
+        Assert.Equal(1L, cache.IconBudgetCensusCount);
+        using (cache.Lease(cache.Under("Cache", "Images", "Icons", "Packages", First)))
+            Assert.True(cache.PublishIconPackage(Second, Payload, ManagedImageCache.Key("third-map"), new byte[40], 320, default));
+        Assert.Equal(320L, IconBytes(cache));
+        Assert.True(File.Exists(cache.Under("Cache", "Images", "Icons", "Mappings", First + ".json")));
+        Assert.True(File.Exists(cache.Under("Cache", "Images", "Icons", "Mappings", Second + ".json")));
+    }
+
+    [Fact]
+    public void AFailedMappingPublishRecountsTheAlreadyMovedPackage()
+    {
+        var cache = new ManagedImageCache(_root);
+        var blockedMapping = cache.Under("Cache", "Images", "Icons", "Mappings", First + ".json");
+        cache.CreateDirectory(blockedMapping); // A real filesystem failure after the package move.
+        var failure = Record.Exception(() => cache.PublishIconPackage(First, Payload, First, new byte[40], 256, default));
+        Assert.True(failure is IOException or UnauthorizedAccessException);
+        var orphan = cache.Under("Cache", "Images", "Icons", "Packages", First);
+        Assert.True(Directory.Exists(orphan));
+        Assert.Equal(120L, IconBytes(cache));
+        Directory.Delete(blockedMapping);
+        Assert.True(cache.PublishIconPackage(Second, Payload, Second, new byte[40], 256, default));
+        Assert.False(Directory.Exists(orphan));
+        Assert.Equal(160L, IconBytes(cache));
+        Assert.True(cache.IconBudgetCensusCount > 1);
+    }
+
+    [Fact]
+    public void NearCapacityRecountsForeignBytesAndStillProtectsLeasedPackages()
+    {
+        var cache = new ManagedImageCache(_root);
+        Assert.True(cache.PublishIconPackage(First, Payload, First, new byte[40], 512, default));
+        var foreign = cache.Under("Cache", "Images", "Icons", "foreign.bin");
+        File.WriteAllBytes(foreign, new byte[100]);
+        Assert.True(cache.PublishIconPackage(Second, Payload, Second, new byte[40], 512, default));
+        var firstDirectory = cache.Under("Cache", "Images", "Icons", "Packages", First);
+        File.SetLastAccessTimeUtc(cache.Under("Cache", "Images", "Icons", "Mappings", First + ".json"), DateTime.UtcNow.AddDays(-10));
+        Directory.SetLastAccessTimeUtc(firstDirectory, DateTime.UtcNow.AddDays(-9));
+        var leased = cache.Under("Cache", "Images", "Icons", "Packages", Second);
+        var third = ManagedImageCache.Key("third");
+        var thirdMapping = ManagedImageCache.Key("third-map");
+        using (cache.Lease(leased))
+            Assert.True(cache.PublishIconPackage(third, Payload, thirdMapping, new byte[40], 512, default));
+        foreach (var (name, expected) in Payload)
+        {
+            Assert.Equal(expected, File.ReadAllBytes(Path.Combine(leased, name)));
+            Assert.Equal(expected, File.ReadAllBytes(cache.Under("Cache", "Images", "Icons", "Packages", third, name)));
+        }
+        Assert.Equal(new byte[40], File.ReadAllBytes(cache.Under("Cache", "Images", "Icons", "Mappings", thirdMapping + ".json")));
+        Assert.Equal(new byte[100], File.ReadAllBytes(foreign));
+        Assert.True(IconBytes(cache) <= 512);
+        // A mapping can free sufficient capacity without evicting its package.
+        // Directory enumeration itself can also refresh directory access times.
+        Assert.True(IconBytes(cache) < 580);
+        Assert.True(cache.IconBudgetCensusCount > 1);
+    }
+
+    [Fact]
+    public async Task GenericIconWritesInvalidateCapacityAccounting()
+    {
+        var cache = new ManagedImageCache(_root);
+        Assert.True(cache.PublishIconPackage(First, Payload, First, new byte[40], 512, default));
+        var staged = await cache.StageAsync(new byte[200], default);
+        var extra = cache.Under("Cache", "Images", "Icons", "extra.pixels");
+        cache.Publish(staged, extra);
+        Assert.True(cache.PublishIconPackage(Second, Payload, Second, new byte[40], 512, default));
+        Assert.True(IconBytes(cache) <= 512);
+        var afterPublish = cache.IconBudgetCensusCount;
+        cache.Delete(extra);
+        Assert.True(cache.PublishIconPackage(Second, Payload, ManagedImageCache.Key("another-map"), new byte[1], 512, default));
+        Assert.True(cache.IconBudgetCensusCount > afterPublish);
+    }
+
+    [Fact]
+    public void CapacityAccountingNeverAuthorizesChangedFileContents()
+    {
+        var cache = new ManagedImageCache(_root);
+        Assert.True(cache.PublishIconPackage(First, Payload, First, new byte[40], 4096, default));
+        var directory = cache.Under("Cache", "Images", "Icons", "Packages", First);
+        var image = Path.Combine(directory, new string('C', 64) + ".ico");
+        File.WriteAllBytes(image, new byte[200]);
+        Assert.Throws<IOException>(() => cache.Read(image, 100));
+        using (cache.Lease(directory))
+            Assert.False(cache.PublishIconPackage(First, Payload, First, new byte[40], 4096, default));
+        Assert.True(cache.PublishIconPackage(First, Payload, First, new byte[40], 4096, default));
+        Assert.Equal(Payload[Path.GetFileName(image)], cache.Read(image, 100));
+        Assert.Equal(160L, IconBytes(cache));
+    }
+
+    private static long IconBytes(ManagedImageCache cache) => Directory.GetFiles(cache.Under("Cache", "Images", "Icons"),
+        "*", SearchOption.AllDirectories).Sum(path => new FileInfo(path).Length);
+
     public void Dispose()
     {
         var expected = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;

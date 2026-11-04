@@ -53,6 +53,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
     private readonly Dictionary<ImportPageSourceKind, int> _skipped = [];
     private readonly Dictionary<ImportPageSourceKind, string> _scopes = [];
     private readonly Dictionary<ImportPageSourceKind, bool> _refreshing = [];
+    private readonly Dictionary<ImportPageSourceKind, int> _refreshRequests = [];
     private readonly Dictionary<ImportPageSourceKind, string?> _errors = [];
     private const int CacheVersion = 4, SystemCatalogVersion = 4, AppsCatalogVersion = 4, OtherNativeCatalogVersion = 1;
     private readonly Dictionary<ImportPageSourceKind, SemaphoreSlim> _refreshGates = [];
@@ -99,19 +100,32 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         Action? changed = null)
     {
         token.ThrowIfCancellationRequested();
-        lock (_sync) _refreshing[kind] = true;
+        lock (_sync)
+        {
+            _refreshRequests[kind] = _refreshRequests.GetValueOrDefault(kind) + 1;
+            _refreshing[kind] = true;
+        }
         return Task.Run(async () =>
     {
+        using var trace = new ShellItemCatalog.SourceReadTrace(kind.ToString());
         SemaphoreSlim gate;
         lock (_sync)
         {
             if (!_refreshGates.TryGetValue(kind, out gate!)) _refreshGates[kind] = gate = new SemaphoreSlim(1, 1);
         }
-        await gate.WaitAsync(token).ConfigureAwait(false);
+        var entered = false;
         try
         {
+            using (trace.Measure("catalog.gate")) await gate.WaitAsync(token).ConfigureAwait(false);
+            entered = true;
             var clock = Stopwatch.StartNew();
             var previous = Cached(kind);
+            // These are preview metadata hints only. Each reused fact still needs
+            // a current safe file observation, and confirmation never uses them.
+            var previousCompanies = previous.Where(entry => entry.Error is null && entry.CompanyStamp is not null && entry.Identity is not null)
+                .GroupBy(entry => entry.Identity!.Target, StringComparer.OrdinalIgnoreCase)
+                .Where(group => group.Select(entry => (entry.Company, entry.CompanyStamp)).Distinct().Take(2).Count() == 1)
+                .ToDictionary(group => group.Key, group => (Company: group.First().Company, Stamp: group.First().CompanyStamp), StringComparer.OrdinalIgnoreCase);
             var scope = CacheScope(kind);
             var observed = new Dictionary<string, NativeImportEntry>(StringComparer.Ordinal);
             var targets = new Dictionary<string, StartMenuImportProjection.TargetObservation>(StringComparer.OrdinalIgnoreCase);
@@ -126,11 +140,15 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             {
                 token.ThrowIfCancellationRequested();
                 if (observed.Count >= MaximumEntries && !observed.ContainsKey(entry.Key)) { skipped++; return; }
-                var current = ObserveTarget(entry with { Stale = false }, kind, token, targets);
-                observed[entry.Key] = kind == ImportPageSourceKind.InstalledApplications ? ObserveCompany(current, token, companies) : current;
+                NativeImportEntry current;
+                using (trace.Measure("facts.target", entry.Key)) current = ObserveTarget(entry with { Stale = false }, kind, token, targets);
+                using (trace.Measure("facts.company", entry.Key))
+                    observed[entry.Key] = kind == ImportPageSourceKind.InstalledApplications
+                        ? ObserveCompanyPreview(current, token, companies, previousCompanies, trace) : current;
                 if (observed.Count == 1 || progress.ElapsedMilliseconds >= 150)
                 {
                     Publish(Merge(completeScan: false), refreshing: true);
+                    if (observed.Count == 1) trace.FirstFact();
                     firstFactsMs ??= clock.Elapsed.TotalMilliseconds; progress.Restart();
                 }
             }
@@ -150,6 +168,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                 lock (_sync)
                 {
                     token.ThrowIfCancellationRequested();
+                    refreshing |= _refreshRequests.GetValueOrDefault(kind) > 1;
                     if (_snapshots.TryGetValue(kind, out var prior) && prior.SequenceEqual(entries)) entries = prior;
                     notify = !ReferenceEquals(_snapshots.GetValueOrDefault(kind), entries) || _refreshing.GetValueOrDefault(kind) != refreshing ||
                         _skipped.GetValueOrDefault(kind) != skipped || _errors.GetValueOrDefault(kind) != error;
@@ -161,7 +180,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             try
             {
                 if (kind == ImportPageSourceKind.InstalledApplications)
-                    complete = await ReadAppsAsync(Observe, previous, token).ConfigureAwait(false);
+                    complete = await ReadAppsAsync(Observe, previous, token, trace).ConfigureAwait(false);
                 else
                 {
                     var entries = kind == ImportPageSourceKind.Desktop ? Desktop(token, out skipped) : SystemFeatureCatalog.Read(token);
@@ -169,10 +188,12 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                     complete = skipped == 0 && !entries.Any(entry => entry.Key == Key("system|control-panel-unavailable"));
                 }
             }
-            catch (Exception ex) when (SourceReadError(ex)) { error = "RefreshFailed"; }
+            catch (Exception ex) when (SourceReadError(ex) || ex is InvalidCastException or System.ComponentModel.Win32Exception)
+            { error = "RefreshFailed"; trace.Mark("read-failed", $"type={ex.GetType().Name} hr={ex.HResult:X8}"); }
             token.ThrowIfCancellationRequested();
             var result = Merge(complete);
             var factsReadyMs = clock.Elapsed.TotalMilliseconds;
+            trace.Mark("facts-ready", $"fresh={observed.Count} total={result.Count} complete={complete} targets={targets.Count} companies={companies.Count} skipped={skipped}");
             Publish(result, refreshing: false);
             Save(kind, result, scope, token);
             AppLog.Warn("ImportSources", JsonSerializer.Serialize(new { source = kind.ToString(), firstFactsMs,
@@ -181,13 +202,22 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         }
         finally
         {
-            lock (_sync) _refreshing[kind] = false;
-            gate.Release();
+            bool notify;
+            lock (_sync)
+            {
+                var remaining = _refreshRequests[kind] - 1;
+                if (remaining == 0) _refreshRequests.Remove(kind); else _refreshRequests[kind] = remaining;
+                notify = _refreshing.GetValueOrDefault(kind) != (remaining != 0);
+                _refreshing[kind] = remaining != 0;
+            }
+            if (entered) gate.Release();
+            if (notify) changed?.Invoke();
         }
-    }, token);
+    }); // The delegate owns canceled gate waits and always removes its pending request.
     }
 
-    private async Task<bool> ReadAppsAsync(Action<NativeImportEntry> observe, IReadOnlyList<NativeImportEntry> previous, CancellationToken token)
+    private async Task<bool> ReadAppsAsync(Action<NativeImportEntry> observe, IReadOnlyList<NativeImportEntry> previous,
+        CancellationToken token, ShellItemCatalog.SourceReadTrace trace)
     {
         var prior = previous.ToDictionary(entry => entry.Key, StringComparer.Ordinal);
         using var enumeration = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -199,26 +229,36 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         {
             try
             {
-                complete = ShellItemCatalog.EnumerateBatches("shell:AppsFolder", batch =>
-                    batches.Writer.WriteAsync(batch, enumeration.Token).AsTask().GetAwaiter().GetResult(), enumeration.Token);
+                complete = ShellItemCatalog.EnumerateBatchesTraced("shell:AppsFolder", batch =>
+                {
+                    using (trace.Measure("channel.write")) batches.Writer.WriteAsync(batch, enumeration.Token).AsTask().GetAwaiter().GetResult();
+                }, enumeration.Token, trace);
             }
             catch (Exception ex) { failure = ex; }
-            finally { batches.Writer.TryComplete(); }
+            finally { trace.Mark("producer-ended", $"complete={complete} error={failure?.GetType().Name}"); batches.Writer.TryComplete(); }
         }, token);
         try
         {
             await foreach (var batch in batches.Reader.ReadAllAsync(token).ConfigureAwait(false))
+            {
+                trace.Mark("batch-read", "count=" + batch.Count);
                 foreach (var item in batch)
                 {
                     token.ThrowIfCancellationRequested();
                     if (!string.IsNullOrWhiteSpace(item.ParsingName))
-                        observe(AppEntry(item, token, prior.GetValueOrDefault(Key("app|" + item.ParsingName))));
+                    {
+                        var key = Key("app|" + item.ParsingName);
+                        NativeImportEntry entry;
+                        using (trace.Measure("facts.app-entry", key)) entry = AppEntryTraced(item, token, prior.GetValueOrDefault(key), trace);
+                        observe(entry);
+                    }
                 }
+            }
         }
         finally
         {
             enumeration.Cancel();
-            try { await producer.ConfigureAwait(false); }
+            try { using (trace.Measure("producer.drain")) await producer.ConfigureAwait(false); }
             catch (OperationCanceledException) when (enumeration.IsCancellationRequested) { }
         }
         if (failure is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
@@ -334,6 +374,8 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
 
     internal IReadOnlyDictionary<string, NativeImportEntry> ConfirmMany(ImportPageSourceKind kind, IReadOnlyCollection<string> keys)
     {
+        using var trace = new ShellItemCatalog.SourceReadTrace("Confirm:" + kind);
+        trace.Mark("confirm-enter", $"count={keys.Count} apartment={Thread.CurrentThread.GetApartmentState()}");
         try
         {
             var selected = keys.Distinct(StringComparer.Ordinal).ToDictionary(key => key, key => Find(kind, key), StringComparer.Ordinal);
@@ -345,14 +387,16 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             // Membership belongs to the actual AppsFolder enumeration. Opening an arbitrary
             // filesystem parsing name alone would not prove that it is still an app source.
             var items = new Dictionary<string, ShellItemCatalog.Item>(StringComparer.Ordinal);
-            var complete = ShellItemCatalog.EnumerateBatches("shell:AppsFolder", batch =>
+            bool complete;
+            using (trace.Measure("confirm.membership")) complete = ShellItemCatalog.EnumerateBatchesTraced("shell:AppsFolder", batch =>
             {
                 foreach (var item in batch)
                 {
                     var key = Key("app|" + item.ParsingName);
                     if (selected.ContainsKey(key)) items[key] = item;
                 }
-            }, CancellationToken.None);
+            }, CancellationToken.None, trace);
+            trace.Mark("confirm.membership-result", $"complete={complete} matched={items.Count} selected={selected.Count}");
             if (!complete || items.Count != selected.Count) throw new IOException("The app source changed.");
             var targets = new Dictionary<string, StartMenuImportProjection.TargetObservation>(StringComparer.OrdinalIgnoreCase);
             var companies = new Dictionary<string, (string? Company, string? Stamp)>(StringComparer.OrdinalIgnoreCase);
@@ -361,15 +405,21 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             {
                 var item = items[key];
                 if (item != old.AppSource) throw new IOException("The app source changed.");
-                var current = ObserveCompany(ObserveTarget(AppEntry(item, CancellationToken.None, old), kind, CancellationToken.None, targets),
-                    CancellationToken.None, companies);
-                if (Facts(current) != Facts(old)) throw new IOException("The app facts changed.");
+                NativeImportEntry current;
+                using (trace.Measure("confirm.app-entry", key)) current = AppEntryTraced(item, CancellationToken.None, old, trace);
+                using (trace.Measure("confirm.target", key)) current = ObserveTarget(current, kind, CancellationToken.None, targets);
+                using (trace.Measure("confirm.company", key)) current = ObserveCompany(current, CancellationToken.None, companies);
+                using (trace.Measure("confirm.facts", key))
+                    if (Facts(current) != Facts(old)) throw new IOException("The app facts changed.");
                 result.Add(key, current);
             }
             return result;
         }
         catch (Exception ex) when (SourceReadError(ex))
-        { throw new ImportSourceChangedException("The selected source changed or is unavailable.", ex); }
+        {
+            trace.Mark("confirm-failed", $"type={ex.GetType().Name} hr={ex.HResult:X8}");
+            throw new ImportSourceChangedException("The selected source changed or is unavailable.", ex);
+        }
     }
 
     private NativeImportEntry ConfirmCurrent(ImportPageSourceKind kind, string key)
@@ -467,7 +517,11 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         return result;
     }
 
-    private NativeImportEntry AppEntry(ShellItemCatalog.Item item, CancellationToken token, NativeImportEntry? prior = null)
+    private NativeImportEntry AppEntry(ShellItemCatalog.Item item, CancellationToken token, NativeImportEntry? prior = null) =>
+        AppEntryTraced(item, token, prior, null);
+
+    private NativeImportEntry AppEntryTraced(ShellItemCatalog.Item item, CancellationToken token, NativeImportEntry? prior,
+        ShellItemCatalog.SourceReadTrace? trace)
     {
         var parsing = item.ParsingName;
         var target = AppSourcePath(item) ?? parsing;
@@ -500,7 +554,8 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                 token.ThrowIfCancellationRequested(); ValidateAppPath(target, item);
                 return entry;
             }
-            var observed = ShellItemCatalog.ReadNativeLink(target);
+            ShellItemCatalog.NativeLinkObservation observed;
+            using (trace?.Measure("facts.native-link", entry.Key)) observed = ShellItemCatalog.ReadNativeLinkTraced(target, true, true, trace);
             token.ThrowIfCancellationRequested();
             var identity = observed.Identity;
             var nativeTarget = observed.Target;
@@ -508,14 +563,14 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             // be retained after a new native observation proves canonical equality.
             if (prior is { Error: null, NativeTarget: { } previousTarget } && nativeTarget is not null &&
                 prior.PackageFullName == observed.PackageFullName && prior.PackageInstallPath == observed.PackageInstallPath &&
-                ShellItemCatalog.SameNativeTarget(previousTarget, nativeTarget))
+                ShellItemCatalog.SameNativeTargetTraced(previousTarget, nativeTarget, trace))
             {
                 identity = previousTarget.Identity;
                 nativeTarget = previousTarget;
             }
             return entry with { Identity = identity, NativeTarget = nativeTarget,
                 PackageFullName = observed.PackageFullName, PackageInstallPath = observed.PackageInstallPath,
-                LinkedTargetPath = ShellItemCatalog.LinkedTargetPath(target) };
+                LinkedTargetPath = observed.LinkedTargetPath };
         }
         catch (Exception ex) when ((ex is FileNotFoundException or DirectoryNotFoundException) &&
             kind == NativeImportTarget.Path && EntryNames.KindOfRelativePath(target) == EntryKind.None)
@@ -690,7 +745,12 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
     }
 
     private static NativeImportEntry ObserveCompany(NativeImportEntry entry, CancellationToken token,
-        IDictionary<string, (string? Company, string? Stamp)> observations)
+        IDictionary<string, (string? Company, string? Stamp)> observations) =>
+        ObserveCompanyPreview(entry, token, observations, null, null);
+
+    private static NativeImportEntry ObserveCompanyPreview(NativeImportEntry entry, CancellationToken token,
+        IDictionary<string, (string? Company, string? Stamp)> observations,
+        IReadOnlyDictionary<string, (string? Company, string? Stamp)>? previous, ShellItemCatalog.SourceReadTrace? trace)
     {
         token.ThrowIfCancellationRequested();
         var identity = entry.Identity;
@@ -699,24 +759,36 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             return entry with { Company = null, CompanyStamp = null };
         if (!observations.TryGetValue(identity.Target, out var fact))
         {
-            fact = ReadCompany(identity.Target, token);
+            (string? Company, string? Stamp)? cached = previous is not null && previous.TryGetValue(identity.Target, out var prior) ? prior : null;
+            fact = ReadCompanyPreview(identity.Target, token, cached, trace);
             observations.Add(identity.Target, fact);
         }
+        else trace?.Count("company.same-scan-reuse");
         token.ThrowIfCancellationRequested();
         return entry with { Company = fact.Company, CompanyStamp = fact.Stamp };
     }
 
-    private static (string? Company, string? Stamp) ReadCompany(string path, CancellationToken token)
+    private static (string? Company, string? Stamp) ReadCompanyPreview(string path, CancellationToken token,
+        (string? Company, string? Stamp)? previous, ShellItemCatalog.SourceReadTrace? trace)
     {
         try
         {
-            ValidateFilePath(path);
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using (trace?.Measure("company.validate-before")) ValidateFilePath(path);
+            FileStream stream;
+            using (trace?.Measure("company.open")) stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var held = stream;
             var stamp = Stamp(path);
             token.ThrowIfCancellationRequested();
-            var company = FileVersionInfo.GetVersionInfo(path).CompanyName?.Trim();
+            string? company;
+            if (previous.HasValue && previous.Value.Stamp is not null && previous.Value.Stamp == stamp)
+            {
+                company = previous.Value.Company;
+                trace?.Count("company.preview-reuse");
+            }
+            else
+                using (trace?.Measure("company.read-version")) company = FileVersionInfo.GetVersionInfo(path).CompanyName?.Trim();
             token.ThrowIfCancellationRequested();
-            ValidateFilePath(path);
+            using (trace?.Measure("company.validate-after")) ValidateFilePath(path);
             if (Stamp(path) != stamp) throw new IOException("The executable changed while reading its company.");
             return (string.IsNullOrEmpty(company) ? null : company, stamp);
         }

@@ -10,7 +10,11 @@ namespace TileWall.Graphics;
 /// <summary>One bounded desktop capture; pixels never leave process memory.</summary>
 internal static class DesktopBackdropSnapshot
 {
-    internal static DecodedImageFrame? CaptureExcludingWindow(RectInt32 region, IntPtr window, ref uint? affinityToRestore)
+    internal sealed record CapturedFrame(DecodedImageFrame Pixels, int Left, int Top, int Width, int Height,
+        int ContentWidth, int ContentHeight, double SigmaX, double SigmaY);
+
+    internal static CapturedFrame? CaptureExcludingWindow(RectInt32 region, double rasterizationScale,
+        IntPtr window, ref uint? affinityToRestore)
     {
         // A failed earlier restore owns the original value until read-back confirms
         // it. Never reinterpret our remaining exclusion flag as the original policy.
@@ -23,7 +27,7 @@ internal static class DesktopBackdropSnapshot
         // Register before changing policy. Even a failed Set must pass through
         // restoration, because accepting another baseline would lose ownership.
         affinityToRestore = original;
-        DecodedImageFrame? captured = null;
+        CapturedFrame? captured = null;
         bool restored;
         try
         {
@@ -32,7 +36,7 @@ internal static class DesktopBackdropSnapshot
                 AppLog.Warn("BackdropSnapshot", $"Exclude window from capture failed: {Marshal.GetLastWin32Error()}");
                 return null;
             }
-            captured = Capture(region);
+            captured = Capture(region, rasterizationScale);
             if (captured is null) AppLog.Warn("BackdropSnapshot", "Desktop capture returned no frame.");
         }
         finally
@@ -76,12 +80,30 @@ internal static class DesktopBackdropSnapshot
         Win32Api.GetWindowThreadProcessId(window, out var owner) != 0 && owner == (uint)Environment.ProcessId &&
         (Win32Api.GetWindowLongPtrW(window, -16).ToInt64() & 0x40000000) == 0; // GWL_STYLE / WS_CHILD
 
-    internal static DecodedImageFrame? Capture(RectInt32 region)
+    internal static CapturedFrame? Capture(RectInt32 region, double rasterizationScale)
     {
-        if (region.Width <= 0 || region.Height <= 0 || region.Width > 20000 || region.Height > 20000) return null;
-        var scale = Math.Min(1, 512d / Math.Max(region.Width, region.Height));
-        var width = Math.Max(1, (int)Math.Round(region.Width * scale));
-        var height = Math.Max(1, (int)Math.Round(region.Height * scale));
+        if (region.Width <= 0 || region.Height <= 0 || region.Width > 20000 || region.Height > 20000 ||
+            !double.IsFinite(rasterizationScale) || rasterizationScale <= 0 || rasterizationScale > 8) return null;
+        // Sample the blur's neighborhood before reducing/cropping. At the physical
+        // desktop edge, the bounded Gaussian extends that edge rather than adding black.
+        var sigma = AcrylicSnapshotRecipe.BlurSigmaDip * rasterizationScale;
+        var padding = (int)Math.Ceiling(3 * sigma) + 2;
+        var desktopX = Win32Api.GetSystemMetrics(76); // SM_XVIRTUALSCREEN
+        var desktopY = Win32Api.GetSystemMetrics(77); // SM_YVIRTUALSCREEN
+        var desktopRight = (long)desktopX + Win32Api.GetSystemMetrics(78);
+        var desktopBottom = (long)desktopY + Win32Api.GetSystemMetrics(79);
+        var left = (int)Math.Max(desktopX, (long)region.X - padding);
+        var top = (int)Math.Max(desktopY, (long)region.Y - padding);
+        var right = (int)Math.Min(desktopRight, (long)region.X + region.Width + padding);
+        var bottom = (int)Math.Min(desktopBottom, (long)region.Y + region.Height + padding);
+        if (left > region.X || top > region.Y || right < (long)region.X + region.Width ||
+            bottom < (long)region.Y + region.Height) return null;
+        var captureWidth = right - left;
+        var captureHeight = bottom - top;
+        if (captureWidth <= 0 || captureHeight <= 0) return null;
+        var scale = Math.Min(1, 512d / Math.Max(captureWidth, captureHeight));
+        var width = Math.Max(1, (int)Math.Round(captureWidth * scale));
+        var height = Math.Max(1, (int)Math.Round(captureHeight * scale));
         var screen = GetDC(IntPtr.Zero);
         if (screen == IntPtr.Zero) return null;
         IntPtr memory = IntPtr.Zero, bitmap = IntPtr.Zero, previous = IntPtr.Zero;
@@ -96,11 +118,18 @@ internal static class DesktopBackdropSnapshot
             previous = SelectObject(memory, bitmap);
             if (previous == IntPtr.Zero || previous == new IntPtr(-1)) return null;
             SetStretchBltMode(memory, 4);
-            if (!StretchBlt(memory, 0, 0, width, height, screen, region.X, region.Y, region.Width, region.Height, 0x00CC0020)) return null;
+            if (!StretchBlt(memory, 0, 0, width, height, screen, left, top, captureWidth, captureHeight, 0x00CC0020)) return null;
             var bytes = new byte[width * height * 4];
             Marshal.Copy(pixels, bytes, 0, bytes.Length);
             for (var index = 3; index < bytes.Length; index += 4) bytes[index] = 255;
-            return new("memory:desktop", bytes.Length, DateTime.UtcNow, region.Width, region.Height, width, height, bytes);
+            var pixelsFrame = new DecodedImageFrame("memory:desktop", bytes.Length, DateTime.UtcNow,
+                captureWidth, captureHeight, width, height, bytes);
+            var cropLeft = (int)Math.Round((region.X - left) * (double)width / captureWidth);
+            var cropTop = (int)Math.Round((region.Y - top) * (double)height / captureHeight);
+            var cropWidth = Math.Clamp((int)Math.Round(region.Width * (double)width / captureWidth), 1, width - cropLeft);
+            var cropHeight = Math.Clamp((int)Math.Round(region.Height * (double)height / captureHeight), 1, height - cropTop);
+            return new(pixelsFrame, cropLeft, cropTop, cropWidth, cropHeight, region.Width, region.Height,
+                sigma * width / captureWidth, sigma * height / captureHeight);
         }
         finally
         {
@@ -111,37 +140,38 @@ internal static class DesktopBackdropSnapshot
         }
     }
 
-    internal static DecodedImageFrame BlurAndTint(DecodedImageFrame captured, bool dark)
+    internal static DecodedImageFrame BlurAndTint(CapturedFrame captured, AcrylicSnapshotRecipe recipe)
     {
-        var blurred = LowResolutionBlur.Apply(captured, 20);
-        var pixels = blurred.BgraPremultiplied.ToArray();
-        // Default DesktopAcrylicController values verified against the current runtime.
-        // They are a local reference recipe, not a guarantee across Windows versions.
-        var tint = dark ? 44d : 252d;
-        var luminosityOpacity = dark ? .96 : .85;
-        var tintOpacity = dark ? .15 : 0;
+        var blurred = LowResolutionBlur.ApplySigma(captured.Pixels, captured.SigmaX, captured.SigmaY);
+        var pixels = new byte[captured.Width * captured.Height * 4];
+        for (var row = 0; row < captured.Height; row++)
+            blurred.BgraPremultiplied.Span.Slice(((row + captured.Top) * blurred.Width + captured.Left) * 4,
+                captured.Width * 4).CopyTo(pixels.AsSpan(row * captured.Width * 4));
+        var tintLuminosity = Luminosity(recipe.Tint.R, recipe.Tint.G, recipe.Tint.B);
+        var luminosityOpacity = Math.Round(Math.Clamp(recipe.LuminosityOpacity, 0, 1) * 255) / 255;
+        var tintOpacity = Math.Round(recipe.Tint.A * Math.Clamp(recipe.TintOpacity, 0, 1)) / 255;
         for (var index = 0; index < pixels.Length; index += 4)
         {
             double red = pixels[index + 2], green = pixels[index + 1], blue = pixels[index];
             var luminosityRed = red;
             var luminosityGreen = green;
             var luminosityBlue = blue;
-            SetLuminosity(ref luminosityRed, ref luminosityGreen, ref luminosityBlue, tint);
+            SetLuminosity(ref luminosityRed, ref luminosityGreen, ref luminosityBlue, tintLuminosity);
             red += (luminosityRed - red) * luminosityOpacity;
             green += (luminosityGreen - green) * luminosityOpacity;
             blue += (luminosityBlue - blue) * luminosityOpacity;
 
-            // Both verified tints are neutral. Color blending therefore moves each
-            // channel towards the adjusted luminance without changing that luminance.
-            var luminosity = Luminosity(red, green, blue);
-            red += (luminosity - red) * tintOpacity;
-            green += (luminosity - green) * tintOpacity;
-            blue += (luminosity - blue) * tintOpacity;
+            double tintRed = recipe.Tint.R, tintGreen = recipe.Tint.G, tintBlue = recipe.Tint.B;
+            SetLuminosity(ref tintRed, ref tintGreen, ref tintBlue, Luminosity(red, green, blue));
+            red += (tintRed - red) * tintOpacity;
+            green += (tintGreen - green) * tintOpacity;
+            blue += (tintBlue - blue) * tintOpacity;
             pixels[index + 2] = ToByte(red);
             pixels[index + 1] = ToByte(green);
             pixels[index] = ToByte(blue);
         }
-        return blurred with { BgraPremultiplied = pixels };
+        return blurred with { SourceWidth = captured.ContentWidth, SourceHeight = captured.ContentHeight,
+            Width = captured.Width, Height = captured.Height, BgraPremultiplied = pixels };
     }
 
     // Nonseparable luminosity blending keeps the source's hue/saturation; clipping

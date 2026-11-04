@@ -21,8 +21,8 @@ public sealed partial class MainWindow
     private CancellationTokenSource? _snapshotRequest;
     // This window's UI thread retains the true original policy through restore failures.
     private uint? _snapshotAffinityToRestore;
-    private (int X, int Y, int W, int H, double Scale, bool Dark)? _snapshotKey;
-    private (int X, int Y, int W, int H, double Scale, bool Dark)? _snapshotRequestKey;
+    private (int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe)? _snapshotKey;
+    private (int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe)? _snapshotRequestKey;
     private long _snapshotGeneration, _snapshotFocusCycle, _snapshotRequestedFocusCycle = -1;
     private bool _snapshotExternalFocus, _snapshotFocusLossRequest;
     private CancellationTokenSource? _backgroundRequest;
@@ -193,7 +193,9 @@ public sealed partial class MainWindow
             (!_backdropActive || _materialFallback);
         var visibility = snapshotReady || _materialFallback || settings.BackgroundMode == WallBackgroundMode.Custom || reduced
             ? Visibility.Visible : Visibility.Collapsed;
-        var opacity = reduced ? 1 : (100 - Math.Clamp(settings.BackgroundTransparency, 0, 100)) / 100d;
+        var opacity = reduced ? 1 : snapshotReady
+            ? AcrylicSnapshotRecipe.BackgroundOpacity(settings.BackgroundTransparency)
+            : (100 - Math.Clamp(settings.BackgroundTransparency, 0, 100)) / 100d;
         if (_backgroundLayer.Opacity != opacity) _backgroundLayer.Opacity = opacity;
         var customImageReady = !reduced && settings.BackgroundMode == WallBackgroundMode.Custom &&
             _backgroundImage.Source is not null;
@@ -232,8 +234,9 @@ public sealed partial class MainWindow
         if (result.Source is null) AppLog.Warn("WallBackdrop", $"Custom background unavailable: {result.Status}");
     }
 
-    private (int X, int Y, int W, int H, double Scale, bool Dark) CurrentSnapshotKey =>
-        (AppWindow.Position.X, AppWindow.Position.Y, AppWindow.Size.Width, AppWindow.Size.Height, Scale, _themeDark);
+    private (int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe) CurrentSnapshotKey =>
+        (AppWindow.Position.X, AppWindow.Position.Y, AppWindow.Size.Width, AppWindow.Size.Height, Scale, _themeDark,
+            _wallBackdrop.SnapshotRecipe(_themeDark));
     private bool HasValidSnapshot => _snapshotImage.Source is not null && _snapshotKey == CurrentSnapshotKey;
 
     private void InvalidateSnapshotIfGeometryChanged()
@@ -264,8 +267,9 @@ public sealed partial class MainWindow
         if (_appearanceStopping || _windowClosing || AppWindow.IsVisible || _modal || Settings.BackgroundMode != WallBackgroundMode.Acrylic ||
             _accessibilitySettings.HighContrast || !_appearanceSettings.AdvancedEffectsEnabled) return;
         var key = CurrentSnapshotKey;
+        if (key.Recipe is null) return;
         BeginSnapshotRequest(key, focusLoss: false);
-        var captured = DesktopBackdropSnapshot.Capture(new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H));
+        var captured = DesktopBackdropSnapshot.Capture(new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H), key.Scale);
         if (captured is not null)
             TrackAppearanceWork(PrepareSnapshotAsync(captured, key, _snapshotGeneration, null, _snapshotRequest!.Token));
     }
@@ -285,12 +289,13 @@ public sealed partial class MainWindow
         if (!CanRefreshFocusLossSnapshot || _snapshotRequestedFocusCycle == _snapshotFocusCycle) return;
         // Mark admission, including a failed capture, once per real external focus
         // cycle. Switching among external apps never starts a capture loop.
-        _snapshotRequestedFocusCycle = _snapshotFocusCycle;
         var key = CurrentSnapshotKey;
+        if (key.Recipe is null) return;
+        _snapshotRequestedFocusCycle = _snapshotFocusCycle;
         BeginSnapshotRequest(key, focusLoss: true);
         TraceInput($"BackdropSnapshot capture focusCycle={_snapshotFocusCycle} generation={_snapshotGeneration}");
         var capture = DesktopBackdropSnapshot.CaptureExcludingWindow(
-            new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H), WinRT.Interop.WindowNative.GetWindowHandle(this),
+            new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H), key.Scale, WinRT.Interop.WindowNative.GetWindowHandle(this),
             ref _snapshotAffinityToRestore);
         if (capture is not null)
             TrackAppearanceWork(PrepareSnapshotAsync(capture, key, _snapshotGeneration, _snapshotFocusCycle, _snapshotRequest!.Token));
@@ -312,7 +317,7 @@ public sealed partial class MainWindow
         _snapshotFocusLossRequest = false;
     }
 
-    private void BeginSnapshotRequest((int X, int Y, int W, int H, double Scale, bool Dark) key, bool focusLoss)
+    private void BeginSnapshotRequest((int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe) key, bool focusLoss)
     {
         CancelSnapshotRequest();
         _snapshotRequest = new();
@@ -320,15 +325,15 @@ public sealed partial class MainWindow
         _snapshotFocusLossRequest = focusLoss;
     }
 
-    private async Task PrepareSnapshotAsync(DecodedImageFrame capture,
-        (int X, int Y, int W, int H, double Scale, bool Dark) key,
+    private async Task PrepareSnapshotAsync(DesktopBackdropSnapshot.CapturedFrame capture,
+        (int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe) key,
         long generation, long? focusCycle, CancellationToken token)
     {
         try
         {
             await _snapshotSlot.WaitAsync(token);
             DecodedImageFrame blurred;
-            try { blurred = await Task.Run(() => DesktopBackdropSnapshot.BlurAndTint(capture, key.Dark), token); }
+            try { blurred = await Task.Run(() => DesktopBackdropSnapshot.BlurAndTint(capture, key.Recipe!.Value), token); }
             finally { _snapshotSlot.Release(); }
             bool IsCurrent() => !token.IsCancellationRequested && !_windowClosing && !_appearanceStopping && !ShutdownStarted &&
                 generation == _snapshotGeneration && _snapshotRequestKey == key && CurrentSnapshotKey == key &&

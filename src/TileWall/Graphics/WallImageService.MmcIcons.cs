@@ -27,7 +27,9 @@ public sealed partial class WallImageService
     /// bounded, checked for reparse redirection, and fingerprinted as real input dependencies.
     /// Unsupported or incomplete files leave the existing Shell/fallback chain in control.
     /// </summary>
-    private static MmcIconSource ReadMmcIconSource(string path)
+    private static MmcIconSource ReadMmcIconSource(string path) => ReadMmcIconSourceObserved(path, null);
+
+    private static MmcIconSource ReadMmcIconSourceObserved(string path, Func<string?, string>? resourceStamp)
     {
         var fullPath = NormalizePath(path);
         if (fullPath is null || !IsMmcConsolePath(fullPath))
@@ -70,7 +72,7 @@ public sealed partial class WallImageService
         if (declaration is null)
             return new(fullPath, null, sourceStamp + "|" + declarationStamp, true);
 
-        var resource = ReadMmcResourceDependency(declaration.Path);
+        var resource = ReadMmcResourceDependency(declaration.Path, resourceStamp);
         var stamp = sourceStamp + "|" + declarationStamp + "|" + resource.Stamp;
         return new(fullPath, resource.SafeToRead ? declaration : null, stamp, resource.CacheAllowed);
     }
@@ -146,7 +148,7 @@ public sealed partial class WallImageService
         return new(fullPath, index);
     }
 
-    private static MmcResourceDependency ReadMmcResourceDependency(string path)
+    private static MmcResourceDependency ReadMmcResourceDependency(string path, Func<string?, string>? resourceStamp = null)
     {
         if (!TryGetSafeFileInfo(path, out var length, out var lastWriteUtc))
             return new($"mmc-resource=unavailable|{path}", false, false);
@@ -158,7 +160,7 @@ public sealed partial class WallImageService
             return new($"mmc-resource=unreadable|{path}|{length}|{lastWriteUtc.Ticks}", false, false);
 
         return new($"mmc-resource=sha256|{path}|{Convert.ToHexString(SHA256.HashData(bytes))}|" +
-            PeIconResourceReader.ResourceDependencyStamp(path), true, true);
+            (resourceStamp ?? PeIconResourceReader.ResourceDependencyStamp)(path), true, true);
     }
 
     private static string SafeFileMetadata(string path) => TryGetSafeFileInfo(path, out var length, out var lastWriteUtc)

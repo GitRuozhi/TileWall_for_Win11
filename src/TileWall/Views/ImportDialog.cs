@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
+using System.Diagnostics;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using TileWall.ApplicationModel;
@@ -48,11 +49,17 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly WallMetrics _metrics = new();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly HashSet<Task> _pendingOperations = [], _previewOperations = [];
+    private readonly Dictionary<string, PreviewImageWork> _previewImageWork = new(StringComparer.Ordinal);
+    private readonly LinkedList<PreviewImageWork> _previewImageQueue = new();
+    private readonly Dictionary<string, PreviewImageCompletion> _previewImageCompletions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, PreviewTargetInference> _previewTargetInferences = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _previewImageDesiredWorkKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _selected = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ImportProjectedCandidate> _candidateByKey = new(StringComparer.Ordinal);
     private readonly HashSet<CandidateRow> _rows = [];
     private readonly Dictionary<string, PuzzleFrame> _frames = new(StringComparer.Ordinal);
     private const long PreviewFrameLimitBytes = 64L * 1024 * 1024;
+    private const int PreviewImageWorkerLimit = 2;
     private readonly LinkedList<string> _frameOrder = new();
     private readonly Dictionary<string, LinkedListNode<string>> _frameNodes = new(StringComparer.Ordinal);
     private long _frameBytes;
@@ -96,6 +103,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly ImportPreviewLayout _previewLayout = new();
     private readonly Dictionary<UIElement, (int Epoch, int Index, PreviewItem Item)> _preparedElements = [];
     private readonly ObservableCollection<string> _previewKeys = [];
+    private readonly Dictionary<string, PreviewItem> _previewMemberItems = new(StringComparer.Ordinal);
     private readonly ScrollViewer _preview, _statusScroll;
     private IReadOnlyList<PreviewItem> _previewItems = [];
     private readonly Action _catalogChanged;
@@ -115,8 +123,14 @@ internal sealed class ImportDialog : IWallDialogSession
     private string? _packagePath, _exportPath, _notice, _error;
     private string? _statisticLayoutKey;
     private readonly double _statisticsMaximumColumnWidth, _statisticsPreviewWidth;
+    private readonly Stopwatch _previewPreparationStopwatch = new();
     private bool _shown, _closed, _dismissRequested, _reading, _adding, _picking, _refreshingStrings, _readsSuspended,
         _preparing, _prepared, _synchronizingSelection, _exportPathPicked, _updatingPreviewItems;
+    private bool _previewPreparationStarted, _previewPreparationTerminalTraced, _previewOffscreenBindTraced;
+    private int _previewImageWorkers, _previewImageCandidateCount, _previewImageExpectedCount, _previewImageCancelledCount,
+        _previewImageCurrentTerminalCount;
+    private DateTimeOffset _previewProgressLastTraceAt;
+    private string? _previewProgressPendingCandidateKey, _previewProgressPendingStage;
     private int _sourceEpoch, _renderEpoch, _preparationEpoch, _tileSize = 1, _catalogRevision, _lastImportSource;
     private ImportPageMode Mode => _mode.SelectedIndex == 1 ? ImportPageMode.Export : ImportPageMode.Import;
     private ImportPageSourceKind SourceKind => SourceKinds[Math.Clamp(_source.SelectedIndex, 0, SourceKinds.Length - 1)];
@@ -140,7 +154,11 @@ internal sealed class ImportDialog : IWallDialogSession
         if (!string.IsNullOrWhiteSpace(initialExportDirectory)) _exportPath = Path.Combine(initialExportDirectory, DefaultExportFileName());
         _catalogChanged = () => owner.DispatcherQueue.TryEnqueue(() => SourceChanged(ImportPageSourceKind.StartMenu));
         _clockTimer = owner.DispatcherQueue.CreateTimer(); _clockTimer.Interval = TimeSpan.FromSeconds(1);
-        _clockTimer.Tick += (_, _) => { foreach (var row in _rows) row.Clock?.Refresh(DateTimeOffset.Now); };
+        _clockTimer.Tick += (_, _) =>
+        {
+            foreach (var row in _rows) row.Clock?.Refresh(DateTimeOffset.Now);
+            TracePreviewPreparationProgress();
+        };
         var budget = OwnedDialogWindow.ContentBudget(owner);
         const double rightWidth = 748, columnGap = 16;
         var previewWidth = _metrics.WallWidth(1);
@@ -300,6 +318,7 @@ internal sealed class ImportDialog : IWallDialogSession
         try { _filter.Text = ""; }
         finally { _refreshingStrings = wasRefreshingStrings; }
         _recognizedTargets.Clear();
+        _previewTargetInferences.Clear(); _previewImageCompletions.Clear();
         _selected.Clear(); _notice = _error = null; _context = null; _sourceData = null; _projection = null; _plan = null;
         _projectedCandidates = null; _projectedIdentities = null; _previewProjection = null;
         _recognitionProjection = null; _recognitionContext = null; _recognitionFacts = null;
@@ -323,6 +342,7 @@ internal sealed class ImportDialog : IWallDialogSession
         var epoch = ++_sourceEpoch; var revision = _catalogRevision;
         if (resetSelection) _selected.Clear();
         _reading = true;
+        ReconcilePreviewImages();
         if (resetSelection) _prepared = false;
         UpdateAvailability(); UpdateStatus();
         Track(ReadPageAsync(epoch, revision, resetPreview, request));
@@ -363,8 +383,20 @@ internal sealed class ImportDialog : IWallDialogSession
             _previewRequest ??= CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             Reproject(prepare: !keepPreparation);
             if (nativeRefreshCompleted)
-                foreach (var row in _rows.Where(row => row.Member.Images.Kind == MemberImageSourceKind.Automatic))
-                { row.ImageKey = null; row.Request?.Cancel(); }
+            {
+                var refreshedKeys = source.Candidates.Where(candidate => candidate.SourceKind == kind &&
+                    candidate.Member.Images.Kind == MemberImageSourceKind.Automatic).Select(candidate => candidate.SourceKey)
+                    .ToHashSet(StringComparer.Ordinal);
+                foreach (var item in _previewImageWork.Values.Where(work => refreshedKeys.Contains(work.Descriptor.SourceCandidate.SourceKey)).ToArray())
+                    CancelPreviewImageWork(item, clearCompletion: true);
+                foreach (var key in _previewImageCompletions.Where(pair => refreshedKeys.Contains(pair.Value.SourceKey))
+                             .Select(pair => pair.Key).ToArray()) _previewImageCompletions.Remove(key);
+                foreach (var key in refreshedKeys)
+                    if (_previewTargetInferences.TryGetValue(key, out var inference) && inference.Result is null)
+                        _previewTargetInferences.Remove(key);
+                foreach (var row in _rows.Where(row => refreshedKeys.Contains(row.Candidate.Source.SourceKey))) row.ImageKey = null;
+                ReconcilePreviewImages();
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (IsCurrent(epoch, request.Token)) { _error = ex.Message; _plan = null; } }
@@ -373,7 +405,7 @@ internal sealed class ImportDialog : IWallDialogSession
             if (_sourceEpoch == epoch)
             {
                 _reading = false; if (ReferenceEquals(_pageRequest, request)) _pageRequest = null;
-                UpdateAvailability(); UpdateStatus(); foreach (var row in _rows) StartRowImage(row);
+                UpdateAvailability(); UpdateStatus(); ReconcilePreviewImages();
                 if (!_closed && !_dismissRequested && !_readsSuspended && revision != _catalogRevision) BeginRead();
             }
             request.Dispose();
@@ -471,6 +503,7 @@ internal sealed class ImportDialog : IWallDialogSession
         var request = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token); _preparationRequest = request;
         var epoch = ++_preparationEpoch; var sourceEpoch = _sourceEpoch;
         _preparing = true; _prepared = false; UpdateAvailability(); UpdateStatus();
+        ReconcilePreviewImages();
         Track(PrepareAsync(_context, _sourceData, _projection, sourceEpoch, epoch, request));
     }
 
@@ -493,7 +526,7 @@ internal sealed class ImportDialog : IWallDialogSession
             if (epoch == _preparationEpoch)
             {
                 _preparing = false; if (ReferenceEquals(_preparationRequest, request)) _preparationRequest = null;
-                UpdateAvailability(); UpdateStatus();
+                UpdateAvailability(); UpdateStatus(); ReconcilePreviewImages();
             }
             request.Dispose();
         }
@@ -548,17 +581,38 @@ internal sealed class ImportDialog : IWallDialogSession
                 if (candidate is null || !_recognizedTargets[key].Matches(source, candidate))
                 { _recognizedTargets.Remove(key); changed = true; }
             }
+            foreach (var key in _previewTargetInferences.Keys.ToArray())
+            {
+                var candidate = source.Candidates.FirstOrDefault(candidate => candidate.SourceKey == key);
+                var fact = candidate is null ? null : ImportTargetRecognition.FactFor(source, candidate);
+                if (candidate is null || _previewTargetInferences[key].SourceFact != fact)
+                { _previewTargetInferences.Remove(key); changed = true; }
+            }
         }
-        // Preview inference applies to visible realized candidates, independent of
-        // selection and current placement capacity. Rebind earlier shell-only frames
-        // when the page becomes ready, and discard presentations whose facts changed.
+        if (becameReady && _sourceData is { } readySource)
+        {
+            foreach (var item in _previewItems)
+            {
+                if (item.Candidate is not { } projected ||
+                    BuildPreviewImageWork(projected, item, readySource) is not { InferTarget: true } descriptor ||
+                    _previewTargetInferences.TryGetValue(descriptor.SourceCandidate.SourceKey, out var inference) &&
+                    inference.SourceFact == descriptor.SourceFact) continue;
+                foreach (var work in _previewImageWork.Values.Where(work => work.Descriptor.WorkKey == descriptor.WorkKey).ToArray())
+                    CancelPreviewImageWork(work, clearCompletion: true);
+                _previewImageCompletions.Remove(descriptor.WorkKey);
+            }
+        }
+        // Preview inference applies to every image-bearing row in the current
+        // projection, independent of viewport realization, selection and capacity.
+        // Rebind visible rows when facts change; offscreen work is reconciled below.
         if (changed || becameReady) RefreshRecognizedRows();
+        ReconcilePreviewImages();
     }
 
     private void RefreshRecognizedRows(string? sourceKey = null)
     {
         foreach (var row in _rows.ToArray().Where(row => sourceKey is null || row.Candidate.Source.SourceKey == sourceKey))
-        { row.Request?.Cancel(); row.ImageKey = null; }
+        { row.ImageKey = null; }
         foreach (var element in _preparedElements.Keys.ToArray())
             if (sourceKey is null || _preparedElements[element].Item.Candidate?.Source.SourceKey == sourceKey)
                 PrepareElement(element, _repeater.GetElementIndex(element));
@@ -615,8 +669,13 @@ internal sealed class ImportDialog : IWallDialogSession
         finally { _updatingPreviewItems = false; }
         _previewLayout.SetScene(items.Select(item => item.Bounds).ToArray(), preview.Geometry.WallWidth, preview.Geometry.WallHeight,
             preserveElements: true);
+        _previewMemberItems.Clear();
+        foreach (var item in items)
+            if (item.Member is not null && item.Candidate is { } candidate)
+                _previewMemberItems[candidate.SelectionKey] = item;
         foreach (var element in _preparedElements.Keys.ToArray()) PrepareElement(element, _repeater.GetElementIndex(element));
         RefreshRealizedMetadata();
+        ReconcilePreviewImages();
     }
 
     private ImportSourceProjection CreateFilteredPreviewProjection(ImportSourceProjection projection)
@@ -644,8 +703,8 @@ internal sealed class ImportDialog : IWallDialogSession
             var stamp = IconStamp(row.Candidate);
             if (row.IconStamp != stamp)
             {
-                row.IconStamp = stamp; row.Request?.Cancel(); row.ImageKey = null;
-                StartRowImage(row, replace: true);
+                row.IconStamp = stamp; row.ImageKey = null;
+                StartRowImage(row);
             }
         }
     }
@@ -750,7 +809,15 @@ internal sealed class ImportDialog : IWallDialogSession
         foreach (var element in _preparedElements.Keys.ToArray()) ClearElement(element);
         _previewLayout.SetScene([], 1, 1);
         _previewKeys.Clear(); _previewItems = []; ++_renderEpoch;
+        _previewMemberItems.Clear();
         _previewFilter = "";
+        CancelPreviewImageWork(clearCompletions: true);
+        _previewPreparationStarted = false; _previewPreparationTerminalTraced = false; _previewOffscreenBindTraced = false;
+        _previewPreparationStopwatch.Stop(); _previewPreparationStopwatch.Reset();
+        _previewImageCandidateCount = _previewImageExpectedCount = _previewImageCancelledCount = 0;
+        _previewImageCurrentTerminalCount = 0;
+        _previewProgressLastTraceAt = default;
+        _previewProgressPendingCandidateKey = _previewProgressPendingStage = null;
     }
     private void UpdateRowTooltip(CandidateRow row)
     {
@@ -791,10 +858,14 @@ internal sealed class ImportDialog : IWallDialogSession
     private void ReleaseRow(CandidateRow row)
     {
         if (!_rows.Remove(row)) return;
-        row.Request?.Cancel(); row.Toggle.Checked -= row.Changed; row.Toggle.Unchecked -= row.Changed;
+        row.Toggle.Checked -= row.Changed; row.Toggle.Unchecked -= row.Changed;
         row.Reset(); row.View?.StopTransientFeedback(); row.View?.UpdateFrame(null); row.Clock?.StopTransientFeedback();
     }
-    private void CancelPreview() { _previewRequest?.Cancel(); foreach (var row in _rows) row.Request?.Cancel(); }
+    private void CancelPreview()
+    {
+        _previewRequest?.Cancel();
+        CancelPreviewImageWork(clearCompletions: false);
+    }
     private void ClosePreviewSource()
     {
         _packageSource?.Retire(); _packageSource = null;
@@ -837,206 +908,478 @@ internal sealed class ImportDialog : IWallDialogSession
         _frames.Clear(); _frameNodes.Clear(); _frameOrder.Clear(); _frameBytes = 0;
     }
 
-    private void StartRowImage(CandidateRow row, bool replace = false)
+    private void StartRowImage(CandidateRow row)
     {
         if (_closed || _dismissRequested || _readsSuspended || _adding || _reading || _sourceData is null || row.Member is ClockMember) return;
-        if (row.Request is { IsCancellationRequested: false } && !replace) return;
-        if (replace) row.Request?.Cancel();
-        _previewRequest ??= CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        if (_previewRequest.IsCancellationRequested) return;
-        var source = _sourceData; var epoch = _renderEpoch;
-        var request = CancellationTokenSource.CreateLinkedTokenSource(_previewRequest.Token);
-        row.Request = request;
-        var scale = _dialog.XamlRoot?.RasterizationScale ?? 1;
-        var width = Math.Clamp((int)Math.Ceiling(_metrics.WidthOf(row.Member.LocalBounds.Width) * scale), 1, 4096);
-        var height = Math.Clamp((int)Math.Ceiling(_metrics.HeightOf(row.Member.LocalBounds.Height) * scale), 1, 4096);
-        var cacheKey = System.Text.Json.JsonSerializer.Serialize(new { row.Candidate.SelectionKey, row.Candidate.Source.SourceKind, Stamp = IconStamp(row.Candidate),
-            row.Member.Images, row.Member.ImageDisplay, row.Member.Visual.BackgroundMode,
-            CurrentImage = row.Member.Carousel?.CurrentImageId, Width = width, Height = height });
-        var automaticCachePath = source.Package is null && row.Member.Images.Kind == MemberImageSourceKind.Automatic
-            ? AutomaticFrameValidationPath(row.Candidate.Source) : null;
-        PuzzleFrame? cachedAutomaticFrame = null;
-        if (!replace && automaticCachePath is not null && TryGetFrame(cacheKey, out var cachedAutomatic) &&
-            cachedAutomatic.MemoryCacheAllowed && cachedAutomatic.AutomaticStamp is not null)
-            cachedAutomaticFrame = cachedAutomatic;
-        var hasAutomaticCache = cachedAutomaticFrame is not null;
-        if (!replace && row.ImageKey == cacheKey && !hasAutomaticCache)
-        { row.Request = null; request.Dispose(); return; }
-        row.RequestKey = cacheKey;
-        if (hasAutomaticCache)
+        if (!_previewMemberItems.TryGetValue(row.Candidate.SelectionKey, out var item) || item.Candidate is not { } projected ||
+            BuildPreviewImageWork(projected, item, _sourceData) is not { } descriptor) return;
+        row.RequestKey = descriptor.WorkKey;
+        if (descriptor.InferTarget && IsPreviewTargetInferenceDeferred(descriptor)) return;
+        var member = PreviewMemberFor(descriptor, item.Member!);
+        var frameKey = PreviewFrameKey(projected, descriptor.SourceCandidate, descriptor.Source, member,
+            descriptor.Width, descriptor.Height, descriptor.DpiScale);
+        if (_previewImageCompletions.TryGetValue(descriptor.WorkKey, out var completion) && completion.FrameKey == frameKey)
         {
-            // Keep a previously loaded frame visible while its lightweight source
-            // stamp is checked and, if stale, a replacement is prepared.
-            row.View!.UpdateFrame(cachedAutomaticFrame!);
+            if (completion.Outcome == PreviewImageOutcome.Frame && TryGetFrame(frameKey, out var cached))
+            {
+                row.ImageKey = frameKey; row.View?.UpdateFrame(cached);
+                TraceFirstOffscreenBind(completion);
+            }
+            else if (completion.Outcome != PreviewImageOutcome.Frame) row.ImageKey = null;
+            else if (row.ImageKey != frameKey)
+            {
+                row.ImageKey = null;
+                QueuePreviewImageWork(descriptor);
+            }
+            return;
         }
-        if (row.Member.Images.Kind != MemberImageSourceKind.Automatic && TryGetFrame(cacheKey, out var cached))
-        { row.View!.UpdateFrame(cached); row.ImageKey = cacheKey; row.RequestKey = null; row.Request = null; request.Dispose(); return; }
-        PackagePreviewSource? packageSource = null;
-        if (source.Package is { } package)
-        {
-            _packageSource ??= new PackagePreviewSource(_reader, package, _previewRequest.Token);
-            packageSource = _packageSource; packageSource.Enter();
-        }
-        var task = LoadRowImageAsync(row, source, epoch, width, height, cacheKey, request, packageSource,
-            cachedAutomaticFrame, automaticCachePath);
-        _previewOperations.RemoveWhere(operation => operation.IsCompleted);
-        _previewOperations.Add(task); _previewLoad = Task.WhenAll(_previewOperations); Track(task);
+        if (_previewImageWork.ContainsKey(descriptor.WorkKey)) return;
+        QueuePreviewImageWork(descriptor);
     }
 
-    private async Task LoadRowImageAsync(CandidateRow row, ImportPageSource source, int epoch, int width, int height,
-        string cacheKey, CancellationTokenSource request, PackagePreviewSource? packageSource,
-        PuzzleFrame? cachedAutomaticFrame, string? automaticCachePath)
+    private void ReconcilePreviewImages()
     {
+        if (_closed || _dismissRequested || _readsSuspended || _adding || _sourceData is null)
+        {
+            CancelPreviewImageWork(clearCompletions: false);
+            return;
+        }
+        _previewRequest ??= CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        if (_previewRequest.IsCancellationRequested) return;
+
+        var descriptors = new Dictionary<string, PreviewImageDescriptor>(StringComparer.Ordinal);
+        foreach (var item in _previewItems)
+            if (item.Candidate is { } projected && BuildPreviewImageWork(projected, item, _sourceData) is { } descriptor)
+                descriptors[descriptor.WorkKey] = descriptor;
+        _previewImageCandidateCount = _previewItems.Count(item => item.Candidate is not null);
+        _previewImageExpectedCount = descriptors.Count;
+        if (!_previewPreparationStarted)
+        {
+            _previewPreparationStarted = true;
+            _previewPreparationStopwatch.Restart();
+            _previewProgressLastTraceAt = DateTimeOffset.UtcNow;
+            _images.TraceImageWork($"preview-full-start:{SourceKind}:elapsedMs=0.0:candidates={_previewImageCandidateCount}:images={_previewImageExpectedCount}");
+        }
+        var previousDesired = _previewImageDesiredWorkKeys.ToHashSet(StringComparer.Ordinal);
+        _previewImageDesiredWorkKeys.Clear();
+        _previewImageDesiredWorkKeys.UnionWith(descriptors.Keys);
+        _previewImageCurrentTerminalCount = _previewImageDesiredWorkKeys.Count(_previewImageCompletions.ContainsKey);
+        if (descriptors.Keys.Any(key => !previousDesired.Contains(key))) _previewPreparationTerminalTraced = false;
+
+        foreach (var work in _previewImageWork.Values.Where(work => !descriptors.ContainsKey(work.Descriptor.WorkKey)).ToArray())
+            CancelPreviewImageWork(work, clearCompletion: false);
+        foreach (var work in _previewImageWork.Values.Where(work =>
+                     descriptors.TryGetValue(work.Descriptor.WorkKey, out var descriptor) && descriptor.InferTarget &&
+                     IsPreviewTargetInferenceDeferred(descriptor)).ToArray())
+            CancelPreviewImageWork(work, clearCompletion: false);
+        _previewProgressPendingCandidateKey = _previewProgressPendingStage = null;
+        foreach (var descriptor in descriptors.Values)
+        {
+            if (descriptor.InferTarget && IsPreviewTargetInferenceDeferred(descriptor))
+            {
+                _previewProgressPendingCandidateKey ??= descriptor.SourceCandidate.SourceKey;
+                _previewProgressPendingStage ??= "target-inference-deferred";
+                continue;
+            }
+            if (_previewImageCompletions.TryGetValue(descriptor.WorkKey, out var completion))
+            {
+                if (completion.Outcome is PreviewImageOutcome.NoImageOrFallback or PreviewImageOutcome.Failed) continue;
+                if (completion.Outcome == PreviewImageOutcome.Frame && !completion.FrameRetained) continue;
+                if (completion.FrameKey is { } readyKey && TryGetFrame(readyKey, out _)) continue;
+            }
+            if (_previewImageWork.ContainsKey(descriptor.WorkKey)) continue;
+            _previewProgressPendingCandidateKey ??= descriptor.SourceCandidate.SourceKey;
+            _previewProgressPendingStage ??= "queueing";
+            QueuePreviewImageWork(descriptor, startWorkers: false);
+        }
+        foreach (var key in _previewImageCompletions.Keys.Where(key => !descriptors.ContainsKey(key)).ToArray())
+            if (_sourceData.Candidates.All(candidate => !_previewImageCompletions[key].SourceKey.Equals(candidate.SourceKey, StringComparison.Ordinal)))
+                _previewImageCompletions.Remove(key);
+        StartPreviewImageWorkers();
+        foreach (var row in _rows.ToArray()) StartRowImage(row);
+        TracePreviewPreparationTerminalIfReady();
+    }
+
+    private PreviewImageDescriptor? BuildPreviewImageWork(ImportProjectedCandidate projected, PreviewItem item, ImportPageSource source)
+    {
+        if (item.Member is not { } member || member is ClockMember || member.Images.Kind == MemberImageSourceKind.None) return null;
+        var candidate = source.Candidates.FirstOrDefault(item => item.SourceKey == projected.Source.SourceKey);
+        if (candidate is null) return null;
+        var scale = _dialog.XamlRoot?.RasterizationScale ?? 1;
+        var width = Math.Clamp((int)Math.Ceiling(_metrics.WidthOf(member.LocalBounds.Width) * scale), 1, 4096);
+        var height = Math.Clamp((int)Math.Ceiling(_metrics.HeightOf(member.LocalBounds.Height) * scale), 1, 4096);
+        var inferTarget = IsTargetInferenceApplicable(projected, source, candidate);
+        var sourceFact = ImportTargetRecognition.FactFor(source, candidate);
+        var workKey = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            Version = 2, CandidateKey = projected.SelectionKey, candidate.SourceKind, candidate.SourceKey,
+            candidate.SelectionIdentity, SourceFact = sourceFact, Stamp = IconStamp(projected),
+            member.Images, member.ImageDisplay, member.Visual.BackgroundMode,
+            CurrentImage = member.Carousel?.CurrentImageId, Width = width, Height = height, DpiScale = scale,
+            InferTarget = inferTarget,
+        });
+        return new(workKey, sourceFact, projected, item, candidate, source, width, height, scale, inferTarget);
+    }
+
+    private WallMember PreviewMemberFor(PreviewImageDescriptor descriptor, WallMember member)
+    {
+        if (_recognizedTargets.TryGetValue(descriptor.SourceCandidate.SourceKey, out var recognition) &&
+            recognition.Matches(descriptor.Source, descriptor.SourceCandidate))
+            return recognition.Result.ApplyTo(member);
+        if (_previewTargetInferences.TryGetValue(descriptor.SourceCandidate.SourceKey, out var inference) &&
+            inference.SourceFact == descriptor.SourceFact && inference.Result is { } inferred)
+            return inferred.ApplyTo(member);
+        return member;
+    }
+
+    private string PreviewFrameKey(ImportProjectedCandidate projected, ImportSourceCandidate candidate,
+        ImportPageSource source, WallMember member, int width, int height, double dpiScale) =>
+        System.Text.Json.JsonSerializer.Serialize(new
+        {
+            Version = 2, CandidateKey = projected.SelectionKey, candidate.SourceKind, candidate.SourceKey,
+            candidate.SelectionIdentity, SourceFact = ImportTargetRecognition.FactFor(source, candidate), Stamp = IconStamp(projected),
+            member.Images, member.ImageDisplay, member.Visual.BackgroundMode,
+            CurrentImage = member.Carousel?.CurrentImageId, Width = width, Height = height, DpiScale = dpiScale,
+        });
+
+    private bool IsTargetInferenceApplicable(ImportProjectedCandidate projected, ImportPageSource source,
+        ImportSourceCandidate candidate)
+    {
+        if (Attributed || !ImportTargetRecognition.AppliesTo(candidate) ||
+            projected.Source.SourceKey != candidate.SourceKey || !MatchesFilter(projected)) return false;
+        if (source.StartMenuSources.TryGetValue(projected.SelectionKey, out var startMenu))
+        {
+            var extension = Path.GetExtension(startMenu.Candidate.FullPath);
+            if (extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".url", StringComparison.OrdinalIgnoreCase)) return false;
+        }
+        if (candidate.Member.SourceShortcutPath is not null) return false;
+        return candidate.Member.TargetInput is { } target && Path.IsPathFullyQualified(target);
+    }
+
+    private bool IsPreviewTargetInferenceDeferred(PreviewImageDescriptor descriptor) =>
+        _reading || _preparing || descriptor.Source.Refreshing;
+
+    private bool CanRunPreviewTargetInference(PreviewImageDescriptor descriptor) =>
+        descriptor.InferTarget && _recognitionReady && !_closed && !_dismissRequested && !_readsSuspended &&
+        !_reading && !_preparing && !_adding && !descriptor.Source.Refreshing &&
+        ReferenceEquals(_sourceData, descriptor.Source);
+
+    private void QueuePreviewImageWork(PreviewImageDescriptor descriptor, bool startWorkers = true)
+    {
+        if (_closed || _dismissRequested || _readsSuspended || _adding || _sourceData is null ||
+            descriptor.InferTarget && IsPreviewTargetInferenceDeferred(descriptor)) return;
+        _previewRequest ??= CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        if (_previewRequest.IsCancellationRequested || _previewImageWork.ContainsKey(descriptor.WorkKey)) return;
+        if (_previewImageCompletions.TryGetValue(descriptor.WorkKey, out var completion) &&
+            completion.Outcome is PreviewImageOutcome.NoImageOrFallback or PreviewImageOutcome.Failed) return;
+        var request = CancellationTokenSource.CreateLinkedTokenSource(_previewRequest.Token);
+        var work = new PreviewImageWork(descriptor, request);
+        work.Stage = "queued";
+        work.QueueNode = _previewImageQueue.AddLast(work);
+        _previewImageWork.Add(descriptor.WorkKey, work);
+        _previewImageDesiredWorkKeys.Add(descriptor.WorkKey);
+        if (_previewPreparationTerminalTraced) _previewPreparationTerminalTraced = false;
+        if (startWorkers) StartPreviewImageWorkers();
+    }
+
+    private void CancelPreviewImageWork(bool clearCompletions)
+    {
+        foreach (var work in _previewImageWork.Values.ToArray()) CancelPreviewImageWork(work, clearCompletion: false);
+        _previewImageQueue.Clear(); _previewImageDesiredWorkKeys.Clear();
+        if (clearCompletions) _previewImageCompletions.Clear();
+    }
+
+    private void CancelPreviewImageWork(PreviewImageWork work, bool clearCompletion)
+    {
+        if (!work.Request.IsCancellationRequested) _previewImageCancelledCount++;
+        work.Request.Cancel();
+        if (work.QueueNode?.List is not null) _previewImageQueue.Remove(work.QueueNode);
+        work.QueueNode = null;
+        if (_previewImageWork.TryGetValue(work.Descriptor.WorkKey, out var current) && ReferenceEquals(current, work))
+            _previewImageWork.Remove(work.Descriptor.WorkKey);
+        if (clearCompletion) _previewImageCompletions.Remove(work.Descriptor.WorkKey);
+        if (!work.IsRunning) work.Request.Dispose();
+    }
+
+    private void StartPreviewImageWorkers()
+    {
+        if (_closed || _dismissRequested || _readsSuspended || _adding || _previewRequest is not { IsCancellationRequested: false }) return;
+        while (_previewImageWorkers < PreviewImageWorkerLimit && _previewImageQueue.First is not null)
+        {
+            _previewImageWorkers++;
+            var worker = RunPreviewImageWorkerAsync();
+            _previewOperations.RemoveWhere(operation => operation.IsCompleted);
+            _previewOperations.Add(worker);
+            _previewLoad = Task.WhenAll(_previewOperations);
+            Track(worker);
+        }
+    }
+
+    private async Task RunPreviewImageWorkerAsync()
+    {
+        await Task.Yield();
         try
         {
-            var candidateKey = row.Candidate.Source.SourceKey;
-            if (_sourceData is { Refreshing: false } recognitionSource &&
-                recognitionSource.Candidates.FirstOrDefault(item => item.SourceKey == candidateKey) is { } recognitionCandidate &&
-                CanInferVisibleTarget(row, recognitionSource, recognitionCandidate) &&
-                (!_recognizedTargets.TryGetValue(recognitionCandidate.SourceKey, out var recognized) || !recognized.Matches(recognitionSource, recognitionCandidate)))
+            while (_previewRequest is { IsCancellationRequested: false } && _previewImageQueue.First is { } node)
             {
-                // Probe only visible, realized filesystem targets. Selection and
-                // placement capacity affect Save, not what the preview can recognize.
-                var fact = ImportTargetRecognition.FactFor(recognitionSource, recognitionCandidate);
-                TargetImageSourceResult? inferred = null;
-                try { inferred = await _images.ResolveTargetSourceAsync(recognitionCandidate.Member.TargetInput, request.Token); }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
-                    InvalidOperationException or OverflowException or System.Runtime.InteropServices.COMException or NotSupportedException)
+                var work = node.Value;
+                _previewImageQueue.RemoveFirst(); work.QueueNode = null;
+                if (!_previewImageWork.TryGetValue(work.Descriptor.WorkKey, out var active) || !ReferenceEquals(active, work) ||
+                    work.Request.IsCancellationRequested)
                 {
-                    // A preview-only read failure should preserve the ordinary Shell
-                    // icon path below. Do not record a successful inference; Save
-                    // performs its own authoritative read and validation.
+                    work.Request.Dispose();
+                    continue;
                 }
-                if (request.IsCancellationRequested) return;
-                if (inferred is not null)
-                {
-                    if (_closed || _dismissRequested || _readsSuspended || _reading || epoch != _renderEpoch || !_rows.Contains(row) ||
-                        !ReferenceEquals(row.Request, request) || !_recognitionReady || _preparing || _adding ||
-                        _sourceData is not { Refreshing: false } currentSource ||
-                        currentSource.Candidates.FirstOrDefault(item => item.SourceKey == candidateKey) is not { } currentCandidate ||
-                        fact != ImportTargetRecognition.FactFor(currentSource, currentCandidate) ||
-                        !CanInferVisibleTarget(row, currentSource, currentCandidate)) return;
-                    _recognizedTargets[currentCandidate.SourceKey] = new(fact, inferred);
-                    // Rebuild only changed realized presentations; source geometry stays intact.
-                    row.Request = null; row.ImageKey = null;
-                    RefreshRecognizedRows(currentCandidate.SourceKey);
-                    return;
-                }
-            }
-            if (cachedAutomaticFrame is { } cachedFrame && automaticCachePath is not null)
-            {
-                var current = await _images.IsAutomaticFrameCurrentAsync(cachedFrame, automaticCachePath, request.Token);
-                if (_closed || _dismissRequested || request.IsCancellationRequested || epoch != _renderEpoch || !_rows.Contains(row) ||
-                    !ReferenceEquals(row.Request, request) || row.RequestKey != cacheKey) return;
-                if (current)
-                {
-                    row.ImageKey = cacheKey;
-                    return;
-                }
-                if (_frames.TryGetValue(cacheKey, out var stillCached) && ReferenceEquals(stillCached, cachedFrame))
-                    ForgetFrame(cacheKey);
-            }
-            var candidate = row.Candidate.Source;
-            PuzzleFrameResult? result = null;
-            var reserve = row.Member.ImageDisplay.Mode == TileWall.Core.Imaging.ImageDisplayMode.Custom
-                ? Math.Max(1, row.Member.ImageDisplay.CustomScale) : 1;
-            var contentWidth = (int)Math.Clamp(Math.Ceiling(width * reserve), 1, 4096);
-            var contentHeight = (int)Math.Clamp(Math.Ceiling(height * reserve), 1, 4096);
-            if (packageSource is not null && (row.Member.Images.Media is not null || row.Member.Images.ManagedGallery is not null))
-            {
-                // Bound retained original bytes as well as decoded frames. ZIP shares a
-                // stream; each ready original then decodes independently in the image service.
-                await _packageMediaSlots.WaitAsync(request.Token);
+                work.IsRunning = true;
+                work.Stage = "worker-start";
                 try
                 {
+                    PreviewImageLoadResult? loaded = null;
+                    try { loaded = await LoadPreviewImageAsync(work); }
+                    catch (OperationCanceledException) { }
+                    catch (ObjectDisposedException) when (work.Request.IsCancellationRequested) { }
+                    catch (Exception) { /* One failed preview item must not stop the page queue. */ }
+
+                    if (IsCurrentPreviewImageWork(work))
+                    {
+                        var retained = loaded?.ReusedCachedFrame == true;
+                        if (loaded?.Frame is { } frame && !loaded.ReusedCachedFrame && loaded.ImageResult is { } result)
+                        {
+                            if (loaded.Member.Images.Kind != MemberImageSourceKind.Automatic && result.CacheAllowed)
+                                RememberFrame(loaded.FrameKey, frame);
+                            else if (loaded.Member.Images.Kind == MemberImageSourceKind.Automatic &&
+                                result.MemoryCacheAllowed && frame.MemoryCacheAllowed &&
+                                (loaded.AutomaticCachePath is not null ? frame.AutomaticStamp is not null :
+                                    HasStableBoundAutomaticFrameFacts(work.Descriptor)))
+                                RememberFrame(loaded.FrameKey, frame);
+                            retained = _frames.ContainsKey(loaded.FrameKey);
+                        }
+                        var offscreen = !_rows.Any(row => row.Candidate.SelectionKey == work.Descriptor.Projected.SelectionKey);
+                        var imageStatus = loaded?.ImageResult?.Status;
+                        var wasPreparedOffscreen = _previewImageCompletions.TryGetValue(work.Descriptor.WorkKey, out var previousCompletion) &&
+                            previousCompletion.PreparedOffscreen;
+                        var outcome = loaded?.Frame is not null ? PreviewImageOutcome.Frame :
+                            loaded is null || imageStatus is WallImageStatus.Invalid or WallImageStatus.Cancelled
+                                ? PreviewImageOutcome.Failed : PreviewImageOutcome.NoImageOrFallback;
+                        var completion = new PreviewImageCompletion(work.Descriptor.SourceCandidate.SourceKey, loaded?.FrameKey,
+                            outcome, retained, offscreen || wasPreparedOffscreen);
+                        var wasMatchingCompletion = _previewImageDesiredWorkKeys.Contains(work.Descriptor.WorkKey) &&
+                            _previewImageCompletions.ContainsKey(work.Descriptor.WorkKey);
+                        _previewImageCompletions[work.Descriptor.WorkKey] = completion;
+                        if (!wasMatchingCompletion && _previewImageDesiredWorkKeys.Contains(work.Descriptor.WorkKey))
+                            _previewImageCurrentTerminalCount++;
+                        if (loaded?.TargetRecognized == true) RefreshRecognizedRows(work.Descriptor.SourceCandidate.SourceKey);
+                        foreach (var row in _rows.Where(row => row.RequestKey == work.Descriptor.WorkKey).ToArray())
+                        {
+                            var rowMember = PreviewMemberFor(work.Descriptor, row.Member);
+                            var rowFrameKey = PreviewFrameKey(work.Descriptor.Projected, work.Descriptor.SourceCandidate,
+                                work.Descriptor.Source, rowMember, work.Descriptor.Width, work.Descriptor.Height, work.Descriptor.DpiScale);
+                            if (loaded?.Frame is { } ready && rowFrameKey == loaded.FrameKey)
+                            {
+                                row.ImageKey = loaded.FrameKey; row.View?.UpdateFrame(ready);
+                                TraceFirstOffscreenBind(completion);
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    work.IsRunning = false;
+                    if (_previewImageWork.TryGetValue(work.Descriptor.WorkKey, out var current) && ReferenceEquals(current, work))
+                        _previewImageWork.Remove(work.Descriptor.WorkKey);
+                    work.Request.Dispose();
+                }
+            }
+        }
+        finally
+        {
+            _previewImageWorkers--;
+            if (_previewImageQueue.Count > 0) StartPreviewImageWorkers();
+            TracePreviewPreparationTerminalIfReady();
+        }
+    }
+
+    private async Task<PreviewImageLoadResult> LoadPreviewImageAsync(PreviewImageWork work)
+    {
+        var descriptor = work.Descriptor;
+        var token = work.Request.Token;
+        var candidate = descriptor.SourceCandidate;
+        var member = PreviewMemberFor(descriptor, descriptor.Item.Member!);
+        var targetRecognized = false;
+        if (CanRunPreviewTargetInference(descriptor) &&
+            (!_previewTargetInferences.TryGetValue(candidate.SourceKey, out var cachedInference) || cachedInference.SourceFact != descriptor.SourceFact))
+        {
+            work.Stage = "target-inference";
+            TargetImageSourceResult? inferred = null;
+            try { inferred = await _images.ResolveTargetSourceAsync(candidate.Member.TargetInput!, token); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
+                InvalidOperationException or OverflowException or System.Runtime.InteropServices.COMException or NotSupportedException)
+            {
+                // A failed preview-only inference keeps the original icon; confirmed add rechecks independently.
+            }
+            token.ThrowIfCancellationRequested();
+            if (!IsCurrentPreviewImageWork(work) || !CanRunPreviewTargetInference(descriptor))
+                throw new OperationCanceledException(token);
+            _previewTargetInferences[candidate.SourceKey] = new(descriptor.SourceFact, inferred);
+            if (inferred is not null)
+            {
+                _recognizedTargets[candidate.SourceKey] = new(descriptor.SourceFact, inferred);
+                member = inferred.ApplyTo(member); targetRecognized = true;
+            }
+        }
+        else if (_previewTargetInferences.TryGetValue(candidate.SourceKey, out var inference) &&
+            inference.SourceFact == descriptor.SourceFact && inference.Result is { } inferred)
+        {
+            member = inferred.ApplyTo(member); targetRecognized = true;
+        }
+
+        var frameKey = PreviewFrameKey(descriptor.Projected, candidate, descriptor.Source, member,
+            descriptor.Width, descriptor.Height, descriptor.DpiScale);
+        var automaticCachePath = descriptor.Source.Package is null && member.Images.Kind == MemberImageSourceKind.Automatic
+            ? AutomaticFrameValidationPath(candidate) : null;
+        work.Stage = "page-frame-cache-check";
+        if (TryGetFrame(frameKey, out var cached))
+        {
+            if (member.Images.Kind != MemberImageSourceKind.Automatic || automaticCachePath is null ||
+                !cached.MemoryCacheAllowed || cached.AutomaticStamp is null)
+                return new(frameKey, member, cached, null, true, targetRecognized, automaticCachePath);
+            work.Stage = "automatic-source-validate";
+            var current = await _images.IsAutomaticFrameCurrentAsync(cached, automaticCachePath, token);
+            token.ThrowIfCancellationRequested();
+            if (!IsCurrentPreviewImageWork(work)) throw new OperationCanceledException(token);
+            if (current) return new(frameKey, member, cached, null, true, targetRecognized, automaticCachePath);
+            ForgetFrame(frameKey);
+        }
+
+        var width = descriptor.Width; var height = descriptor.Height;
+        var reserve = member.ImageDisplay.Mode == TileWall.Core.Imaging.ImageDisplayMode.Custom
+            ? Math.Max(1, member.ImageDisplay.CustomScale) : 1;
+        var packageWidth = (int)Math.Clamp(Math.Ceiling(width * reserve), 1, 4096);
+        var packageHeight = (int)Math.Clamp(Math.Ceiling(height * reserve), 1, 4096);
+        PuzzleFrameResult? result = null;
+        PackagePreviewSource? packageSource = null;
+        if (descriptor.Source.Package is { } package)
+        {
+            _packageSource ??= new PackagePreviewSource(_reader, package, _previewRequest!.Token);
+            packageSource = _packageSource; packageSource.Enter();
+        }
+        try
+        {
+            if (packageSource is not null && (member.Images.Media is not null || member.Images.ManagedGallery is not null))
+            {
+                work.Stage = "package-slot-wait";
+                await _packageMediaSlots.WaitAsync(token);
+                try
+                {
+                    work.Stage = "package-open";
                     var batch = await packageSource.OpenAsync();
-                    await packageSource.ReadGate.WaitAsync(request.Token);
+                    work.Stage = "package-media-read";
+                    await packageSource.ReadGate.WaitAsync(token);
                     TileWall.Core.Storage.PreparedMediaAsset asset;
                     try
                     {
-                        asset = row.Member.Images.ManagedGallery is { } gallery
-                            ? await batch.ReadGalleryImageAsync(gallery.ContentId, request.Token)
-                            : (await batch.PrepareMediaAsync([row.Member.Images.Media!], token: request.Token)).Single();
+                        asset = member.Images.ManagedGallery is { } gallery
+                            ? await batch.ReadGalleryImageAsync(gallery.ContentId, token)
+                            : (await batch.PrepareMediaAsync([member.Images.Media!], token: token)).Single();
                     }
                     finally { packageSource.ReadGate.Release(); }
-                    result = await _images.LoadPackageFrameAsync(asset, contentWidth, contentHeight,
-                        row.Member.Visual.BackgroundMode == MemberBackgroundMode.Blur, request.Token);
+                    result = await _images.LoadPackageFrameAsync(asset, packageWidth, packageHeight,
+                        member.Visual.BackgroundMode == MemberBackgroundMode.Blur, token);
                 }
                 finally { _packageMediaSlots.Release(); }
             }
-            // Unconfirmed packages never delegate target/icon/source paths to Shell.
-            // Keep the shared first-party placeholder when no bundled media exists.
-            else if (packageSource is null && row.Member.Images.Kind == MemberImageSourceKind.Automatic && _loadIcon is not null)
+            else if (packageSource is null && member.Images.Kind == MemberImageSourceKind.Automatic && _loadIcon is not null)
             {
-                result = await _loadIcon(row.Candidate.Source, contentWidth, contentHeight, request.Token);
+                // The image service applies CustomScale once and returns the Q1 display plane.
+                work.Stage = "automatic-icon-load";
+                result = await _loadIcon(candidate, width, height, token);
             }
-            var cacheAllowed = result?.CacheAllowed != false;
-            if (result?.Frame is null && source.Package is null)
+            if (result?.Frame is null && descriptor.Source.Package is null)
             {
-                var path = source.StartMenuSources.TryGetValue(row.Candidate.SelectionKey, out var startMenu)
-                    ? startMenu.Candidate.FullPath : row.Member.SourceShortcutPath ?? row.Candidate.Source.Identity?.Target ?? row.Member.TargetInput;
-                result = await _images.LoadMemberFrameAsync(row.Member, path, width, height,
-                    ct: request.Token, purpose: MemberImagePurpose.Content);
+                var path = descriptor.Source.StartMenuSources.TryGetValue(descriptor.Projected.SelectionKey, out var startMenu)
+                    ? startMenu.Candidate.FullPath : member.SourceShortcutPath ?? candidate.Identity?.Target ?? member.TargetInput;
+                work.Stage = "member-content-load";
+                result = await _images.LoadMemberFrameAsync(member, path, width, height,
+                    ct: token, purpose: MemberImagePurpose.Content);
             }
-            if (_closed || _dismissRequested || request.IsCancellationRequested || epoch != _renderEpoch || !_rows.Contains(row) ||
-                !ReferenceEquals(row.Request, request) || row.RequestKey != cacheKey) return;
-            if (row.Member.Images.Kind != MemberImageSourceKind.Automatic && cacheAllowed && result is { CacheAllowed: true, Frame: { } frame })
-            {
-                RememberFrame(cacheKey, frame);
-            }
-            if (row.Member.Images.Kind == MemberImageSourceKind.Automatic && source.Package is null && automaticCachePath is not null &&
-                result is { MemoryCacheAllowed: true, Frame: { } automaticFrame } && automaticFrame.MemoryCacheAllowed && automaticFrame.AutomaticStamp is not null)
-            {
-                RememberFrame(cacheKey, automaticFrame);
-            }
-            if (result?.Frame is { } success)
-            {
-                var canReuseAutomatic = row.Member.Images.Kind == MemberImageSourceKind.Automatic && source.Package is null &&
-                    automaticCachePath is not null && result is { MemoryCacheAllowed: true } && success.MemoryCacheAllowed && success.AutomaticStamp is not null;
-                row.ImageKey = row.Member.Images.Kind == MemberImageSourceKind.Automatic
-                    ? canReuseAutomatic ? cacheKey : null
-                    : cacheAllowed && result.CacheAllowed ? cacheKey : null;
-                row.View!.UpdateFrame(success);
-            }
+            token.ThrowIfCancellationRequested();
+            if (!IsCurrentPreviewImageWork(work)) throw new OperationCanceledException(token);
+            work.Stage = "frame-ready";
+            return new(frameKey, member, result?.Frame, result, false, targetRecognized, automaticCachePath);
         }
-        catch (OperationCanceledException) { }
-        catch (ObjectDisposedException) { }
-        catch (Exception) { /* A failed thumbnail keeps the shared placeholder. */ }
-        finally
-        {
-            if (ReferenceEquals(row.Request, request))
-            {
-                row.Request = null;
-                row.RequestKey = null;
-            }
-            request.Dispose();
-            packageSource?.Release();
-        }
+        finally { packageSource?.Release(); }
     }
 
-    private bool CanInferVisibleTarget(CandidateRow row, ImportPageSource source, ImportSourceCandidate candidate)
+    private bool IsCurrentPreviewImageWork(PreviewImageWork work) => !_closed && !_dismissRequested && !_readsSuspended && !_adding &&
+        !work.Request.IsCancellationRequested && _previewImageDesiredWorkKeys.Contains(work.Descriptor.WorkKey) &&
+        _previewImageWork.TryGetValue(work.Descriptor.WorkKey, out var current) && ReferenceEquals(current, work);
+
+    private void TraceFirstOffscreenBind(PreviewImageCompletion completion)
     {
-        if (!_recognitionReady || _closed || _dismissRequested || _readsSuspended || _reading || _preparing || _adding ||
-            source.Refreshing || !ReferenceEquals(_sourceData, source) || !ImportTargetRecognition.AppliesTo(candidate)) return false;
-        var projected = _candidateByKey.GetValueOrDefault(row.Candidate.SelectionKey);
-        if (projected is null || !MatchesFilter(projected) || projected.Source.SourceKey != candidate.SourceKey) return false;
-        if (source.StartMenuSources.TryGetValue(projected.SelectionKey, out var startMenu))
-        {
-            var sourceExtension = Path.GetExtension(startMenu.Candidate.FullPath);
-            if (sourceExtension.Equals(".lnk", StringComparison.OrdinalIgnoreCase) ||
-                sourceExtension.Equals(".url", StringComparison.OrdinalIgnoreCase)) return false;
-        }
-        if (candidate.Member.SourceShortcutPath is not null) return false;
-        var target = candidate.Member.TargetInput;
-        // ResolveTargetSourceAsync treats .lnk as opaque and never follows it; the
-        // exact path check also excludes URI targets without guessing a link target.
-        return target is not null && Path.IsPathFullyQualified(target);
+        if (!_previewPreparationTerminalTraced || !completion.PreparedOffscreen || _previewOffscreenBindTraced) return;
+        _previewOffscreenBindTraced = true; _images.TraceImageWork("preview-first-offscreen-bind");
+    }
+
+    private void TracePreviewPreparationProgress()
+    {
+        if (!_previewPreparationStarted || _previewPreparationTerminalTraced || _closed || _dismissRequested ||
+            Environment.GetEnvironmentVariable("TILEWALL_PERF") != "1") return;
+        var now = DateTimeOffset.UtcNow;
+        if (_previewProgressLastTraceAt != default && now - _previewProgressLastTraceAt < TimeSpan.FromSeconds(1)) return;
+        var matched = _previewImageCurrentTerminalCount;
+
+        var active = _previewImageWork.Values.Where(work => work.IsRunning).Take(PreviewImageWorkerLimit)
+            .Select(work => $"{TracePreviewKey(work.Descriptor.SourceCandidate.SourceKey)}@{work.Stage}").ToArray();
+        var focus = active.Length > 0 ? string.Join("|", active) :
+            _previewImageQueue.First is { } queued
+                ? $"{TracePreviewKey(queued.Value.Descriptor.SourceCandidate.SourceKey)}@queued"
+                : _previewProgressPendingCandidateKey is { } pending
+                    ? $"{TracePreviewKey(pending)}@{_previewProgressPendingStage ?? "pending"}"
+                    : "none@idle";
+        var blockers = new List<string>();
+        if (_reading) blockers.Add("reading");
+        if (_preparing) blockers.Add("preparing");
+        if (_sourceData?.Refreshing == true) blockers.Add("source-refreshing");
+        if (_previewImageDesiredWorkKeys.Count != _previewImageExpectedCount) blockers.Add("desired-count-mismatch");
+        if (_previewImageQueue.Count != 0) blockers.Add("queued");
+        if (_previewImageWork.Count != 0) blockers.Add("work-present");
+        if (_previewImageWorkers != 0) blockers.Add("workers-running");
+        if (matched != _previewImageExpectedCount) blockers.Add("missing-completions");
+        if (_previewRequest?.IsCancellationRequested == true) blockers.Add("preview-cancelled");
+        var gate = blockers.Count == 0 ? "ready" : string.Join("+", blockers);
+        _images.TraceImageWork($"preview-progress:{SourceKind}:sourceRefreshing={_sourceData?.Refreshing == true}:reading={_reading}:preparing={_preparing}:recognitionReady={_recognitionReady}:desired={_previewImageDesiredWorkKeys.Count}:expected={_previewImageExpectedCount}:work={_previewImageWork.Count}:queue={_previewImageQueue.Count}:workers={_previewImageWorkers}:completionsMatched={matched}/{_previewImageExpectedCount}:completionsStale={Math.Max(0, _previewImageCompletions.Count - matched)}:terminalGate={gate}:candidate={focus}");
+        _previewProgressLastTraceAt = now;
+    }
+
+    private static string TracePreviewKey(string sourceKey) => sourceKey.Length <= 72 ? sourceKey : sourceKey[..72];
+
+    private void TracePreviewPreparationTerminalIfReady()
+    {
+        if (!_previewPreparationStarted || _previewPreparationTerminalTraced || _closed || _dismissRequested || _reading || _preparing ||
+            _sourceData is null || _sourceData.Refreshing || _previewImageQueue.Count != 0 || _previewImageWork.Count != 0 || _previewImageWorkers != 0 ||
+            _previewImageDesiredWorkKeys.Count != _previewImageExpectedCount ||
+            _previewImageDesiredWorkKeys.Any(key => !_previewImageCompletions.ContainsKey(key))) return;
+        _previewPreparationTerminalTraced = true;
+        var elapsedMs = _previewPreparationStopwatch.Elapsed.TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture);
+        var current = _previewImageDesiredWorkKeys.Select(key => _previewImageCompletions[key]).ToArray();
+        var frames = current.Count(item => item.Outcome == PreviewImageOutcome.Frame);
+        var retained = current.Count(item => item.Outcome == PreviewImageOutcome.Frame &&
+            item.FrameKey is { } key && _frames.ContainsKey(key));
+        var unretained = frames - retained;
+        var fallbacks = current.Count(item => item.Outcome == PreviewImageOutcome.NoImageOrFallback);
+        var failures = current.Count(item => item.Outcome == PreviewImageOutcome.Failed);
+        _images.TraceImageWork($"preview-full-terminal:{SourceKind}:elapsedMs={elapsedMs}:candidates={_previewImageCandidateCount}:images={_previewImageExpectedCount}:frames={frames}:framesRetained={retained}:framesUnretained={unretained}:noImageOrFallback={fallbacks}:failures={failures}:cancelled={_previewImageCancelledCount}");
     }
 
     private static string? AutomaticFrameValidationPath(ImportSourceCandidate candidate) =>
         candidate.SourceKind is ImportPageSourceKind.CurrentWall or ImportPageSourceKind.RecycleBin or ImportPageSourceKind.WallPackage
             ? null : candidate.Member.SourceShortcutPath ?? candidate.Member.TargetInput ?? candidate.Identity?.Target;
+
+    private static bool HasStableBoundAutomaticFrameFacts(PreviewImageDescriptor descriptor) =>
+        descriptor.Source.Package is not null ||
+        descriptor.SourceCandidate.SourceKind is ImportPageSourceKind.CurrentWall or ImportPageSourceKind.RecycleBin;
 
     private void StartOperation()
     {
@@ -1383,6 +1726,23 @@ internal sealed class ImportDialog : IWallDialogSession
     }
     private static void Id(DependencyObject element, string id) => AutomationProperties.SetAutomationId(element, "import-" + id);
     private sealed record PreviewItem(string Key, DipRect Bounds, StartGroup? Group, WallMember? Member, ImportProjectedCandidate? Candidate);
+    private sealed record PreviewImageDescriptor(string WorkKey, string SourceFact, ImportProjectedCandidate Projected,
+        PreviewItem Item, ImportSourceCandidate SourceCandidate, ImportPageSource Source,
+        int Width, int Height, double DpiScale, bool InferTarget);
+    private sealed class PreviewImageWork(PreviewImageDescriptor descriptor, CancellationTokenSource request)
+    {
+        public PreviewImageDescriptor Descriptor { get; } = descriptor;
+        public CancellationTokenSource Request { get; } = request;
+        public LinkedListNode<PreviewImageWork>? QueueNode { get; set; }
+        public bool IsRunning { get; set; }
+        public string Stage { get; set; } = "queued";
+    }
+    private sealed record PreviewImageLoadResult(string FrameKey, WallMember Member, PuzzleFrame? Frame,
+        PuzzleFrameResult? ImageResult, bool ReusedCachedFrame, bool TargetRecognized, string? AutomaticCachePath);
+    private sealed record PreviewImageCompletion(string SourceKey, string? FrameKey, PreviewImageOutcome Outcome,
+        bool FrameRetained, bool PreparedOffscreen);
+    private sealed record PreviewTargetInference(string SourceFact, TargetImageSourceResult? Result);
+    private enum PreviewImageOutcome { Frame, NoImageOrFallback, Failed }
     private sealed class CandidateRow(ImportProjectedCandidate candidate, WallMember member, PuzzleCanvasView? view, ClockMemberView? clock,
         ToggleButton toggle, RoutedEventHandler changed, Action reset, Border outline, Border check)
     {
@@ -1395,7 +1755,6 @@ internal sealed class ImportDialog : IWallDialogSession
         public Action Reset { get; } = reset;
         public Border Outline { get; } = outline;
         public Border Check { get; } = check;
-        public CancellationTokenSource? Request { get; set; }
         public string? ImageKey { get; set; }
         public string? RequestKey { get; set; }
         public string IconStamp { get; set; } = "";

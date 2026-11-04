@@ -95,9 +95,12 @@ public sealed partial class WallImageService : IDisposable
     private async Task<Prepared> PrepareAutoCoreAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct,
         string? verifiedPackageTarget = null)
     {
-        var candidates = await CollectIconSeriesAsync(entryOrTargetPath, width, height, verifiedPackageTarget,
-            true, ct).ConfigureAwait(false);
-        var chosen = SelectIconSeries(candidates, width, height);
+        using var trace = ImageCandidateTrace.Start("automatic-choice", entryOrTargetPath, width, height);
+        List<IconCandidateSeries> candidates;
+        using (trace?.Measure("collect"))
+            candidates = await CollectIconSeriesAsync(entryOrTargetPath, width, height, verifiedPackageTarget,
+                true, ct).ConfigureAwait(false);
+        var chosen = SelectIconSeriesObserved(candidates, width, height, trace);
         if (chosen is null) return new(WallImageStatus.None, null, 0, 0, "IconSeriesUnavailable");
         return chosen.Frames.OrderBy(frame => frame.Width >= width && frame.Height >= height ? 0 : 1)
             .ThenBy(frame => frame.Width >= width && frame.Height >= height ? (long)frame.Width * frame.Height : -(long)frame.Width * frame.Height)

@@ -3,6 +3,7 @@ using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using TileWall.Core.Entries;
+using TileWall.Core.Shell;
 
 namespace TileWall.Shell.Interop;
 
@@ -11,7 +12,7 @@ internal static class ShellItemCatalog
 {
     internal sealed record Item(string Name, string ParsingName, string? Path, bool IsFolder);
     internal sealed record NativeLinkObservation(Item Item, LaunchIdentity Identity,
-        NativeShellTargetSnapshot? Target, string? PackageFullName, string? PackageInstallPath);
+        NativeShellTargetSnapshot? Target, string? PackageFullName, string? PackageInstallPath, string? LinkedTargetPath);
     internal sealed record IconResourceLocation(string? Path, int Index, uint Flags, bool CanReadResource)
     {
         internal bool CanCache => (Flags & 0x10) == 0; // GIL_DONTCACHE
@@ -30,29 +31,47 @@ internal static class ShellItemCatalog
     });
 
     /// <summary>Read an explicit link target for icon fallback, never a source path or launch identity.</summary>
-    internal static string? LinkedTargetPath(string parsingName) => IconApartment<string?>(() =>
+    internal static string? LinkedTargetPath(string parsingName) => LinkedTargetPathTraced(parsingName, null);
+
+    internal static string? LinkedTargetPathTraced(string parsingName, SourceReadTrace? trace) =>
+        IconApartment(() => ReadFreshLinkedTargetPath(parsingName, trace), (string?)null, trace);
+
+    private static string? ReadFreshLinkedTargetPath(string parsingName, SourceReadTrace? trace)
     {
         IShellItem? item = null;
-        object? linked = null;
         try
         {
-            item = Open(parsingName);
-            if (ReadLinkedTargetPath(item) is { } direct) return direct;
+            using (trace?.Measure("linked-target.open")) item = Open(parsingName);
+            return ReadOptionalLinkedTargetPath(item, null, trace);
+        }
+        catch (Exception ex) when (ex.HResult != NoInterface &&
+            (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidCastException)) { return null; }
+        finally { if (item is not null) Marshal.ReleaseComObject(item); }
+    }
+
+    private static string? ReadOptionalLinkedTargetPath(IShellItem item, IPropertyStore? properties, SourceReadTrace? trace)
+    {
+        IShellItem? linked = null;
+        try
+        {
+            var direct = properties is null ? ReadLinkedTargetPath(item, trace) :
+                FullLinkedTargetPath(ReadLinkedTargetParsingProperty(properties, trace));
+            if (direct is not null) return direct;
             // A managed Shell LNK's own property is its AppsFolder identity.
             // Read the linked Shell item's property once to retain that context.
             var handler = new Guid("3981E228-F559-11D3-8E3A-00C04F6837D5"); // BHID_LinkTargetItem
             var iid = typeof(IShellItem).GUID;
-            item.BindToHandler(IntPtr.Zero, ref handler, ref iid, out linked);
-            return ReadLinkedTargetPath((IShellItem)linked);
+            using (trace?.Measure("linked-target.bind-target"))
+                ((IShellItemLinkTarget)item).BindToHandler(IntPtr.Zero, ref handler, ref iid, out linked);
+            return ReadLinkedTargetPath(linked, trace);
         }
         catch (Exception ex) when (ex.HResult != NoInterface &&
             (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidCastException)) { return null; }
         finally
         {
             if (linked is not null) Marshal.ReleaseComObject(linked);
-            if (item is not null) Marshal.ReleaseComObject(item);
         }
-    }, null);
+    }
 
     /// <summary>The Shell's target description from the actual managed link, including an AppsFolder AUMID.</summary>
     internal static string? LinkTargetParsingName(string linkPath) => IconApartment<string?>(() =>
@@ -64,22 +83,30 @@ internal static class ShellItemCatalog
         finally { if (item is not null) Marshal.ReleaseComObject(item); }
     }, null);
 
-    private static string? ReadLinkedTargetPath(IShellItem item)
+    private static string? ReadLinkedTargetPath(IShellItem item, SourceReadTrace? trace = null) =>
+        FullLinkedTargetPath(ReadLinkedTargetParsingName(item, trace));
+
+    private static string? FullLinkedTargetPath(string? path) =>
+        path is not null && Path.IsPathFullyQualified(path) ? Path.GetFullPath(path) : null;
+
+    private static string? ReadLinkedTargetParsingName(IShellItem item, SourceReadTrace? trace = null)
     {
-        var path = ReadLinkedTargetParsingName(item);
-        return path is not null && Path.IsPathFullyQualified(path) ? Path.GetFullPath(path) : null;
+        IPropertyStore? store = null;
+        try
+        {
+            using (trace?.Measure("linked-target.bind-properties")) store = BindPropertyStore(item);
+            return ReadLinkedTargetParsingProperty(store, trace);
+        }
+        finally { if (store is not null) Marshal.ReleaseComObject(store); }
     }
 
-    private static string? ReadLinkedTargetParsingName(IShellItem item)
+    private static string? ReadLinkedTargetParsingProperty(IPropertyStore store, SourceReadTrace? trace)
     {
-        object? raw = null;
         var value = new PropertyVariant();
         try
         {
-            var handler = new Guid("0384E1A4-1523-439C-A4C8-AB911052F586"); // BHID_PropertyStore
-            var iid = typeof(IPropertyStore).GUID;
-            item.BindToHandler(IntPtr.Zero, ref handler, ref iid, out raw);
-            var hr = ((IPropertyStore)raw).GetValue(in LinkTargetParsingPath, out value);
+            int hr;
+            using (trace?.Measure("linked-target.read-property")) hr = store.GetValue(in LinkTargetParsingPath, out value);
             Marshal.ThrowExceptionForHR(hr);
             if (hr != 0 || value.Pointer == IntPtr.Zero) return null;
             var path = value.Type switch
@@ -90,11 +117,7 @@ internal static class ShellItemCatalog
             };
             return path is { Length: > 0 and < 32768 } && !path.Contains('\0') ? path : null;
         }
-        finally
-        {
-            try { Marshal.ThrowExceptionForHR(PropVariantClear(ref value)); }
-            finally { if (raw is not null) Marshal.ReleaseComObject(raw); }
-        }
+        finally { Marshal.ThrowExceptionForHR(PropVariantClear(ref value)); }
     }
 
     /// <summary>Observe the identity that a standard PIDL Shell link will persist.</summary>
@@ -104,24 +127,30 @@ internal static class ShellItemCatalog
         return (observed.Item, observed.Identity);
     }
 
-    internal static NativeLinkObservation ReadNativeLink(string parsingName, bool observeRegistration = true) => InApartment(() =>
+    internal static NativeLinkObservation ReadNativeLink(string parsingName, bool observeRegistration = true) =>
+        ReadNativeLinkTraced(parsingName, observeRegistration, false, null);
+
+    internal static NativeLinkObservation ReadNativeLinkTraced(string parsingName, bool observeRegistration,
+        bool observeLinkedTarget, SourceReadTrace? trace) => InApartment(() =>
     {
-        var item = Open(parsingName);
+        IShellItem item;
+        using (trace?.Measure("native-link.open")) item = Open(parsingName);
         IntPtr pidl = IntPtr.Zero;
         IntPtr linkPidl = IntPtr.Zero;
         IShellLinkPath? link = null;
+        IPropertyStore? properties = null;
         try
         {
-            var actual = Describe(item);
+            var actual = Describe(item, trace);
             // A virtual Shell item can be represented by a filesystem path in
             // IShellLink.GetPath even when SIGDN_FILESYSPATH rejects it (Libraries).
             // Use the same PIDL/GetPath contract as the eventual managed LNK.
-            Marshal.ThrowExceptionForHR(SHGetIDListFromObject(item, out pidl));
+            using (trace?.Measure("native-link.get-pidl")) Marshal.ThrowExceptionForHR(SHGetIDListFromObject(item, out pidl));
             if (pidl == IntPtr.Zero) throw new IOException("The Shell link target is unavailable.");
-            link = (IShellLinkPath)(object)new ShellLinkPath();
-            link.SetIDList(pidl);
+            using (trace?.Measure("native-link.create-link")) link = (IShellLinkPath)(object)new ShellLinkPath();
+            using (trace?.Measure("native-link.set-pidl")) link.SetIDList(pidl);
             var path = new StringBuilder(32768);
-            link.GetPath(path, path.Capacity, IntPtr.Zero, 4); // SLGP_RAWPATH
+            using (trace?.Measure("native-link.get-path")) link.GetPath(path, path.Capacity, IntPtr.Zero, 4); // SLGP_RAWPATH
             if (path.Length == path.Capacity - 1) throw new IOException("The Shell link target path is incomplete.");
             LaunchIdentity identity;
             NativeShellTargetSnapshot? target = null;
@@ -129,13 +158,30 @@ internal static class ShellItemCatalog
             else
             {
                 // GetIDList returns the validated PIDL owned by the Shell link object.
-                link.GetIDList(out var storedPidl);
+                IntPtr storedPidl;
+                using (trace?.Measure("native-link.get-stored-pidl")) link.GetIDList(out storedPidl);
                 if (storedPidl == IntPtr.Zero) throw new IOException("The Shell link target IDList is unavailable.");
                 linkPidl = storedPidl;
                 var hash = ShellLinkFileService.IdListHash(linkPidl);
                 identity = LaunchIdentityService.ForShellIdList(hash, actual.ParsingName);
             }
-            var registration = observeRegistration ? ReadPackageRegistration(item) : (FullName: (string?)null, InstallPath: (string?)null);
+            var registration = (FullName: (string?)null, InstallPath: (string?)null);
+            if (observeRegistration)
+            {
+                using (trace?.Measure("registration.bind-properties")) properties = BindPropertyStore(item);
+                registration = ReadPackageRegistrationValues(properties, trace);
+            }
+            string? linkedTarget = null;
+            if (observeLinkedTarget)
+            {
+                try { using (trace?.Measure("facts.linked-target")) linkedTarget = ReadOptionalLinkedTargetPath(item, properties, trace); }
+                catch (Exception ex) when (ex.HResult == NoInterface)
+                {
+                    // Retry only the optional property on its own newly opened STA
+                    // item. Neither the source RCW nor its store crosses apartments.
+                    linkedTarget = IconStaRetry(() => ReadFreshLinkedTargetPath(parsingName, trace), (string?)null, trace);
+                }
+            }
             if (observeRegistration && linkPidl != IntPtr.Zero)
             {
                 NativeShellTargetSnapshot? frozen = null;
@@ -150,20 +196,29 @@ internal static class ShellItemCatalog
                 });
                 target = frozen;
             }
-            return new NativeLinkObservation(actual, identity, target, registration.FullName, registration.InstallPath);
+            return new NativeLinkObservation(actual, identity, target, registration.FullName, registration.InstallPath, linkedTarget);
         }
         finally
         {
-            if (link is not null) Marshal.ReleaseComObject(link);
+            if (link is not null) using (trace?.Measure("native-link.release-link")) Marshal.ReleaseComObject(link);
+            if (properties is not null) using (trace?.Measure("native-link.release-properties")) Marshal.ReleaseComObject(properties);
             if (linkPidl != IntPtr.Zero) Marshal.FreeCoTaskMem(linkPidl);
             if (pidl != IntPtr.Zero) Marshal.FreeCoTaskMem(pidl);
-            Marshal.ReleaseComObject(item);
+            using (trace?.Measure("native-link.release-item")) Marshal.ReleaseComObject(item);
         }
     });
 
     /// <summary>Only process-local PIDLs freshly returned by Windows may enter this namespace comparison.</summary>
-    internal static bool SameNativeTarget(NativeShellTargetSnapshot expected, NativeShellTargetSnapshot current) => InApartment(() =>
+    internal static bool SameNativeTarget(NativeShellTargetSnapshot expected, NativeShellTargetSnapshot current)
     {
+        using var trace = new SourceReadTrace("NativeCanonical");
+        return SameNativeTargetTraced(expected, current, trace);
+    }
+
+    internal static bool SameNativeTargetTraced(NativeShellTargetSnapshot expected, NativeShellTargetSnapshot current,
+        SourceReadTrace? trace) => InApartment(() =>
+    {
+        trace?.Mark("canonical-enter", $"apartment={Thread.CurrentThread.GetApartmentState()} samePidl={expected.IdListSha256 == current.IdListSha256}");
         if (expected.Identity.Arguments != current.Identity.Arguments ||
             !string.Equals(expected.Identity.WorkingDirectory, current.Identity.WorkingDirectory, StringComparison.OrdinalIgnoreCase)) return false;
         if (expected.IdListSha256 == current.IdListSha256) return true;
@@ -175,59 +230,78 @@ internal static class ShellItemCatalog
             b = Marshal.AllocCoTaskMem(right.Length);
             Marshal.Copy(left, 0, a, left.Length); Marshal.Copy(right, 0, b, right.Length);
             var iid = typeof(IShellItem).GUID;
-            Marshal.ThrowExceptionForHR(SHCreateItemFromIDList(a, ref iid, out x));
-            Marshal.ThrowExceptionForHR(SHCreateItemFromIDList(b, ref iid, out y));
+            using (trace?.Measure("canonical.create-left")) Marshal.ThrowExceptionForHR(SHCreateItemFromIDList(a, ref iid, out x));
+            using (trace?.Measure("canonical.create-right")) Marshal.ThrowExceptionForHR(SHCreateItemFromIDList(b, ref iid, out y));
             if (x is null || y is null) throw new IOException("The native Shell snapshot is unavailable.");
-            var result = x.Compare(y, 0x10000000, out var order); // SICHINT_CANONICAL; excludes presentation metadata.
+            int result, order;
+            using (trace?.Measure("canonical.compare")) result = x.Compare(y, 0x10000000, out order); // SICHINT_CANONICAL; excludes presentation metadata.
             Marshal.ThrowExceptionForHR(result);
             return result == 0 && order == 0;
         }
         finally
         {
-            if (x is not null) Marshal.ReleaseComObject(x);
-            if (y is not null) Marshal.ReleaseComObject(y);
+            if (x is not null) using (trace?.Measure("canonical.release-left")) Marshal.ReleaseComObject(x);
+            if (y is not null) using (trace?.Measure("canonical.release-right")) Marshal.ReleaseComObject(y);
             Marshal.FreeCoTaskMem(a); Marshal.FreeCoTaskMem(b);
         }
     });
 
-    private static (string? FullName, string? InstallPath) ReadPackageRegistration(IShellItem item)
+    private static (string? FullName, string? InstallPath) ReadPackageRegistration(IShellItem item) =>
+        ReadPackageRegistrationTraced(item, null);
+
+    private static (string? FullName, string? InstallPath) ReadPackageRegistrationTraced(IShellItem item, SourceReadTrace? trace)
     {
-        object? raw = null;
+        IPropertyStore? store = null;
         try
         {
-            var handler = new Guid("0384E1A4-1523-439C-A4C8-AB911052F586"); // BHID_PropertyStore
-            var iid = typeof(IPropertyStore).GUID;
-            item.BindToHandler(IntPtr.Zero, ref handler, ref iid, out raw);
-            var store = (IPropertyStore)raw;
-            var fullName = Read("System.AppUserModel.PackageFullName");
-            var installPath = Read("System.AppUserModel.PackageInstallPath");
-            if ((fullName is null) != (installPath is null)) throw new IOException("The native package registration is incomplete.");
-            return (fullName, installPath);
-
-            string? Read(string name)
-            {
-                Marshal.ThrowExceptionForHR(PSGetPropertyKeyFromName(name, out var key));
-                var value = new PropertyVariant();
-                try
-                {
-                    var result = store.GetValue(in key, out value);
-                    Marshal.ThrowExceptionForHR(result);
-                    if (result != 0) throw new IOException("The native package registration was not returned completely.");
-                    var text = value.Type switch
-                    {
-                        0 => null,
-                        31 when value.Pointer != IntPtr.Zero => Marshal.PtrToStringUni(value.Pointer),
-                        8 when value.Pointer != IntPtr.Zero => Marshal.PtrToStringBSTR(value.Pointer),
-                        _ => throw new IOException("The native package registration is not a complete string."),
-                    };
-                    if (text is not null && (text.Length > 32768 || text.Contains('\0')))
-                        throw new IOException("The native package registration is invalid.");
-                    return string.IsNullOrEmpty(text) ? null : text;
-                }
-                finally { Marshal.ThrowExceptionForHR(PropVariantClear(ref value)); }
-            }
+            using (trace?.Measure("registration.bind-properties")) store = BindPropertyStore(item);
+            return ReadPackageRegistrationValues(store, trace);
         }
-        finally { if (raw is not null) Marshal.ReleaseComObject(raw); }
+        finally { if (store is not null) Marshal.ReleaseComObject(store); }
+    }
+
+    private static (string? FullName, string? InstallPath) ReadPackageRegistrationValues(IPropertyStore store, SourceReadTrace? trace)
+    {
+        var fullName = Read("System.AppUserModel.PackageFullName");
+        var installPath = Read("System.AppUserModel.PackageInstallPath");
+        if ((fullName is null) != (installPath is null)) throw new IOException("The native package registration is incomplete.");
+        return (fullName, installPath);
+
+        string? Read(string name)
+        {
+            Marshal.ThrowExceptionForHR(PSGetPropertyKeyFromName(name, out var key));
+            var value = new PropertyVariant();
+            try
+            {
+                int result;
+                using (trace?.Measure("registration.read:" + name)) result = store.GetValue(in key, out value);
+                Marshal.ThrowExceptionForHR(result);
+                if (result != 0) throw new IOException("The native package registration was not returned completely.");
+                var text = value.Type switch
+                {
+                    0 => null,
+                    31 when value.Pointer != IntPtr.Zero => Marshal.PtrToStringUni(value.Pointer),
+                    8 when value.Pointer != IntPtr.Zero => Marshal.PtrToStringBSTR(value.Pointer),
+                    _ => throw new IOException("The native package registration is not a complete string."),
+                };
+                if (text is not null && (text.Length > 32768 || text.Contains('\0')))
+                    throw new IOException("The native package registration is invalid.");
+                return string.IsNullOrEmpty(text) ? null : text;
+            }
+            finally { Marshal.ThrowExceptionForHR(PropVariantClear(ref value)); }
+        }
+    }
+
+    private static IPropertyStore BindPropertyStore(IShellItem item)
+    {
+        var iid = typeof(IPropertyStore).GUID;
+        // BHID_PropertyStore is unsupported by some valid namespace items (for
+        // example, Recycle Bin). The Shell's recommended item property-store
+        // entry point supplies their complete read-only default store as well.
+        // Do not use FASTPROPERTIESONLY or BESTEFFORT: missing registration
+        // values must come from successful GetValue calls, never omitted work.
+        ((IShellItem2PropertyStore)item).GetPropertyStore(0, ref iid, out var store); // GPS_DEFAULT
+        return store ?? throw new IOException("The Shell property store is unavailable.");
     }
 
     internal static IReadOnlyList<Item> Enumerate(string parsingName, CancellationToken token)
@@ -239,15 +313,19 @@ internal static class ShellItemCatalog
 
     /// <summary>Only immutable managed descriptions leave this apartment. False means the bounded scan was truncated.</summary>
     internal static bool EnumerateBatches(string parsingName, Action<IReadOnlyList<Item>> publishBatch,
-        CancellationToken token) => InApartment(() =>
+        CancellationToken token) => EnumerateBatchesTraced(parsingName, publishBatch, token, null);
+
+    internal static bool EnumerateBatchesTraced(string parsingName, Action<IReadOnlyList<Item>> publishBatch,
+        CancellationToken token, SourceReadTrace? trace) => InApartment(() =>
     {
         ArgumentNullException.ThrowIfNull(publishBatch);
-        var root = Open(parsingName);
+        IShellItem root;
+        using (trace?.Measure("enumeration.open", untilFirstBatch: true)) root = Open(parsingName);
         object? raw = null;
         try
         {
             var handler = EnumHandler; var iid = EnumId;
-            root.BindToHandler(IntPtr.Zero, ref handler, ref iid, out raw);
+            using (trace?.Measure("enumeration.bind", untilFirstBatch: true)) root.BindToHandler(IntPtr.Zero, ref handler, ref iid, out raw);
             var enumerator = (IEnumShellItems)raw;
             var batch = new List<Item>(64);
             var progress = Stopwatch.StartNew();
@@ -255,7 +333,10 @@ internal static class ShellItemCatalog
             while (true)
             {
                 token.ThrowIfCancellationRequested();
-                var hr = enumerator.Next(1, out var item, out var fetched);
+                int hr;
+                IShellItem? item;
+                uint fetched;
+                using (trace?.Measure("enumeration.next", untilFirstBatch: true)) hr = enumerator.Next(1, out item, out fetched);
                 if (hr < 0) Marshal.ThrowExceptionForHR(hr);
                 if (hr != 0 || fetched == 0 || item is null)
                 {
@@ -269,7 +350,11 @@ internal static class ShellItemCatalog
                     Publish();
                     return false;
                 }
-                try { batch.Add(Describe(item)); count++; }
+                try
+                {
+                    using (trace?.Measure("enumeration.describe", untilFirstBatch: true)) batch.Add(Describe(item, trace));
+                    count++;
+                }
                 finally { Marshal.ReleaseComObject(item); }
                 if (batch.Count >= 64 || progress.ElapsedMilliseconds >= 150) Publish();
             }
@@ -278,6 +363,7 @@ internal static class ShellItemCatalog
             {
                 if (batch.Count == 0) return;
                 token.ThrowIfCancellationRequested();
+                trace?.BatchReady(batch.Count);
                 publishBatch(Array.AsReadOnly(batch.ToArray()));
                 batch.Clear(); progress.Restart();
             }
@@ -414,42 +500,46 @@ internal static class ShellItemCatalog
         }
     }, new IconResourceLocation(null, 0, 0x10, false));
 
-    private static T IconApartment<T>(Func<T> work, T unavailable)
+    private static T IconApartment<T>(Func<T> work, T unavailable, SourceReadTrace? trace = null)
     {
-        try { return InApartment(work); }
+        try { using (trace?.Measure("linked-target.mta")) return InApartment(work); }
         catch (Exception ex) when (ex.HResult == NoInterface)
+        { return IconStaRetry(work, unavailable, trace); }
+    }
+
+    private static T IconStaRetry<T>(Func<T> work, T unavailable, SourceReadTrace? trace)
+    {
+        if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA || !IconStaSlots.Wait(0))
+            return unavailable;
+        // Some registered instance handlers expose properties or icons only from
+        // an STA. Retry this one call, without moving scans or persistence
+        // onto an apartment service or retaining COM objects across threads.
+        T result = unavailable;
+        ExceptionDispatchInfo? failure = null;
+        trace?.Mark("linked-target.sta-retry");
+        var thread = new Thread(() =>
         {
-            if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA || !IconStaSlots.Wait(0))
-                return unavailable;
-            // Some registered instance handlers expose IExtractIcon only from
-            // an STA. Retry this one call, without moving scans or persistence
-            // onto an apartment service or retaining COM objects across threads.
-            T result = unavailable;
-            ExceptionDispatchInfo? failure = null;
-            var thread = new Thread(() =>
+            var initialized = CoInitializeEx(IntPtr.Zero, 2); // COINIT_APARTMENTTHREADED
+            try
             {
-                var initialized = CoInitializeEx(IntPtr.Zero, 2); // COINIT_APARTMENTTHREADED
-                try
-                {
-                    Marshal.ThrowExceptionForHR(initialized);
-                    result = work();
-                }
-                catch (Exception error) { failure = ExceptionDispatchInfo.Capture(error); }
-                finally
-                {
-                    if (initialized >= 0) CoUninitialize();
-                    IconStaSlots.Release();
-                }
-            }) { IsBackground = true, Name = "TileWall icon STA retry" };
-            try { thread.SetApartmentState(ApartmentState.STA); thread.Start(); }
-            catch { IconStaSlots.Release(); throw; }
-            // Join the bounded retry so the existing image request continues to
-            // own its Shell work through completion and shutdown.
-            thread.Join();
-            if (failure?.SourceException.HResult == NoInterface) return unavailable;
-            failure?.Throw();
-            return result;
-        }
+                Marshal.ThrowExceptionForHR(initialized);
+                using (trace?.Measure("linked-target.sta-work")) result = work();
+            }
+            catch (Exception error) { failure = ExceptionDispatchInfo.Capture(error); }
+            finally
+            {
+                if (initialized >= 0) CoUninitialize();
+                IconStaSlots.Release();
+            }
+        }) { IsBackground = true, Name = "TileWall icon STA retry" };
+        try { thread.SetApartmentState(ApartmentState.STA); thread.Start(); }
+        catch { IconStaSlots.Release(); throw; }
+        // The slot count bounds concurrency, not time. The owning source or
+        // image request still drains this native call through completion.
+        using (trace?.Measure("linked-target.sta-join")) thread.Join();
+        if (failure?.SourceException.HResult == NoInterface) return unavailable;
+        failure?.Throw();
+        return result;
     }
 
     private static bool TryPackExtractIconSize(int physicalPixels, out uint packedSize)
@@ -507,18 +597,23 @@ internal static class ShellItemCatalog
         return item ?? throw new IOException("The native Shell item is unavailable.");
     }
 
-    private static Item Describe(IShellItem item)
+    private static Item Describe(IShellItem item, SourceReadTrace? trace = null)
     {
-        var name = Name(item, 0) ?? "";
-        var parsing = Name(item, 0x80028000) ?? throw new IOException("The Shell identity is unavailable.");
-        item.GetAttributes(0x20000000, out var attributes);
-        return new(name.Length == 0 ? parsing : name, parsing, Name(item, 0x80058000), (attributes & 0x20000000) != 0);
+        var name = Name(item, 0, trace) ?? "";
+        var parsing = Name(item, 0x80028000, trace) ?? throw new IOException("The Shell identity is unavailable.");
+        uint attributes;
+        using (trace?.Measure("describe.attributes", untilFirstBatch: true)) item.GetAttributes(0x20000000, out attributes);
+        return new(name.Length == 0 ? parsing : name, parsing, Name(item, 0x80058000, trace), (attributes & 0x20000000) != 0);
     }
 
-    private static string? Name(IShellItem item, uint kind)
+    private static string? Name(IShellItem item, uint kind, SourceReadTrace? trace = null)
     {
         IntPtr text = IntPtr.Zero;
-        try { item.GetDisplayName(kind, out text); return Marshal.PtrToStringUni(text); }
+        try
+        {
+            using (trace?.Measure("describe.name:" + kind.ToString("X"), untilFirstBatch: true)) item.GetDisplayName(kind, out text);
+            return Marshal.PtrToStringUni(text);
+        }
         catch (Exception ex) when (ex is COMException or ArgumentException) { return null; }
         finally { if (text != IntPtr.Zero) Marshal.FreeCoTaskMem(text); }
     }
@@ -531,6 +626,84 @@ internal static class ShellItemCatalog
         finally { if (result >= 0) CoUninitialize(); }
     }
 
+    // One requested source read owns these counters. No timer, native hook or global tracing service is installed.
+    internal sealed class SourceReadTrace : IDisposable
+    {
+        private static long _nextId;
+        private readonly bool _enabled = Environment.GetEnvironmentVariable("TILEWALL_PERF") == "1";
+        private readonly long _id = Interlocked.Increment(ref _nextId);
+        private readonly long _started = Stopwatch.GetTimestamp();
+        private readonly object _sync = new();
+        private readonly Dictionary<string, (int Count, double Total, double Maximum)> _stages = [];
+        private bool _firstBatch, _firstFact;
+        private long _callId;
+
+        internal SourceReadTrace(string source) { if (_enabled) Write("begin", source); }
+
+        internal IDisposable? Measure(string stage, string? sourceKey = null, bool untilFirstBatch = false)
+        {
+            if (!_enabled) return null;
+            var call = Interlocked.Increment(ref _callId);
+            bool entered;
+            lock (_sync) entered = !_firstFact && (!untilFirstBatch || !_firstBatch);
+            if (entered) Write("enter", $"call={call} stage={stage} key={sourceKey}");
+            return new Measurement(this, stage, sourceKey, call, entered);
+        }
+
+        internal void BatchReady(int count)
+        {
+            if (!_enabled) return;
+            lock (_sync) _firstBatch = true;
+            Write("batch-ready", "count=" + count);
+        }
+
+        internal void FirstFact()
+        {
+            if (!_enabled) return;
+            lock (_sync) _firstFact = true;
+            Write("first-fact", string.Empty);
+        }
+
+        internal void Mark(string stage, string? detail = null) { if (_enabled) Write(stage, detail ?? string.Empty); }
+
+        internal void Count(string stage)
+        {
+            if (!_enabled) return;
+            lock (_sync)
+            {
+                var prior = _stages.GetValueOrDefault(stage);
+                _stages[stage] = (prior.Count + 1, prior.Total, prior.Maximum);
+            }
+        }
+
+        private void Write(string stage, string detail) => AppLog.Warn("ImportSourcesPerf",
+            $"scan={_id} elapsedMs={Stopwatch.GetElapsedTime(_started).TotalMilliseconds:F2} event={stage} {detail}");
+
+        public void Dispose()
+        {
+            if (!_enabled) return;
+            lock (_sync)
+                foreach (var (stage, value) in _stages)
+                    Write("summary", $"stage={stage} count={value.Count} totalMs={value.Total:F2} maxMs={value.Maximum:F2}");
+            Write("end", string.Empty);
+        }
+
+        private sealed class Measurement(SourceReadTrace owner, string stage, string? sourceKey, long call, bool entered) : IDisposable
+        {
+            private readonly long _started = Stopwatch.GetTimestamp();
+            public void Dispose()
+            {
+                var elapsed = Stopwatch.GetElapsedTime(_started).TotalMilliseconds;
+                lock (owner._sync)
+                {
+                    var prior = owner._stages.GetValueOrDefault(stage);
+                    owner._stages[stage] = (prior.Count + 1, prior.Total + elapsed, Math.Max(prior.Maximum, elapsed));
+                }
+                if (entered || elapsed >= 100) owner.Write("leave", $"call={call} stage={stage} key={sourceKey} durationMs={elapsed:F2}");
+            }
+        }
+    }
+
     [StructLayout(LayoutKind.Sequential)] private readonly record struct Size(int Width, int Height);
     [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IShellItem
@@ -540,6 +713,22 @@ internal static class ShellItemCatalog
         void GetDisplayName(uint kind, out IntPtr name);
         void GetAttributes(uint mask, out uint attributes);
         [PreserveSig] int Compare(IShellItem other, uint hint, out int order);
+    }
+    // Flatten the inherited IShellItem methods before IShellItem2's first method.
+    [ComImport, Guid("7E9FB0D3-919F-4307-AB2E-9B1860310C93"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItem2PropertyStore
+    {
+        void BindToHandler(IntPtr context, ref Guid handler, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object value);
+        void GetParent(out IShellItem parent);
+        void GetDisplayName(uint kind, out IntPtr name);
+        void GetAttributes(uint mask, out uint attributes);
+        [PreserveSig] int Compare(IShellItem other, uint hint, out int order);
+        void GetPropertyStore(uint flags, ref Guid iid, out IPropertyStore store);
+    }
+    [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItemLinkTarget
+    {
+        void BindToHandler(IntPtr context, ref Guid handler, ref Guid iid, out IShellItem item);
     }
     [ComImport, Guid("70629033-E363-4A28-A567-0DB78006E6D7"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IEnumShellItems
