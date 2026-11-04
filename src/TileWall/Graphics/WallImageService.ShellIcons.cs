@@ -399,7 +399,12 @@ public sealed partial class WallImageService
             else entryStamp = Fingerprint(path, "automatic-source");
         }
         var canonical = NormalizePath(target);
-        var appsParsingName = AppsFolderIconParsingName(source);
+        var appsFolderSource = IsAppsFolderIconSource(source);
+        var appsMetadata = appsFolderSource
+            ? ShellItemCatalog.ObserveIconMetadata(source!, 1, followLinkedTarget) : null;
+        // A null field is this observation's result, not permission to reopen the
+        // same Shell item through the independent legacy metadata entry points.
+        var appsParsingName = appsFolderSource ? appsMetadata?.ParsingName : AppsFolderIconParsingName(source);
         var uri = canonical is null && Uri.TryCreate(target, UriKind.Absolute, out var parsed) && !parsed.IsFile ? parsed : null;
         string? associationIcon = null, associationExecutable = null;
         string association;
@@ -422,9 +427,12 @@ public sealed partial class WallImageService
         // Flags belong to the dependency snapshot before cache lookup as well as
         // to newly collected Shell pixels. This asks for location metadata only;
         // the minimum native argument does not extract or resize an image.
-        ShellItemCatalog.IconResourceLocation? shellPolicy = null;
-        try { if (source is not null) shellPolicy = ShellItemCatalog.IconLocation(source, 1); }
-        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException) { }
+        ShellItemCatalog.IconResourceLocation? shellPolicy = appsFolderSource ? appsMetadata?.IconLocation : null;
+        if (!appsFolderSource)
+        {
+            try { if (source is not null) shellPolicy = ShellItemCatalog.IconLocation(source, 1); }
+            catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException) { }
+        }
         var stamp = string.Join("|", "automatic-v10", source, entryStamp, target,
             canonical is null ? null : Fingerprint(canonical, "target"), Fingerprint(explicitIcon, "explicit") ?? explicitIcon,
             iconIndex, association, AssociationResourceStamp(associationIcon, ResourceStamp), Fingerprint(associationExecutable, "association-executable"),
@@ -447,9 +455,13 @@ public sealed partial class WallImageService
         if (shellIconContext)
             stamp += "|shell-icon-context-v4|apps-list-parsing=" + appsParsingName;
         if (packagedApp) stamp += "|package-app-list-v2|" + PackageRegistrationStamp(target);
-        if (followLinkedTarget && LinkedAutomaticIconTarget(source, shellLink) is { } linked &&
-            !string.Equals(linked, canonical, StringComparison.OrdinalIgnoreCase))
-            stamp += "|linked-icon-target-v2|" + AutomaticSourceStampObserved(linked, followLinkedTarget: false, resourceObservations).Stamp;
+        if (followLinkedTarget)
+        {
+            var linked = appsFolderSource ? NormalizeLinkedAutomaticIconTarget(source, appsMetadata?.LinkedTargetPath)
+                : LinkedAutomaticIconTarget(source, shellLink);
+            if (linked is not null && !string.Equals(linked, canonical, StringComparison.OrdinalIgnoreCase))
+                stamp += "|linked-icon-target-v2|" + AutomaticSourceStampObserved(linked, followLinkedTarget: false, resourceObservations).Stamp;
+        }
         return new(stamp, (mmc?.CacheAllowed ?? true) && (!IsAppsFolderIconSource(source) || appsParsingName is not null), mmc);
     }
 
@@ -472,7 +484,13 @@ public sealed partial class WallImageService
         if (source is null || !nativeLink && !source.StartsWith("shell:", StringComparison.OrdinalIgnoreCase)) return null;
         // This path is a fact supplied by the original Shell item, not a path
         // inferred from a display name or a command line. Follow it only once.
-        var linked = NormalizePath(ShellItemCatalog.LinkedTargetPath(source));
+        return NormalizeLinkedAutomaticIconTarget(source, ShellItemCatalog.LinkedTargetPath(source));
+    }
+
+    private static string? NormalizeLinkedAutomaticIconTarget(string? source, string? linkedTarget)
+    {
+        if (source is null) return null;
+        var linked = NormalizePath(linkedTarget);
         return linked is not null && !string.Equals(linked, NormalizePath(source), StringComparison.OrdinalIgnoreCase) &&
             Path.GetExtension(linked).ToLowerInvariant() is ".lnk" or ".url" or ".exe" && File.Exists(linked)
                 ? linked : null;

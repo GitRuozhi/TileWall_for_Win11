@@ -17,6 +17,7 @@ internal static class ShellItemCatalog
     {
         internal bool CanCache => (Flags & 0x10) == 0; // GIL_DONTCACHE
     }
+    internal sealed record IconMetadataObservation(string? ParsingName, IconResourceLocation? IconLocation, string? LinkedTargetPath);
     private static readonly Guid EnumHandler = new("94F60519-2850-4924-AA5A-D15E84868039");
     private static readonly Guid EnumId = new("70629033-E363-4A28-A567-0DB78006E6D7");
     private const int NoInterface = unchecked((int)0x80004002);
@@ -29,6 +30,62 @@ internal static class ShellItemCatalog
         try { return Describe(item); }
         finally { Marshal.ReleaseComObject(item); }
     });
+
+    /// <summary>One icon-dependency observation; only managed values leave this apartment.</summary>
+    internal static IconMetadataObservation ObserveIconMetadata(string source, int physicalPixels, bool includeLinkedTarget) => InApartment(() =>
+    {
+        IShellItem item;
+        try { item = Open(source); }
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or InvalidCastException)
+        {
+            // A failed shared bind does not suppress independent fields that a
+            // later legacy bind may still provide. Keep their individual policies.
+            return ReadIconMetadata(null, source, physicalPixels, includeLinkedTarget);
+        }
+        try { return ReadIconMetadata(item, source, physicalPixels, includeLinkedTarget); }
+        finally { Marshal.ReleaseComObject(item); }
+    });
+
+    private static IconMetadataObservation ReadIconMetadata(IShellItem? item, string source, int physicalPixels, bool includeLinkedTarget)
+    {
+        string? parsing;
+        // Match Graphics' AppsFolderIconParsingName boundary, including Describe's
+        // original success conditions. InvalidCast is deliberately not swallowed.
+        try { parsing = item is null ? Read(source).ParsingName : Describe(item).ParsingName; }
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        { parsing = null; }
+        IconResourceLocation? location;
+        try
+        {
+            if (item is null) location = IconLocation(source, physicalPixels);
+            else
+            {
+                try { location = ReadIconLocation(item, physicalPixels); }
+                catch (Exception ex) when (ex.HResult == NoInterface)
+                {
+                    // Reopen only this failed field on the existing one-shot STA.
+                    location = IconStaRetry<IconResourceLocation?>(() => ReadFreshIconLocation(source, physicalPixels),
+                        new IconResourceLocation(null, 0, 0x10, false), null);
+                }
+            }
+        }
+        // Match the existing SourceStamp shell-policy wrapper, not a new policy.
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        { location = null; }
+        var linked = includeLinkedTarget ? ReadMetadataLinkedTarget(item, source) : null;
+        return new(parsing, location, linked);
+    }
+
+    private static string? ReadMetadataLinkedTarget(IShellItem? item, string source)
+    {
+        if (item is null) return LinkedTargetPath(source);
+        try { return ReadOptionalLinkedTargetPath(item, null, null); }
+        catch (Exception ex) when (ex.HResult == NoInterface)
+        { return IconStaRetry(() => ReadFreshLinkedTargetPath(source, null), (string?)null, null); }
+        catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidCastException)
+        { return null; }
+    }
 
     /// <summary>Read an explicit link target for icon fallback, never a source path or launch identity.</summary>
     internal static string? LinkedTargetPath(string parsingName) => LinkedTargetPathTraced(parsingName, null);
@@ -464,14 +521,28 @@ internal static class ShellItemCatalog
     }, null);
 
     /// <summary>Only a handler-approved file resource may enter the PE/ICO cache.</summary>
-    internal static IconResourceLocation? IconLocation(string parsingName, int physicalPixels) => IconApartment<IconResourceLocation?>(() =>
+    internal static IconResourceLocation? IconLocation(string parsingName, int physicalPixels) =>
+        IconApartment<IconResourceLocation?>(() => ReadFreshIconLocation(parsingName, physicalPixels), new IconResourceLocation(null, 0, 0x10, false));
+
+    private static IconResourceLocation? ReadFreshIconLocation(string parsingName, int physicalPixels)
     {
         IShellItem? item = null;
+        try
+        {
+            try { item = Open(parsingName); }
+            catch (Exception ex) when (ex.HResult != NoInterface && (ex is COMException or IOException or ArgumentException or InvalidCastException))
+            { return null; }
+            return ReadIconLocation(item, physicalPixels);
+        }
+        finally { if (item is not null) Marshal.ReleaseComObject(item); }
+    }
+
+    private static IconResourceLocation? ReadIconLocation(IShellItem item, int physicalPixels)
+    {
         object? raw = null;
         IntPtr large = IntPtr.Zero, small = IntPtr.Zero;
         try
         {
-            item = Open(parsingName);
             var handler = new Guid("3981E225-F559-11D3-8E3A-00C04F6837D5"); // BHID_SFUIObject
             var iid = typeof(IExtractIconW).GUID;
             item.BindToHandler(IntPtr.Zero, ref handler, ref iid, out raw);
@@ -496,9 +567,8 @@ internal static class ShellItemCatalog
             if (large != IntPtr.Zero) Win32Api.DestroyIcon(large);
             if (small != IntPtr.Zero && small != large) Win32Api.DestroyIcon(small);
             if (raw is not null) Marshal.ReleaseComObject(raw);
-            if (item is not null) Marshal.ReleaseComObject(item);
         }
-    }, new IconResourceLocation(null, 0, 0x10, false));
+    }
 
     private static T IconApartment<T>(Func<T> work, T unavailable, SourceReadTrace? trace = null)
     {
