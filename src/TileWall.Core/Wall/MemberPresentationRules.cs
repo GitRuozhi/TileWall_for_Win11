@@ -5,6 +5,22 @@ namespace TileWall.Core.Wall;
 /// <summary>Model rules shared by persistence validation, editors and rendering.</summary>
 public static class MemberPresentationRules
 {
+    /// <summary>Apply a newly selected source; the caller decides whether its visual defaults still apply.</summary>
+    public static WallMember ApplyImageSource(WallMember member, MemberImageSource source, bool applyDefaults = true)
+    {
+        ArgumentNullException.ThrowIfNull(member);
+        ArgumentNullException.ThrowIfNull(source);
+        return member with
+        {
+            Images = source, Carousel = null,
+            Visual = !applyDefaults ? member.Visual : member.Visual with
+            {
+                BackgroundMode = source.Kind == MemberImageSourceKind.Automatic ? MemberBackgroundMode.Default : MemberBackgroundMode.Blur,
+                BackgroundTransparency = source.Kind == MemberImageSourceKind.Automatic ? 50 : member.Visual.BackgroundTransparency,
+            },
+        };
+    }
+
     public static string? Validate(WallMember member)
     {
         ArgumentNullException.ThrowIfNull(member);

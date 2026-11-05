@@ -15,24 +15,31 @@ internal sealed class ClockEditorDialog : IWallDialogSession
     private readonly ClockMember _draft;
     private readonly int _maxHeight;
     private readonly IClock _clock;
+    private readonly WallMetrics _metrics;
+    private readonly WallVisualStyle _style;
+    private readonly double _rasterScale;
     private readonly Func<ClockMember, string?> _save;
     private readonly ContentDialog _dialog;
     private readonly DialogExitPrompt _exit;
     private readonly TextBox _title = new() { IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
     private readonly CheckBox _showTitle = new();
+    private readonly Viewbox _preview = new() { Height = 150, Stretch = Stretch.Uniform,
+        HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox _width = new(), _height = new(), _timeFormat = new(), _dateFormat = new();
-    private readonly TextBlock _time = new() { FontSize = 34 }, _date = new() { TextWrapping = TextWrapping.Wrap },
-        _error = new() { TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed) };
+    private readonly TextBlock _error = new() { TextWrapping = TextWrapping.Wrap,
+        Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed) };
     private readonly Dictionary<string, TextBlock> _labels = [];
-    private bool _saved, _dirty, _allowDiscard, _discarded;
+    private bool _saved, _dirty, _allowDiscard, _discarded, _titleEdited;
 
-    public ClockEditorDialog(Window owner, ClockMember original, int maxHeight,
-        IClock clock, Func<ClockMember, string?> save)
+    public ClockEditorDialog(Window owner, ClockMember original, int maxHeight, IClock clock,
+        WallMetrics metrics, WallVisualStyle style, double rasterScale, Func<ClockMember, string?> save)
     {
         _draft = original;
-        _maxHeight = Math.Clamp(maxHeight, _draft.LocalBounds.Height, 256); _clock = clock; _save = save;
-        _title.Text = _draft.Visual.Title ?? string.Empty; _showTitle.IsChecked = _draft.Visual.ShowTitle;
-        for (var i = 1; i <= 8; i++) _width.Items.Add(i.ToString());
+        _maxHeight = Math.Max(_draft.LocalBounds.Height, Math.Clamp(maxHeight, 1, WallLayoutEngine.MaxRows));
+        _clock = clock; _metrics = metrics; _style = style; _rasterScale = Math.Max(0.1, rasterScale); _save = save;
+        var initialTitle = WallMemberVisualFactory.ResolveTitle(_draft);
+        _title.Text = initialTitle; _showTitle.IsChecked = _draft.Visual.ShowTitle;
+        for (var i = 1; i <= WallLayoutEngine.CellsPerLane; i++) _width.Items.Add(i.ToString());
         for (var i = 1; i <= _maxHeight; i++) _height.Items.Add(i.ToString());
         foreach (var key in new[] { "Clock.Time24", "Clock.Time24Seconds", "Clock.Time12", "Clock.Time12Seconds" }) _timeFormat.Items.Add(ProductStrings.Get(key));
         foreach (var key in new[] { "Clock.DateFull", "Clock.DateNumeric", "Clock.DateShort", "Clock.DateChinese" }) _dateFormat.Items.Add(ProductStrings.Get(key));
@@ -45,10 +52,9 @@ internal sealed class ClockEditorDialog : IWallDialogSession
         AddRow(form, "Common.Title", _title); AddRow(form, "Common.ShowTitle", _showTitle);
         AddRow(form, "Common.Width", _width); AddRow(form, "Common.Height", _height);
         AddRow(form, "Clock.TimeFormat", _timeFormat); AddRow(form, "Clock.DateFormat", _dateFormat);
-        var preview = new StackPanel { Spacing = 4, Margin = new Thickness(0, 12, 0, 0) };
-        preview.Children.Add(_time); preview.Children.Add(_date);
+        _preview.Margin = new Thickness(0, 12, 0, 0);
         var previewRow = form.RowDefinitions.Count; form.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(preview, previewRow); Grid.SetColumnSpan(preview, 2); form.Children.Add(preview);
+        Grid.SetRow(_preview, previewRow); Grid.SetColumnSpan(_preview, 2); form.Children.Add(_preview);
         var root = (owner.Content as FrameworkElement)?.XamlRoot;
         var body = new Grid { Width = Math.Min(400, Math.Max(260, (root?.Size.Width ?? 480) - 80)),
             MaxHeight = Math.Min(520, Math.Max(120, (root?.Size.Height ?? 730) - 210)) };
@@ -60,9 +66,13 @@ internal sealed class ClockEditorDialog : IWallDialogSession
         _dialog = new ContentDialog { XamlRoot = root, Content = body, DefaultButton = ContentDialogButton.None };
         _exit = new(_dialog);
         Id(_dialog, "editor"); Id(_title, "title"); Id(_showTitle, "show-title"); Id(_width, "width"); Id(_height, "height");
-        Id(_timeFormat, "time-format"); Id(_dateFormat, "date-format"); Id(_time, "time-preview"); Id(_date, "date-preview"); Id(_error, "error");
+        Id(_timeFormat, "time-format"); Id(_dateFormat, "date-format"); Id(_preview, "clock-preview"); Id(_error, "error");
         RefreshStrings(); RefreshPreview();
-        _title.TextChanged += (_, _) => Changed();
+        _title.TextChanged += (_, _) =>
+        {
+            _titleEdited = !string.Equals(_title.Text, initialTitle, StringComparison.Ordinal);
+            Changed();
+        };
         _showTitle.Checked += (_, _) => Changed(); _showTitle.Unchecked += (_, _) => Changed();
         foreach (var box in new[] { _width, _height, _timeFormat, _dateFormat }) box.SelectionChanged += (_, _) => Changed();
         _dialog.Opened += (_, _) => { _title.Focus(FocusState.Programmatic); RefreshPreview(); };
@@ -97,11 +107,14 @@ internal sealed class ClockEditorDialog : IWallDialogSession
         var time = _timeFormat.SelectedIndex >= 0 ? ClockFormatOptions.SupportedTimeFormats[_timeFormat.SelectedIndex] : null;
         var date = _dateFormat.SelectedIndex >= 0 ? ClockFormatOptions.SupportedDateFormats[_dateFormat.SelectedIndex] : null;
         if (!ClockFormatOptions.IsValid(time, date)) return Error(ProductStrings.Get("Clock.FormatInvalid"));
-        if (_width.SelectedIndex is < 0 or > 7 || _height.SelectedIndex < 0 || _height.SelectedIndex >= _maxHeight)
+        if (_width.SelectedIndex < 0 || _width.SelectedIndex >= WallLayoutEngine.CellsPerLane ||
+            _height.SelectedIndex < 0 || _height.SelectedIndex >= _maxHeight)
             return Error(ProductStrings.Get("Clock.SizeInvalid"));
+        var visual = _draft.Visual with { ShowTitle = _showTitle.IsChecked == true };
+        if (_titleEdited)
+            visual = visual with { TitleMode = MemberTitleMode.Manual, Title = _title.Text };
         var value = _draft with { LocalBounds = _draft.LocalBounds with { Width = _width.SelectedIndex + 1, Height = _height.SelectedIndex + 1 },
-            Visual = _draft.Visual with { TitleMode = MemberTitleMode.Manual, Title = _title.Text,
-                ShowTitle = _showTitle.IsChecked == true },
+            Visual = visual,
             TimeFormat = time!, DateFormat = date!, Entry = null };
         try
         {
@@ -127,10 +140,25 @@ internal sealed class ClockEditorDialog : IWallDialogSession
     private string Error(string error) { _error.Text = error; return error; }
     private void RefreshPreview()
     {
-        var value = ClockTextFormatter.Format(_clock.UtcNow,
-            _timeFormat.SelectedIndex >= 0 ? ClockFormatOptions.SupportedTimeFormats[_timeFormat.SelectedIndex] : null,
-            _dateFormat.SelectedIndex >= 0 ? ClockFormatOptions.SupportedDateFormats[_dateFormat.SelectedIndex] : null);
-        _time.Text = value.TimeLine; _date.Text = value.DateLine;
+        var visual = _draft.Visual with { ShowTitle = _showTitle.IsChecked == true };
+        if (_titleEdited) visual = visual with { TitleMode = MemberTitleMode.Manual, Title = _title.Text };
+        var member = _draft with
+        {
+            LocalBounds = _draft.LocalBounds with
+            {
+                Width = _width.SelectedIndex >= 0 ? _width.SelectedIndex + 1 : _draft.LocalBounds.Width,
+                Height = _height.SelectedIndex >= 0 ? _height.SelectedIndex + 1 : _draft.LocalBounds.Height,
+            },
+            Visual = visual,
+            TimeFormat = _timeFormat.SelectedIndex >= 0
+                ? ClockFormatOptions.SupportedTimeFormats[_timeFormat.SelectedIndex] : _draft.TimeFormat,
+            DateFormat = _dateFormat.SelectedIndex >= 0
+                ? ClockFormatOptions.SupportedDateFormats[_dateFormat.SelectedIndex] : _draft.DateFormat,
+        };
+        var clock = new ClockMemberView(member, _metrics, _rasterScale, _style,
+            revealTitles: true, initialUtcNow: _clock.UtcNow);
+        Id(clock.TimeText, "time-preview"); Id(clock.DateText, "date-preview");
+        _preview.Child = clock;
     }
     private void AddRow(Grid form, string key, FrameworkElement value)
     {

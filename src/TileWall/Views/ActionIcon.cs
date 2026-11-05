@@ -61,8 +61,19 @@ internal static class ActionIcon
     }
     private static readonly ConditionalWeakTable<ButtonBase, Registration> RegisteredTips = new();
     private static readonly ConditionalWeakTable<UIElement, DisabledTips> RootTips = new();
-    internal static void SetTip(ButtonBase button, string text)
+    internal static void SetTip(ButtonBase button, string? text)
     {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            if (RegisteredTips.TryGetValue(button, out var previous))
+            {
+                previous.Root?.Stop();
+                previous.Tip.IsOpen = false;
+                previous.Tip.Content = null;
+            }
+            ToolTipService.SetToolTip(button, null);
+            return;
+        }
         if (!RegisteredTips.TryGetValue(button, out var registration))
         {
             registration = new Registration(); RegisteredTips.Add(button, registration);

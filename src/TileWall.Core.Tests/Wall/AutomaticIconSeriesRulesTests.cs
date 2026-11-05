@@ -20,6 +20,17 @@ public sealed class AutomaticIconSeriesRulesTests
     }
 
     [Fact]
+    public void SharedNativeSelectionPreservesSourceTieOrderAndEmptyResult()
+    {
+        (int Width, int Height)[] frames = [(128, 64), (64, 128), (128, 64), (256, 128)];
+        Assert.Equal(0, AutomaticIconSeriesRules.SelectNativeFrame(frames, 100, 50, static size => size));
+        Assert.Equal(1, AutomaticIconSeriesRules.SelectNativeFrame(frames, 50, 100, static size => size));
+        Assert.Equal(3, AutomaticIconSeriesRules.SelectNativeFrame(frames, 500, 500, static size => size));
+        Assert.Equal(-1, AutomaticIconSeriesRules.SelectNativeFrame(Array.Empty<(int Width, int Height)>(),
+            48, 48, static size => size));
+    }
+
+    [Fact]
     public void GeometryReferenceStaysStableWhileDisplayResolutionFollowsDemand()
     {
         var series = Series((48, 48), (128, 128), (256, 256)) with { SelectedFrame = 1, Columns = 2, Rows = 2 };

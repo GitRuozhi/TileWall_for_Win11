@@ -22,7 +22,8 @@ internal sealed class ClockMemberView : Grid
     private readonly double _textWidth, _textHeight;
     private (string Time, string Date, string Culture)? _last;
 
-    internal ClockMemberView(ClockMember member, WallMetrics metrics, double scale, WallVisualStyle style)
+    internal ClockMemberView(ClockMember member, WallMetrics metrics, double scale, WallVisualStyle style,
+        bool revealTitles = false, DateTimeOffset? initialUtcNow = null)
     {
         _member = member; _metrics = metrics; _scale = scale; _style = style;
         Width = metrics.WidthOf(member.LocalBounds.Width); Height = metrics.HeightOf(member.LocalBounds.Height);
@@ -32,10 +33,14 @@ internal sealed class ClockMemberView : Grid
         // behavior as tiles and puzzles. The clock text keeps its original wall fit.
         _title = WallMemberVisualFactory.Create(member with
         {
-            Visual = member.Visual with { TitleMode = MemberTitleMode.Manual, BackgroundMode = MemberBackgroundMode.None },
+            Visual = member.Visual with { BackgroundMode = MemberBackgroundMode.None },
         }, null, metrics, scale, style, interactive: false, externalInteraction: true);
+        _title.RevealTitles = revealTitles;
+        if (revealTitles) _title.StopTransientFeedback();
         _title.IsHitTestVisible = false; Children.Add(_title);
-        var titleSpace = member.Visual.ShowTitle && !string.IsNullOrWhiteSpace(member.Visual.Title) ? 23 : 0;
+        var title = WallMemberVisualFactory.ResolveTitle(member);
+        var titleSpace = member.Visual.ShowTitle && !string.IsNullOrWhiteSpace(title)
+            ? WallMemberVisualFactory.TitleBandHeight : 0;
         _textWidth = Math.Max(1, Width - 8); _textHeight = Math.Max(1, Height - 8 - titleSpace);
         var stack = new StackPanel { Width = _textWidth, Margin = new Thickness(0, 0, 0, titleSpace),
             VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center,
@@ -43,8 +48,11 @@ internal sealed class ClockMemberView : Grid
         stack.Children.Add(_time); stack.Children.Add(_date); Children.Add(stack);
         ActualThemeChanged += (_, _) => RefreshAppearance();
         Unloaded += (_, _) => StopTransientFeedback();
-        RefreshAppearance(); Refresh(DateTimeOffset.Now);
+        RefreshAppearance(); Refresh(initialUtcNow ?? DateTimeOffset.Now);
     }
+
+    internal TextBlock TimeText => _time;
+    internal TextBlock DateText => _date;
 
     internal void RefreshAppearance()
     {
@@ -60,8 +68,9 @@ internal sealed class ClockMemberView : Grid
     internal void StopTransientFeedback() => _title.StopTransientFeedback();
     internal ClockMemberView CloneForDrag()
     {
-        var copy = new ClockMemberView(_member, _metrics, _scale, _style) { IsHitTestVisible = false };
-        copy._title.RevealTitles = true; copy.SetExternalHover(false);
+        var copy = new ClockMemberView(_member, _metrics, _scale, _style,
+            revealTitles: true) { IsHitTestVisible = false };
+        copy.SetExternalHover(false);
         return copy;
     }
 

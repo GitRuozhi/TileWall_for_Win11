@@ -60,9 +60,9 @@ public sealed record WallLayoutResult(WallProposal? Proposal, WallRejection Reje
 /// <summary>Pure, deterministic layout decisions. No UI state or disk operations are performed here.</summary>
 public static class WallLayoutEngine
 {
-    private const int CellsPerLane = 8;
+    public const int CellsPerLane = 8;
     private const int MaxColumns = 64;
-    private const int MaxRows = 256;
+    public const int MaxRows = 256;
 
     /// <summary>Normalizes the same candidate that callers preview and commit; does not advance its generation.</summary>
     public static WallLayoutResult NormalizeExpanded(WallDocument candidate, WallMetrics? metrics = null)

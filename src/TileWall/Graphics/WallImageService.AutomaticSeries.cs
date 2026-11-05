@@ -177,7 +177,9 @@ public sealed partial class WallImageService
             // of orientation or image aspect. Never mix unrelated PE groups.
             frames = frames.Where(frame => Math.Abs((long)frame.Width * anchor.Height - (long)frame.Height * anchor.Width)
                 <= Math.Max(anchor.Width, anchor.Height)).ToArray();
-            if (frames.Length != 0) admitted.Add(candidate with { Frames = frames });
+            // This detached candidate owns the already admitted native planes.
+            // Later selection in the same collection must not rescan their pixels.
+            if (frames.Length != 0) admitted.Add(candidate with { Frames = frames, CheckComposition = false });
         }
         using (trace?.Measure("select-order"))
             return admitted.OrderBy(candidate => candidate.Priority).ThenBy(candidate => candidate.Theme)
@@ -260,8 +262,13 @@ public sealed partial class WallImageService
             if (location?.Path is { } protocolFile) await AddPeAsync(protocolFile, location.Index, 100);
             if (facts.AppUserModelId is { } appId)
                 result.AddRange(await CollectPackagedIconSeriesAsync(appId, 110, token).ConfigureAwait(false));
-            await Attempt(async () => AddSingle(await PrepareRegisteredProtocolAppIconAsync(uri.Scheme, width, height, token, facts),
-                "protocol-logo:" + uri.Scheme + ":" + facts.AppUserModelId, 120));
+            if (CanStopBefore(120)) return result;
+            await Attempt(async () =>
+            {
+                using (trace?.Measure("protocol.logo", uri.Scheme))
+                    AddSingle(await PrepareRegisteredProtocolAppIconAsync(uri.Scheme, width, height, token, facts),
+                        "protocol-logo:" + uri.Scheme + ":" + facts.AppUserModelId, 120);
+            });
             if (NormalizePath(facts.Executable) is { } exe) await AddPeAsync(exe, null, 130);
         }
         // MMC ExtractIcon remains priority 130 even though it is called after
@@ -362,6 +369,16 @@ public sealed partial class WallImageService
         {
             token.ThrowIfCancellationRequested();
             if (exhaustive) return false;
+            // Keep admission local to this collection. Native/package caches
+            // retain their original candidates, and exhaustive collection still
+            // reaches the same final admission rules without any early pruning.
+            for (var index = result.Count - 1; index >= 0; index--)
+            {
+                if (!result[index].CheckComposition) continue;
+                var admitted = SelectIconSeriesObserved([result[index]], width, height, trace);
+                if (admitted is null) result.RemoveAt(index);
+                else result[index] = admitted;
+            }
             // Priority is the first sort key, before theme, adequacy, role and
             // identity. Strict inequality preserves every same-level competitor.
             var best = SelectIconSeriesObserved(result, width, height, trace);

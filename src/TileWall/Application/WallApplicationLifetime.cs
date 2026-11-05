@@ -44,6 +44,8 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private int _addSucceeded, _addFailed, _addCount;
     private string? _lastAddFailure;
     private bool _addTruncated;
+    private CancellationTokenSource? _animationPreparation;
+    private long _animationGeneration;
 
     public WallApplicationLifetime(RuntimeScope scope, SingleInstanceGate instance,
         Microsoft.UI.Xaml.Application application)
@@ -62,7 +64,11 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _startReplacement.Faulted += QueueStartReplacementFault;
         _show = new WallShowMachine(WallShowState.Hidden, this);
         _animation = new ShowHideAnimator(_window.WallContent);
-        _animation.ShowCompleted += _show.ShowAnimationCompleted;
+        _animation.ShowCompleted += () =>
+        {
+            _show.ShowAnimationCompleted();
+            if (_show.State == WallShowState.Visible) _window.CompleteBackdropAnimation(visible: true);
+        };
         _animation.HideCompleted += _show.HideAnimationCompleted;
         _exit = new ExitCoordinator(this);
         _window.HideRequested += () => Request(WallShowTrigger.Hide);
@@ -308,6 +314,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             _window.TraceExit("dialog-closed");
             if (!await StopInputForExitAsync()) return;
             _window.TraceExit("shutdown-workers");
+            CancelAnimations(); // Cancel a pending backdrop fence before appearance drains it.
             try { await _window.ShutdownPersistenceAsync(); }
             catch (Exception ex) { AppLog.Warn("Exit", $"Storage worker shutdown: {ex.Message}"); }
             _tearingDown = true;
@@ -324,11 +331,80 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         }
     }
 
-    public void BeginShowAnimation() => _animation.BeginShow();
-    public void BeginHideAnimation() => _animation.BeginHide();
-    public void CancelAnimations() => _animation.Cancel();
-    public void SnapShow() { _animation.ResetVisual(); _window.ShowWall(); }
-    public void SnapHide() { _animation.ResetVisual(); _window.HideWall(); }
+    public void BeginShowAnimation() => BeginWallAnimation(show: true);
+    public void BeginHideAnimation() => BeginWallAnimation(show: false);
+
+    private void BeginWallAnimation(bool show)
+    {
+        CancelAnimationPreparation();
+        var request = new CancellationTokenSource();
+        _animationPreparation = request;
+        _ = BeginWallAnimationAsync(show, _animationGeneration, request);
+    }
+
+    private async Task BeginWallAnimationAsync(bool show, long generation, CancellationTokenSource request)
+    {
+        bool IsCurrent() => !request.IsCancellationRequested && generation == _animationGeneration &&
+            _show.State == (show ? WallShowState.Showing : WallShowState.Hiding) && !_tearingDown;
+        try
+        {
+            var ready = await _window.PrepareBackdropForAnimationAsync(request.Token);
+            if (!IsCurrent()) return;
+            if (ready)
+            {
+                if (show) _animation.BeginShow();
+                else _animation.BeginHide();
+            }
+            else FinishWithoutAnimation();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            AppLog.Warn("BackdropCommit", $"Animation preparation unavailable: {ex.GetType().Name}");
+            if (IsCurrent()) FinishWithoutAnimation();
+        }
+        finally
+        {
+            if (ReferenceEquals(_animationPreparation, request)) _animationPreparation = null;
+            request.Dispose();
+        }
+
+        void FinishWithoutAnimation()
+        {
+            // A failed detach must never fade a snapshot over live native alpha.
+            // Use the existing physical terminal operation for this transition.
+            if (show)
+            {
+                _animation.ResetVisual();
+                _show.ShowAnimationCompleted();
+                _window.CompleteBackdropAnimation(visible: true);
+            }
+            else _show.HideAnimationCompleted();
+        }
+    }
+
+    private void CancelAnimationPreparation()
+    {
+        _animationGeneration++;
+        _animationPreparation?.Cancel();
+        _animationPreparation = null; // The owning async finally disposes it.
+    }
+
+    public void CancelAnimations() { CancelAnimationPreparation(); _animation.Cancel(); }
+    public void SnapShow()
+    {
+        CancelAnimationPreparation();
+        _animation.ResetVisual();
+        _window.ShowWall();
+        if (_show.State == WallShowState.Visible) _window.CompleteBackdropAnimation(visible: true);
+    }
+    public void SnapHide()
+    {
+        CancelAnimationPreparation();
+        _animation.ResetVisual();
+        _window.HideWall();
+        _window.CompleteBackdropAnimation(visible: false);
+    }
     public void FocusWall() => _window.FocusTopSession();
     public IExitParticipant? TopParticipant => _window.ActiveDialog;
     public void CloseTopSession() => _window.ActiveDialog?.Close();

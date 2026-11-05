@@ -526,8 +526,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private void RefreshFields()
     {
         _refreshing = true;
-        if (!_titleDirty) _title.Text = MemberPresentationRules.ResolveTitle(_draft,
-            _draft.ResourceOrigin == MemberResourceOrigin.Local && _foregroundActivated && Directory.Exists(_draft.TargetInput));
+        if (!_titleDirty) _title.Text = WallMemberVisualFactory.ResolveTitle(_draft, _foregroundActivated ? null : false);
         if (!_targetDirty) _target.Text = _draft.TargetInput ?? string.Empty;
         _width.Value = _draft.LocalBounds.Width; _height.Value = _draft.LocalBounds.Height;
         _source.SelectedIndex = _draft.Images.Kind == MemberImageSourceKind.None ? -1 : (int)_draft.Images.Kind;
@@ -780,7 +779,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         if (kind == MemberImageSourceKind.Automatic)
         {
             MarkExplicitImageSource();
-            _sourceDirty = false; _draft = _draft with { Images = new(), Carousel = null, Visual = _draft.Visual with { BackgroundMode = MemberBackgroundMode.Default, BackgroundTransparency = 50 } };
+            _sourceDirty = false;
+            _draft = MemberPresentationRules.ApplyImageSource(_draft, new MemberImageSource(), applyDefaults: true);
             _previewPath = null; Changed(); RefreshFields(); GallerySourceChanged?.Invoke(); await ReloadCandidatesAsync(); return;
         }
         _pickerBusy = true;
@@ -1407,9 +1407,10 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             _sourceStatus.Text = WallImageService.DescribeCandidateDiagnostic(result) ?? T("Puzzle.UnavailableImage");
             ShowError(T("Puzzle.UnavailableImage")); return false;
         }
-        _sourceDirty = false; _draft = _draft with { Images = new MemberImageSource { Kind = kind, Path = path }, Carousel = null,
-            Visual = _appearanceRevision == _recognitionAppearanceRevision
-                ? _draft.Visual with { BackgroundMode = MemberBackgroundMode.Blur } : _draft.Visual };
+        _sourceDirty = false;
+        _draft = MemberPresentationRules.ApplyImageSource(_draft,
+            new MemberImageSource { Kind = kind, Path = path },
+            applyDefaults: _appearanceRevision == _recognitionAppearanceRevision);
         _targetRecognition = proof with { Source = _draft.Images };
         _targetRecognitionRevision = revision; _verifiedRecognition = null; _preparedSourceAsset = null;
         TraceImage("ConfirmSourceAccepted");
@@ -1446,9 +1447,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _targetRecognition = result; _targetRecognitionRevision = sourceRevision; _verifiedRecognition = null;
         _targetRecognitionRequired = false;
         _sourceDirty = false; _previewPath = null; _frame = null;
-        var inferred = result.ApplyTo(_draft);
-        if (_appearanceRevision != _recognitionAppearanceRevision) inferred = inferred with { Visual = _draft.Visual };
-        _draft = inferred;
+        _draft = result.ApplyTo(_draft, applyDefaults: _appearanceRevision == _recognitionAppearanceRevision);
         RefreshFields(); GallerySourceChanged?.Invoke(); await ReloadCandidatesAsync(result.Source.Kind == MemberImageSourceKind.Automatic ? null : result.Candidates);
     }
 

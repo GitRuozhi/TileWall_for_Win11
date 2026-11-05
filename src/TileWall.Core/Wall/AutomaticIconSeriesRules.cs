@@ -33,17 +33,28 @@ public static class AutomaticIconSeriesRules
         if (series.Frames is null || series.Frames.Count == 0 ||
             series.Frames.Any(frame => frame is null || frame.Width <= 0 || frame.Height <= 0))
             throw new ArgumentException("An automatic icon series needs valid native frames.", nameof(series));
+        return SelectNativeFrame(series.Frames, width, height, static frame => (frame.Width, frame.Height));
+    }
+
+    /// <summary>Choose among admitted native frames; equal areas retain the source's tie order.</summary>
+    public static int SelectNativeFrame<TFrame>(IReadOnlyList<TFrame> frames, double width, double height,
+        Func<TFrame, (int Width, int Height)> nativeSize)
+    {
+        ArgumentNullException.ThrowIfNull(frames);
+        ArgumentNullException.ThrowIfNull(nativeSize);
+        if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 0 || height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(width));
         var sufficient = -1;
-        var largest = 0;
-        for (var index = 0; index < series.Frames.Count; index++)
+        var sufficientArea = long.MaxValue;
+        var largest = -1;
+        var largestArea = long.MinValue;
+        for (var index = 0; index < frames.Count; index++)
         {
-            var frame = series.Frames[index];
+            var frame = nativeSize(frames[index]);
             var area = (long)frame.Width * frame.Height;
-            var maximum = series.Frames[largest];
-            if (area > (long)maximum.Width * maximum.Height) largest = index;
+            if (area > largestArea) { largest = index; largestArea = area; }
             if (frame.Width < width || frame.Height < height) continue;
-            if (sufficient < 0 || area < (long)series.Frames[sufficient].Width * series.Frames[sufficient].Height)
-                sufficient = index;
+            if (area < sufficientArea) { sufficient = index; sufficientArea = area; }
         }
         return sufficient >= 0 ? sufficient : largest;
     }

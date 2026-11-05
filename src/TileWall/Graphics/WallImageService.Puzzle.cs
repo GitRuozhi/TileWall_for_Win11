@@ -46,15 +46,8 @@ public sealed record TargetImageSourceResult(MemberImageSource Source, PuzzleCan
     internal string? SourceFingerprint { get; init; }
     internal bool? TargetIsDirectory { get; init; }
 
-    public WallMember ApplyTo(WallMember member) => member with
-    {
-        Images = Source, Carousel = null,
-        Visual = member.Visual with
-        {
-            BackgroundMode = Source.Kind == MemberImageSourceKind.Automatic ? MemberBackgroundMode.Default : MemberBackgroundMode.Blur,
-            BackgroundTransparency = Source.Kind == MemberImageSourceKind.Automatic ? 50 : member.Visual.BackgroundTransparency,
-        },
-    };
+    public WallMember ApplyTo(WallMember member, bool applyDefaults = true) =>
+        MemberPresentationRules.ApplyImageSource(member, Source, applyDefaults);
 }
 
 public sealed partial class WallImageService

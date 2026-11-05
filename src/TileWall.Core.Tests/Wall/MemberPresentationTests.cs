@@ -11,6 +11,47 @@ public sealed class MemberPresentationTests
     private static TileMember Tile() => new() { Id = "tile", LocalBounds = new GridRect(0, 0, 2, 2) };
 
     [Theory]
+    [InlineData(MemberImageSourceKind.Automatic, MemberBackgroundMode.Default, 50)]
+    [InlineData(MemberImageSourceKind.Single, MemberBackgroundMode.Blur, 73)]
+    [InlineData(MemberImageSourceKind.Folder, MemberBackgroundMode.Blur, 73)]
+    public void SelectingSourceAppliesSharedDefaultsWithoutResettingDisplayOrTitle(
+        MemberImageSourceKind kind, MemberBackgroundMode background, int transparency)
+    {
+        var original = Tile() with
+        {
+            Visual = new() { Title = "My title", TitleMode = MemberTitleMode.Manual,
+                BackgroundMode = MemberBackgroundMode.Color, BackgroundColor = "#123456", BackgroundTransparency = 73 },
+            ImageDisplay = new() { Mode = ImageDisplayMode.Custom, CustomScale = 1.75 },
+            Carousel = ImageCarouselSequence.Next(["a", "b"], null, DateTimeOffset.UtcNow),
+        };
+        var source = new MemberImageSource { Kind = kind, Path = kind == MemberImageSourceKind.Automatic ? null : "source" };
+        var result = MemberPresentationRules.ApplyImageSource(original, source);
+        Assert.Same(source, result.Images);
+        Assert.Null(result.Carousel);
+        Assert.Equal(original.Visual with { BackgroundMode = background, BackgroundTransparency = transparency }, result.Visual);
+        Assert.Same(original.ImageDisplay, result.ImageDisplay);
+    }
+
+    [Fact]
+    public void SourceRecognitionAfterAppearanceEditPreservesAllVisualSettings()
+    {
+        var original = Tile() with
+        { Visual = new() { BackgroundMode = MemberBackgroundMode.Blur, BackgroundTransparency = 73 } };
+        var source = new MemberImageSource();
+        var result = MemberPresentationRules.ApplyImageSource(original, source, applyDefaults: false);
+        Assert.Same(source, result.Images);
+        Assert.Same(original.Visual, result.Visual);
+    }
+
+    [Fact]
+    public void AutomaticTitleRetainsTheObservedNativeDisplayName()
+    {
+        var member = Tile() with { TargetInput = "ms-settings:display", TargetDisplayName = "Display settings" };
+        Assert.Equal(MemberTitleMode.Automatic, member.Visual.TitleMode);
+        Assert.Equal("Display settings", MemberPresentationRules.ResolveTitle(member));
+    }
+
+    [Theory]
     [InlineData(ImageDisplayMode.Fit)]
     [InlineData(ImageDisplayMode.Fill)]
     [InlineData(ImageDisplayMode.Original)]

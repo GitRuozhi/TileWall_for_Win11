@@ -302,7 +302,6 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                 TargetDisplayName = entry.Name,
                 Entry = new(id, $"Objects/{id}/entry.{(urlEntry ? "url" : "lnk")}",
                     urlEntry ? ManagedEntryKind.Url : ManagedEntryKind.Lnk),
-                Visual = new MemberVisual { Title = entry.Name, TitleMode = MemberTitleMode.Manual },
             })
             {
                 SourceKind = kind, Policy = policy, TargetKind = targetKind, HasLaunchTarget = true,

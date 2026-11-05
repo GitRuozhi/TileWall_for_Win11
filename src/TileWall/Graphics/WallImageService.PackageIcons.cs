@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
+using System.Security.Cryptography;
 using System.Xml;
 using System.Xml.Linq;
 using Windows.Graphics.Imaging;
@@ -130,19 +131,46 @@ public sealed partial class WallImageService
                         if (!valid || unplatedOnly != unplated) continue;
                         try
                         {
-                            if (PackageIconPath(root, Path.GetRelativePath(root, file)) is not { } safe) continue;
-                            using var input = new FileStream(safe, FileMode.Open, FileAccess.Read, FileShare.Read);
-                            using var stream = input.AsRandomAccessStream();
-                            var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token).ConfigureAwait(false);
-                            var width = checked((int)decoder.PixelWidth); var height = checked((int)decoder.PixelHeight);
-                            if (width <= 0 || height <= 0) continue;
-                            Interlocked.Increment(ref _packageIconDecodedFrames);
-                            var data = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, new BitmapTransform(),
-                                ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(token).ConfigureAwait(false);
-                            var pixels = data.DetachPixelData();
-                            if (pixels.LongLength != (long)width * height * 4 || PackageIconPath(root, Path.GetRelativePath(root, safe)) != safe) continue;
-                            var prepared = new Prepared(WallImageStatus.Loaded, pixels, width, height,
-                                $"PackageNative:{identity.AppId}:role={role}:{Path.GetFileName(safe)}:{width}x{height}") { CacheAllowed = false };
+                            var relative = Path.GetRelativePath(root, file);
+                            if (!TryGetPackageIconSourceFacts(root, relative, out var safe, out var sourceLength, out var sourceWriteTicks)) continue;
+                            byte[] original;
+                            await using (var input = BoundedOriginalFileRead.OpenRead(safe))
+                            {
+                                if (input.Length != sourceLength) continue;
+                                original = await BoundedOriginalFileRead.ReadAsync(input,
+                                    TileWall.Core.Storage.PreparedMediaAsset.MaximumBytes, token).ConfigureAwait(false);
+                            }
+                            if (original.LongLength != sourceLength ||
+                                !PackageIconFileFactsMatch(root, relative, safe, sourceLength, sourceWriteTicks)) continue;
+                            var contentHash = Convert.ToHexString(SHA256.HashData(original));
+                            token.ThrowIfCancellationRequested();
+                            var cacheKey = PackageIconPixelCacheKey(identity.AppId, fullName, root, relative,
+                                sourceLength, sourceWriteTicks, contentHash);
+                            Prepared? prepared = null;
+                            if (TryGetCached(cacheKey, out var cached) && cached.Pixels is { } cachedPixels &&
+                                cachedPixels.LongLength == (long)cached.Width * cached.Height * 4)
+                            {
+                                prepared = cached with { Diagnostic = PackageIconDiagnostic(identity.AppId, role, safe, cached.Width, cached.Height) };
+                            }
+                            else
+                            {
+                                using var imageBytes = new MemoryStream(original, writable: false);
+                                using var stream = imageBytes.AsRandomAccessStream();
+                                var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token).ConfigureAwait(false);
+                                var width = checked((int)decoder.PixelWidth); var height = checked((int)decoder.PixelHeight);
+                                if (width <= 0 || height <= 0) continue;
+                                Interlocked.Increment(ref _packageIconDecodedFrames);
+                                var data = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, new BitmapTransform(),
+                                    ExifOrientationMode.IgnoreExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(token).ConfigureAwait(false);
+                                var pixels = data.DetachPixelData();
+                                if (pixels.LongLength != (long)width * height * 4) continue;
+                                prepared = new Prepared(WallImageStatus.Loaded, pixels, width, height,
+                                    PackageIconDiagnostic(identity.AppId, role, safe, width, height))
+                                    { CacheAllowed = false, MemoryCacheAllowed = true };
+                            }
+                            if (prepared is null ||
+                                !PackageIconFileFactsMatch(root, relative, safe, sourceLength, sourceWriteTicks)) continue;
+                            Cache(cacheKey, prepared, allowMemoryOnly: true);
                             if (!planes.TryGetValue(theme, out var frames)) planes.Add(theme, frames = new());
                             frames.Add(prepared);
                         }
@@ -187,4 +215,43 @@ public sealed partial class WallImageService
         }
         return path;
     }
+
+    private static bool TryGetPackageIconSourceFacts(string root, string relative, out string safePath,
+        out long length, out long lastWriteTicks)
+    {
+        safePath = string.Empty; length = 0; lastWriteTicks = 0;
+        try
+        {
+            safePath = PackageIconPath(root, relative) ?? string.Empty;
+            if (safePath.Length == 0) return false;
+            var info = new FileInfo(safePath);
+            info.Refresh();
+            if (!info.Exists || info.Length is < 1 or > TileWall.Core.Storage.PreparedMediaAsset.MaximumBytes) return false;
+            length = info.Length;
+            lastWriteTicks = info.LastWriteTimeUtc.Ticks;
+            return PackageIconPath(root, relative) is { } afterPath &&
+                string.Equals(afterPath, safePath, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        { return false; }
+    }
+
+    private static bool PackageIconFileFactsMatch(string root, string relative, string safePath,
+        long expectedLength, long expectedLastWriteTicks) =>
+        TryGetPackageIconSourceFacts(root, relative, out var currentPath, out var currentLength, out var currentLastWriteTicks) &&
+        string.Equals(currentPath, safePath, StringComparison.OrdinalIgnoreCase) &&
+        currentLength == expectedLength && currentLastWriteTicks == expectedLastWriteTicks;
+
+    private static string PackageIconPixelCacheKey(string appId, string packageFullName, string packageRoot,
+        string relativePath, long length, long lastWriteTicks, string contentHash)
+    {
+        static string Field(string value) => value.Length.ToString(CultureInfo.InvariantCulture) + ":" + value;
+        var identity = "package-icon-pixels-v1|" + Field(appId) + Field(packageFullName) + Field(packageRoot) +
+            Field(relativePath) + Field(length.ToString(CultureInfo.InvariantCulture)) +
+            Field(lastWriteTicks.ToString(CultureInfo.InvariantCulture)) + Field(contentHash);
+        return "package-icon-frame:" + ManagedImageCache.Key(identity);
+    }
+
+    private static string PackageIconDiagnostic(string appId, int role, string path, int width, int height) =>
+        $"PackageNative:{appId}:role={role}:{Path.GetFileName(path)}:{width}x{height}";
 }

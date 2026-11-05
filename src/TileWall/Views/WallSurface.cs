@@ -842,11 +842,12 @@ public sealed class WallSurface : Canvas
             Background = new SolidColorBrush(Colors.Transparent), Tag = $"member:{member.Id}",
         };
         AutomationProperties.SetAutomationId(button, $"member-{member.Id}");
-        AutomationProperties.SetName(button, $"{ProductStrings.Get("Wall.Clock")}: {member.Visual.Title ?? member.Id}");
+        var title = WallMemberVisualFactory.ResolveTitle(member);
+        AutomationProperties.SetName(button, $"{ProductStrings.Get("Wall.Clock")}: {(string.IsNullOrWhiteSpace(title) ? member.Id : title)}");
         button.Click += (_, _) => MemberInvoked?.Invoke(member.Id);
         var reset = WallMemberVisualFactory.ConfigureInteraction(button, content, WallCorners, content.SetExternalHover);
         _memberInteractions[member.Id] = () => { reset(); content.StopTransientFeedback(); };
-        ToolTipService.SetToolTip(button, string.IsNullOrWhiteSpace(member.Visual.Title) ? null : member.Visual.Title);
+        WallMemberVisualFactory.SetTargetTooltip(button, member);
         button.ContextFlyout = CreateMemberContextMenu(member);
         return button;
     }

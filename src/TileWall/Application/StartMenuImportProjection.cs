@@ -5,6 +5,7 @@ using TileWall.Core.Grid;
 using TileWall.Core.Import;
 using TileWall.Core.Wall;
 using TileWall.Shell.Interop;
+using TileWall.Views;
 
 namespace TileWall.ApplicationModel;
 
@@ -92,7 +93,8 @@ internal sealed class StartMenuImportProjection
                 !RegisteredUrlProtocols.IsSupported(identity.Target) ? "UnsupportedProtocol" : null;
             var fact = "package|" + preview.PackageSha256 + "|" + identity?.Key;
             facts.Add(id, fact);
-            candidates.Add(new(id, member.Visual.Title ?? id, member)
+            var title = WallMemberVisualFactory.ResolveTitle(member);
+            candidates.Add(new(id, string.IsNullOrWhiteSpace(title) ? id : title, member)
             {
                 SourceKind = ImportPageSourceKind.WallPackage, Policy = ImportSourcePolicy.Attributed,
                 HasLaunchTarget = member.Entry is not null, TargetKind = ContentKind(identity, member.Entry is not null),

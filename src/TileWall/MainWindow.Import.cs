@@ -283,7 +283,8 @@ public sealed partial class MainWindow
                 var target = member.ResourceOrigin == MemberResourceOrigin.Package
                     ? new StartMenuImportProjection.TargetObservation(ImportTargetAvailability.Unknown, null)
                     : StartMenuImportProjection.ObserveTarget(identity);
-                rows.Add(new(member.Id, member.Visual.Title ?? member.Id, member)
+                var title = WallMemberVisualFactory.ResolveTitle(member);
+                rows.Add(new(member.Id, string.IsNullOrWhiteSpace(title) ? member.Id : title, member)
                 {
                     SourceKind = ImportPageSourceKind.CurrentWall, Policy = ImportSourcePolicy.Attributed,
                     SourceGroup = new(group.Id, group.Title, groupIndex) { LaneIndex = laneIndex }, SourceOrder = memberIndex,

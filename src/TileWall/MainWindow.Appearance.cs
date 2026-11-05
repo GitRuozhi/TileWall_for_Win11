@@ -19,18 +19,19 @@ public sealed partial class MainWindow
     private readonly Image _snapshotImage = new() { Stretch = Stretch.Fill, Opacity = 1, Visibility = Visibility.Collapsed };
     private readonly SemaphoreSlim _snapshotSlot = new(1, 1);
     private CancellationTokenSource? _snapshotRequest;
-    // This window's UI thread retains the true original policy through restore failures.
-    private uint? _snapshotAffinityToRestore;
+    private DesktopBackdropSnapshot.CapturedFrame? _snapshotCapture;
+    private (int X, int Y, int W, int H, double Scale)? _snapshotCaptureGeometry;
     private (int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe)? _snapshotKey;
     private (int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe)? _snapshotRequestKey;
-    private long _snapshotGeneration, _snapshotFocusCycle, _snapshotRequestedFocusCycle = -1;
-    private long? _snapshotAcceptedFocusCycle;
-    private bool _snapshotExternalFocus, _snapshotFocusLossRequest, _snapshotFocusLossPending;
+    private long _snapshotGeneration;
     private CancellationTokenSource? _backgroundRequest;
     private CancellationTokenSource? _backgroundCommitRequest;
     private Task<bool>? _backgroundCommitWork;
+    private long _backdropTraceCommitSequence;
     private readonly HashSet<Task> _appearanceWork = [];
     private bool _appearanceStopping;
+    private bool _backdropAnimationSuspended;
+    private bool _backdropTransitionCover;
     private string? _backgroundPath;
     private bool _themeDark, _materialFallback = true, _materialReduced;
     private bool? _materialHighContrast;
@@ -38,7 +39,13 @@ public sealed partial class MainWindow
 
     private void InitializeAppearance()
     {
+        if (BackdropTrace.Enabled)
+            BackdropTrace.Write($"Session frequency={System.Diagnostics.Stopwatch.Frequency} pid={Environment.ProcessId}");
         _wallBackdrop.WaitForFallbackCommit = EnsureBackgroundCommittedAsync;
+        _wallBackdrop.HasOpaqueSnapshotCover = () => !_backdropAnimationSuspended && HasValidSnapshot &&
+            _snapshotImage.Visibility == Visibility.Visible && _backgroundLayer.Visibility == Visibility.Visible &&
+            _snapshotImage.Opacity == 1 && _backgroundLayer.Opacity == 1 && WallRoot.Opacity == 1 &&
+            (WallRoot.RenderTransform is not TranslateTransform translate || translate.Y == 0);
         _backgroundLayer.Children.Add(_backgroundImage);
         _backgroundLayer.Children.Add(_snapshotImage);
         WallRoot.Children.Insert(0, _backgroundLayer);
@@ -59,11 +66,48 @@ public sealed partial class MainWindow
         RefreshAppearance();
     }
 
+    internal Task<bool> PrepareBackdropForAnimationAsync(CancellationToken token)
+    {
+        var work = PrepareBackdropForAnimationCoreAsync(token);
+        TrackAppearanceWork(work);
+        return work;
+    }
+
+    private async Task<bool> PrepareBackdropForAnimationCoreAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        _backdropAnimationSuspended = true;
+        // Preserve the independent hidden-before-show preparation and F fence.
+        var shield = HasValidSnapshot && _snapshotImage.Visibility == Visibility.Visible &&
+            _backgroundLayer.Visibility == Visibility.Visible;
+        _wallBackdrop.SuspendSnapshotResidence(shield);
+        if (!shield) return true; // Preserve the existing active-native animation path.
+        RefreshAppearance();
+        if (!await EnsureBackgroundCommittedAsync().WaitAsync(token)) return false;
+        token.ThrowIfCancellationRequested();
+        if (!await _wallBackdrop.DetachSnapshotForAnimationAsync(token)) return false;
+        // The host's target-clear and the XAML animation belong to this compositor.
+        // Submit that clear before changing root alpha/translation; no timed delay.
+        await CompositionTarget.GetCompositorForCurrentThread().RequestCommitAsync().AsTask(token);
+        token.ThrowIfCancellationRequested();
+        if (BackdropTrace.Enabled) BackdropTrace.Write("Animation snapshot shield detached native");
+        return true;
+    }
+
+    internal void CompleteBackdropAnimation(bool visible)
+    {
+        _backdropAnimationSuspended = !visible;
+        _wallBackdrop.ResumeSnapshotResidence(visible);
+        if (visible && !_windowClosing && !_appearanceStopping)
+        {
+            RefreshAppearance();
+        }
+    }
+
     /// <summary>Only committed Settings enter this method, including initial load and environment changes.</summary>
     internal void RefreshAppearance()
     {
         if (_windowClosing || _appearanceStopping) return;
-        CancelBackgroundCommit();
         var settings = Settings;
         var foreground = _appearanceSettings.GetColorValue(UIColorType.Foreground);
         _themeDark = settings.ThemeMode == WallThemeMode.Dark || settings.ThemeMode == WallThemeMode.System &&
@@ -72,6 +116,8 @@ public sealed partial class MainWindow
         if (WallRoot.RequestedTheme != theme) WallRoot.RequestedTheme = theme;
         _dialogHost?.ApplyTheme(theme);
         var contrast = _accessibilitySettings.HighContrast;
+        if (settings.BackgroundMode != WallBackgroundMode.Acrylic || contrast || !_appearanceSettings.AdvancedEffectsEnabled)
+            _backdropTransitionCover = false;
         var statusForeground = contrast
             ? _appearanceSettings.GetColorValue(UIColorType.Foreground)
             : _themeDark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
@@ -82,15 +128,12 @@ public sealed partial class MainWindow
             : _themeDark ? Color.FromArgb(240, 32, 32, 32) : Color.FromArgb(240, 243, 243, 243);
         if (StatusPanel.Background is not SolidColorBrush statusBrush || !statusBrush.Color.Equals(statusBackground))
             StatusPanel.Background = new SolidColorBrush(statusBackground);
-        if (settings.BackgroundMode != WallBackgroundMode.Acrylic || contrast || !_appearanceSettings.AdvancedEffectsEnabled ||
-            !_backdropActive && !settings.StayVisibleOnFocusLoss)
-            _snapshotFocusLossPending = false;
-        if (_snapshotRequestKey is not null && (settings.BackgroundMode != WallBackgroundMode.Acrylic || contrast ||
-            !_appearanceSettings.AdvancedEffectsEnabled || _snapshotFocusLossRequest && !CanRefreshFocusLossSnapshot))
-            CancelSnapshotRequest();
+        if (_snapshotCapture is not null && (settings.BackgroundMode != WallBackgroundMode.Acrylic || contrast ||
+            !_appearanceSettings.AdvancedEffectsEnabled))
+            ReleaseBackdropSnapshot();
         InvalidateSnapshotIfGeometryChanged();
-        _wallBackdrop.Configure(settings, _backdropActive, _themeDark,
-            _backdropActive ? HasValidSnapshot : HasCurrentInactiveSnapshot, _snapshotFocusLossPending);
+        _wallBackdrop.Configure(settings, _backdropActive, _themeDark, HasValidSnapshot);
+        if (_backdropActive) PrepareCachedBackdropIfNeeded();
         var path = settings.BackgroundMode == WallBackgroundMode.Custom ? settings.BackgroundMedia?.Sha256 ?? settings.BackgroundImagePath : null;
         if (!string.Equals(_backgroundPath, path, StringComparison.OrdinalIgnoreCase))
         {
@@ -98,6 +141,7 @@ public sealed partial class MainWindow
             _backgroundRequest?.Cancel();
             _backgroundRequest?.Dispose();
             _backgroundRequest = null;
+            if (_backgroundImage.Source is not null) CancelBackgroundCommit();
             _backgroundImage.Source = null;
             if (path is not null)
             {
@@ -110,7 +154,10 @@ public sealed partial class MainWindow
 
     private void OnMaterialFallbackChanged(bool fallback, bool reduced)
     {
-        if (!fallback) CancelBackgroundCommit();
+        // A foreground native source may release the cover only after WallBackdrop
+        // has admitted the current focus revision's commit.
+        if (!fallback && (_backdropActive || !HasValidSnapshot))
+            _backdropTransitionCover = false;
         TraceInput($"Backdrop mode={Settings.BackgroundMode} active={_backdropActive} fallback={fallback} reduced={reduced} transparency={Settings.BackgroundTransparency}");
         var highContrast = _accessibilitySettings.HighContrast;
         var policyChanged = _materialReduced != reduced ||
@@ -136,6 +183,9 @@ public sealed partial class MainWindow
 
     private async Task<bool> CommitBackgroundAsync(CancellationToken token)
     {
+        var traceCommitId = BackdropTrace.Enabled ? ++_backdropTraceCommitSequence : 0;
+        if (BackdropTrace.Enabled)
+            BackdropTrace.Write($"XAML commit begin id={traceCommitId} generation={_snapshotGeneration}");
         var renderedFrame = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         EventHandler<object>? rendering = null;
         EventHandler<RenderedEventArgs>? rendered = null;
@@ -148,6 +198,8 @@ public sealed partial class MainWindow
         }
         rendered = (_, _) =>
         {
+            if (BackdropTrace.Enabled)
+                BackdropTrace.Write($"XAML rendered id={traceCommitId} snapshot={_snapshotImage.Visibility} layer={_backgroundLayer.Visibility} generation={_snapshotGeneration}");
             Unsubscribe();
             renderedFrame.TrySetResult();
         };
@@ -169,9 +221,14 @@ public sealed partial class MainWindow
             await CompositionTarget.GetCompositorForCurrentThread().RequestCommitAsync().AsTask(token);
             token.ThrowIfCancellationRequested();
             TraceInput("BackdropCommit XAML committed");
+            if (BackdropTrace.Enabled) BackdropTrace.Write($"XAML commit returned id={traceCommitId}");
             return true;
         }
-        catch (OperationCanceledException) { return false; }
+        catch (OperationCanceledException)
+        {
+            if (BackdropTrace.Enabled) BackdropTrace.Write($"XAML commit canceled id={traceCommitId}");
+            return false;
+        }
         catch (Exception ex)
         {
             AppLog.Warn("BackdropCommit", $"XAML commit unavailable: {ex.GetType().Name}");
@@ -191,37 +248,51 @@ public sealed partial class MainWindow
     private void UpdateBackgroundLayer()
     {
         if (_windowClosing || _appearanceStopping) return;
+        var previousLayerVisibility = _backgroundLayer.Visibility;
+        var previousSnapshotVisibility = _snapshotImage.Visibility;
+        var previousOpacity = _backgroundLayer.Opacity;
         var highContrast = _accessibilitySettings.HighContrast;
         var reduced = _materialReduced || highContrast || !_appearanceSettings.AdvancedEffectsEnabled;
         var settings = Settings;
+        var transitionCover = _backdropTransitionCover && !reduced && settings.BackgroundMode == WallBackgroundMode.Acrylic;
         var snapshotReady = !reduced && settings.BackgroundMode == WallBackgroundMode.Acrylic && HasValidSnapshot &&
-            (!_backdropActive && HasCurrentInactiveSnapshot || _materialFallback);
-        var visibility = snapshotReady || _materialFallback || settings.BackgroundMode == WallBackgroundMode.Custom || reduced
+            (transitionCover || !_backdropActive && HasValidSnapshot || _materialFallback);
+        var visibility = transitionCover || snapshotReady || _materialFallback || settings.BackgroundMode == WallBackgroundMode.Custom || reduced
             ? Visibility.Visible : Visibility.Collapsed;
         // F already contains its captured transparency. It shields the whole native
         // graph during either handoff, with no live desktop contribution underneath.
         // A real solid fallback also shields an outgoing native graph until detach.
-        var opacity = reduced || snapshotReady || _materialFallback && _wallBackdrop.NativeMaterialAttached
+        var opacity = transitionCover || reduced || snapshotReady || _materialFallback && _wallBackdrop.NativeMaterialAttached
             ? 1 : (100 - Math.Clamp(settings.BackgroundTransparency, 0, 100)) / 100d;
-        if (_backgroundLayer.Opacity != opacity) _backgroundLayer.Opacity = opacity;
         var customImageReady = !reduced && settings.BackgroundMode == WallBackgroundMode.Custom &&
             _backgroundImage.Source is not null;
+        var imageVisibility = customImageReady ? Visibility.Visible : Visibility.Collapsed;
+        var snapshotVisibility = snapshotReady ? Visibility.Visible : Visibility.Collapsed;
+        var imagePlane = customImageReady || snapshotReady;
+        var color = highContrast ? _appearanceSettings.GetColorValue(UIColorType.Background)
+            : _themeDark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243);
+        var backgroundChanged = imagePlane ? _backgroundLayer.Background is not null
+            : _backgroundLayer.Background is not SolidColorBrush existingBrush || !existingBrush.Color.Equals(color);
+        var planeChanged = previousLayerVisibility != visibility || previousSnapshotVisibility != snapshotVisibility ||
+            previousOpacity != opacity || _backgroundImage.Visibility != imageVisibility || backgroundChanged;
+        // Own a fence per actual visual plane, not per appearance/focus callback.
+        // Subscribe in this same UI turn, before its frame can be rendered; an
+        // unchanged already submitted F must not wait for a new idle-screen frame.
+        if (planeChanged) CancelBackgroundCommit();
+        if (_backgroundLayer.Opacity != opacity) _backgroundLayer.Opacity = opacity;
         // Draw exactly one background plane. Keeping a tinted plane underneath the
         // image would attenuate the desktop twice when XAML applies layer opacity.
-        if (customImageReady || snapshotReady)
+        if (imagePlane)
         {
             if (_backgroundLayer.Background is not null) _backgroundLayer.Background = null;
         }
         else
         {
-            var color = highContrast ? _appearanceSettings.GetColorValue(UIColorType.Background)
-                : _themeDark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243);
             if (_backgroundLayer.Background is not SolidColorBrush backgroundBrush || !backgroundBrush.Color.Equals(color))
                 _backgroundLayer.Background = new SolidColorBrush(color);
         }
-        var imageVisibility = customImageReady ? Visibility.Visible : Visibility.Collapsed;
         if (_backgroundImage.Visibility != imageVisibility) _backgroundImage.Visibility = imageVisibility;
-        _snapshotImage.Visibility = snapshotReady ? Visibility.Visible : Visibility.Collapsed;
+        _snapshotImage.Visibility = snapshotVisibility;
         // Publish visibility only after the replacement's image/solid and opacity
         // are ready; WallBackdrop then detaches the outgoing native material.
         if (_backgroundLayer.Visibility != visibility)
@@ -229,6 +300,11 @@ public sealed partial class MainWindow
             _backgroundLayer.Visibility = visibility;
             TraceInput($"BackdropLayer visible={visibility} snapshot={snapshotReady} custom={customImageReady} opacity={opacity:F2}");
         }
+        if (visibility == Visibility.Visible && (opacity == 1 || _wallBackdrop.NativeMaterialAttached))
+            _ = EnsureBackgroundCommittedAsync();
+        if (BackdropTrace.Enabled && (previousLayerVisibility != _backgroundLayer.Visibility ||
+            previousSnapshotVisibility != _snapshotImage.Visibility || previousOpacity != _backgroundLayer.Opacity))
+            BackdropTrace.Write($"XAML plane layer={previousLayerVisibility}->{_backgroundLayer.Visibility} snapshot={previousSnapshotVisibility}->{_snapshotImage.Visibility} source={_snapshotImage.Source is not null} layerAlpha={_backgroundLayer.Opacity:F3} imageAlpha={_snapshotImage.Opacity:F3} rootAlpha={WallRoot.Opacity:F3} rootY={(WallRoot.RenderTransform as TranslateTransform)?.Y:F2} native={_wallBackdrop.NativeMaterialAttached} active={_backdropActive} fallback={_materialFallback} generation={_snapshotGeneration}");
     }
 
     private async Task LoadCustomBackgroundAsync(string path, WallSettings settings, CancellationToken ct)
@@ -236,6 +312,7 @@ public sealed partial class MainWindow
         // The existing decoder bounds file/pixel budgets and only opens sources read-only.
         var result = await _images.LoadBackgroundAsync(settings.BackgroundMedia, settings.BackgroundImagePath, 2560, 1440, ct);
         if (ct.IsCancellationRequested || _windowClosing || !string.Equals(_backgroundPath, path, StringComparison.OrdinalIgnoreCase)) return;
+        if (!ReferenceEquals(_backgroundImage.Source, result.Source)) CancelBackgroundCommit();
         _backgroundImage.Source = result.Source;
         RefreshAppearance();
         if (result.Source is null) AppLog.Warn("WallBackdrop", $"Custom background unavailable: {result.Status}");
@@ -258,26 +335,33 @@ public sealed partial class MainWindow
     }
 
     private bool HasValidSnapshot => _snapshotImage.Source is not null && _snapshotKey is { } key && MatchesSnapshotEnvironment(key);
-    private bool HasCurrentInactiveSnapshot => HasValidSnapshot && !_snapshotFocusLossPending &&
-        (!_snapshotExternalFocus || _snapshotAcceptedFocusCycle == _snapshotFocusCycle);
 
     private void InvalidateSnapshotIfGeometryChanged()
     {
-        if ((_snapshotKey is null || MatchesSnapshotEnvironment(_snapshotKey.Value)) &&
+        var current = CurrentSnapshotKey;
+        var geometryChanged = _snapshotCaptureGeometry is { } geometry &&
+            geometry != (current.X, current.Y, current.W, current.H, current.Scale);
+        if (!geometryChanged && (_snapshotKey is null || MatchesSnapshotEnvironment(_snapshotKey.Value)) &&
             (_snapshotRequestKey is null || MatchesSnapshotEnvironment(_snapshotRequestKey.Value))) return;
-        ReleaseBackdropSnapshot();
-        _wallBackdrop.Configure(Settings, _backdropActive, _themeDark, false, _snapshotFocusLossPending);
+        // A recipe change can reuse the original screen pixels. A different
+        // geometry cannot; the next actual hidden show owns the next capture.
+        ReleaseBackdropSnapshot(releaseCapture: geometryChanged);
+        _wallBackdrop.Configure(Settings, _backdropActive, _themeDark, false);
         UpdateBackgroundLayer();
     }
 
-    private void ReleaseBackdropSnapshot()
+    private void ReleaseBackdropSnapshot(bool releaseCapture = true)
     {
         CancelBackgroundCommit();
         CancelSnapshotRequest();
-        if (!AppWindow.IsVisible) _snapshotExternalFocus = false;
+        if (releaseCapture)
+        {
+            _snapshotCapture = null;
+            _snapshotCaptureGeometry = null;
+        }
+        if (!AppWindow.IsVisible) _backdropTransitionCover = false;
         _snapshotKey = null;
-        _snapshotAcceptedFocusCycle = null;
-        // Invalidating a visible snapshot must install the solid replacement before
+        // Invalidating a visible snapshot installs the safe replacement before
         // removing its pixels. Hide/close use the same cancellation boundary.
         UpdateBackgroundLayer();
         _snapshotImage.Source = null;
@@ -288,58 +372,28 @@ public sealed partial class MainWindow
     {
         if (_appearanceStopping || _windowClosing || AppWindow.IsVisible || _modal || Settings.BackgroundMode != WallBackgroundMode.Acrylic ||
             _accessibilitySettings.HighContrast || !_appearanceSettings.AdvancedEffectsEnabled) return;
+        ReleaseBackdropSnapshot();
         var key = CurrentSnapshotKey;
         if (key.Recipe is null) return;
-        BeginSnapshotRequest(key, focusLoss: false);
+        TraceInput($"BackdropSnapshot capture source=hidden-before-show x={key.X} y={key.Y} width={key.W} height={key.H} scale={key.Scale}");
         var captured = DesktopBackdropSnapshot.Capture(new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H), key.Scale);
-        if (captured is not null)
-            TrackAppearanceWork(PrepareSnapshotAsync(captured, key, _snapshotGeneration, null, _snapshotRequest!.Token));
+        if (captured is null) return;
+        _snapshotCapture = captured;
+        _snapshotCaptureGeometry = (key.X, key.Y, key.W, key.H, key.Scale);
+        PrepareCachedBackdropIfNeeded();
     }
 
-    private bool CanRefreshFocusLossSnapshot => !_appearanceStopping && !_windowClosing && !ShutdownStarted &&
-        AppWindow.IsVisible && !_backdropActive && !_modal && !_contextMenuOpen &&
-        Settings.StayVisibleOnFocusLoss && Settings.BackgroundMode == WallBackgroundMode.Acrylic &&
-        !_accessibilitySettings.HighContrast && _appearanceSettings.AdvancedEffectsEnabled && IsForegroundOutsideWallSession();
-
-    private void RefreshBackdropOnFocusLoss()
+    private void PrepareCachedBackdropIfNeeded()
     {
-        if (!_snapshotExternalFocus)
-        {
-            _snapshotExternalFocus = true;
-            _snapshotFocusCycle++;
-        }
-        if (!CanRefreshFocusLossSnapshot || _snapshotRequestedFocusCycle == _snapshotFocusCycle) return;
-        // Mark admission, including a failed capture, once per real external focus
-        // cycle. Switching among external apps never starts a capture loop.
-        _snapshotRequestedFocusCycle = _snapshotFocusCycle;
+        if (_appearanceStopping || _windowClosing || ShutdownStarted || _snapshotCapture is not { } capture) return;
         var key = CurrentSnapshotKey;
-        if (key.Recipe is null)
-        {
-            _snapshotFocusLossPending = false;
-            RefreshAppearance();
-            return;
-        }
-        BeginSnapshotRequest(key, focusLoss: true);
-        TraceInput($"BackdropSnapshot capture focusCycle={_snapshotFocusCycle} generation={_snapshotGeneration}");
-        var capture = DesktopBackdropSnapshot.CaptureExcludingWindow(
-            new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H), key.Scale, WinRT.Interop.WindowNative.GetWindowHandle(this),
-            ref _snapshotAffinityToRestore);
-        if (capture is not null)
-            TrackAppearanceWork(PrepareSnapshotAsync(capture, key, _snapshotGeneration, _snapshotFocusCycle, _snapshotRequest!.Token));
-        else
-        {
-            _snapshotFocusLossPending = false;
-            RefreshAppearance();
-        }
-    }
-
-    private void CancelFocusLossSnapshot()
-    {
-        _snapshotExternalFocus = false;
-        _snapshotFocusLossPending = false;
-        // A hidden-before-show frame may still be preparing after first activation.
-        // Its validity is geometric; only visible refreshes belong to a focus cycle.
-        if (_snapshotFocusLossRequest) CancelSnapshotRequest();
+        if (key.Recipe is null || _snapshotCaptureGeometry != (key.X, key.Y, key.W, key.H, key.Scale) ||
+            _snapshotKey == key || _snapshotRequestKey == key) return;
+        CancelSnapshotRequest();
+        _snapshotRequest = new();
+        _snapshotRequestKey = key;
+        TraceInput($"BackdropSnapshot derive source=hidden-capture generation={_snapshotGeneration} bakedAlpha={key.Recipe.Value.EffectiveOpacity:F3}");
+        TrackAppearanceWork(PrepareSnapshotAsync(capture, key, _snapshotGeneration, _snapshotRequest.Token));
     }
 
     private void CancelSnapshotRequest()
@@ -347,22 +401,11 @@ public sealed partial class MainWindow
         _snapshotGeneration++;
         _snapshotRequest?.Cancel(); _snapshotRequest?.Dispose(); _snapshotRequest = null;
         _snapshotRequestKey = null;
-        _snapshotFocusLossRequest = false;
-        _snapshotFocusLossPending = false;
-    }
-
-    private void BeginSnapshotRequest((int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe) key, bool focusLoss)
-    {
-        CancelSnapshotRequest();
-        _snapshotRequest = new();
-        _snapshotRequestKey = key;
-        _snapshotFocusLossRequest = focusLoss;
-        _snapshotFocusLossPending = focusLoss;
     }
 
     private async Task PrepareSnapshotAsync(DesktopBackdropSnapshot.CapturedFrame capture,
         (int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe) key,
-        long generation, long? focusCycle, CancellationToken token)
+        long generation, CancellationToken token)
     {
         try
         {
@@ -371,37 +414,21 @@ public sealed partial class MainWindow
             try { blurred = await Task.Run(() => DesktopBackdropSnapshot.BlurAndTint(capture, key.Recipe!.Value, token), token); }
             finally { _snapshotSlot.Release(); }
             bool IsCurrent() => !token.IsCancellationRequested && !_windowClosing && !_appearanceStopping && !ShutdownStarted &&
-                generation == _snapshotGeneration && _snapshotRequestKey == key && MatchesSnapshotEnvironment(key) &&
-                (focusCycle is null ? !_snapshotFocusLossPending && !_snapshotExternalFocus :
-                    _snapshotExternalFocus && focusCycle == _snapshotFocusCycle && CanRefreshFocusLossSnapshot);
+                generation == _snapshotGeneration && _snapshotRequestKey == key && ReferenceEquals(capture, _snapshotCapture) &&
+                MatchesSnapshotEnvironment(key);
             if (!IsCurrent()) return;
             var candidate = DesktopBackdropSnapshot.ToBitmap(blurred);
             if (!IsCurrent()) return;
-            // No committed key/source changes until the independent candidate is
-            // complete. Failed, canceled and stale requests leave the old plane.
             CancelBackgroundCommit();
             _snapshotImage.Source = candidate;
             _snapshotKey = key;
-            _snapshotAcceptedFocusCycle = focusCycle;
-            _snapshotFocusLossPending = false;
-            TraceInput($"BackdropSnapshot accepted focusCycle={focusCycle} generation={generation} opacity=1 bakedAlpha={key.Recipe!.Value.EffectiveOpacity:F3}");
+            TraceInput($"BackdropSnapshot accepted source=hidden-capture generation={generation} opacity=1 bakedAlpha={key.Recipe!.Value.EffectiveOpacity:F3}");
             RefreshAppearance();
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or IOException or ArgumentException)
         { AppLog.Warn("BackdropSnapshot", ex.GetType().Name); }
-        finally
-        {
-            // Only this admitted focus request can finish its hold on native.
-            // Superseded/canceled workers never clear a newer transition's intent.
-            if (focusCycle is not null && generation == _snapshotGeneration && _snapshotFocusLossPending)
-            {
-                _snapshotFocusLossPending = false;
-                RefreshAppearance();
-            }
-        }
     }
-
     private void OnSystemColorsChanged(UISettings sender, object args) => QueueAppearanceRefresh();
     private void OnAdvancedEffectsChanged(UISettings sender, object args) => QueueAppearanceRefresh();
     private void OnHighContrastChanged(AccessibilitySettings sender, object args) => QueueAppearanceRefresh();
@@ -417,8 +444,6 @@ public sealed partial class MainWindow
     private async Task ShutdownAppearanceAsync()
     {
         _appearanceStopping = true;
-        DesktopBackdropSnapshot.TryRestoreWindowAffinity(WinRT.Interop.WindowNative.GetWindowHandle(this),
-            ref _snapshotAffinityToRestore);
         CancelBackgroundCommit();
         _backgroundRequest?.Cancel();
         _snapshotRequest?.Cancel();

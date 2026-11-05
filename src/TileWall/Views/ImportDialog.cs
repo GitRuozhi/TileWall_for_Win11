@@ -828,16 +828,13 @@ internal sealed class ImportDialog : IWallDialogSession
             {
                 ClockMember => "Wall.Clock", PuzzleMember => "Wall.Puzzle", _ => "Wall.Tile",
             }) : candidate.Source.DisplayName;
-        var tooltip = displayName;
-        if (_sourceData?.StartMenuSources.TryGetValue(candidate.SelectionKey, out var source) == true)
-        {
-            tooltip += "\n" + source.Candidate.FullPath;
-            if (source.Stale) tooltip += "\n" + ProductStrings.Get("Import.Stale");
-        }
-        if (candidate.ErrorCode is { } error) tooltip += "\n" + ErrorText(error);
-        if (candidate.FilterReason != ImportFilterReason.None) tooltip += "\n" + FilterText(candidate.FilterReason);
-        ActionIcon.SetTip(row.Toggle, tooltip); AutomationProperties.SetName(row.Toggle, displayName);
-        AutomationProperties.SetHelpText(row.Toggle, tooltip);
+        var diagnostics = new List<string>();
+        if (_sourceData?.StartMenuSources.TryGetValue(candidate.SelectionKey, out var source) == true && source.Stale)
+            diagnostics.Add(ProductStrings.Get("Import.Stale"));
+        if (candidate.ErrorCode is { } error) diagnostics.Add(ErrorText(error));
+        if (candidate.FilterReason != ImportFilterReason.None) diagnostics.Add(FilterText(candidate.FilterReason));
+        WallMemberVisualFactory.SetTargetTooltip(row.Toggle, row.Member, string.Join("\n", diagnostics));
+        AutomationProperties.SetName(row.Toggle, displayName);
     }
     private void UpdateSelectionFeedback()
     {
@@ -1076,6 +1073,7 @@ internal sealed class ImportDialog : IWallDialogSession
             completion.Outcome is PreviewImageOutcome.NoImageOrFallback or PreviewImageOutcome.Failed) return;
         var request = CancellationTokenSource.CreateLinkedTokenSource(_previewRequest.Token);
         var work = new PreviewImageWork(descriptor, request);
+        if (work.DetailTraceEnabled) work.QueuedAt = Stopwatch.GetTimestamp();
         work.Stage = "queued";
         work.QueueNode = _previewImageQueue.AddLast(work);
         _previewImageWork.Add(descriptor.WorkKey, work);
@@ -1134,17 +1132,30 @@ internal sealed class ImportDialog : IWallDialogSession
                 }
                 work.IsRunning = true;
                 work.Stage = "worker-start";
+                PreviewImageLoadResult? loaded = null;
+                Exception? failure = null;
+                var retained = false;
+                if (work.DetailTraceEnabled)
+                {
+                    work.StartedAt = Stopwatch.GetTimestamp();
+                    TracePreviewImageWork(work, "begin", null, null, false);
+                }
+                var preparationStartedAt = work.DetailTraceEnabled ? Stopwatch.GetTimestamp() : 0;
                 try
                 {
-                    PreviewImageLoadResult? loaded = null;
                     try { loaded = await LoadPreviewImageAsync(work); }
-                    catch (OperationCanceledException) { }
-                    catch (ObjectDisposedException) when (work.Request.IsCancellationRequested) { }
-                    catch (Exception) { /* One failed preview item must not stop the page queue. */ }
+                    catch (OperationCanceledException ex) { if (work.DetailTraceEnabled) failure = ex; }
+                    catch (ObjectDisposedException ex) when (work.Request.IsCancellationRequested) { if (work.DetailTraceEnabled) failure = ex; }
+                    catch (Exception ex) { if (work.DetailTraceEnabled) failure = ex; /* One failed preview item must not stop the page queue. */ }
+                    finally
+                    {
+                        if (work.DetailTraceEnabled)
+                            work.PreparationElapsedMs = Stopwatch.GetElapsedTime(preparationStartedAt).TotalMilliseconds;
+                    }
 
                     if (IsCurrentPreviewImageWork(work))
                     {
-                        var retained = loaded?.ReusedCachedFrame == true;
+                        retained = loaded?.ReusedCachedFrame == true;
                         if (loaded?.Frame is { } frame && !loaded.ReusedCachedFrame && loaded.ImageResult is { } result)
                         {
                             if (loaded.Member.Images.Kind != MemberImageSourceKind.Automatic && result.CacheAllowed)
@@ -1186,6 +1197,7 @@ internal sealed class ImportDialog : IWallDialogSession
                 }
                 finally
                 {
+                    if (work.DetailTraceEnabled) TracePreviewImageWork(work, "end", loaded, failure, retained);
                     work.IsRunning = false;
                     if (_previewImageWork.TryGetValue(work.Descriptor.WorkKey, out var current) && ReferenceEquals(current, work))
                         _previewImageWork.Remove(work.Descriptor.WorkKey);
@@ -1199,6 +1211,35 @@ internal sealed class ImportDialog : IWallDialogSession
             if (_previewImageQueue.Count > 0) StartPreviewImageWorkers();
             TracePreviewPreparationTerminalIfReady();
         }
+    }
+
+    private void TracePreviewImageWork(PreviewImageWork work, string state, PreviewImageLoadResult? loaded,
+        Exception? failure, bool retained)
+    {
+        if (!work.DetailTraceEnabled) return;
+        var candidate = work.Descriptor.SourceCandidate;
+        AppLog.Warn("ImportPreviewImagePerf", System.Text.Json.JsonSerializer.Serialize(new
+        {
+            measurement = "preparation-wall-time", state, request = work.QueuedAt, sourceKind = candidate.SourceKind.ToString(),
+            candidate.SourceKey, name = candidate.DisplayName, input = candidate.Member.TargetInput,
+            candidate.Member.SourceShortcutPath, work.Descriptor.Width, work.Descriptor.Height,
+            queueWaitMs = Stopwatch.GetElapsedTime(work.QueuedAt, work.StartedAt).TotalMilliseconds,
+            preparationElapsedMs = state == "end" ? work.PreparationElapsedMs : (double?)null,
+            lastStage = work.Stage,
+            status = loaded?.ImageResult?.Status.ToString() ?? (loaded?.ReusedCachedFrame == true ? "PageFrameCacheHit"
+                : failure is OperationCanceledException ? "Cancelled" : failure is not null ? "Exception" : state == "begin" ? "Pending" : "NoResult"),
+            diagnostic = loaded?.ImageResult?.Diagnostic, exception = failure?.GetType().Name,
+            exceptionMessage = failure?.Message, hasFrame = loaded?.Frame is not null, retained,
+            current = IsCurrentPreviewImageWork(work), cancelled = work.Request.IsCancellationRequested || failure is OperationCanceledException,
+            firstIconAttempted = work.FirstIconStartedAt != 0,
+            firstIconElapsedMs = work.FirstIconElapsedMs ?? (work.FirstIconStartedAt != 0
+                ? Stopwatch.GetElapsedTime(work.FirstIconStartedAt).TotalMilliseconds : (double?)null),
+            firstIconStatus = work.FirstIconResult?.Status.ToString(), firstIconDiagnostic = work.FirstIconResult?.Diagnostic,
+            secondContentAttempted = work.SecondContentStartedAt != 0, secondContentInput = work.SecondContentInput,
+            secondContentElapsedMs = work.SecondContentElapsedMs ?? (work.SecondContentStartedAt != 0
+                ? Stopwatch.GetElapsedTime(work.SecondContentStartedAt).TotalMilliseconds : (double?)null),
+            secondContentStatus = work.SecondContentResult?.Status.ToString(), secondContentDiagnostic = work.SecondContentResult?.Diagnostic,
+        }));
     }
 
     private async Task<PreviewImageLoadResult> LoadPreviewImageAsync(PreviewImageWork work)
@@ -1304,15 +1345,31 @@ internal sealed class ImportDialog : IWallDialogSession
             {
                 // The image service applies CustomScale once and returns the Q1 display plane.
                 work.Stage = "automatic-icon-load";
+                if (work.DetailTraceEnabled) work.FirstIconStartedAt = Stopwatch.GetTimestamp();
                 result = await _loadIcon(candidate, width, height, token);
+                if (work.DetailTraceEnabled)
+                {
+                    work.FirstIconElapsedMs = Stopwatch.GetElapsedTime(work.FirstIconStartedAt).TotalMilliseconds;
+                    work.FirstIconResult = result;
+                }
             }
             if (result?.Frame is null && descriptor.Source.Package is null)
             {
                 var path = descriptor.Source.StartMenuSources.TryGetValue(descriptor.Projected.SelectionKey, out var startMenu)
                     ? startMenu.Candidate.FullPath : member.SourceShortcutPath ?? candidate.Identity?.Target ?? member.TargetInput;
                 work.Stage = "member-content-load";
+                if (work.DetailTraceEnabled)
+                {
+                    work.SecondContentInput = path;
+                    work.SecondContentStartedAt = Stopwatch.GetTimestamp();
+                }
                 result = await _images.LoadMemberFrameAsync(member, path, width, height,
                     ct: token, purpose: MemberImagePurpose.Content);
+                if (work.DetailTraceEnabled)
+                {
+                    work.SecondContentElapsedMs = Stopwatch.GetElapsedTime(work.SecondContentStartedAt).TotalMilliseconds;
+                    work.SecondContentResult = result;
+                }
             }
             token.ThrowIfCancellationRequested();
             if (!IsCurrentPreviewImageWork(work)) throw new OperationCanceledException(token);
@@ -1746,6 +1803,17 @@ internal sealed class ImportDialog : IWallDialogSession
         public LinkedListNode<PreviewImageWork>? QueueNode { get; set; }
         public bool IsRunning { get; set; }
         public string Stage { get; set; } = "queued";
+        public bool DetailTraceEnabled { get; } = Environment.GetEnvironmentVariable("TILEWALL_PERF_DETAIL") == "1";
+        public long QueuedAt { get; set; }
+        public long StartedAt { get; set; }
+        public double PreparationElapsedMs { get; set; }
+        public long FirstIconStartedAt { get; set; }
+        public double? FirstIconElapsedMs { get; set; }
+        public PuzzleFrameResult? FirstIconResult { get; set; }
+        public long SecondContentStartedAt { get; set; }
+        public string? SecondContentInput { get; set; }
+        public double? SecondContentElapsedMs { get; set; }
+        public PuzzleFrameResult? SecondContentResult { get; set; }
     }
     private sealed record PreviewImageLoadResult(string FrameKey, WallMember Member, PuzzleFrame? Frame,
         PuzzleFrameResult? ImageResult, bool ReusedCachedFrame, bool TargetRecognized, string? AutomaticCachePath);

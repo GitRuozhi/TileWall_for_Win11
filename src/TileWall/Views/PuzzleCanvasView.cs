@@ -71,8 +71,7 @@ public sealed class PuzzleCanvasView : Canvas
         _viewports = member.Partitions.Select(p => new DipRect(p.Column * metrics.Pitch,
             p.Row * metrics.Pitch, p.Width * metrics.Pitch - metrics.Gap,
             p.Height * metrics.Pitch - metrics.Gap)).ToArray();
-        var title = MemberPresentationRules.ResolveTitle(member, targetIsFolder ??
-            (member.ResourceOrigin == MemberResourceOrigin.Local && Directory.Exists(member.SourceShortcutPath ?? member.TargetInput)));
+        var title = WallMemberVisualFactory.ResolveTitle(member, targetIsFolder);
         for (var index = 0; index < _viewports.Length; index++)
         {
             var pixels = PuzzleSceneGeometry.ToPixelRect(_viewports[index], rasterScale);
@@ -104,7 +103,7 @@ public sealed class PuzzleCanvasView : Canvas
                 };
                 SetTop(label, 2);
                 titleViewport.Children.Add(label);
-                band = new Border { Height = 23, VerticalAlignment = VerticalAlignment.Bottom,
+                band = new Border { Height = WallMemberVisualFactory.TitleBandHeight, VerticalAlignment = VerticalAlignment.Bottom,
                     Background = new SolidColorBrush(Color.FromArgb(128, 0, 0, 0)),
                     Visibility = RevealTitles ? Visibility.Visible : Visibility.Collapsed,
                     Padding = new Thickness(5, 2, 5, 2), IsHitTestVisible = false, Child = titleViewport };
@@ -124,7 +123,7 @@ public sealed class PuzzleCanvasView : Canvas
                 };
                 AutomationProperties.SetAutomationId(button, $"member-{member.Id}-partition-{index}");
                 AutomationProperties.SetName(button, title);
-                ToolTipService.SetToolTip(button, string.IsNullOrWhiteSpace(member.TargetInput) ? null : member.TargetInput);
+                WallMemberVisualFactory.SetTargetTooltip(button, member);
                 _resetInteractions.Add(WallMemberVisualFactory.ConfigureInteraction(button, content, content.CornerRadius, hover =>
                 {
                     if (band is not null) band.Visibility = hover ? Visibility.Visible : Visibility.Collapsed;

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using TileWall.Core.Shell;
+using TileWall.Graphics;
 using TileWall.Shell.Interop;
 
 namespace TileWall.Views;
@@ -59,21 +60,40 @@ internal sealed class NativeBackdropSurface : IDisposable
         // erase the surface when the window is resized, activated, or exposed.
         if (message == 0x0014) // WM_ERASEBKGND
         {
+            if (BackdropTrace.Enabled) TraceSurface(message, "before");
             var started = _measureErase ? Stopwatch.GetTimestamp() : 0;
-            try { if (ClearBackground(wParam)) return new IntPtr(1); }
-            finally { if (started != 0) _eraseTiming?.Invoke(Stopwatch.GetTimestamp() - started); }
+            var cleared = false;
+            try
+            {
+                cleared = ClearBackground(wParam);
+                if (cleared) return new IntPtr(1);
+            }
+            finally
+            {
+                if (started != 0) _eraseTiming?.Invoke(Stopwatch.GetTimestamp() - started);
+                if (BackdropTrace.Enabled) TraceSurface(message, $"after cleared={cleared}");
+            }
         }
         if (message == 0x031E) ConfigureDwm(); // WM_DWMCOMPOSITIONCHANGED
         if (message == 0x0082) Dispose(); // WM_NCDESTROY
-        if (_measureErase && message is 0x0003 or 0x0005 or 0x0046 or 0x0047 or 0x0083)
+        var traceWindowPos = BackdropTrace.Enabled && (message is 0x0046 or 0x0047);
+        if (_measureErase && (message is 0x0003 or 0x0005 or 0x0046 or 0x0047 or 0x0083) || traceWindowPos)
         {
             // WM_MOVE / WM_SIZE / WM_WINDOWPOSCHANGING / WM_WINDOWPOSCHANGED / WM_NCCALCSIZE.
-            var started = Stopwatch.GetTimestamp();
+            if (traceWindowPos) TraceSurface(message, "before");
+            var started = _measureErase ? Stopwatch.GetTimestamp() : 0;
             try { return Win32Api.DefSubclassProc(hwnd, message, wParam, lParam); }
-            finally { _messageTiming?.Invoke(message, Stopwatch.GetTimestamp() - started); }
+            finally
+            {
+                if (started != 0) _messageTiming?.Invoke(message, Stopwatch.GetTimestamp() - started);
+                if (traceWindowPos) TraceSurface(message, "after");
+            }
         }
         return Win32Api.DefSubclassProc(hwnd, message, wParam, lParam);
     }
+
+    private void TraceSurface(uint message, string phase) =>
+        BackdropTrace.Write($"NativeSurface message=0x{message:X4} {phase} hwnd={_hwnd} actualTopmost={(Win32Api.GetWindowLongPtrW(_hwnd, -20).ToInt64() & 8) != 0}");
 
     public void Dispose()
     {

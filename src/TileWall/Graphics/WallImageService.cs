@@ -102,9 +102,8 @@ public sealed partial class WallImageService : IDisposable
                 true, ct).ConfigureAwait(false);
         var chosen = SelectIconSeriesObserved(candidates, width, height, trace);
         if (chosen is null) return new(WallImageStatus.None, null, 0, 0, "IconSeriesUnavailable");
-        return chosen.Frames.OrderBy(frame => frame.Width >= width && frame.Height >= height ? 0 : 1)
-            .ThenBy(frame => frame.Width >= width && frame.Height >= height ? (long)frame.Width * frame.Height : -(long)frame.Width * frame.Height)
-            .First();
+        return chosen.Frames[AutomaticIconSeriesRules.SelectNativeFrame(chosen.Frames, width, height,
+            static frame => (frame.Width, frame.Height))];
     }
     private async Task<Prepared> PrepareFileAsync(string? path, string semantic, int width, int height,
         CancellationToken ct, ManagedMediaReference? media = null)
@@ -321,9 +320,9 @@ public sealed partial class WallImageService : IDisposable
         private static (byte[] Pixels, int Width, int Height)? ReadCore(string path, bool association, int physicalPixels)
         {
             var frames = ReadSeries(path, association);
-            return frames.Count == 0 ? null : frames.OrderBy(frame => frame.Width >= physicalPixels && frame.Height >= physicalPixels ? 0 : 1)
-                .ThenBy(frame => frame.Width >= physicalPixels && frame.Height >= physicalPixels
-                    ? (long)frame.Width * frame.Height : -(long)frame.Width * frame.Height).First();
+            var index = AutomaticIconSeriesRules.SelectNativeFrame(frames, physicalPixels, physicalPixels,
+                static frame => (frame.Width, frame.Height));
+            return index < 0 ? null : frames[index];
         }
         private static (byte[] Pixels, int Width, int Height)? ReadImageListIcon(int index, int imageList)
         {

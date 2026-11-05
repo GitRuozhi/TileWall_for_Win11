@@ -9,6 +9,7 @@ using TileWall.Core.Shell;
 using TileWall.Core.Entries;
 using TileWall.Core.Storage;
 using TileWall.Resources;
+using TileWall.Graphics;
 using TileWall.Shell.Interop;
 using TileWall.Views;
 using Windows.Foundation;
@@ -94,14 +95,15 @@ public sealed partial class MainWindow
             // Let that route finish, then decide from the actual foreground session.
             var foreground = GetForegroundWindow();
             var thread = GetWindowThreadProcessId(foreground, out var processId);
+            if (BackdropTrace.Enabled)
+                BackdropTrace.Write($"FocusCheck reason={reason} foreground={foreground} pid={processId} thread={thread} retryUnknown={retryUnknown} modal={_modal} menu={_contextMenuOpen}");
             if (foreground == IntPtr.Zero || thread == 0)
             {
                 AppLog.Info("WindowFocus", $"Automatic hide deferred: foreground transition reason={reason} retry={retryUnknown}");
                 if (!retryUnknown)
                 {
-                    // No external session was confirmed, so do not capture. End
-                    // only the provisional material hold and use safe fallback.
-                    CancelFocusLossSnapshot();
+                    // Unknown foreground preserves the prepared background;
+                    // it never starts a capture or changes screenshot policy.
                     RefreshAppearance();
                     UpdateWindowZOrder(foregroundInSession: false);
                     return;
@@ -118,17 +120,20 @@ public sealed partial class MainWindow
             }
             var wall = WinRT.Interop.WindowNative.GetWindowHandle(this);
             var inSession = processId == (uint)Environment.ProcessId || GetAncestor(foreground, 3) == wall;
-            UpdateWindowZOrder(inSession);
             if (inSession)
             {
-                CancelFocusLossSnapshot();
+                UpdateWindowZOrder(foregroundInSession: true);
                 RefreshAppearance();
             }
-            if (_modal || _contextMenuOpen) return;
+            if (_modal || _contextMenuOpen)
+            {
+                if (!inSession) UpdateWindowZOrder(foregroundInSession: false);
+                return;
+            }
             AppLog.Info("WindowFocus", $"Automatic hide check reason={reason} foreground={foreground} pid={processId} inSession={inSession}");
             if (!inSession)
             {
-                RefreshBackdropOnFocusLoss();
+                UpdateWindowZOrder(foregroundInSession: false);
                 AutomaticHideRequested?.Invoke();
             }
         });
@@ -171,6 +176,9 @@ public sealed partial class MainWindow
         // The active wall must cover the taskbar even without persistent topmost.
         // On an outside focus change, restore the user's background preference.
         var topmost = Settings.AlwaysOnTop || AppWindow.IsVisible && foregroundInSession;
+        var hwnd = BackdropTrace.Enabled ? WinRT.Interop.WindowNative.GetWindowHandle(this) : IntPtr.Zero;
+        if (BackdropTrace.Enabled)
+            BackdropTrace.Write($"ZOrder before hwnd={hwnd} foreground={GetForegroundWindow()} inSession={foregroundInSession} preference={Settings.AlwaysOnTop} presenter={presenter.IsAlwaysOnTop} actualTopmost={(Shell.Interop.Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64() & 8) != 0} desired={topmost} raise={raise}");
         if (presenter.IsAlwaysOnTop != topmost) presenter.IsAlwaysOnTop = topmost;
         if (topmost && raise)
         {
@@ -179,6 +187,8 @@ public sealed partial class MainWindow
                     new IntPtr(-1), 0, 0, 0, 0, flags))
                 AppLog.Warn("WindowFocus", "Could not raise the foreground wall above the taskbar.");
         }
+        if (BackdropTrace.Enabled)
+            BackdropTrace.Write($"ZOrder after hwnd={hwnd} foreground={GetForegroundWindow()} presenter={presenter.IsAlwaysOnTop} actualTopmost={(Shell.Interop.Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64() & 8) != 0}");
     }
 
     internal void CancelTransientState([CallerMemberName] string reason = "")

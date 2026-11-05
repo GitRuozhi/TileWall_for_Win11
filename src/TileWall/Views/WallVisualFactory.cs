@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
@@ -15,9 +16,25 @@ namespace TileWall.Views;
 /// <summary>Shared projection and presentation. The caller owns all activation and drag behavior.</summary>
 internal static class WallMemberVisualFactory
 {
+    internal const double TitleBandHeight = 23;
+
     private static ControlTemplate? _memberButtonTemplate;
     private static ControlTemplate? _memberToggleTemplate;
     private static readonly Windows.UI.ViewManagement.UISettings MotionSettings = new();
+
+    internal static string ResolveTitle(WallMember member, bool? targetIsFolder = null) =>
+        MemberPresentationRules.ResolveTitle(member, targetIsFolder ??
+            (member.Visual.TitleMode == MemberTitleMode.Automatic && member.ResourceOrigin == MemberResourceOrigin.Local &&
+                Directory.Exists(member.SourceShortcutPath ?? member.TargetInput)));
+
+    /// <summary>Every member surface shows its model target, without resolving it or falling back to its title.</summary>
+    internal static void SetTargetTooltip(ButtonBase button, WallMember member, string? diagnostic = null)
+    {
+        var text = string.Join("\n", new[] { member.TargetInput, diagnostic }
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
+        ActionIcon.SetTip(button, text);
+        AutomationProperties.SetHelpText(button, text);
+    }
 
     /// <summary>Shared pointer/focus states for wall, import and gallery buttons; hit targets never move.</summary>
     internal static Action ConfigureInteraction(ButtonBase button, Grid content, CornerRadius corners,

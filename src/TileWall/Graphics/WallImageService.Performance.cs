@@ -7,6 +7,7 @@ namespace TileWall.Graphics;
 public sealed partial class WallImageService
 {
     private long _resourceStampRequests, _resourceStampUnique;
+    private long _automaticSourceObservations;
     private long _nativePackageMemoryHits, _nativePackageDiskHits, _nativeResourceReads;
     private long _displayMemoryHits, _displayDiskHits, _shellIconReads, _packageIconDecodedFrames;
     private static long _nativeDecodedFrames;
@@ -59,7 +60,8 @@ public sealed partial class WallImageService
         if (Environment.GetEnvironmentVariable("TILEWALL_PERF") != "1") return;
         AppLog.Warn("ImagePreparationPerf", JsonSerializer.Serialize(new
         {
-            stage, resourceStampRequests = Interlocked.Read(ref _resourceStampRequests),
+            stage, automaticSourceObservations = Interlocked.Read(ref _automaticSourceObservations),
+            resourceStampRequests = Interlocked.Read(ref _resourceStampRequests),
             resourceStampUnique = Interlocked.Read(ref _resourceStampUnique),
             nativeMemoryHits = Interlocked.Read(ref _nativePackageMemoryHits),
             nativeDiskHits = Interlocked.Read(ref _nativePackageDiskHits),

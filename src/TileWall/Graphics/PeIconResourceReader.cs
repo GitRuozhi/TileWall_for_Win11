@@ -5,6 +5,7 @@ using AsmResolver;
 using AsmResolver.IO;
 using AsmResolver.PE;
 using AsmResolver.PE.Win32Resources.Icon;
+using TileWall.Core.Wall;
 
 namespace TileWall.Graphics;
 
@@ -218,12 +219,12 @@ public sealed partial class PeIconResourceReader
         ArgumentNullException.ThrowIfNull(group);
         if (requiredWidth <= 0 || requiredHeight <= 0)
             throw new ArgumentOutOfRangeException(nameof(requiredWidth));
-        return group.Frames
-            .OrderBy(frame => frame.Width >= requiredWidth && frame.Height >= requiredHeight ? 0 : 1)
-            .ThenBy(frame => frame.Width >= requiredWidth && frame.Height >= requiredHeight
-                ? (double)frame.Width * frame.Height : -(double)frame.Width * frame.Height)
-            .ThenByDescending(frame => frame.BitsPerPixel)
+        // Native PE quality/identity breaks dimension ties; the dimension policy is shared.
+        var frames = group.Frames.OrderByDescending(frame => frame.BitsPerPixel)
             .ThenBy(frame => frame.ResourceId)
-            .FirstOrDefault();
+            .ToArray();
+        var index = AutomaticIconSeriesRules.SelectNativeFrame(frames, requiredWidth, requiredHeight,
+            static frame => (frame.Width, frame.Height));
+        return index < 0 ? null : frames[index];
     }
 }

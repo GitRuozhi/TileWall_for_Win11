@@ -13,73 +13,6 @@ internal static class DesktopBackdropSnapshot
     internal sealed record CapturedFrame(DecodedImageFrame Pixels, int Left, int Top, int Width, int Height,
         int ContentWidth, int ContentHeight, double SigmaX, double SigmaY);
 
-    internal static CapturedFrame? CaptureExcludingWindow(RectInt32 region, double rasterizationScale,
-        IntPtr window, ref uint? affinityToRestore)
-    {
-        // A failed earlier restore owns the original value until read-back confirms
-        // it. Never reinterpret our remaining exclusion flag as the original policy.
-        if (!TryRestoreWindowAffinity(window, ref affinityToRestore) || !IsOwnedCaptureWindow(window)) return null;
-        if (!Win32Api.GetWindowDisplayAffinity(window, out var original))
-        {
-            AppLog.Warn("BackdropSnapshot", $"Read display affinity failed: {Marshal.GetLastWin32Error()}");
-            return null;
-        }
-        // Register before changing policy. Even a failed Set must pass through
-        // restoration, because accepting another baseline would lose ownership.
-        affinityToRestore = original;
-        CapturedFrame? captured = null;
-        bool restored;
-        try
-        {
-            if (!Win32Api.SetWindowDisplayAffinity(window, Win32Api.WdaExcludeFromCapture))
-            {
-                AppLog.Warn("BackdropSnapshot", $"Exclude window from capture failed: {Marshal.GetLastWin32Error()}");
-                return null;
-            }
-            captured = Capture(region, rasterizationScale);
-            if (captured is null) AppLog.Warn("BackdropSnapshot", "Desktop capture returned no frame.");
-        }
-        finally
-        {
-            // Keep this scope synchronous and short. Blur/bitmap preparation happens
-            // only after the original screenshot/recording policy has been restored.
-            restored = TryRestoreWindowAffinity(window, ref affinityToRestore);
-        }
-        return restored ? captured : null;
-    }
-
-    internal static bool TryRestoreWindowAffinity(IntPtr window, ref uint? affinityToRestore)
-    {
-        if (affinityToRestore is not { } original) return true;
-        if (!IsOwnedCaptureWindow(window))
-        {
-            AppLog.Warn("BackdropSnapshot", "Restore display affinity deferred: owned top-level window is unavailable.");
-            return false;
-        }
-        if (!Win32Api.SetWindowDisplayAffinity(window, original))
-        {
-            AppLog.Warn("BackdropSnapshot", $"Restore display affinity Set failed: {Marshal.GetLastWin32Error()}, expected={original}.");
-            return false;
-        }
-        if (!Win32Api.GetWindowDisplayAffinity(window, out var actual))
-        {
-            AppLog.Warn("BackdropSnapshot", $"Restore display affinity read-back failed: {Marshal.GetLastWin32Error()}, expected={original}.");
-            return false;
-        }
-        if (actual != original)
-        {
-            AppLog.Warn("BackdropSnapshot", $"Restore display affinity mismatch: expected={original}, actual={actual}.");
-            return false;
-        }
-        affinityToRestore = null;
-        return true;
-    }
-
-    private static bool IsOwnedCaptureWindow(IntPtr window) =>
-        OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041) && window != IntPtr.Zero &&
-        Win32Api.GetWindowThreadProcessId(window, out var owner) != 0 && owner == (uint)Environment.ProcessId &&
-        (Win32Api.GetWindowLongPtrW(window, -16).ToInt64() & 0x40000000) == 0; // GWL_STYLE / WS_CHILD
-
     internal static CapturedFrame? Capture(RectInt32 region, double rasterizationScale)
     {
         if (region.Width <= 0 || region.Height <= 0 || region.Width > 20000 || region.Height > 20000 ||
@@ -262,4 +195,16 @@ internal static class DesktopBackdropSnapshot
     [DllImport("gdi32.dll", ExactSpelling = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll", ExactSpelling = true)] private static extern int SetStretchBltMode(IntPtr dc, int mode);
     [DllImport("gdi32.dll", ExactSpelling = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool StretchBlt(IntPtr destination, int x, int y, int width, int height, IntPtr source, int sourceX, int sourceY, int sourceWidth, int sourceHeight, uint operation);
+}
+
+/// <summary>Optional transition markers using the existing buffered application log.</summary>
+internal static class BackdropTrace
+{
+    internal static readonly bool Enabled = Environment.GetEnvironmentVariable("TILEWALL_TRACE_BACKDROP") == "1";
+
+    internal static void Write(string message)
+    {
+        if (Enabled)
+            AppLog.Warn("BackdropTransition", $"qpc={System.Diagnostics.Stopwatch.GetTimestamp()} tid={Environment.CurrentManagedThreadId} {message}");
+    }
 }

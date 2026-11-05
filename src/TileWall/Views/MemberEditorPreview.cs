@@ -18,7 +18,7 @@ internal sealed partial class MemberEditorPreview : Grid
 {
     private readonly Canvas _viewport = new();
     private readonly Canvas _scene = new() { IsHitTestVisible = false };
-    private readonly PuzzleCanvasView _formal = new();
+    private readonly PuzzleCanvasView _formal = new() { RevealTitles = true };
     private readonly Canvas _guides = new(), _hint = new();
     private readonly TextBlock _pointerText = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, MaxWidth = 300 };
     private readonly Border _pointerTip;
@@ -138,14 +138,7 @@ internal sealed partial class MemberEditorPreview : Grid
             AddOutsideRegion(new DipRect(middleLeft, image.Y, Math.Max(0, middleRight - middleLeft), Math.Max(0, -image.Y)), image);
             AddOutsideRegion(new DipRect(middleLeft, height, Math.Max(0, middleRight - middleLeft), Math.Max(0, image.Y + image.Height - height)), image);
         }
-        var projected = member as PuzzleMember ?? new PuzzleMember
-        {
-            Id = member.Id, LocalBounds = member.LocalBounds, Partitions = [new GridRect(0, 0, member.LocalBounds.Width, member.LocalBounds.Height)],
-            Visual = member.Visual, Images = member.Images, ImageDisplay = member.ImageDisplay, Entry = member.Entry,
-            TargetInput = member.TargetInput, SourceShortcutPath = member.SourceShortcutPath,
-            TargetDisplayName = member.TargetDisplayName, ResourceOrigin = member.ResourceOrigin,
-            RotationInterval = member.RotationInterval, Carousel = member.Carousel,
-        };
+        var projected = WallMemberVisualFactory.Project(member);
         _formal.SetScene(projected, _frame, _metrics, _rasterScale, _visualStyle);
         Canvas.SetLeft(_formal, -_unionX); Canvas.SetTop(_formal, -_unionY); _scene.Children.Add(_formal);
         _guides.Children.Clear();

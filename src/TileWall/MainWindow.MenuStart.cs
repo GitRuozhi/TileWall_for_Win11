@@ -10,6 +10,7 @@ using TileWall.Core.Imaging;
 using TileWall.Core.Wall;
 using TileWall.Graphics;
 using TileWall.Resources;
+using TileWall.Views;
 using Windows.Foundation;
 
 namespace TileWall;
@@ -128,7 +129,7 @@ public sealed partial class MainWindow
                     if (!_menuIcons.TryGetValue(member.Id, out var icons)) _menuIcons[member.Id] = icons = [];
                     icons.Add(icon);
                     UpdateMenuFrame(member.Id, _puzzles.FrameFor(member.Id), 1);
-                    var label = new TextBlock { Text = member.Visual.Title ?? MemberPresentationRules.ResolveTitle(member),
+                    var label = new TextBlock { Text = WallMemberVisualFactory.ResolveTitle(member),
                         VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
                         Margin = new Thickness(0, 0, 12, 0) };
                     Grid.SetColumn(label, 1); content.Children.Add(label);
@@ -140,7 +141,7 @@ public sealed partial class MainWindow
                     row.Click += (_, _) => LaunchMember(id);
                     AutomationProperties.SetAutomationId(row, "menu-member-" + id);
                     AutomationProperties.SetName(row, label.Text);
-                    ToolTipService.SetToolTip(row, label.Text);
+                    WallMemberVisualFactory.SetTargetTooltip(row, member);
                     entryPanel.Children.Add(row);
                 }
             }

@@ -160,7 +160,11 @@ public sealed partial class MainWindow : Window
         Activated += (_, e) =>
         {
             if (_windowClosing || ShutdownStarted) return;
-            SetBackdropActive(e.WindowActivationState != WindowActivationState.Deactivated);
+            var active = e.WindowActivationState != WindowActivationState.Deactivated;
+            // The new native commit must include the activation Z-order changes.
+            // Keep the prior opaque cover while the window is raised.
+            if (active) UpdateWindowZOrder(IsForegroundWallSession(), raise: true);
+            SetBackdropActive(active);
             TraceInput($"Activated state={e.WindowActivationState} phase={_gesture.Phase}");
             if (e.WindowActivationState == WindowActivationState.Deactivated)
             {
@@ -168,7 +172,6 @@ public sealed partial class MainWindow : Window
                 CancelResize();
                 QueueAutomaticHideCheck("Deactivated");
             }
-            else UpdateWindowZOrder(IsForegroundWallSession(), raise: true);
         };
         Closed += (_, _) =>
         {
@@ -195,18 +198,21 @@ public sealed partial class MainWindow : Window
     private void SetBackdropActive(bool active)
     {
         var wasActive = _backdropActive;
-        if (active)
-            DesktopBackdropSnapshot.TryRestoreWindowAffinity(WinRT.Interop.WindowNative.GetWindowHandle(this),
-                ref _snapshotAffinityToRestore);
-        if (active || _backdropActive != active) CancelFocusLossSnapshot();
+        if (BackdropTrace.Enabled)
+            BackdropTrace.Write($"FocusIntent begin active={wasActive}->{active} foreground={GetForegroundWindow()} generation={_snapshotGeneration}");
         _backdropActive = active;
-        // Admit only a hold here. The existing settled external-session check owns
-        // capture, so own dialogs/popups and unknown foreground never get sampled.
-        if (wasActive && !active && Settings.StayVisibleOnFocusLoss && Settings.BackgroundMode == WallBackgroundMode.Acrylic &&
-            !_accessibilitySettings.HighContrast && _appearanceSettings.AdvancedEffectsEnabled)
-            _snapshotFocusLossPending = true;
-        if (wasActive != active) CancelBackgroundCommit();
-        _wallBackdrop.SetFocusIntent(active, _snapshotFocusLossPending);
+        if (wasActive != active && Settings.BackgroundMode == WallBackgroundMode.Acrylic &&
+            !_accessibilitySettings.HighContrast && _appearanceSettings.AdvancedEffectsEnabled &&
+            AppWindow.IsVisible && !_backdropAnimationSuspended && (active || Settings.StayVisibleOnFocusLoss))
+        {
+            // Only hand off the already prepared background. Focus changes must
+            // not capture the visible wall or alter its capture policy/styles.
+            _backdropTransitionCover = true;
+            UpdateBackgroundLayer();
+        }
+        _wallBackdrop.SetFocusIntent(active);
+        if (BackdropTrace.Enabled)
+            BackdropTrace.Write($"FocusIntent applied active={active} generation={_snapshotGeneration}");
         if (_backdropUpdateQueued || _windowClosing) return;
         _backdropUpdateQueued = DispatcherQueue.TryEnqueue(() =>
         {
@@ -650,6 +656,8 @@ public sealed partial class MainWindow : Window
             if (member is ClockMember clock)
             {
                 var clockDialog = new ClockEditorDialog(DialogOwner, clock, MaxMemberRows(), _clock,
+                    _metrics, Settings.VisualStyle,
+                    (DialogOwner.Content as FrameworkElement)?.XamlRoot?.RasterizationScale ?? 1,
                     replacement => Apply(new ReplaceMemberAction(Document.Generation, id, replacement)));
                 ActiveDialog = clockDialog;
                 await clockDialog.ShowAsync();
@@ -1140,6 +1148,14 @@ public sealed partial class MainWindow : Window
 
     private void TraceInput(string message)
     {
+        if (BackdropTrace.Enabled)
+        {
+            // The narrow backdrop trace must not turn every input event into IO
+            // or synchronously flush the background logger during a transition.
+            if (message.StartsWith("Backdrop", StringComparison.Ordinal) || message.StartsWith("Activated ", StringComparison.Ordinal))
+                BackdropTrace.Write($"{message} generation={_snapshotGeneration}");
+            return;
+        }
         if (!_traceInput) return;
         AppLog.Warn("Phase2Input", message);
         AppLog.Flush();

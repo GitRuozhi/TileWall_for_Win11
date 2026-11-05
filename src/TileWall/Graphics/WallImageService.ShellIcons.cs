@@ -198,7 +198,11 @@ public sealed partial class WallImageService
             Prepared? diskHit;
             using (trace?.Measure("automatic.disk-read"))
                 diskHit = allowPixelCache && snapshot.CacheAllowed ? ReadAutomaticPixels(key, snapshot.Stamp) : null;
-            if (diskHit is not null && snapshot == AutomaticSourceStamp(source, snapshot.PackageTarget)) return diskHit;
+            // A disk hit only returns verified immutable pixels; it publishes no
+            // new result under the old stamp. The sole consumer is
+            // LoadAutomaticFrameCoreAsync, whose every waiter reobserves the
+            // full source after this await and before accepting any pixels.
+            if (diskHit is not null) return diskHit;
             Prepared prepared;
             using (trace?.Measure("automatic.collect-select"))
                 prepared = await PrepareAutoCoreAsync(source, width, height, lifetime,
@@ -338,6 +342,7 @@ public sealed partial class WallImageService
 
     private AutomaticSourceSnapshot AutomaticSourceStamp(string? source, string? packageTarget = null)
     {
+        Interlocked.Increment(ref _automaticSourceObservations);
         var snapshot = AutomaticSourceStampCore(source, followLinkedTarget: true);
         return packageTarget is null ? snapshot : snapshot with
         {
@@ -352,6 +357,7 @@ public sealed partial class WallImageService
     private AutomaticSourceSnapshot AutomaticSourceStampObserved(string? source, bool followLinkedTarget,
         Dictionary<string, string> resourceObservations)
     {
+        using var trace = ImageCandidateTrace.Start("automatic-source-stamp", source, 0, 0);
         string ResourceStamp(string? resource)
         {
             var normalized = NormalizePath(resource);
@@ -359,7 +365,9 @@ public sealed partial class WallImageService
             Interlocked.Increment(ref _resourceStampRequests);
             if (resourceObservations.TryGetValue(normalized, out var observed)) return observed;
             Interlocked.Increment(ref _resourceStampUnique);
-            var stamp = PeIconResourceReader.ResourceDependencyStamp(normalized);
+            string stamp;
+            using (trace?.Measure("resource-dependency", normalized))
+                stamp = PeIconResourceReader.ResourceDependencyStamp(normalized);
             resourceObservations.Add(normalized, stamp);
             return stamp;
         }
@@ -381,7 +389,9 @@ public sealed partial class WallImageService
                     {
                         if (!_automaticDescriptors.TryGetValue(entryStamp, out descriptor))
                         {
-                            var fields = _links.Read(path);
+                            using var metadataTrace = ImageCandidateTrace.Start("link-metadata", path, 0, 0);
+                            LinkFields fields;
+                            using (metadataTrace?.Measure("shell-link.read")) fields = _links.Read(path);
                             descriptor = (!string.IsNullOrWhiteSpace(fields.ShellParsingName) ? fields.ShellParsingName : fields.TargetPath,
                                 fields.IconPath, fields.IconIndex, fields.HasIdList);
                             if (_automaticDescriptors.Count >= 2048) _automaticDescriptors.Clear();
@@ -430,7 +440,11 @@ public sealed partial class WallImageService
         ShellItemCatalog.IconResourceLocation? shellPolicy = appsFolderSource ? appsMetadata?.IconLocation : null;
         if (!appsFolderSource)
         {
-            try { if (source is not null) shellPolicy = ShellItemCatalog.IconLocation(source, 1); }
+            try
+            {
+                if (source is not null)
+                    using (trace?.Measure("shell-icon-policy", source)) shellPolicy = ShellItemCatalog.IconLocation(source, 1);
+            }
             catch (Exception ex) when (ex is COMException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException) { }
         }
         var stamp = string.Join("|", "automatic-v10", source, entryStamp, target,
