@@ -23,7 +23,8 @@ public sealed class WallPackageSnapshot : IDisposable
         ProtectedSourcePaths = protectedSourcePaths.ToArray();
         LexicalProtectedSourcePaths = (lexicalProtectedSourcePaths ?? []).ToArray();
         AutomaticImageMembers = Array.AsReadOnly((automaticImageMembers ?? content.Members
-            .Where(member => member.Images.Kind == MemberImageSourceKind.Automatic).Select(member => member.ToMember()).ToArray()).ToArray());
+            .Where(member => member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is null)
+            .Select(member => member.ToMember()).ToArray()).ToArray());
         AutomaticImagesCompleted = AutomaticImageMembers.Count == 0;
         Galleries = new ReadOnlyDictionary<string, WallPackageSnapshotGallery>(galleries ?? new Dictionary<string, WallPackageSnapshotGallery>(StringComparer.Ordinal));
     }
@@ -44,7 +45,7 @@ public sealed class WallPackageSnapshot : IDisposable
     }
 
     /// <summary>Complete only the detached export projection. A null payload records a genuine absent foreground.</summary>
-    public void CompleteAutomaticImages(IReadOnlyDictionary<string, PreparedMediaAsset?>? images = null,
+    public void CompleteAutomaticImages(IReadOnlyDictionary<string, PreparedAutomaticIconSeries?>? images = null,
         CancellationToken token = default)
     {
         EnsureAvailable(); token.ThrowIfCancellationRequested();
@@ -58,26 +59,38 @@ public sealed class WallPackageSnapshot : IDisposable
             var content = Content with { Members = Content.Members.Select(member =>
             {
                 token.ThrowIfCancellationRequested();
-                if (member.Images.Kind != MemberImageSourceKind.Automatic) return member;
-                var asset = images?.GetValueOrDefault(member.Id);
-                if (asset is not null)
+                if (!ids.Contains(member.Id)) return member;
+                var prepared = images?.GetValueOrDefault(member.Id);
+                if (prepared is not null)
                 {
-                    if (asset.Reference.Extension != ".png") throw new InvalidDataException("An exported automatic foreground must be PNG.");
-                    if (_media.TryGetValue(asset.Reference.Sha256, out var existing) && existing.Length != asset.Reference.Length)
-                        throw new InvalidDataException("Conflicting automatic image digest.");
-                    if (!_media.ContainsKey(asset.Reference.Sha256) && !additions.ContainsKey(asset.Reference.Sha256))
-                        additions.Add(asset.Reference.Sha256, new MemoryStream(asset.CopyBytes(), writable: false));
+                    if (prepared.Series is null || prepared.Series.Frames is null || prepared.Assets is null ||
+                        prepared.Series.Frames.Any(frame => frame is null) || prepared.Assets.Any(asset => asset is null) ||
+                        !prepared.Series.Frames.Select(frame => frame.Media).ToHashSet().SetEquals(prepared.Assets.Select(asset => asset.Reference)))
+                        throw new InvalidDataException("Automatic image preparation has an incomplete frame closure.");
+                    foreach (var asset in prepared.Assets)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (asset.Reference.Extension != ".png") throw new InvalidDataException("An exported automatic foreground must be PNG.");
+                        if (_media.TryGetValue(asset.Reference.Sha256, out var existing) && existing.Length != asset.Reference.Length)
+                            throw new InvalidDataException("Conflicting automatic image digest.");
+                        if (!_media.ContainsKey(asset.Reference.Sha256) && !additions.ContainsKey(asset.Reference.Sha256))
+                            additions.Add(asset.Reference.Sha256, new MemoryStream(asset.CopyBytes(), writable: false));
+                    }
                 }
-                return member with { Images = asset is null ? new() { Kind = MemberImageSourceKind.None }
-                    : new() { Kind = MemberImageSourceKind.Single, Media = asset.Reference } };
+                return member with { Images = prepared is null ? new() { Kind = MemberImageSourceKind.None }
+                    : new() { Kind = MemberImageSourceKind.Automatic, IconSeries = prepared.Series } };
             }).ToArray() };
             WallPackageJson.ValidateContent(content);
+            foreach (var prepared in images?.Values.OfType<PreparedAutomaticIconSeries>() ?? [])
+                foreach (var asset in prepared.Assets)
+                    WallPackageJson.ValidateSeriesImage(content, asset.Reference, asset.CopyBytes());
             var limits = new WallPackageLimits();
             if (_media.Values.Sum(stream => stream.Length) + additions.Values.Sum(stream => stream.Length) > limits.MaximumExpandedBytes)
                 throw new InvalidDataException("Automatic foregrounds exceed the export preparation budget.");
+            var frozen = WallPackageJson.Freeze(content);
             token.ThrowIfCancellationRequested();
             foreach (var (key, stream) in additions) _media.Add(key, stream);
-            Content = WallPackageJson.Freeze(content); AutomaticImagesCompleted = true;
+            Content = frozen; AutomaticImagesCompleted = true;
             additions.Clear();
         }
         finally { foreach (var stream in additions.Values) stream.Dispose(); }

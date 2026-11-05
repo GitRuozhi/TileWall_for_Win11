@@ -1,59 +1,23 @@
 using TileWall.Core.Imaging;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
-using System.Runtime.InteropServices.WindowsRuntime;
-using Microsoft.UI.Xaml.Media.Imaging;
-using Windows.Graphics.Imaging;
-using Windows.Storage.Streams;
 
 namespace TileWall.Graphics;
 
 public sealed partial class WallImageService
 {
-    /// <summary>Encode the automatic source plane, before any ImageDisplay, partition, background or blur transform.</summary>
-    internal Task<PreparedMediaAsset?> PrepareAutomaticExportImageAsync(WallMember member, string? entryOrTarget,
-        int width, int height, CancellationToken token) => StartImageRequest<PreparedMediaAsset?>(async requestToken =>
-    {
-        if (member.ResourceOrigin == MemberResourceOrigin.Package || member.Images.Kind != MemberImageSourceKind.Automatic)
-            return null;
-        if (member.Images.IconSeries is not null)
-        {
-            var native = await LoadSavedAutomaticIconPixelsAsync(member, width, height, requestToken,
-                nativePlane: true, purpose: MemberImagePurpose.Content);
-            requestToken.ThrowIfCancellationRequested();
-            if (native.Pair?.Sharp is not { } plane) return null;
-            return await EncodeIconFrameAsync(new Prepared(WallImageStatus.Loaded,
-                plane.BgraPremultiplied.ToArray(), plane.Width, plane.Height, null), requestToken);
-        }
-        var result = await LoadAutomaticFrameCoreAsync(entryOrTarget, width, height, false, requestToken, member, nativePlane: true);
-        requestToken.ThrowIfCancellationRequested();
-        if (result.Frame?.Sharp is not WriteableBitmap bitmap) return null;
-        var pixels = new byte[checked(bitmap.PixelWidth * bitmap.PixelHeight * 4)];
-        using (var input = bitmap.PixelBuffer.AsStream()) input.ReadExactly(pixels);
-        var pixelWidth = bitmap.PixelWidth; var pixelHeight = bitmap.PixelHeight;
-        return await Task.Run(async () =>
-        {
-            using var encoded = new InMemoryRandomAccessStream();
-            var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, encoded).AsTask(requestToken).ConfigureAwait(false);
-            encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied,
-                (uint)pixelWidth, (uint)pixelHeight, 96, 96, pixels);
-            await encoder.FlushAsync().AsTask(requestToken).ConfigureAwait(false);
-            requestToken.ThrowIfCancellationRequested();
-            if (encoded.Size is < 1 or > PreparedMediaAsset.MaximumBytes) throw new IOException("Automatic foreground exceeds its PNG byte budget.");
-            encoded.Seek(0);
-            using var input = encoded.AsStreamForRead();
-            var bytes = new byte[(int)encoded.Size];
-            await input.ReadExactlyAsync(bytes, requestToken).ConfigureAwait(false);
-            return PreparedMediaAsset.FromVerifiedImage(bytes, ".png");
-        }, requestToken);
-    }, token, null);
+    /// <summary>Freeze an unbound automatic source in the detached export projection.</summary>
+    internal Task<PreparedAutomaticIconSeries?> PrepareAutomaticExportImageAsync(WallMember member, string? entryOrTarget,
+        int width, int height, CancellationToken token) =>
+        PrepareAutomaticIconSeriesAsync(member, entryOrTarget, width, height, token);
 
     internal Task<PuzzleFrameResult> LoadPackageFrameAsync(PreparedMediaAsset asset, int width, int height, bool blur,
-        CancellationToken token) => StartImageRequest(requestToken => LoadPackageFrameCoreAsync(asset, width, height, blur, requestToken),
+        CancellationToken token, MemberImageDisplay? display = null, PixelSize? geometryReference = null) =>
+        StartImageRequest(requestToken => LoadPackageFrameCoreAsync(asset, width, height, blur, requestToken, display, geometryReference),
             token, new PuzzleFrameResult(null, WallImageStatus.Cancelled));
 
     private async Task<PuzzleFrameResult> LoadPackageFrameCoreAsync(PreparedMediaAsset asset, int width, int height, bool blur,
-        CancellationToken token)
+        CancellationToken token, MemberImageDisplay? display = null, PixelSize? geometryReference = null)
     {
         try
         {
@@ -64,7 +28,9 @@ public sealed partial class WallImageService
             {
                 var bytes = asset.CopyBytes();
                 var identity = "package:" + asset.Reference.Sha256;
-                var result = await Task.Run(() => _decoder.DecodePackageFrameAsync(bytes, identity, width, height, token), token);
+                var result = await Task.Run(() => display is null
+                    ? _decoder.DecodePackageFrameAsync(bytes, identity, width, height, token)
+                    : _decoder.DecodePackageDisplayFrameAsync(bytes, identity, width, height, display, token), token);
                 sharp = result.Frame;
                 var blurSource = sharp is not null && blur
                     ? (await Task.Run(() => _decoder.DecodePackageFrameAsync(bytes, identity, 512, 512, token, maximumEdge: 512), token)).Frame : null;
@@ -74,7 +40,7 @@ public sealed partial class WallImageService
             token.ThrowIfCancellationRequested();
             if (sharp is null || blur && blurred is null) return new(null, WallImageStatus.Invalid);
             return new(new PuzzleFrame(sharp.SourcePath, asset.Reference.Length, DateTime.MinValue,
-                new PixelSize(sharp.SourceWidth, sharp.SourceHeight), new PixelSize(sharp.Width, sharp.Height),
+                geometryReference ?? new PixelSize(sharp.SourceWidth, sharp.SourceHeight), new PixelSize(sharp.Width, sharp.Height),
                 blurred is null ? default : new PixelSize(blurred.Width, blurred.Height), MakeBitmap(sharp),
                 blurred is null ? null : MakeBitmap(blurred)), WallImageStatus.Loaded);
         }

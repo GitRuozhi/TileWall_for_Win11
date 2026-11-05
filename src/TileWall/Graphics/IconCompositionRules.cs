@@ -61,8 +61,8 @@ internal static class IconCompositionRules
         // A flat monochrome shape touching the edge has no separable border;
         // this is not evidence to remove its authored visible pixels.
         if (right < left) return true;
-        var small = (long)(right - left + 1) * 5 <= (long)width * 3 &&
-                    (long)(bottom - top + 1) * 5 <= (long)height * 3;
+        var small = (long)(right - left + 1) * 2 <= width &&
+                    (long)(bottom - top + 1) * 2 <= height;
         var centered = Math.Abs((long)left + right + 1 - width) * 5 <= width * 2L &&
                        Math.Abs((long)top + bottom + 1 - height) * 5 <= height * 2L;
         return !(small && centered);

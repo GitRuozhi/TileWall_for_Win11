@@ -1,3 +1,5 @@
+using TileWall.Core.Wall;
+
 namespace TileWall.Core.Imaging;
 
 internal readonly record struct ImageDecodeDimensions(
@@ -16,10 +18,27 @@ internal static class ImageDecodeSizing
     internal static (int Width, int Height) ForDisplay(int sourceWidth, int sourceHeight,
         int canvasWidthPixels, int canvasHeightPixels, MemberImageDisplay display)
     {
+        var demand = DisplayDemand(sourceWidth, sourceHeight, canvasWidthPixels, canvasHeightPixels, display);
+        return (Math.Min(sourceWidth, demand.Width), Math.Min(sourceHeight, demand.Height));
+    }
+
+    internal static (int Width, int Height) DisplayDemand(int referenceWidth, int referenceHeight,
+        int canvasWidthPixels, int canvasHeightPixels, MemberImageDisplay display)
+    {
         var placed = MemberImageGeometry.Calculate(canvasWidthPixels, canvasHeightPixels,
-            sourceWidth, sourceHeight, 1, display);
-        return (checked((int)Math.Max(1, Math.Min(sourceWidth, Math.Ceiling(placed.Bounds.Width)))),
-            checked((int)Math.Max(1, Math.Min(sourceHeight, Math.Ceiling(placed.Bounds.Height)))));
+            referenceWidth, referenceHeight, 1, display);
+        return (checked((int)Math.Max(1, Math.Ceiling(placed.Bounds.Width))),
+            checked((int)Math.Max(1, Math.Ceiling(placed.Bounds.Height))));
+    }
+
+    internal static (int FrameIndex, int Width, int Height) ForSeries(AutomaticIconSeries series,
+        int canvasWidthPixels, int canvasHeightPixels, MemberImageDisplay display)
+    {
+        var reference = series.Frames[series.SelectedFrame];
+        var demand = DisplayDemand(reference.Width, reference.Height, canvasWidthPixels, canvasHeightPixels, display);
+        var index = AutomaticIconSeriesRules.SelectFrame(series, demand.Width, demand.Height);
+        var frame = series.Frames[index];
+        return (index, Math.Min(frame.Width, demand.Width), Math.Min(frame.Height, demand.Height));
     }
 
     internal static ImageDecodeDimensions Calculate(

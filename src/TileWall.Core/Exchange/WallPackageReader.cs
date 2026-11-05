@@ -40,7 +40,7 @@ public sealed class WallPackageReader(
             var manifest = WallPackageJson.Deserialize<WallPackageManifest>(
                 await WallPackageZip.ReadAsync(manifestEntry, limits.MaximumManifestBytes, token).ConfigureAwait(false));
             if (manifest.FormatId != WallPackageManifest.CurrentFormatId ||
-                manifest.FormatVersion is not (2 or 3 or WallPackageManifest.CurrentFormatVersion) ||
+                manifest.FormatVersion is not (2 or 3 or 4 or WallPackageManifest.CurrentFormatVersion) ||
                 manifest.WallSchemaVersion != (manifest.FormatVersion < 4 ? 4 : WallDocument.CurrentSchemaVersion))
                 return new(WallPackageReadStatus.UnsupportedFormat, null, "This wall file requires a supported application version.");
             if (manifest.Files is null || !WallPackageJson.ValidHash(manifest.ContentFingerprint) ||
@@ -62,6 +62,9 @@ public sealed class WallPackageReader(
             var wallBytes = await ReadDeclaredAsync(entries["wall.json"], wallFile, limits.MaximumContentBytes, token).ConfigureAwait(false);
             var content = WallPackageJson.Deserialize<WallPackageContent>(wallBytes, manifest.FormatVersion);
             WallPackageJson.ValidateContent(content, limits, token);
+            if (manifest.FormatVersion >= 5 && content.Members.Any(member =>
+                member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is null))
+                throw new InvalidDataException("An automatic package source requires a complete embedded series.");
             content = WallPackageJson.Freeze(content);
             var expected = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["wall.json"] = "wall" };
             foreach (var member in content.Members.Where(m => m.EntryKind is not null))
@@ -101,6 +104,7 @@ public sealed class WallPackageReader(
                 if (files[path].Length != reference.Length || files[path].Sha256 != reference.Sha256)
                     throw new InvalidDataException("Media reference differs from its declaration.");
                 var bytes = await ReadDeclaredAsync(entries[path], files[path], PreparedMediaAsset.MaximumBytes, token).ConfigureAwait(false);
+                WallPackageJson.ValidateSeriesImage(content, reference, bytes);
                 foreach (var extension in references.Select(item => item.Extension).Distinct(StringComparer.Ordinal))
                 {
                     var valid = await verifyImageAsync(bytes, extension, token).ConfigureAwait(false);
@@ -188,6 +192,7 @@ public sealed class WallPackageReader(
             var file = preview.Manifest.Files.SingleOrDefault(f => f.Path == path && f.Length == reference.Length && f.Sha256 == reference.Sha256)
                 ?? throw new InvalidDataException("Accepted media is not in the verified package.");
             var bytes = await ReadDeclaredAsync(zip.GetEntry(path)!, file, PreparedMediaAsset.MaximumBytes, token).ConfigureAwait(false);
+            WallPackageJson.ValidateSeriesImage(preview.Content, reference, bytes);
             var valid = await verifyImageAsync(bytes, reference.Extension, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
             if (!valid) throw new InvalidDataException("Invalid image.");
@@ -231,6 +236,7 @@ public sealed class WallPackageReader(
             var file = preview.Manifest.Files.SingleOrDefault(file => file.Path == path && file.Length == reference.Length && file.Sha256 == reference.Sha256)
                 ?? throw new InvalidDataException("Accepted original is missing from the verified package.");
             var bytes = await ReadDeclaredAsync(zip.GetEntry(path)!, file, PreparedMediaAsset.MaximumBytes, token).ConfigureAwait(false);
+            WallPackageJson.ValidateSeriesImage(preview.Content, reference, bytes);
             if (!await verifyImageAsync(bytes, reference.Extension, token).ConfigureAwait(false)) throw new InvalidDataException("Invalid original image.");
             token.ThrowIfCancellationRequested();
             var asset = PreparedMediaAsset.FromVerifiedImage(bytes, reference.Extension);

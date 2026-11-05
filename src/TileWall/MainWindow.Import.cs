@@ -324,13 +324,13 @@ public sealed partial class MainWindow
                 });
                 RequireCurrent();
             }
-            var images = new Dictionary<string, PreparedMediaAsset?>(StringComparer.Ordinal);
+            var images = new Dictionary<string, PreparedAutomaticIconSeries?>(StringComparer.Ordinal);
             long preparedBytes = 0;
             var preparedHashes = new HashSet<string>(StringComparer.Ordinal);
             foreach (var member in snapshot.AutomaticImageMembers)
             {
                 RequireCurrent();
-                PreparedMediaAsset? image = null;
+                PreparedAutomaticIconSeries? image = null;
                 if (member.ResourceOrigin == MemberResourceOrigin.Local)
                 {
                     var path = _session.ManagedEntryPath(member) ?? member.SourceShortcutPath ?? member.TargetInput;
@@ -342,12 +342,13 @@ public sealed partial class MainWindow
                         (int)Math.Clamp(Math.Ceiling(_metrics.HeightOf(member.LocalBounds.Height) * Scale * reserve), 1, 4096), CancellationToken.None);
                     await RequireEntryCurrentAsync(member, path);
                 }
-                if (image is not null && preparedHashes.Add(image.Reference.Sha256))
-                {
-                    preparedBytes = checked(preparedBytes + image.Reference.Length);
-                    if (preparedBytes > new WallPackageLimits().MaximumPreparedMediaBytes)
-                        throw new IOException("Automatic foregrounds exceed the export preparation budget.");
-                }
+                foreach (var asset in image?.Assets ?? [])
+                    if (preparedHashes.Add(asset.Reference.Sha256))
+                    {
+                        preparedBytes = checked(preparedBytes + asset.Reference.Length);
+                        if (preparedBytes > new WallPackageLimits().MaximumPreparedMediaBytes)
+                            throw new IOException("Automatic foregrounds exceed the export preparation budget.");
+                    }
                 images.Add(member.Id, image);
             }
             RequireCurrent();
@@ -653,6 +654,17 @@ public sealed partial class MainWindow
                 throw new ImportSourceChangedException("The import source changed.");
             requireCurrent(); sources.Add(source);
             var member = source.ApplyTo(input.Member);
+            async Task AddAssetAsync(PreparedMediaAsset asset)
+            {
+                reusable ??= (await _session.ReusablePackageMediaAsync(generation)).Select(media => media.Sha256).ToHashSet(StringComparer.Ordinal);
+                requireCurrent();
+                if (assets.TryAdd(asset.Reference.Sha256, asset) && !reusable.Contains(asset.Reference.Sha256))
+                {
+                    newBytes = checked(newBytes + asset.Reference.Length);
+                    if (newBytes > PreparedManagedGallery.MaximumTotalBytes)
+                        throw new IOException("Selected original images exceed the combined preparation budget.");
+                }
+            }
             if (source.Source.Kind == MemberImageSourceKind.Single)
             {
                 var asset = await _images.PrepareMediaAsync(source.Source.Path ?? throw new IOException("Missing image source."), token);
@@ -662,15 +674,26 @@ public sealed partial class MainWindow
                 requireCurrent();
                 // Reuse the Store's verified resource closure for the batch budget.
                 // Keep only one frozen copy per digest; the transaction still checks its own budget.
-                reusable ??= (await _session.ReusablePackageMediaAsync(generation)).Select(media => media.Sha256).ToHashSet(StringComparer.Ordinal);
-                requireCurrent();
-                if (assets.TryAdd(asset.Reference.Sha256, asset) && !reusable.Contains(asset.Reference.Sha256))
-                {
-                    newBytes += asset.Reference.Length;
-                    if (newBytes > PreparedManagedGallery.MaximumTotalBytes)
-                        throw new IOException("Selected original images exceed the combined preparation budget.");
-                }
+                await AddAssetAsync(asset);
                 member = member with { Images = member.Images with { Media = asset.Reference } };
+            }
+            else if (member.ResourceOrigin == MemberResourceOrigin.Local && member.Images.Kind == MemberImageSourceKind.Automatic &&
+                member.Images.IconSeries is null)
+            {
+                var reserve = member.ImageDisplay.Mode == TileWall.Core.Imaging.ImageDisplayMode.Custom
+                    ? Math.Max(1, member.ImageDisplay.CustomScale) : 1;
+                var prepared = await _images.PrepareAutomaticIconSeriesAsync(member, input.Input,
+                    (int)Math.Clamp(Math.Ceiling(_metrics.WidthOf(member.LocalBounds.Width) * Scale * reserve), 1, 4096),
+                    (int)Math.Clamp(Math.Ceiling(_metrics.HeightOf(member.LocalBounds.Height) * Scale * reserve), 1, 4096), token);
+                requireCurrent();
+                if (!await _images.IsTargetSourceCurrentAsync(source, token))
+                    throw new ImportSourceChangedException("The import source changed.");
+                requireCurrent();
+                if (prepared is not null)
+                {
+                    foreach (var asset in prepared.Assets) await AddAssetAsync(asset);
+                    member = member with { Images = member.Images with { IconSeries = prepared.Series } };
+                }
             }
             members.Add(member.Id, member);
         }

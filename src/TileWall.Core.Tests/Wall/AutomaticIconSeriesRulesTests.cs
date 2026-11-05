@@ -20,16 +20,22 @@ public sealed class AutomaticIconSeriesRulesTests
     }
 
     [Fact]
-    public void SameLogicalSizeKeepsConfirmedSelectionRegardlessOfChangedPixelDemand()
+    public void GeometryReferenceStaysStableWhileDisplayResolutionFollowsDemand()
     {
         var series = Series((48, 48), (128, 128), (256, 256)) with { SelectedFrame = 1, Columns = 2, Rows = 2 };
         Assert.Same(series, AutomaticIconSeriesRules.SelectForSize(series, 2, 2, 500, 500));
         var resized = AutomaticIconSeriesRules.SelectForSize(series, 4, 2, 200, 100);
-        Assert.Equal(2, resized.SelectedFrame);
+        Assert.Equal(1, resized.SelectedFrame);
         Assert.Equal(4, resized.Columns);
         Assert.Equal(2, resized.Rows);
         Assert.Same(series.Frames, resized.Frames);
         Assert.Equal(series.Identity, resized.Identity);
+        Assert.Equal(0, AutomaticIconSeriesRules.SelectForDisplay(series, 48, 48, new()));
+        Assert.Equal(1, AutomaticIconSeriesRules.SelectForDisplay(series, 100, 100, new()));
+        Assert.Equal(2, AutomaticIconSeriesRules.SelectForDisplay(series, 200, 200, new()));
+        Assert.Equal(2, AutomaticIconSeriesRules.SelectForDisplay(series, 500, 500, new()));
+        Assert.Equal(1, AutomaticIconSeriesRules.SelectForDisplay(series, 500, 500,
+            new() { Mode = TileWall.Core.Imaging.ImageDisplayMode.Original }));
     }
 
     [Fact]

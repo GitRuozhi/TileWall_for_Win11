@@ -333,11 +333,13 @@ public sealed class WallPackageTests : IDisposable
                 new WallPackageMember
                 {
                     Id = "puzzle", Kind = "puzzle", LocalBounds = new(3, 1, 2, 2),
+                    Images = new() { Kind = MemberImageSourceKind.None },
                     Partitions = [new(0, 0, 2, 2)],
                 },
                 new WallPackageMember
                 {
                     Id = "clock", Kind = "clock", LocalBounds = new(0, 4, 2, 1), TimeFormat = "HH:mm:ss",
+                    Images = new() { Kind = MemberImageSourceKind.None },
                 },
             ],
         };

@@ -60,12 +60,15 @@ public sealed partial class WallImageService
         {
             if (member.ResourceOrigin == MemberResourceOrigin.Package) return new(null, WallImageStatus.None);
             var series = member.Images.IconSeries ?? prepared.Series;
-            var selected = series.Frames[series.SelectedFrame];
+            var request = ImageDecodeSizing.ForSeries(series, width, height, member.ImageDisplay);
+            var selected = series.Frames[request.FrameIndex];
             var asset = prepared.Assets.FirstOrDefault(item => item.Reference == selected.Media);
             if (asset is null) return new(null, WallImageStatus.Invalid, "IconSeriesFrameUnavailable");
-            var size = ImageDecodeSizing.ForDisplay(selected.Width, selected.Height, width, height, member.ImageDisplay);
-            return await LoadPackageFrameCoreAsync(asset, size.Width, size.Height,
+            var result = await LoadPackageFrameCoreAsync(asset, request.Width, request.Height,
                 member.Visual.BackgroundMode == MemberBackgroundMode.Blur, token);
+            var reference = series.Frames[series.SelectedFrame];
+            return result.Frame is { } frame ? result with { Frame = frame with
+                { SourcePixels = new(reference.Width, reference.Height), AutomaticDisplayMedia = selected.Media } } : result;
         }, ct, new PuzzleFrameResult(null, WallImageStatus.Cancelled));
 
     private async Task<PuzzleFrameResult> LoadSavedAutomaticIconFrameAsync(WallMember member, int width, int height,
@@ -77,9 +80,14 @@ public sealed partial class WallImageService
             token.ThrowIfCancellationRequested();
             if (prepared.Pair is not { } pair) return new(null, prepared.Status, prepared.Diagnostic);
             var sharp = pair.Sharp; var blur = pair.BlurSource;
+            var series = member.Images.IconSeries!;
+            var reference = series.Frames[series.SelectedFrame];
+            var displayed = series.Frames[nativePlane ? series.SelectedFrame :
+                AutomaticIconSeriesRules.SelectForDisplay(series, width, height, member.ImageDisplay)];
             return new(new PuzzleFrame(sharp.SourcePath, sharp.SourceBytes, sharp.LastWriteUtc,
-                new(sharp.SourceWidth, sharp.SourceHeight), new(sharp.Width, sharp.Height),
-                blur is null ? default : new(blur.Width, blur.Height), MakeBitmap(sharp), blur is null ? null : MakeBitmap(blur)),
+                new(reference.Width, reference.Height), new(sharp.Width, sharp.Height),
+                blur is null ? default : new(blur.Width, blur.Height), MakeBitmap(sharp), blur is null ? null : MakeBitmap(blur))
+                { AutomaticDisplayMedia = displayed.Media },
                 WallImageStatus.Loaded);
         }
         catch (OperationCanceledException) { return new(null, WallImageStatus.Cancelled); }
@@ -94,9 +102,9 @@ public sealed partial class WallImageService
         CancellationToken token, bool nativePlane, MemberImagePurpose purpose)
     {
         var series = member.Images.IconSeries!;
-        var frame = series.Frames[series.SelectedFrame];
-        var size = nativePlane ? (frame.Width, frame.Height) :
-            ImageDecodeSizing.ForDisplay(frame.Width, frame.Height, width, height, member.ImageDisplay);
+        var request = ImageDecodeSizing.ForSeries(series, width, height, member.ImageDisplay);
+        var frame = series.Frames[nativePlane ? series.SelectedFrame : request.FrameIndex];
+        var size = nativePlane ? (frame.Width, frame.Height) : (request.Width, request.Height);
         var budget = new PuzzleDecodeBudget(purpose, size.Item1, size.Item2,
             nativePlane, int.MaxValue, 512, !nativePlane && member.Visual.BackgroundMode == MemberBackgroundMode.Blur,
             CacheSharp: !nativePlane);

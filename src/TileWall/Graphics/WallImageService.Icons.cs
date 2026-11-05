@@ -14,7 +14,7 @@ public sealed partial class WallImageService
     private const long NativeIconLimit = 128L * 1024 * 1024;
     private readonly Dictionary<string, Task<NativeIconPackage>> _nativePackages = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _nativeSlots = new(2, 2);
-    private sealed record NativeIconFrame(PeIconFrame Native, byte[] Ico, Prepared Decoded);
+    private sealed record NativeIconFrame(PeIconFrame Native, byte[] Encoded, Prepared Decoded);
     private sealed record NativeIconPackage(PeIconGroup? Group, IReadOnlyList<NativeIconFrame> Frames,
         bool CacheEmpty, string? ResourcePath = null, string? Key = null, bool Complete = true);
     private sealed record DiskIconFrame(uint ResourceId, uint LanguageId, int Width, int Height, int BitsPerPixel,
@@ -101,14 +101,14 @@ public sealed partial class WallImageService
             var directory = disk.Under("Cache", "Images", "Icons", "Packages", key);
             var manifest = JsonSerializer.Deserialize<DiskIconManifest>(disk.Read(Path.Combine(directory, "manifest.json"), int.MaxValue), CacheJson);
             // Old Empty manifests have no proof of a stable absence. Never import them.
-            if (manifest is null || manifest.Format != 2 || manifest.Key != key || manifest.Empty ||
+            if (manifest is null || manifest.Format != 3 || manifest.Key != key || manifest.Empty ||
                 manifest.Frames is not { Count: > 0 }) return null;
             foreach (var frame in manifest.Frames)
             {
                 if (frame is null || frame.Width is < 1 or > 256 || frame.Height is < 1 or > 256 ||
                     frame.NativeSha256 is not { Length: 64 } || !frame.NativeSha256.All(Uri.IsHexDigit) ||
                     frame.FileSha256 is not { Length: 64 } || !frame.FileSha256.All(Uri.IsHexDigit) ||
-                    frame.File != frame.NativeSha256 + ".ico") return null;
+                    frame.File != frame.NativeSha256 + ".ico" && frame.File != frame.NativeSha256 + ".png") return null;
                 var path = Path.Combine(directory, frame.File);
                 var bytes = disk.Read(path, int.MaxValue);
                 if (Convert.ToHexString(SHA256.HashData(bytes)) != frame.FileSha256) return null;
@@ -126,7 +126,7 @@ public sealed partial class WallImageService
         {
             var mapping = JsonSerializer.Deserialize<DiskIconMapping>(disk.Read(disk.Under("Cache", "Images", "Icons", "Mappings",
                 ManagedImageCache.Key(dependency) + ".json"), 128 * 1024), CacheJson);
-            if (mapping is null || mapping.Format != 2 || mapping.Dependency != dependency ||
+            if (mapping is null || mapping.Format != 3 || mapping.Dependency != dependency ||
                 mapping.PackageKey is not { Length: 64 } || !mapping.PackageKey.All(Uri.IsHexDigit)) return null;
             var directory = disk.Under("Cache", "Images", "Icons", "Packages", mapping.PackageKey);
             using var lease = disk.Lease(directory);
@@ -136,7 +136,15 @@ public sealed partial class WallImageService
             foreach (var item in manifest.Frames)
             {
                 token.ThrowIfCancellationRequested();
-                var single = ReadExplicitIco(Path.Combine(directory, item.File), 0)?.Frames.SingleOrDefault();
+                PeIconFrame? single;
+                if (item.File.EndsWith(".png", StringComparison.Ordinal))
+                {
+                    var bytes = disk.Read(Path.Combine(directory, item.File), int.MaxValue);
+                    if (PeIconResourceReader.DetectFormat(bytes, item.Width, item.Height) != PeIconFrameFormat.Png) return null;
+                    single = new(item.ResourceId, item.LanguageId, item.Width, item.Height, item.BitsPerPixel,
+                        item.ColorCount, item.Planes, PeIconFrameFormat.Png, bytes, Convert.ToHexString(SHA256.HashData(bytes)));
+                }
+                else single = ReadExplicitIco(Path.Combine(directory, item.File), 0)?.Frames.SingleOrDefault();
                 if (single is null || single.Width != item.Width || single.Height != item.Height || single.Sha256 != item.NativeSha256) return null;
                 native.Add(single with { ResourceId = item.ResourceId, LanguageId = item.LanguageId });
             }
@@ -152,17 +160,19 @@ public sealed partial class WallImageService
     {
         if (_disk is not { } disk || package.Group is null || package.Frames.Count == 0 || !package.Complete) return null;
         var group = package.Group;
-        var key = ManagedImageCache.Key("native-resource-v5|" + PeIconResourceReader.ResourceDependencyStamp(package.ResourcePath) + "|" +
+        var key = ManagedImageCache.Key("native-resource-v6|" + PeIconResourceReader.ResourceDependencyStamp(package.ResourcePath) + "|" +
             group.ResourceId + "|" + group.ResourceName + "|" + group.LanguageId + "|" +
             string.Join("|", package.Frames.Select(frame => frame.Native.Sha256)));
         var frames = package.Frames.Select(frame => new DiskIconFrame(frame.Native.ResourceId, frame.Native.LanguageId,
             frame.Native.Width, frame.Native.Height, frame.Native.BitsPerPixel, frame.Native.ColorCount, frame.Native.Planes,
-            frame.Native.Sha256, frame.Native.Sha256 + ".ico", Convert.ToHexString(SHA256.HashData(frame.Ico)))).ToArray();
-        var manifest = new DiskIconManifest(2, key, group.ResourceId, group.ResourceName, group.LanguageId, false, frames);
+            frame.Native.Sha256, frame.Native.Sha256 + (frame.Native.Format == PeIconFrameFormat.Png ? ".png" : ".ico"),
+            Convert.ToHexString(SHA256.HashData(frame.Encoded)))).ToArray();
+        var manifest = new DiskIconManifest(3, key, group.ResourceId, group.ResourceName, group.LanguageId, false, frames);
         var payload = package.Frames.GroupBy(frame => frame.Native.Sha256, StringComparer.Ordinal)
-            .ToDictionary(items => items.Key + ".ico", items => items.First().Ico, StringComparer.Ordinal);
+            .ToDictionary(items => items.Key + (items.First().Native.Format == PeIconFrameFormat.Png ? ".png" : ".ico"),
+                items => items.First().Encoded, StringComparer.Ordinal);
         payload.Add("manifest.json", JsonSerializer.SerializeToUtf8Bytes(manifest, CacheJson));
-        var mapping = JsonSerializer.SerializeToUtf8Bytes(new DiskIconMapping(2, dependency, key), CacheJson);
+        var mapping = JsonSerializer.SerializeToUtf8Bytes(new DiskIconMapping(3, dependency, key), CacheJson);
         try
         {
             if (ReadIconManifest(key) is null) disk.DiscardIconPackage(key);
@@ -180,7 +190,7 @@ public sealed partial class WallImageService
         var target = string.Equals(icon, NormalizePath(exe), StringComparison.OrdinalIgnoreCase)
             ? iconDependency : PeIconResourceReader.ResourceDependencyStamp(exe);
         if (icon is null && !File.Exists(exe)) return null;
-        return "native-icon-v5:" + (language ?? CultureInfo.CurrentUICulture.Name) + ":" + iconIndex + ":" + iconDependency + "|" + target;
+        return "native-icon-v6:" + (language ?? CultureInfo.CurrentUICulture.Name) + ":" + iconIndex + ":" + iconDependency + "|" + target;
     }
     private static PeIconGroup? ReadExplicitIco(string path, int? index)
     {
@@ -231,7 +241,7 @@ public sealed partial class WallImageService
             {
                 ct.ThrowIfCancellationRequested();
                 var prepared = await DecodeNativeFrameAsync(frame, group, ct).ConfigureAwait(false);
-                if (prepared.Pixels is not null) frames.Add(new(frame, PeIconResourceReader.WrapSingleFrameIco(frame), prepared));
+                if (prepared.Pixels is not null) frames.Add(new(frame, NativeFrameBytes(frame), prepared));
             }
         return frames;
     }
@@ -323,16 +333,21 @@ public sealed partial class WallImageService
                 lock (_workGate)
                 {
                     var completed = _nativePackages.Where(pair => pair.Key != producerKey && pair.Value.IsCompletedSuccessfully).ToArray();
-                    var bytes = completed.Sum(pair => pair.Value.Result.Frames.Sum(frame => (long)frame.Ico.Length + (frame.Decoded.Pixels?.LongLength ?? 0))) +
-                        frames.Sum(frame => (long)frame.Ico.Length + (frame.Decoded.Pixels?.LongLength ?? 0));
+                    var bytes = completed.Sum(pair => pair.Value.Result.Frames.Sum(frame => (long)frame.Encoded.Length + (frame.Decoded.Pixels?.LongLength ?? 0))) +
+                        frames.Sum(frame => (long)frame.Encoded.Length + (frame.Decoded.Pixels?.LongLength ?? 0));
                     foreach (var pair in completed)
-                    { if (_nativePackages.Count <= 32 && bytes <= 64L * 1024 * 1024) break; _nativePackages.Remove(pair.Key); bytes -= pair.Value.Result.Frames.Sum(frame => (long)frame.Ico.Length + (frame.Decoded.Pixels?.LongLength ?? 0)); }
+                    { if (_nativePackages.Count <= 32 && bytes <= 64L * 1024 * 1024) break; _nativePackages.Remove(pair.Key); bytes -= pair.Value.Result.Frames.Sum(frame => (long)frame.Encoded.Length + (frame.Decoded.Pixels?.LongLength ?? 0)); }
                 }
             }
             return result;
         }
         finally { _nativeSlots.Release(); }
     }, _cacheLifetime.Token);
+
+    // PNG resources are complete images already. Only a DIB needs the ICO
+    // directory and icon mask semantics supplied by a single-frame wrapper.
+    private static byte[] NativeFrameBytes(PeIconFrame frame) => frame.Format == PeIconFrameFormat.Png
+        ? frame.RawData.ToArray() : PeIconResourceReader.WrapSingleFrameIco(frame);
 
     private static async Task<Prepared> DecodeNativeFrameAsync(PeIconFrame frame, PeIconGroup group, CancellationToken ct)
     {
@@ -341,7 +356,7 @@ public sealed partial class WallImageService
             using var stream = new InMemoryRandomAccessStream(); using var writer = new DataWriter(stream);
             // Cancellation must reach the WinRT bridge: checking between frames
             // cannot end a shutdown wait when a codec never signals Completed.
-            writer.WriteBytes(PeIconResourceReader.WrapSingleFrameIco(frame));
+            writer.WriteBytes(NativeFrameBytes(frame));
             await writer.StoreAsync().AsTask(ct).ConfigureAwait(false); stream.Seek(0);
             var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(ct).ConfigureAwait(false);
             Interlocked.Increment(ref _nativeDecodedFrames);

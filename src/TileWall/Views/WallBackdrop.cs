@@ -24,18 +24,22 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
     private WallBackgroundMode _mode = WallBackgroundMode.Acrylic;
     private int _transparency = 10;
     private bool _active = true, _dark, _acrylicFailed, _updating, _disconnecting;
-    private bool _snapshotAvailable;
+    private bool _snapshotAvailable, _snapshotPending;
+    private long _intentGeneration;
     private Task<bool>? _pendingCommit;
     private (bool Fallback, bool Reduced)? _lastNotifiedState;
+    private bool? _lastNotifiedNativeAttached;
     private (bool HighContrast, Color? Background)? _lastMaterialPolicy;
 
     internal Func<Task<bool>>? WaitForFallbackCommit { get; set; }
+    internal bool NativeMaterialAttached => _selectedMaterial is not null;
 
     internal AcrylicSnapshotRecipe? SnapshotRecipe(bool dark) =>
         _materials.TryGetValue(WallBackgroundMode.Acrylic, out var slot) &&
         slot.Configuration.Theme == (dark ? SystemBackdropTheme.Dark : SystemBackdropTheme.Light) &&
         slot.Controller is DesktopAcrylicController acrylic
-            ? new(acrylic.TintColor, acrylic.TintOpacity, acrylic.LuminosityOpacity) : null;
+            ? new(acrylic.TintColor, acrylic.TintOpacity, acrylic.LuminosityOpacity,
+                Math.Round(slot.Proxy.Opacity * 255) / 255d) : null;
 
     private sealed class MaterialSlot(WallBackgroundMode mode, ISystemBackdropControllerWithTargets controller,
         AlphaBackdropTarget proxy)
@@ -53,14 +57,36 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
         if (_diagnosticTrace) AppLog.Warn("BackdropDiagnostic", message);
     }
 
-    internal void Configure(WallSettings settings, bool active, bool dark, bool snapshotAvailable = false)
+    internal void SetFocusIntent(bool active, bool snapshotPending)
     {
+        if (_active == active && _snapshotPending == snapshotPending) return;
+        // Record intent synchronously with Window.Activated, before the queued
+        // appearance refresh. An earlier commit cannot finish the old transition
+        // in the gap between those two UI callbacks.
+        _intentGeneration++;
+        _pendingCommit = null;
+        _active = active;
+        _snapshotPending = snapshotPending;
+        _acrylicFailed = false;
+    }
+
+    internal void Configure(WallSettings settings, bool active, bool dark, bool snapshotAvailable = false,
+        bool snapshotPending = false)
+    {
+        if (_mode != settings.BackgroundMode || _active != active || _dark != dark ||
+            _snapshotAvailable != snapshotAvailable || _snapshotPending != snapshotPending ||
+            _transparency != Math.Clamp(settings.BackgroundTransparency, 0, 100))
+        {
+            _intentGeneration++;
+            _pendingCommit = null;
+        }
         if (_mode != settings.BackgroundMode || _active != active || _dark != dark) _acrylicFailed = false;
         _mode = settings.BackgroundMode;
         _transparency = Math.Clamp(settings.BackgroundTransparency, 0, 100);
         _active = active;
         _dark = dark;
         _snapshotAvailable = snapshotAvailable;
+        _snapshotPending = snapshotPending;
         UpdateMaterial();
     }
 
@@ -87,6 +113,8 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
 
     private void OnEffectsChanged(UISettings sender, object args) => queue.TryEnqueue(() =>
     {
+        _intentGeneration++;
+        _pendingCommit = null;
         _acrylicFailed = false;
         UpdateMaterial();
     });
@@ -133,9 +161,11 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
 
     private void NotifyFallbackChanged(bool fallback, bool reduced)
     {
-        if (_lastNotifiedState is { } previous && previous.Fallback == fallback && previous.Reduced == reduced) return;
+        if (_lastNotifiedState is { } previous && previous.Fallback == fallback && previous.Reduced == reduced &&
+            _lastNotifiedNativeAttached == NativeMaterialAttached) return;
         fallbackChanged(fallback, reduced);
         _lastNotifiedState = (fallback, reduced);
+        _lastNotifiedNativeAttached = NativeMaterialAttached;
     }
 
     private void OnMaterialReadinessChanged(AlphaBackdropTarget proxy)
@@ -158,12 +188,12 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
         if (!ReferenceEquals(_pendingCommit, commit))
         {
             _pendingCommit = commit;
-            _ = ResumeAfterCommitAsync(commit);
+            _ = ResumeAfterCommitAsync(commit, _intentGeneration);
         }
         return false;
     }
 
-    private async Task ResumeAfterCommitAsync(Task<bool> commit)
+    private async Task ResumeAfterCommitAsync(Task<bool> commit, long generation)
     {
         try { await commit; }
         catch (Exception ex)
@@ -171,7 +201,7 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             AppLog.Warn("BackdropCommit", $"Commit completion failed: {ex.GetType().Name}");
             return;
         }
-        if (!ReferenceEquals(_pendingCommit, commit)) return;
+        if (generation != _intentGeneration || !ReferenceEquals(_pendingCommit, commit)) return;
         _pendingCommit = null;
         // A canceled/superseded source can complete false without another callback.
         // Re-evaluate once; HasCommitted never queues an already completed failure.
@@ -190,19 +220,26 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             var highContrast = _defaultConfiguration.IsHighContrast;
             var contrastBackground = _defaultConfiguration.HighContrastBackgroundColor;
             if (_lastMaterialPolicy is { } previousPolicy && (previousPolicy.HighContrast != highContrast ||
-                !previousPolicy.Background.Equals(contrastBackground))) _lastNotifiedState = null;
+                !previousPolicy.Background.Equals(contrastBackground)))
+            {
+                _lastNotifiedState = null;
+                _intentGeneration++;
+                _pendingCommit = null;
+            }
             _lastMaterialPolicy = (highContrast, contrastBackground);
-            // The default configuration observes focus before Window.Activated.
-            // Keep the outgoing brush until its replacement has committed.
-            var effectiveActive = _active && _defaultConfiguration.IsInputActive;
+            // Window/session handling owns focus intent. The default configuration
+            // can observe deactivation earlier; reacting to that here used to insert
+            // Mica/solid before the admitted snapshot had even started preparing.
+            var effectiveActive = _active;
             var reduced = !_uiSettings.AdvancedEffectsEnabled || _defaultConfiguration.IsHighContrast;
             // A hidden first show also needs the resolved recipe. Creating the
             // disabled proxy does not attach its brush to the window; selection
             // and the existing committed handoff still own that transition.
             if (!reduced && _mode == WallBackgroundMode.Acrylic && DesktopAcrylicController.IsSupported())
                 _ = GetMaterial(WallBackgroundMode.Acrylic);
-            var useSnapshot = !reduced && _snapshotAvailable && _mode == WallBackgroundMode.Acrylic && !effectiveActive;
-            var selected = useSnapshot ? WallBackgroundMode.Custom : _mode == WallBackgroundMode.Acrylic && (!effectiveActive || _acrylicFailed || !DesktopAcrylicController.IsSupported())
+            var useSnapshot = !reduced && _snapshotAvailable && !_snapshotPending && _mode == WallBackgroundMode.Acrylic && !effectiveActive;
+            var selected = useSnapshot ? WallBackgroundMode.Custom : _mode == WallBackgroundMode.Acrylic &&
+                (!effectiveActive && !_snapshotPending || _acrylicFailed || !DesktopAcrylicController.IsSupported())
                 ? WallBackgroundMode.Mica : _mode;
             var supported = selected == WallBackgroundMode.Acrylic ? DesktopAcrylicController.IsSupported()
                 : selected == WallBackgroundMode.Mica && MicaController.IsSupported();
@@ -218,9 +255,16 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             if (!ReferenceEquals(material, _selectedMaterial)) DisableSelectedMaterial();
             foreach (var slot in _materials.Values)
             {
-                slot.Proxy.Opacity = reduced ? 1f : slot.Mode == WallBackgroundMode.Acrylic
-                    ? (float)AcrylicSnapshotRecipe.BackgroundOpacity(_transparency) : (100 - _transparency) / 100f;
-                UpdateConfiguration(slot, ReferenceEquals(slot, material) && effectiveActive);
+                // Hold the admitted Acrylic alpha as well as its pixels while
+                // inactive. A new setting takes effect on the next activation.
+                if (effectiveActive || !_snapshotPending && !_snapshotAvailable || slot.Mode != WallBackgroundMode.Acrylic || reduced)
+                    slot.Proxy.Opacity = reduced ? 1f : slot.Mode == WallBackgroundMode.Acrylic
+                        ? (float)AcrylicSnapshotRecipe.BackgroundOpacity(_transparency) : (100 - _transparency) / 100f;
+                // The disabled Acrylic controller keeps its active recipe cached.
+                // Toggling its input state while F is visible would let a stale
+                // native fallback brush be the first committed activation source.
+                UpdateConfiguration(slot, ReferenceEquals(slot, material) && (effectiveActive || _snapshotPending) ||
+                    slot.Mode == WallBackgroundMode.Acrylic && useSnapshot);
             }
             if (material is { Available: true })
             {
@@ -242,6 +286,9 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
                 NotifyFallbackChanged(useSnapshot || selected != WallBackgroundMode.Custom, reduced);
                 DisableSelectedMaterial();
                 if (_target.SystemBackdrop is not null) _target.SystemBackdrop = null!;
+                // Recalculate the final solid plane after native detach. While a
+                // native graph existed it had to be opaque to avoid double alpha.
+                NotifyFallbackChanged(useSnapshot || selected != WallBackgroundMode.Custom, reduced);
                 if (selected == WallBackgroundMode.Acrylic)
                 {
                     _acrylicFailed = true;
@@ -256,6 +303,7 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             if (WaitForFallbackCommit is { } waitForCommit && !HasCommitted(waitForCommit())) return;
             DisableSelectedMaterial();
             _target.SystemBackdrop = null!;
+            NotifyFallbackChanged(true, !_uiSettings.AdvancedEffectsEnabled || _defaultConfiguration.IsHighContrast);
             if (_mode == WallBackgroundMode.Acrylic && !_acrylicFailed)
             {
                 _acrylicFailed = true;
@@ -317,6 +365,7 @@ internal sealed partial class AlphaBackdropTarget(ICompositionSupportsSystemBack
     private bool _enabled, _ready, _disposed;
     private readonly CancellationTokenSource _commitLifetime = new();
     private Task<bool>? _commitWork;
+    private long _revision;
 
     internal bool IsReady => _ready;
 
@@ -324,13 +373,14 @@ internal sealed partial class AlphaBackdropTarget(ICompositionSupportsSystemBack
     {
         if (_ready == ready && !sourceChanged) return;
         _ready = ready;
+        _revision++;
         _commitWork = null;
         readinessChanged?.Invoke(this);
     }
 
-    internal Task<bool> WaitForCommitAsync() => _commitWork ??= CommitAsync(_source, _commitLifetime.Token);
+    internal Task<bool> WaitForCommitAsync() => _commitWork ??= CommitAsync(_source, _revision, _commitLifetime.Token);
 
-    private async Task<bool> CommitAsync(Windows.UI.Composition.CompositionBrush? source, CancellationToken token)
+    private async Task<bool> CommitAsync(Windows.UI.Composition.CompositionBrush? source, long revision, CancellationToken token)
     {
         if (!_ready || source is null) return false;
         try
@@ -338,7 +388,7 @@ internal sealed partial class AlphaBackdropTarget(ICompositionSupportsSystemBack
             TraceDiagnostic("Native commit requested");
             await source.Compositor.RequestCommitAsync().AsTask(token);
             token.ThrowIfCancellationRequested();
-            var current = _ready && ReferenceEquals(_source, source);
+            var current = !_disposed && _enabled && _ready && revision == _revision && ReferenceEquals(_source, source);
             if (current) TraceDiagnostic("Native committed");
             return current;
         }
@@ -377,6 +427,7 @@ internal sealed partial class AlphaBackdropTarget(ICompositionSupportsSystemBack
             if (_opacity == value) return;
             _opacity = value;
             if (_alpha is not null) _alpha.Color = Color.FromArgb((byte)Math.Round(255 * value), 255, 255, 255);
+            _revision++;
             _commitWork = null;
         }
     }

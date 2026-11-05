@@ -7,7 +7,7 @@ using Windows.Graphics;
 
 namespace TileWall.Graphics;
 
-/// <summary>One bounded desktop capture; pixels never leave process memory.</summary>
+/// <summary>One physical-resolution desktop capture; pixels never leave process memory.</summary>
 internal static class DesktopBackdropSnapshot
 {
     internal sealed record CapturedFrame(DecodedImageFrame Pixels, int Left, int Top, int Width, int Height,
@@ -101,9 +101,11 @@ internal static class DesktopBackdropSnapshot
         var captureWidth = right - left;
         var captureHeight = bottom - top;
         if (captureWidth <= 0 || captureHeight <= 0) return null;
-        var scale = Math.Min(1, 512d / Math.Max(captureWidth, captureHeight));
-        var width = Math.Max(1, (int)Math.Round(captureWidth * scale));
-        var height = Math.Max(1, (int)Math.Round(captureHeight * scale));
+        // S must retain the physical desktop detail. Only the later Gaussian work
+        // plane is reduced; both branches come from this single synchronous read.
+        if ((long)captureWidth * captureHeight > 64L * 1024 * 1024) return null;
+        var width = captureWidth;
+        var height = captureHeight;
         var screen = GetDC(IntPtr.Zero);
         if (screen == IntPtr.Zero) return null;
         IntPtr memory = IntPtr.Zero, bitmap = IntPtr.Zero, previous = IntPtr.Zero;
@@ -124,12 +126,12 @@ internal static class DesktopBackdropSnapshot
             for (var index = 3; index < bytes.Length; index += 4) bytes[index] = 255;
             var pixelsFrame = new DecodedImageFrame("memory:desktop", bytes.Length, DateTime.UtcNow,
                 captureWidth, captureHeight, width, height, bytes);
-            var cropLeft = (int)Math.Round((region.X - left) * (double)width / captureWidth);
-            var cropTop = (int)Math.Round((region.Y - top) * (double)height / captureHeight);
-            var cropWidth = Math.Clamp((int)Math.Round(region.Width * (double)width / captureWidth), 1, width - cropLeft);
-            var cropHeight = Math.Clamp((int)Math.Round(region.Height * (double)height / captureHeight), 1, height - cropTop);
+            var cropLeft = region.X - left;
+            var cropTop = region.Y - top;
+            var cropWidth = region.Width;
+            var cropHeight = region.Height;
             return new(pixelsFrame, cropLeft, cropTop, cropWidth, cropHeight, region.Width, region.Height,
-                sigma * width / captureWidth, sigma * height / captureHeight);
+                sigma, sigma);
         }
         finally
         {
@@ -140,19 +142,25 @@ internal static class DesktopBackdropSnapshot
         }
     }
 
-    internal static DecodedImageFrame BlurAndTint(CapturedFrame captured, AcrylicSnapshotRecipe recipe)
+    internal static DecodedImageFrame BlurAndTint(CapturedFrame captured, AcrylicSnapshotRecipe recipe,
+        CancellationToken token = default)
     {
-        var blurred = LowResolutionBlur.ApplySigma(captured.Pixels, captured.SigmaX, captured.SigmaY);
-        var pixels = new byte[captured.Width * captured.Height * 4];
-        for (var row = 0; row < captured.Height; row++)
-            blurred.BgraPremultiplied.Span.Slice(((row + captured.Top) * blurred.Width + captured.Left) * 4,
-                captured.Width * 4).CopyTo(pixels.AsSpan(row * captured.Width * 4));
+        token.ThrowIfCancellationRequested();
+        var scale = Math.Min(1, 512d / Math.Max(captured.Pixels.Width, captured.Pixels.Height));
+        var workWidth = Math.Max(1, (int)Math.Round(captured.Pixels.Width * scale));
+        var workHeight = Math.Max(1, (int)Math.Round(captured.Pixels.Height * scale));
+        var work = ImageFrameDecoder.ResizePixels(captured.Pixels, workWidth, workHeight, token);
+        var blurred = LowResolutionBlur.ApplySigma(work,
+            captured.SigmaX * workWidth / captured.Pixels.Width,
+            captured.SigmaY * workHeight / captured.Pixels.Height);
+        token.ThrowIfCancellationRequested();
+        var materialPixels = blurred.BgraPremultiplied.ToArray();
         var tintLuminosity = Luminosity(recipe.Tint.R, recipe.Tint.G, recipe.Tint.B);
         var luminosityOpacity = Math.Round(Math.Clamp(recipe.LuminosityOpacity, 0, 1) * 255) / 255;
         var tintOpacity = Math.Round(recipe.Tint.A * Math.Clamp(recipe.TintOpacity, 0, 1)) / 255;
-        for (var index = 0; index < pixels.Length; index += 4)
+        for (var index = 0; index < materialPixels.Length; index += 4)
         {
-            double red = pixels[index + 2], green = pixels[index + 1], blue = pixels[index];
+            double red = materialPixels[index + 2], green = materialPixels[index + 1], blue = materialPixels[index];
             var luminosityRed = red;
             var luminosityGreen = green;
             var luminosityBlue = blue;
@@ -166,11 +174,35 @@ internal static class DesktopBackdropSnapshot
             red += (tintRed - red) * tintOpacity;
             green += (tintGreen - green) * tintOpacity;
             blue += (tintBlue - blue) * tintOpacity;
-            pixels[index + 2] = ToByte(red);
-            pixels[index + 1] = ToByte(green);
-            pixels[index] = ToByte(blue);
+            materialPixels[index + 2] = ToByte(red);
+            materialPixels[index + 1] = ToByte(green);
+            materialPixels[index] = ToByte(blue);
+            materialPixels[index + 3] = 255;
         }
-        return blurred with { SourceWidth = captured.ContentWidth, SourceHeight = captured.ContentHeight,
+        // Expand M to exactly S's padded coordinate space before cropping either.
+        // Interpolation may smooth M; S is never resampled or reconstructed from M.
+        var material = ImageFrameDecoder.ResizePixels(blurred with { BgraPremultiplied = materialPixels },
+            captured.Pixels.Width, captured.Pixels.Height, token);
+        var opacity = Math.Clamp(recipe.EffectiveOpacity, 0, 1);
+        var pixels = new byte[checked(captured.Width * captured.Height * 4)];
+        var sharpPixels = captured.Pixels.BgraPremultiplied.Span;
+        var softenedPixels = material.BgraPremultiplied.Span;
+        for (var row = 0; row < captured.Height; row++)
+        {
+            token.ThrowIfCancellationRequested();
+            var sourceOffset = ((row + captured.Top) * captured.Pixels.Width + captured.Left) * 4;
+            var destinationOffset = row * captured.Width * 4;
+            for (var column = 0; column < captured.Width; column++)
+            {
+                var source = sourceOffset + column * 4;
+                var destination = destinationOffset + column * 4;
+                for (var channel = 0; channel < 3; channel++)
+                    pixels[destination + channel] = ToByte(opacity * softenedPixels[source + channel] +
+                        (1 - opacity) * sharpPixels[source + channel]);
+                pixels[destination + 3] = 255;
+            }
+        }
+        return captured.Pixels with { SourceWidth = captured.ContentWidth, SourceHeight = captured.ContentHeight,
             Width = captured.Width, Height = captured.Height, BgraPremultiplied = pixels };
     }
 

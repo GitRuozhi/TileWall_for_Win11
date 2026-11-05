@@ -13,8 +13,9 @@ public sealed partial class WallImageService
         MemberImageDisplay display, CancellationToken ct = default) => StartImageRequest(async token =>
     {
         if (frame.Sharp is not WriteableBitmap bitmap) return frame;
-        var size = ImageDecodeSizing.ForDisplay(checked((int)frame.SourcePixels.Width), checked((int)frame.SourcePixels.Height),
+        var demand = ImageDecodeSizing.DisplayDemand(checked((int)frame.SourcePixels.Width), checked((int)frame.SourcePixels.Height),
             width, height, display);
+        var size = (Width: Math.Min(bitmap.PixelWidth, demand.Width), Height: Math.Min(bitmap.PixelHeight, demand.Height));
         if (size.Width >= bitmap.PixelWidth && size.Height >= bitmap.PixelHeight) return frame;
         var pixels = new byte[checked(bitmap.PixelWidth * bitmap.PixelHeight * 4)];
         using (var input = bitmap.PixelBuffer.AsStream()) input.ReadExactly(pixels);
@@ -31,7 +32,8 @@ public sealed partial class WallImageService
     private async Task<DecodedImageFrame> PrepareAutomaticDisplayPlaneAsync(DecodedImageFrame source,
         int width, int height, MemberImageDisplay display, bool cacheAllowed, CancellationToken token)
     {
-        var size = ImageDecodeSizing.ForDisplay(source.SourceWidth, source.SourceHeight, width, height, display);
+        var demand = ImageDecodeSizing.DisplayDemand(source.SourceWidth, source.SourceHeight, width, height, display);
+        var size = (Width: Math.Min(source.Width, demand.Width), Height: Math.Min(source.Height, demand.Height));
         if (size.Width >= source.Width && size.Height >= source.Height) return source;
         var key = await Task.Run(() => "automatic-display-v1:" +
             Convert.ToHexString(SHA256.HashData(source.BgraPremultiplied.Span)) + $":{size.Width}x{size.Height}", token);
@@ -80,11 +82,7 @@ public sealed partial class WallImageService
         {
             // The native buffer is immutable; the service owns a shared display
             // producer independently of a caller abandoning its wait.
-            var asset = await EncodeIconFrameAsync(new Prepared(WallImageStatus.Loaded,
-                source.BgraPremultiplied.ToArray(), source.Width, source.Height, null), token).ConfigureAwait(false);
-            var decoded = await _decoder.DecodePackageFrameAsync(asset.CopyBytes(), source.SourcePath,
-                width, height, token).ConfigureAwait(false);
-            if (decoded.Frame is not { } result) throw new IOException(decoded.ErrorType ?? "Automatic display scaling failed.");
+            var result = ImageFrameDecoder.ResizePixels(source, width, height, token);
             token.ThrowIfCancellationRequested();
             if (cacheAllowed) CachePuzzle(key, new PuzzlePrepared(WallImageStatus.Loaded, new(result, null)));
             return result;
@@ -118,8 +116,9 @@ public sealed partial class WallImageService
     private const long DerivedLimit = 128L * 1024 * 1024;
     private const int MaximumDerivedBytes = 2 * 1024 * 1024;
     private string DerivedPath(string hash, PuzzleDecodeBudget budget) => _disk!.Under("Cache", "Images", "Derived",
-        ManagedImageCache.Key($"derived-v5|{hash}|{budget.Purpose}|{budget.Width}x{budget.Height}|" +
-            $"{budget.PreserveSourceResolution}|{budget.SharpMaxEdge}|{budget.BlurMaxEdge}|{budget.NeedsBlur}|{budget.CacheSharp}|BGRA8-premultiplied") + ".pixels");
+        ManagedImageCache.Key($"derived-v6|{hash}|{budget.Purpose}|{budget.Width}x{budget.Height}|" +
+            $"{budget.PreserveSourceResolution}|{budget.SharpMaxEdge}|{budget.BlurMaxEdge}|{budget.NeedsBlur}|{budget.CacheSharp}|" +
+            $"{budget.Display?.Mode}:{budget.Display?.CustomScale:R}|BGRA8-premultiplied") + ".pixels");
 
     private PuzzleDecodedPair? ReadDerived(string hash, PuzzleDecodeBudget budget, string identity)
     {

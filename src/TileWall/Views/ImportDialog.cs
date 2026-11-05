@@ -12,6 +12,7 @@ using TileWall.Core.Application;
 using TileWall.Core.Exchange;
 using TileWall.Core.Grid;
 using TileWall.Core.Import;
+using TileWall.Core.Imaging;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
 using TileWall.Graphics;
@@ -1254,10 +1255,8 @@ internal sealed class ImportDialog : IWallDialogSession
         }
 
         var width = descriptor.Width; var height = descriptor.Height;
-        var reserve = member.ImageDisplay.Mode == TileWall.Core.Imaging.ImageDisplayMode.Custom
-            ? Math.Max(1, member.ImageDisplay.CustomScale) : 1;
-        var packageWidth = (int)Math.Clamp(Math.Ceiling(width * reserve), 1, 4096);
-        var packageHeight = (int)Math.Clamp(Math.Ceiling(height * reserve), 1, 4096);
+        var packageWidth = width;
+        var packageHeight = height;
         PuzzleFrameResult? result = null;
         PackagePreviewSource? packageSource = null;
         if (descriptor.Source.Package is { } package)
@@ -1267,7 +1266,7 @@ internal sealed class ImportDialog : IWallDialogSession
         }
         try
         {
-            if (packageSource is not null && (member.Images.Media is not null || member.Images.ManagedGallery is not null))
+            if (packageSource is not null && (member.Images.Media is not null || member.Images.ManagedGallery is not null || member.Images.IconSeries is not null))
             {
                 work.Stage = "package-slot-wait";
                 await _packageMediaSlots.WaitAsync(token);
@@ -1278,15 +1277,26 @@ internal sealed class ImportDialog : IWallDialogSession
                     work.Stage = "package-media-read";
                     await packageSource.ReadGate.WaitAsync(token);
                     TileWall.Core.Storage.PreparedMediaAsset asset;
+                    PixelSize? referenceSize = null;
+                    MemberImageDisplay? packageDisplay = member.ImageDisplay;
                     try
                     {
-                        asset = member.Images.ManagedGallery is { } gallery
+                        if (member.Images.IconSeries is { } series)
+                        {
+                            var request = ImageDecodeSizing.ForSeries(series, width, height, member.ImageDisplay);
+                            asset = (await batch.PrepareMediaAsync([series.Frames[request.FrameIndex].Media], token: token)).Single();
+                            packageWidth = request.Width; packageHeight = request.Height;
+                            var reference = series.Frames[series.SelectedFrame];
+                            referenceSize = new(reference.Width, reference.Height);
+                            packageDisplay = null;
+                        }
+                        else asset = member.Images.ManagedGallery is { } gallery
                             ? await batch.ReadGalleryImageAsync(gallery.ContentId, token)
                             : (await batch.PrepareMediaAsync([member.Images.Media!], token: token)).Single();
                     }
                     finally { packageSource.ReadGate.Release(); }
                     result = await _images.LoadPackageFrameAsync(asset, packageWidth, packageHeight,
-                        member.Visual.BackgroundMode == MemberBackgroundMode.Blur, token);
+                        member.Visual.BackgroundMode == MemberBackgroundMode.Blur, token, packageDisplay, referenceSize);
                 }
                 finally { _packageMediaSlots.Release(); }
             }

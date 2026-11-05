@@ -133,14 +133,15 @@ public sealed partial class WallStoreTests
             with { Generation = 1 }, [], prepared.Assets)).CommittedDocument!;
         using (var snapshot = store.CapturePackageSnapshot(first, 1, ["series"]))
         {
-            Assert.NotNull(Assert.Single(snapshot.AutomaticImageMembers).Images.IconSeries);
+            Assert.Empty(snapshot.AutomaticImageMembers);
             var removed = store.Commit(first, new(1, Wall() with { Generation = 2 }, [])).CommittedDocument!;
             var latest = store.Commit(removed, new(2, removed with
                 { Generation = 3, Settings = removed.Settings with { AlwaysOnTop = false } }, []));
             Assert.Equal(WallCommitStatus.Committed, latest.Status);
             Assert.All(prepared.Assets, asset => Assert.True(files.Exists(store.ManagedMediaPath(asset.Reference))));
-            snapshot.CompleteAutomaticImages(new Dictionary<string, PreparedMediaAsset?> { ["series"] = prepared.Assets[0] });
-            Assert.Equal(prepared.Assets[0].Reference, Assert.Single(snapshot.Content.Members).Images.Media);
+            snapshot.CompleteAutomaticImages();
+            Assert.True(AutomaticIconSeriesRules.SameSeries(prepared.Series,
+                Assert.Single(snapshot.Content.Members).Images.IconSeries));
         }
         Assert.Equal(WallOpenStatus.Loaded, store.Open().Status);
         Assert.All(prepared.Assets, asset => Assert.False(files.Exists(store.ManagedMediaPath(asset.Reference))));

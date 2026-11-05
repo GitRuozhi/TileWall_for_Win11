@@ -71,15 +71,17 @@ public sealed record WallPackageImageSource
     public string? Path { get; init; }
     public ManagedMediaReference? Media { get; init; }
     public string? GalleryId { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public AutomaticIconSeries? IconSeries { get; init; }
     internal static WallPackageImageSource From(MemberImageSource source) => new()
     {
-        Kind = source.Kind, Media = source.Media,
+        Kind = source.Kind, Media = source.Media, IconSeries = source.IconSeries,
         Path = source.ManagedGallery is null && source.Media is null ? source.Path : null,
         GalleryId = source.ManagedGallery?.ContentId,
     };
     internal MemberImageSource ToSource() => new()
     {
-        Kind = Kind, Path = GalleryId is null ? Path : null, Media = Media,
+        Kind = Kind, Path = GalleryId is null ? Path : null, Media = Media, IconSeries = IconSeries,
         ManagedGallery = GalleryId is { } id ? new(id, id) : null,
     };
 }
@@ -135,7 +137,8 @@ public sealed record WallPackageMember
             Visual = Visual, Entry = EntryKind is { } kind ? new(id, $"Objects/{id}/entry.{(kind == ManagedEntryKind.Lnk ? "lnk" : "url")}", kind) : null,
             TargetInput = TargetInput, SourceShortcutPath = SourceShortcutPath, TargetDisplayName = TargetDisplayName,
             ResourceOrigin = MemberResourceOrigin.Package,
-            Images = Images.Kind == MemberImageSourceKind.Automatic ? new() { Kind = MemberImageSourceKind.None } : Images.ToSource(),
+            Images = Images.Kind == MemberImageSourceKind.Automatic && Images.IconSeries is null
+                ? new() { Kind = MemberImageSourceKind.None } : Images.ToSource(),
             ImageDisplay = ImageDisplay, RotationInterval = RotationInterval,
         };
     }

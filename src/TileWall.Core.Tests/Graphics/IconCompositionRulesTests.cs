@@ -73,6 +73,26 @@ public sealed class IconCompositionRulesTests
     }
 
     [Theory]
+    [InlineData(50, 50, false)]
+    [InlineData(51, 30, true)]
+    [InlineData(30, 51, true)]
+    [InlineData(49, 50, false)]
+    [InlineData(104, 150, true, 256)]
+    [InlineData(42, 60, true)]
+    public void EitherContentAxisMustExceedHalfForACenteredFigure(
+        int contentWidth, int contentHeight, bool accepted, int edge = 100)
+    {
+        var pixels = new byte[edge * edge * 4];
+        Rectangle(pixels, edge, 0, 0, edge, edge, 80, 80, 80, 255);
+        Rectangle(pixels, edge, (edge - contentWidth) / 2, (edge - contentHeight) / 2,
+            contentWidth, contentHeight, 240, 240, 240, 255);
+        var original = pixels.ToArray();
+
+        Assert.Equal(accepted, IconCompositionRules.Accept(pixels, edge, edge));
+        Assert.Equal(original, pixels);
+    }
+
+    [Theory]
     [InlineData(0, 4, 0)]
     [InlineData(4, -1, 0)]
     [InlineData(4, 4, 63)]

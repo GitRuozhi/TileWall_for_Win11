@@ -1,3 +1,5 @@
+using TileWall.Core.Imaging;
+
 namespace TileWall.Core.Wall;
 
 /// <summary>Resolution choice never changes a confirmed icon's source or presentation policy.</summary>
@@ -52,6 +54,13 @@ public static class AutomaticIconSeriesRules
         ArgumentNullException.ThrowIfNull(series);
         if (columns <= 0 || rows <= 0) throw new ArgumentOutOfRangeException(nameof(columns));
         return series.Columns == columns && series.Rows == rows ? series : series with
-        { SelectedFrame = SelectFrame(series, width, height), Columns = columns, Rows = rows };
+        { Columns = columns, Rows = rows };
+    }
+
+    /// <summary>Display resolution may change; the confirmed frame remains the geometry reference.</summary>
+    public static int SelectForDisplay(AutomaticIconSeries series, int width, int height, MemberImageDisplay display)
+    {
+        ArgumentNullException.ThrowIfNull(series);
+        return ImageDecodeSizing.ForSeries(series, width, height, display).FrameIndex;
     }
 }

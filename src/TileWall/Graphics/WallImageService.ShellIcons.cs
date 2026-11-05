@@ -273,9 +273,9 @@ public sealed partial class WallImageService
         MemberImagePurpose purpose = MemberImagePurpose.Content)
     {
         using var trace = ImageCandidateTrace.Start("automatic-display", source, width, height);
-        if (member?.ResourceOrigin == MemberResourceOrigin.Package) return new(null, WallImageStatus.None);
         if (member?.Images.IconSeries is not null)
             return await LoadSavedAutomaticIconFrameAsync(member, width, height, token, nativePlane, purpose);
+        if (member?.ResourceOrigin == MemberResourceOrigin.Package) return new(null, WallImageStatus.None);
         if (width < 1 || height < 1) throw new ArgumentOutOfRangeException(nameof(width));
         try
         {

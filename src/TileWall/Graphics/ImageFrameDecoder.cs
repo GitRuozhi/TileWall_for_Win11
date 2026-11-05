@@ -21,7 +21,7 @@ public sealed record PuzzleDecodedPair(DecodedImageFrame Sharp, DecodedImageFram
 public sealed record PuzzleDecodeResult(ImageDecodeStatus Status, PuzzleDecodedPair? Pair, string? ErrorType = null);
 
 /// <summary>Orientation-correct WIC decode. Safe to call away from the XAML UI thread.</summary>
-public sealed class ImageFrameDecoder
+public sealed partial class ImageFrameDecoder
 {
     private static long _decodedPlaneCount;
     internal static long DecodedPlaneCount => Interlocked.Read(ref _decodedPlaneCount);
@@ -56,10 +56,18 @@ public sealed class ImageFrameDecoder
     }
 
     /// <summary>Decode both complete image planes from one open file and one decoder.</summary>
-    public async Task<PuzzleDecodeResult> DecodePuzzlePairAsync(
+    public Task<PuzzleDecodeResult> DecodePuzzlePairAsync(
         string? sourcePath, int requiredWidthPx, int requiredHeightPx,
         CancellationToken cancellationToken = default, bool preserveSourceResolution = false,
-        int sharpMaxEdge = MaxDecodedEdge, int blurMaxEdge = MaxDecodedEdge, bool needsBlur = true)
+        int sharpMaxEdge = MaxDecodedEdge, int blurMaxEdge = MaxDecodedEdge, bool needsBlur = true) =>
+        DecodeDisplayPairAsync(sourcePath, requiredWidthPx, requiredHeightPx, cancellationToken,
+            preserveSourceResolution, sharpMaxEdge, blurMaxEdge, needsBlur, null);
+
+    internal async Task<PuzzleDecodeResult> DecodeDisplayPairAsync(
+        string? sourcePath, int requiredWidthPx, int requiredHeightPx,
+        CancellationToken cancellationToken = default, bool preserveSourceResolution = false,
+        int sharpMaxEdge = MaxDecodedEdge, int blurMaxEdge = MaxDecodedEdge, bool needsBlur = true,
+        MemberImageDisplay? display = null)
     {
         if (string.IsNullOrWhiteSpace(sourcePath))
             return new(ImageDecodeStatus.MissingFile, null);
@@ -98,10 +106,12 @@ public sealed class ImageFrameDecoder
                 (long)orientedWidth * orientedHeight != (long)rawWidth * rawHeight)
                 return new(ImageDecodeStatus.SourceTooLarge, null);
 
+            var sharpSize = display is null ? (requiredWidthPx, requiredHeightPx) :
+                ImageDecodeSizing.ForDisplay(orientedWidth, orientedHeight, requiredWidthPx, requiredHeightPx, display);
             var sharp = await DecodePlaneAsync(source, path, fileBytes, lastWriteUtc,
                 rawWidth, rawHeight, orientedWidth, orientedHeight,
-                preserveSourceResolution ? orientedWidth : requiredWidthPx,
-                preserveSourceResolution ? orientedHeight : requiredHeightPx, cancellationToken, maxEdge: sharpMaxEdge);
+                preserveSourceResolution ? orientedWidth : sharpSize.Item1,
+                preserveSourceResolution ? orientedHeight : sharpSize.Item2, cancellationToken, maxEdge: sharpMaxEdge);
             DecodedImageFrame? blur = null;
             if (needsBlur)
             {
@@ -204,8 +214,12 @@ public sealed class ImageFrameDecoder
         int width, int height, CancellationToken token, int maximumEdge = MaxDecodedEdge) => DecodePackageFrameCoreAsync(bytes, identity,
             width, height, maximumEdge, token);
 
+    internal Task<ImageDecodeResult> DecodePackageDisplayFrameAsync(byte[] bytes, string identity,
+        int width, int height, MemberImageDisplay display, CancellationToken token) =>
+        DecodePackageFrameCoreAsync(bytes, identity, width, height, MaxDecodedEdge, token, display);
+
     private static async Task<ImageDecodeResult> DecodePackageFrameCoreAsync(byte[] bytes, string identity,
-        int requiredWidth, int requiredHeight, int maximumEdge, CancellationToken token)
+        int requiredWidth, int requiredHeight, int maximumEdge, CancellationToken token, MemberImageDisplay? display = null)
     {
         if (bytes.LongLength < 1) return new(ImageDecodeStatus.SourceTooLarge, null);
         if (requiredWidth < 1 || requiredHeight < 1)
@@ -220,8 +234,10 @@ public sealed class ImageFrameDecoder
         var width = checked((int)source.OrientedPixelWidth); var height = checked((int)source.OrientedPixelHeight);
         if (rawWidth <= 0 || rawHeight <= 0 ||
             (long)width * height != (long)rawWidth * rawHeight) return new(ImageDecodeStatus.SourceTooLarge, null);
+        var size = display is null ? (requiredWidth, requiredHeight) :
+            ImageDecodeSizing.ForDisplay(width, height, requiredWidth, requiredHeight, display);
         var frame = await DecodePlaneAsync(source, identity, bytes.Length, DateTime.MinValue,
-            rawWidth, rawHeight, width, height, requiredWidth, requiredHeight, token, maximumEdge).ConfigureAwait(false);
+            rawWidth, rawHeight, width, height, size.Item1, size.Item2, token, maximumEdge).ConfigureAwait(false);
         return new(frame is null ? ImageDecodeStatus.InvalidImage : ImageDecodeStatus.Success, frame);
     }
 

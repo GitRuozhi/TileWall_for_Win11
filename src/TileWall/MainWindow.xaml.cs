@@ -194,11 +194,19 @@ public sealed partial class MainWindow : Window
 
     private void SetBackdropActive(bool active)
     {
+        var wasActive = _backdropActive;
         if (active)
             DesktopBackdropSnapshot.TryRestoreWindowAffinity(WinRT.Interop.WindowNative.GetWindowHandle(this),
                 ref _snapshotAffinityToRestore);
         if (active || _backdropActive != active) CancelFocusLossSnapshot();
         _backdropActive = active;
+        // Admit only a hold here. The existing settled external-session check owns
+        // capture, so own dialogs/popups and unknown foreground never get sampled.
+        if (wasActive && !active && Settings.StayVisibleOnFocusLoss && Settings.BackgroundMode == WallBackgroundMode.Acrylic &&
+            !_accessibilitySettings.HighContrast && _appearanceSettings.AdvancedEffectsEnabled)
+            _snapshotFocusLossPending = true;
+        if (wasActive != active) CancelBackgroundCommit();
+        _wallBackdrop.SetFocusIntent(active, _snapshotFocusLossPending);
         if (_backdropUpdateQueued || _windowClosing) return;
         _backdropUpdateQueued = DispatcherQueue.TryEnqueue(() =>
         {

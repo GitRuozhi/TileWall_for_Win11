@@ -49,7 +49,7 @@ public sealed partial class WallStore
         var selected = content.Members.Select(member => member.Id).ToHashSet(StringComparer.Ordinal);
         var members = current.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
             .Where(member => selected.Contains(member.Id)).ToArray();
-        var references = members.Select(member => member.Images.Media).OfType<ManagedMediaReference>().Distinct().ToArray();
+        var references = members.SelectMany(member => ImageMediaReferences(member.Images)).Distinct().ToArray();
         var galleryReferences = members.Select(member => member.Images.ManagedGallery).OfType<ManagedGalleryReference>().Distinct().ToArray();
         var resourceLease = AcquireResourceLeases(members.SelectMany(member => ImageMediaReferences(member.Images))
             .Select(reference => "media:" + reference.Sha256)
@@ -132,7 +132,7 @@ public sealed partial class WallStore
             token.ThrowIfCancellationRequested();
             if (!CurrentMatchesDisk(current, expectedGeneration, out _, out _, activeView, expectedManifestSha256)) throw new IOException("Committed wall changed during export capture.");
             var snapshot = new WallPackageSnapshot(_paths.Root, expectedGeneration, content, entries, media, protectedPaths, galleries,
-                members.Where(member => member.Images.Kind == MemberImageSourceKind.Automatic).ToArray(), lexicalProtectedPaths);
+                members.Where(member => member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is null).ToArray(), lexicalProtectedPaths);
             snapshot.AttachResourceLease(new ResourceLease(() =>
             {
                 try { foreach (var handle in additionalHandles) handle.Dispose(); }

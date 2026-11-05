@@ -124,7 +124,7 @@ public sealed class PuzzleCanvasView : Canvas
                 };
                 AutomationProperties.SetAutomationId(button, $"member-{member.Id}-partition-{index}");
                 AutomationProperties.SetName(button, title);
-                ToolTipService.SetToolTip(button, string.IsNullOrWhiteSpace(title) ? null : title);
+                ToolTipService.SetToolTip(button, string.IsNullOrWhiteSpace(member.TargetInput) ? null : member.TargetInput);
                 _resetInteractions.Add(WallMemberVisualFactory.ConfigureInteraction(button, content, content.CornerRadius, hover =>
                 {
                     if (band is not null) band.Visibility = hover ? Visibility.Visible : Visibility.Collapsed;

@@ -179,7 +179,7 @@ internal sealed class ManagedImageCache(string root)
         if (!IsKey(key) || !IsKey(mappingKey) || payload.Count < 2 ||
             !payload.ContainsKey("manifest.json") || payload.Any(pair =>
                 pair.Value.Length == 0 || pair.Key != "manifest.json" &&
-                !(pair.Key.EndsWith(".ico", StringComparison.Ordinal) && IsKey(pair.Key[..^4]) ||
+                !((pair.Key.EndsWith(".ico", StringComparison.Ordinal) || pair.Key.EndsWith(".png", StringComparison.Ordinal)) && IsKey(pair.Key[..^4]) ||
                   pair.Key.EndsWith(".pixels", StringComparison.Ordinal) && IsKey(pair.Key[..^7]))))
             throw new IOException("Invalid native icon package.");
         var required = checked(payload.Sum(pair => (long)pair.Value.Length) + mapping.LongLength);

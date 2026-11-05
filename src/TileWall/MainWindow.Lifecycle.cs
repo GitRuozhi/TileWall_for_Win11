@@ -99,6 +99,10 @@ public sealed partial class MainWindow
                 AppLog.Info("WindowFocus", $"Automatic hide deferred: foreground transition reason={reason} retry={retryUnknown}");
                 if (!retryUnknown)
                 {
+                    // No external session was confirmed, so do not capture. End
+                    // only the provisional material hold and use safe fallback.
+                    CancelFocusLossSnapshot();
+                    RefreshAppearance();
                     UpdateWindowZOrder(foregroundInSession: false);
                     return;
                 }
@@ -115,7 +119,11 @@ public sealed partial class MainWindow
             var wall = WinRT.Interop.WindowNative.GetWindowHandle(this);
             var inSession = processId == (uint)Environment.ProcessId || GetAncestor(foreground, 3) == wall;
             UpdateWindowZOrder(inSession);
-            if (inSession) CancelFocusLossSnapshot();
+            if (inSession)
+            {
+                CancelFocusLossSnapshot();
+                RefreshAppearance();
+            }
             if (_modal || _contextMenuOpen) return;
             AppLog.Info("WindowFocus", $"Automatic hide check reason={reason} foreground={foreground} pid={processId} inSession={inSession}");
             if (!inSession)

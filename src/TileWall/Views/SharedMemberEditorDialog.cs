@@ -635,6 +635,15 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private bool AutomaticPreviewDemandMatches(PuzzleFrame frame)
     {
         var metrics = new WallMetrics();
+        if (_draft.Images.IconSeries is { } series)
+        {
+            var request = ImageDecodeSizing.ForSeries(series,
+                Math.Max(1, checked((int)Math.Ceiling(metrics.WidthOf(_draft.LocalBounds.Width) * PreviewRasterizationScale))),
+                Math.Max(1, checked((int)Math.Ceiling(metrics.HeightOf(_draft.LocalBounds.Height) * PreviewRasterizationScale))), _draft.ImageDisplay);
+            return frame.AutomaticDisplayMedia == series.Frames[request.FrameIndex].Media &&
+                Math.Abs(frame.SharpDecodedPixels.Width - request.Width) <= 1 &&
+                Math.Abs(frame.SharpDecodedPixels.Height - request.Height) <= 1;
+        }
         var size = ImageDecodeSizing.ForDisplay(checked((int)frame.SourcePixels.Width), checked((int)frame.SourcePixels.Height),
             Math.Max(1, checked((int)Math.Ceiling(metrics.WidthOf(_draft.LocalBounds.Width) * PreviewRasterizationScale))),
             Math.Max(1, checked((int)Math.Ceiling(metrics.HeightOf(_draft.LocalBounds.Height) * PreviewRasterizationScale))), _draft.ImageDisplay);

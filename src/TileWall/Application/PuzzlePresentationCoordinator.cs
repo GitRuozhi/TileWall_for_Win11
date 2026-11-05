@@ -49,7 +49,8 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     private sealed record CurrentFrameKey(MemberImageSource Source, MemberResourceOrigin Origin,
         string? Entry, string? Target, string? SourceShortcut, int Width, int Height, MemberImageDisplay Display,
-        bool Blur, string? Image, string? SourceVersion, string? IconIdentity, AutomaticIconFrame? IconFrame);
+        bool Blur, string? Image, string? SourceVersion, string? IconIdentity, AutomaticIconFrame? IconFrame,
+        AutomaticIconFrame? DisplayFrame);
 
     private readonly Dictionary<string, State> _states = new(StringComparer.Ordinal);
     private readonly Dictionary<CurrentFrameKey, Task<PuzzleFrameResult>> _currentLoads = [];
@@ -227,6 +228,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     private static bool CouldAdvance(State state) => state.Member.Images.Kind == MemberImageSourceKind.Folder;
 
     private static bool ReadableSource(WallMember member) => member.ResourceOrigin != MemberResourceOrigin.Package ||
+        member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is not null ||
         member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is not null ||
         member.Images.Kind == MemberImageSourceKind.Folder && member.Images.ManagedGallery is not null ||
         member.Images.Kind == MemberImageSourceKind.None;
@@ -801,7 +803,8 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             state.Member.Images.Kind == MemberImageSourceKind.Automatic ? state.Member.SourceShortcutPath : null,
             state.TargetWidth, state.TargetHeight, state.Member.ImageDisplay,
             state.Member.Visual.BackgroundMode == MemberBackgroundMode.Blur, image, state.SourceVersion,
-            series?.Identity, series is null ? null : series.Frames[series.SelectedFrame]);
+            series?.Identity, series is null ? null : series.Frames[series.SelectedFrame], series is null ? null :
+                series.Frames[AutomaticIconSeriesRules.SelectForDisplay(series, state.TargetWidth, state.TargetHeight, state.Member.ImageDisplay)]);
         foreach (var other in _states.Values)
             if (other.Frame is { MemoryCacheAllowed: true } held &&
                 _frameKeys.TryGetValue(held, out var heldKey) && heldKey == key)

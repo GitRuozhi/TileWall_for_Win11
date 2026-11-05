@@ -44,6 +44,7 @@ public sealed partial class WallStore
             if (member.ResourceOrigin == MemberResourceOrigin.Package &&
                 !(member.Images.Kind == MemberImageSourceKind.None ||
                   member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is not null ||
+                  member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is not null ||
                   member.Images.Kind == MemberImageSourceKind.Folder))
                 yield return "PACKAGE_IMAGE_SOURCE";
             if (member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is null)
@@ -51,12 +52,12 @@ public sealed partial class WallStore
             if (member.Images.Media is not null && (member.Images.Kind != MemberImageSourceKind.Single ||
                 !PreparedMediaAsset.IsValidReference(member.Images.Media))) yield return "MEDIA_REFERENCE";
             if (member.Images.IconSeries is { } series &&
-                (member.Images.Kind != MemberImageSourceKind.Automatic || member.ResourceOrigin != MemberResourceOrigin.Local ||
+                (member.Images.Kind != MemberImageSourceKind.Automatic ||
                  member.Images.Media is not null || member.Images.ManagedGallery is not null || member.Images.Path is not null ||
                  member.Carousel is not null || string.IsNullOrWhiteSpace(series.Identity) || series.Columns <= 0 || series.Rows <= 0 ||
                  series.Frames is null || series.Frames.Count == 0 || series.SelectedFrame < 0 || series.SelectedFrame >= series.Frames.Count ||
                  series.Frames.Any(frame => frame is null || frame.Width <= 0 || frame.Height <= 0 ||
-                     !PreparedMediaAsset.IsValidReference(frame.Media)) ||
+                     !PreparedMediaAsset.IsValidReference(frame.Media) || frame.Media.Extension != ".png") ||
                  series.Frames.Select(frame => (frame.Width, frame.Height)).Distinct().Count() != series.Frames.Count))
                 yield return "AUTOMATIC_ICON_SERIES";
         }

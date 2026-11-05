@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Buffers.Binary;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
@@ -27,28 +28,32 @@ internal static class WallPackageJson
             TypeInfoResolver = resolver,
         };
     }
-    private static readonly JsonSerializerOptions V2Options = CreateV2Options();
-    private static JsonSerializerOptions CreateV2Options()
+    private static readonly JsonSerializerOptions V2Options = CreateLegacyOptions(2);
+    private static readonly JsonSerializerOptions LegacyOptions = CreateLegacyOptions(4);
+    private static JsonSerializerOptions CreateLegacyOptions(int version)
     {
         var resolver = new DefaultJsonTypeInfoResolver();
         resolver.Modifiers.Add(typeInfo =>
         {
             foreach (var property in typeInfo.Properties.Where(property => property.IsExtensionData).ToArray())
                 typeInfo.Properties.Remove(property);
-            if (typeInfo.Type != typeof(WallPackageMember)) return;
-            foreach (var name in new[] { "sourceShortcutPath", "targetDisplayName" })
-                typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == name));
+            if (typeInfo.Type == typeof(WallPackageImageSource))
+                typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "iconSeries"));
+            if (version == 2 && typeInfo.Type == typeof(WallPackageMember))
+                foreach (var name in new[] { "sourceShortcutPath", "targetDisplayName" })
+                    typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == name));
         });
         return new(Options) { TypeInfoResolver = resolver };
     }
     internal static byte[] Serialize<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value, Options);
     internal static byte[] Serialize<T>(T value, int formatVersion) =>
-        JsonSerializer.SerializeToUtf8Bytes(value, formatVersion == 2 ? V2Options : Options);
+        JsonSerializer.SerializeToUtf8Bytes(value, FormatOptions(formatVersion));
+    private static JsonSerializerOptions FormatOptions(int version) => version == 2 ? V2Options : version < 5 ? LegacyOptions : Options;
     internal static T Deserialize<T>(byte[] bytes, int formatVersion = WallPackageManifest.CurrentFormatVersion)
     {
         using var json = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 64 });
         RejectDuplicateProperties(json.RootElement);
-        return JsonSerializer.Deserialize<T>(bytes, formatVersion == 2 ? V2Options : Options) ?? throw new InvalidDataException("Empty package JSON.");
+        return JsonSerializer.Deserialize<T>(bytes, FormatOptions(formatVersion)) ?? throw new InvalidDataException("Empty package JSON.");
     }
     private static void RejectDuplicateProperties(JsonElement element)
     {
@@ -72,7 +77,11 @@ internal static class WallPackageJson
         Lanes = Array.AsReadOnly(content.Lanes.Select(l => l with { GroupIds = Array.AsReadOnly(l.GroupIds.ToArray()) }).ToArray()),
         Groups = Array.AsReadOnly(content.Groups.Select(g => g with { MemberIds = Array.AsReadOnly(g.MemberIds.ToArray()) }).ToArray()),
         Members = Array.AsReadOnly(content.Members.Select(m => m with
-        { Partitions = m.Partitions is null ? null : Array.AsReadOnly(m.Partitions.ToArray()) }).ToArray()),
+        {
+            Images = m.Images with { IconSeries = m.Images.IconSeries is { } series
+                ? series with { Frames = Array.AsReadOnly(series.Frames.ToArray()) } : null },
+            Partitions = m.Partitions is null ? null : Array.AsReadOnly(m.Partitions.ToArray())
+        }).ToArray()),
         Galleries = Array.AsReadOnly(content.Galleries.ToArray()),
     };
 
@@ -89,7 +98,7 @@ internal static class WallPackageJson
     internal static void ValidateGalleryExpansion(WallPackageContent content, IEnumerable<ManagedGalleryManifest> source,
         WallPackageLimits limits)
     {
-        var singles = content.Members.Select(member => member.Images.Media).OfType<ManagedMediaReference>()
+        var singles = content.Members.SelectMany(member => ImageMedia(member.Images))
             .DistinctBy(reference => reference.Sha256, StringComparer.Ordinal).ToArray();
         long count = content.Members.Count(member => member.EntryKind is not null) + singles.Length + content.Galleries.Count + 2L;
         long bytes = singles.Sum(reference => reference.Length);
@@ -105,12 +114,33 @@ internal static class WallPackageJson
     internal static IReadOnlyList<ManagedMediaReference> AllMedia(WallPackageContent content,
         IEnumerable<ManagedGalleryManifest> galleries)
     {
-        var references = content.Members.Select(member => member.Images.Media).OfType<ManagedMediaReference>()
+        var references = content.Members.SelectMany(member => ImageMedia(member.Images))
             .Concat(galleries.SelectMany(gallery => gallery.Files.Select(file => file.Media))).Distinct().ToArray();
         if (references.Any(reference => !PreparedMediaAsset.IsValidReference(reference)) ||
             references.GroupBy(reference => reference.Sha256, StringComparer.Ordinal).Any(group => group.Select(reference => reference.Length).Distinct().Count() != 1))
             throw new InvalidDataException("Conflicting original-image digest references.");
         return references;
+    }
+
+    internal static IEnumerable<ManagedMediaReference> ImageMedia(WallPackageImageSource images) =>
+        (images.Media is { } media ? new[] { media } : [])
+            .Concat(images.IconSeries?.Frames.Select(frame => frame.Media) ?? []);
+
+    // The injected platform probe validates decoding; this binds native size metadata to the actual PNG header.
+    internal static void ValidateSeriesImage(WallPackageContent content, ManagedMediaReference reference, ReadOnlySpan<byte> bytes)
+    {
+        var frames = content.Members.SelectMany(member => member.Images.IconSeries?.Frames ?? [])
+            .Where(frame => frame.Media.Sha256 == reference.Sha256).ToArray();
+        if (frames.Length == 0) return;
+        if (reference.Extension != ".png" || bytes.Length < 33 ||
+            !bytes[..8].SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }) ||
+            BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(8, 4)) != 13 ||
+            !bytes.Slice(12, 4).SequenceEqual("IHDR"u8))
+            throw new InvalidDataException("An automatic series frame must be a native PNG.");
+        var width = BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(16, 4));
+        var height = BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(20, 4));
+        if (frames.Any(frame => frame.Width != width || frame.Height != height))
+            throw new InvalidDataException("Automatic series native dimensions differ from its PNG.");
     }
 
     internal static void ValidateContent(WallPackageContent content, WallPackageLimits? limits = null, CancellationToken token = default)
@@ -123,7 +153,8 @@ internal static class WallPackageJson
             throw new InvalidDataException("Malformed content collections.");
         if (content.Lanes.Count > 64 || content.Groups.Count > limits.MaximumGroups || content.Members.Count > limits.MaximumMembers ||
             content.Galleries.Count > limits.MaximumEntries ||
-            content.Lanes.Sum(lane => (long)lane.GroupIds.Count) + content.Groups.Sum(group => (long)group.MemberIds.Count) > limits.MaximumReferences)
+            content.Lanes.Sum(lane => (long)lane.GroupIds.Count) + content.Groups.Sum(group => (long)group.MemberIds.Count) +
+                content.Members.Sum(member => (long)(member.Images.IconSeries?.Frames?.Count ?? 0)) > limits.MaximumReferences)
             throw new InvalidDataException("Wall content exceeds its structure budget.");
         if (content.Galleries.Any(gallery => gallery is null || !WallPackageJson.ValidHash(gallery.Id) || gallery.ManifestSha256 != gallery.Id) ||
             content.Galleries.Select(gallery => gallery.Id).Distinct(StringComparer.Ordinal).Count() != content.Galleries.Count)
@@ -154,15 +185,24 @@ internal static class WallPackageJson
                 member.Images.Media is { } media && (member.Images.Kind != MemberImageSourceKind.Single || !PreparedMediaAsset.IsValidReference(media)))
                 throw new InvalidDataException("Invalid formal image reference.");
             if (!Enum.IsDefined(member.Images.Kind) || member.Images.Kind == MemberImageSourceKind.None &&
-                (member.Images.Path is not null || member.Images.Media is not null || member.Images.GalleryId is not null))
+                (member.Images.Path is not null || member.Images.Media is not null || member.Images.GalleryId is not null || member.Images.IconSeries is not null))
                 throw new InvalidDataException("Invalid empty image source.");
+            if (member.Images.IconSeries is { } series &&
+                (member.Images.Kind != MemberImageSourceKind.Automatic || member.Images.Path is not null ||
+                 member.Images.Media is not null || member.Images.GalleryId is not null ||
+                 string.IsNullOrWhiteSpace(series.Identity) || series.Identity.Length > 32768 || series.Columns <= 0 || series.Rows <= 0 ||
+                 series.Frames is null || series.Frames.Count == 0 || series.SelectedFrame < 0 || series.SelectedFrame >= series.Frames.Count ||
+                 series.Frames.Any(frame => frame is null || frame.Width <= 0 || frame.Height <= 0 ||
+                     !PreparedMediaAsset.IsValidReference(frame.Media) || frame.Media.Extension != ".png") ||
+                 series.Frames.Select(frame => (frame.Width, frame.Height)).Distinct().Count() != series.Frames.Count))
+                throw new InvalidDataException("Invalid automatic icon series.");
             if (member.SourceShortcutPath is { Length: > 32768 } || member.TargetDisplayName is { Length: > 32768 })
                 throw new InvalidDataException("Oversized entry presentation fields.");
             if (member.Images.GalleryId is { } galleryId && (!ValidHash(galleryId) || member.Images.Kind != MemberImageSourceKind.Folder ||
                 member.Images.Path is not null || member.Images.Media is not null))
                 throw new InvalidDataException("A package gallery must use only a logical source ID.");
         }
-        var conflicts = content.Members.Select(m => m.Images.Media).OfType<ManagedMediaReference>()
+        var conflicts = content.Members.SelectMany(m => ImageMedia(m.Images))
             .GroupBy(m => m.Sha256, StringComparer.Ordinal).Any(g => g.Distinct().Count() != 1);
         if (conflicts) throw new InvalidDataException("Conflicting media references.");
         token.ThrowIfCancellationRequested();
