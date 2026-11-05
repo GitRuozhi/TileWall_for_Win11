@@ -54,7 +54,9 @@ public sealed partial class WallStoreTests
         {
         var reader = new WallPackageReader((kind, bytes, token) => Task.FromResult(store.ObservePackageEntry(kind, bytes, token)),
             (_, _, _) => Task.FromResult(true));
-        var preview = (await reader.ReadPreviewAsync(fixture)).Preview!;
+        var read = await reader.ReadPreviewAsync(fixture);
+        Assert.Equal(WallPackageReadStatus.Valid, read.Status);
+        var preview = Assert.IsType<WallPackagePreview>(read.Preview);
         using var batch = await reader.OpenImportAsync(preview);
         var source = await batch.ReadEntryAsync("tile-v1");
         var candidate = Wall(Tile("local-id", "Local title")) with { Generation = 1 };
@@ -79,7 +81,8 @@ public sealed partial class WallStoreTests
         var content = new WallPackageContent
         {
             Columns = 1, Rows = 6, Lanes = [new(["group"])], Groups = [new("group", null, ["tile-v1"])],
-            Members = [new() { Id = "tile-v1", Kind = "tile", LocalBounds = new(0, 0, 2, 2), EntryKind = ManagedEntryKind.Url }],
+            Members = [new() { Id = "tile-v1", Kind = "tile", LocalBounds = new(0, 0, 2, 2), EntryKind = ManagedEntryKind.Url,
+                Images = new() { Kind = MemberImageSourceKind.None } }],
         };
         var wall = WallPackageJson.Serialize(content);
         var entry = Encoding.UTF8.GetBytes("[InternetShortcut]\r\nIconFile=C:\\Samples\\icon.ico\r\n");

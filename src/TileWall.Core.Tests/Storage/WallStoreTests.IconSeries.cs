@@ -18,13 +18,15 @@ public sealed partial class WallStoreTests
             new AutomaticIconFrame(asset.Reference, 32 << index, 32 << index)).ToArray(), 1, 2, 2), assets);
     }
 
-    [Fact]
-    public void ConfirmedSeriesPersistsAllFramesAcrossRetentionAndRestart()
+    [Theory]
+    [InlineData(MemberResourceOrigin.Local)]
+    [InlineData(MemberResourceOrigin.Package)]
+    public void ConfirmedSeriesPersistsAllFramesAcrossRetentionAndRestart(MemberResourceOrigin origin)
     {
         var (store, files, links, root) = Harness();
         var initial = Wall(); Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
         var prepared = IconSeries();
-        var tile = Tile("series") with { Images = new() { IconSeries = prepared.Series } };
+        var tile = Tile("series") with { ResourceOrigin = origin, Images = new() { IconSeries = prepared.Series } };
         var added = store.Commit(initial, new(0, Wall(tile) with { Generation = 1 }, [], prepared.Assets));
         Assert.Equal(WallCommitStatus.Committed, added.Status);
         var current = added.CommittedDocument!;
@@ -35,6 +37,7 @@ public sealed partial class WallStoreTests
         var reopened = new WallStore(files, links, root).Open();
         Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
         var series = Assert.Single(reopened.Document!.InactiveMembers).Images.IconSeries!;
+        Assert.Equal(origin, Assert.Single(reopened.Document.InactiveMembers).ResourceOrigin);
         Assert.Equal("native:confirmed", series.Identity); Assert.Equal(1, series.SelectedFrame);
         Assert.Equal(2, series.Columns); Assert.Equal(2, series.Rows);
         Assert.Equal(prepared.Series.Frames.ToArray(), series.Frames.ToArray());
@@ -73,7 +76,6 @@ public sealed partial class WallStoreTests
     [Theory]
     [InlineData("single")]
     [InlineData("none")]
-    [InlineData("package")]
     [InlineData("duplicate")]
     [InlineData("selected")]
     public void InvalidSeriesBindingsAndMetadataCannotBePublished(string invalid)
@@ -85,7 +87,6 @@ public sealed partial class WallStoreTests
         {
             "single" => tile with { Images = tile.Images with { Kind = MemberImageSourceKind.Single, Media = prepared.Assets[0].Reference } },
             "none" => tile with { Images = tile.Images with { Kind = MemberImageSourceKind.None } },
-            "package" => tile with { ResourceOrigin = MemberResourceOrigin.Package },
             "duplicate" => tile with { Images = tile.Images with { IconSeries = series with { Frames = [series.Frames[0], series.Frames[0]] } } },
             _ => tile with { Images = tile.Images with { IconSeries = series with { SelectedFrame = series.Frames.Count } } },
         };
