@@ -201,9 +201,8 @@ internal sealed class ManagedImageCache(string root)
             // plane forever even after the producer successfully rebuilt it.
             if (exists && !IconPackageMatches(destination, payload, token))
             {
-                ForgetIconBudget();
-                if (IsLeased(destination)) return false;
-                DeleteIconTree(destination); exists = false;
+                if (!DiscardIconDirectory(destination)) return false;
+                exists = false;
             }
             Guard(mappingPath);
             var mappingExists = File.Exists(mappingPath);
@@ -282,11 +281,36 @@ internal sealed class ManagedImageCache(string root)
                     ObserveIconFile(Path.Combine(directory, "manifest.json"), null);
                     return;
                 }
-                ForgetIconBudget();
-                if (!IsLeased(directory)) DeleteIconTree(directory);
+                DiscardIconDirectory(directory);
             }
             catch { ForgetIconBudget(); throw; }
         }
+    }
+
+    // Leaf-only cache cleanup can retain old empty package directories. They
+    // consume no accounted bytes, so removing one must not force a full census.
+    // Missing accounted files or any remaining entry still invalidates the ledger.
+    private bool DiscardIconDirectory(string directory)
+    {
+        Guard(directory);
+        var prefix = directory + Path.DirectorySeparatorChar;
+        var emptyUnaccounted = _iconBytes is not null &&
+            !_iconFileBytes.Keys.Any(path => path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) &&
+            !Directory.EnumerateFileSystemEntries(directory).Any();
+        if (!emptyUnaccounted) ForgetIconBudget();
+        if (IsLeased(directory)) return false;
+        if (emptyUnaccounted)
+        {
+            Guard(directory);
+            // A late file must make deletion fail, never be recursively erased
+            // while the old empty observation keeps capacity accounting valid.
+            Directory.Delete(directory, recursive: false);
+            Guard(directory);
+            if (File.Exists(directory) || Directory.Exists(directory))
+                throw new IOException("Icon cache directory changed during empty-directory removal.");
+        }
+        else DeleteIconTree(directory);
+        return true;
     }
 
     private bool MakeIconSpace(string root, string packages, string mappings, long additional, long limit, string keep, string keepMapping,

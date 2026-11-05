@@ -5,7 +5,6 @@ using System.Text.Json;
 using TileWall.Core.Wall;
 using TileWall.Shell.Interop;
 using Windows.Graphics.Imaging;
-using Windows.Storage.Streams;
 
 namespace TileWall.Graphics;
 
@@ -353,11 +352,12 @@ public sealed partial class WallImageService
     {
         try
         {
-            using var stream = new InMemoryRandomAccessStream(); using var writer = new DataWriter(stream);
             // Cancellation must reach the WinRT bridge: checking between frames
             // cannot end a shutdown wait when a codec never signals Completed.
-            writer.WriteBytes(NativeFrameBytes(frame));
-            await writer.StoreAsync().AsTask(ct).ConfigureAwait(false); stream.Seek(0);
+            // Use the same immutable byte-stream adapter as package/image decoding.
+            // No asynchronous memory write or attached writer crosses decoder creation.
+            using var input = new MemoryStream(NativeFrameBytes(frame), writable: false);
+            using var stream = input.AsRandomAccessStream();
             var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(ct).ConfigureAwait(false);
             Interlocked.Increment(ref _nativeDecodedFrames);
             var data = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, new BitmapTransform(),

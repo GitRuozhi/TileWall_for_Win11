@@ -107,6 +107,59 @@ public sealed class NativeIconPackageCacheTests : IDisposable
     }
 
     [Fact]
+    public void RebuildingRetainedEmptyPackageDirectoriesNeedsOnlyOneCapacityCensus()
+    {
+        var cache = new ManagedImageCache(_root);
+        var packages = Enumerable.Range(0, 12).Select(index => ManagedImageCache.Key("package-" + index)).ToArray();
+        foreach (var key in packages)
+        {
+            var directory = cache.Under("Cache", "Images", "Icons", "Packages", key);
+            cache.CreateDirectory(directory);
+            File.WriteAllBytes(Path.Combine(directory, "manifest.json"), [1]);
+        }
+        // Match leaf-only cache maintenance: remove files and retain every directory.
+        foreach (var path in Directory.GetFiles(cache.Under("Cache", "Images", "Icons"), "*", SearchOption.AllDirectories))
+            File.Delete(path);
+        for (var index = 0; index < packages.Length; index++)
+        {
+            var package = packages[index];
+            var directory = cache.Under("Cache", "Images", "Icons", "Packages", package);
+            Assert.True(Directory.Exists(directory)); Assert.Empty(Directory.GetFileSystemEntries(directory));
+            if (index == 1)
+                using (cache.Lease(directory))
+                {
+                    cache.DiscardIconPackage(package);
+                    Assert.True(Directory.Exists(directory));
+                    Assert.False(cache.PublishIconPackage(package, Payload, package, new byte[40], 4096, default));
+                    Assert.Equal(1L, cache.IconBudgetCensusCount);
+                }
+            if (index % 2 == 0) cache.DiscardIconPackage(package);
+            Assert.True(cache.PublishIconPackage(package, Payload, package, new byte[40], 4096, default));
+            Assert.Equal((index + 1) * 160L, IconBytes(cache));
+        }
+        Assert.Equal(1L, cache.IconBudgetCensusCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MissingAccountedPackageFilesStillRequireAFreshCapacityCensus(bool discardFirst)
+    {
+        var cache = new ManagedImageCache(_root);
+        Assert.True(cache.PublishIconPackage(First, Payload, First, new byte[40], 4096, default));
+        var directory = cache.Under("Cache", "Images", "Icons", "Packages", First);
+        foreach (var path in Directory.GetFiles(directory)) File.Delete(path);
+        Assert.True(Directory.Exists(directory));
+        if (discardFirst) cache.DiscardIconPackage(First);
+        Assert.True(cache.PublishIconPackage(First, Payload, First, new byte[40], 4096, default));
+        Assert.Equal(160L, IconBytes(cache));
+        Assert.Equal(2L, cache.IconBudgetCensusCount);
+        Assert.True(cache.PublishIconPackage(Second, Payload, Second, new byte[40], 4096, default));
+        Assert.Equal(320L, IconBytes(cache));
+        Assert.Equal(2L, cache.IconBudgetCensusCount);
+    }
+
+    [Fact]
     public void MappingGrowthAndShrinkAreChargedAsNetBytes()
     {
         var cache = new ManagedImageCache(_root);
