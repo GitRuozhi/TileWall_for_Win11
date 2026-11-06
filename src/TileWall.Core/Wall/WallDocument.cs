@@ -1,21 +1,33 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
+using TileWall.Core.Storage;
 using TileWall.Core.Components;
 using TileWall.Core.Grid;
 using TileWall.Core.Imaging;
 
 namespace TileWall.Core.Wall;
 
-/// <summary>The sole persisted wall snapshot. Lane and group order, plus member-local cells, determine placement.</summary>
+/// <summary>Wall state. Storage uses a temporary joint document; the session retains only its active view.</summary>
 public sealed record WallDocument
 {
-    public const int CurrentSchemaVersion = 4;
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
+    [JsonIgnore]
+    internal UserDataFormatMetadata? StorageMetadata { get; init; }
+
+    public const int CurrentSchemaVersion = 5;
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public long Generation { get; init; }
     public required int Columns { get; init; }
     public required int Rows { get; init; }
     public required IReadOnlyList<WallLane> Lanes { get; init; }
     public IReadOnlyList<WallMember> InactiveMembers { get; init; } = [];
+    public bool RecycleBinEnabled { get; init; } = true;
     public WallSettings Settings { get; init; } = new();
+
+    /// <summary>Releases retained members before a document becomes session or ordinary UI state.</summary>
+    public WallDocument ActiveView() => InactiveMembers.Count == 0 ? this : this with { InactiveMembers = [] };
 
     /// <summary>All formally owned members, including retained unpinned content.</summary>
     public IEnumerable<WallMember> EnumerateAllMembers() =>
@@ -31,12 +43,18 @@ public sealed record WallDocument
 
 public sealed record WallLane
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public required IReadOnlyList<StartGroup> Groups { get; init; }
     public string? ImportBatchId { get; init; }
 }
 
 public sealed record StartGroup
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public required string Id { get; init; }
     public string? Title { get; init; }
     public required IReadOnlyList<WallMember> Members { get; init; }
@@ -52,10 +70,13 @@ public enum WallBackgroundMode { Acrylic = 0, Mica = 1, Custom = 2 }
 
 public sealed record WallSettings
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public AnchorCorner AnchorCorner { get; init; } = AnchorCorner.BottomLeft;
     public bool FullScreen { get; init; }
     public bool ExpandColumns { get; init; }
-    public bool MenuStart { get; init; }
+    public bool MenuStart { get; init; } = true;
     public int? WindowedColumns { get; init; }
     public int? WindowedRows { get; init; }
     /// <summary>Visible window client width, including the fixed sidebar and optional menu.</summary>
@@ -63,9 +84,9 @@ public sealed record WallSettings
     /// <summary>Last successfully committed manual window width; automatic sizing does not update it.</summary>
     public double? ManualWindowedViewportWidthDip { get; init; }
     public WallVisualStyle VisualStyle { get; init; } = WallVisualStyle.Win10;
-    public WallThemeMode ThemeMode { get; init; } = WallThemeMode.System;
+    public WallThemeMode ThemeMode { get; init; } = WallThemeMode.Dark;
     public WallBackgroundMode BackgroundMode { get; init; } = WallBackgroundMode.Acrylic;
-    public int BackgroundTransparency { get; init; } = 10;
+    public int BackgroundTransparency { get; init; } = 5;
     public string? BackgroundImagePath { get; init; }
     public ManagedMediaReference? BackgroundMedia { get; init; }
     public bool AlwaysOnTop { get; init; } = true;
@@ -73,17 +94,58 @@ public sealed record WallSettings
     public bool ShowGrid { get; init; }
     public WallLanguageMode LanguageMode { get; init; } = WallLanguageMode.System;
     public string? HotKey { get; init; } = "Win+Oem3";
+    public string SecondaryHotKey { get; init; } = "Win+Ctrl+Oem3";
+    public bool ReplaceStartMenu { get; init; }
     public bool RunAtLogin { get; init; }
 }
 
 public enum ManagedEntryKind { Lnk, Url }
-public sealed record ManagedEntryReference(string ObjectId, string RelativePath, ManagedEntryKind Kind);
+public sealed record ManagedEntryReference(string ObjectId, string RelativePath, ManagedEntryKind Kind)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+    public bool Equals(ManagedEntryReference? other) => other is not null && ObjectId == other.ObjectId && RelativePath == other.RelativePath && Kind == other.Kind;
+    public override int GetHashCode() => HashCode.Combine(ObjectId, RelativePath, Kind);
+}
 
 /// <summary>An immutable original whose SHA-256 is also its asset directory identity.</summary>
-public sealed record ManagedMediaReference(string Sha256, string Extension, long Length);
+public sealed record ManagedMediaReference(string Sha256, string Extension, long Length)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+    public bool Equals(ManagedMediaReference? other) => other is not null && Sha256 == other.Sha256 && Extension == other.Extension && Length == other.Length;
+    public override int GetHashCode() => HashCode.Combine(Sha256, Extension, Length);
+}
+
+/// <summary>A native resolution of one confirmed automatic icon image.</summary>
+public sealed record AutomaticIconFrame(ManagedMediaReference Media, int Width, int Height)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+}
+
+/// <summary>The confirmed image and all its resolutions; only logical tile resizing selects another frame.</summary>
+public sealed record AutomaticIconSeries(string Identity, IReadOnlyList<AutomaticIconFrame> Frames,
+    int SelectedFrame, int Columns, int Rows)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+}
+
+/// <summary>Content-addressed, immutable application-owned gallery. Its path is derived by storage.</summary>
+public sealed record ManagedGalleryReference(string ContentId, string ManifestSha256)
+{
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+    public bool Equals(ManagedGalleryReference? other) => other is not null && ContentId == other.ContentId && ManifestSha256 == other.ManifestSha256;
+    public override int GetHashCode() => HashCode.Combine(ContentId, ManifestSha256);
+}
 
 public sealed record MemberVisual
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public MemberTitleMode TitleMode { get; init; } = MemberTitleMode.Automatic;
     public string? Title { get; init; }
     public bool ShowTitle { get; init; } = true;
@@ -94,21 +156,31 @@ public sealed record MemberVisual
 
 public enum MemberTitleMode { Automatic, Manual }
 public enum MemberBackgroundMode { Default, Color, Blur, None }
-public enum MemberImageSourceKind { Automatic, Single, Folder }
+public enum MemberImageSourceKind { Automatic, Single, Folder, None }
+public enum MemberResourceOrigin { Local, Package }
 public enum ImageRotationInterval { Seconds5 = 5, Seconds15 = 15, Seconds30 = 30, Minute1 = 60,
     Minute5 = 300, Minute15 = 900, Minute30 = 1800 }
 
 /// <summary>One source and display policy for a complete tile or puzzle canvas.</summary>
 public sealed record MemberImageSource
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public MemberImageSourceKind Kind { get; init; } = MemberImageSourceKind.Automatic;
     public string? Path { get; init; }
     public ManagedMediaReference? Media { get; init; }
+    public ManagedGalleryReference? ManagedGallery { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AutomaticIconSeries? IconSeries { get; init; }
 }
 
 /// <summary>Queue position is persisted only when the asynchronously prepared image is adopted.</summary>
 public sealed record ImageCarouselState
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public string? CurrentImageId { get; init; }
     public DateTimeOffset? LastSwitchUtc { get; init; }
     public IReadOnlyList<string> CandidateIds { get; init; } = [];
@@ -120,6 +192,9 @@ public sealed record ImageCarouselState
 public enum ImportSourceKind { StartMenu }
 public sealed record ImportSourceMetadata
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public ImportSourceKind Kind { get; init; } = ImportSourceKind.StartMenu;
     public required string BatchId { get; init; }
     public required string GroupBucketKey { get; init; }
@@ -135,11 +210,17 @@ public sealed record ImportSourceMetadata
 [JsonDerivedType(typeof(ClockMember), "clock")]
 public abstract record WallMember
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public required string Id { get; init; }
     public required GridRect LocalBounds { get; init; }
     public MemberVisual Visual { get; init; } = new();
     public ManagedEntryReference? Entry { get; init; }
     public string? TargetInput { get; init; }
+    public string? SourceShortcutPath { get; init; }
+    public string? TargetDisplayName { get; init; }
+    public MemberResourceOrigin ResourceOrigin { get; init; } = MemberResourceOrigin.Local;
     public MemberImageSource Images { get; init; } = new();
     public MemberImageDisplay ImageDisplay { get; init; } = new();
     public ImageRotationInterval RotationInterval { get; init; } = ImageRotationInterval.Minute1;

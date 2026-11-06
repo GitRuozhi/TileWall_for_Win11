@@ -4,6 +4,8 @@ namespace TileWall.ApplicationModel;
 
 internal sealed record StartupIntent(bool Background, ExplorerAddMessage? Add)
 {
+    public bool NotificationActivation { get; init; }
+
     public static StartupIntent Parse(string[] arguments, bool startupTask = false)
     {
         var background = startupTask;

@@ -80,7 +80,6 @@ internal sealed class OwnedDialogWindow : Window
             presenter.IsAlwaysOnTop = owner.AppWindow.Presenter is OverlappedPresenter { IsAlwaysOnTop: true };
         }
         RemoveNativeFrame(hwnd);
-        AppWindow.IsShownInSwitchers = false;
         AppWindow.Changed += (_, e) => { if (e.DidPositionChange && !_fitting) QueueFit(); };
         AppWindow.Closing += (_, e) =>
         {
@@ -251,6 +250,10 @@ internal sealed class OwnedDialogWindow : Window
         const long frameStyles = 0x00C00000L | 0x00040000L; // WS_CAPTION | WS_THICKFRAME
         var style = Win32Api.GetWindowLongPtrW(hwnd, -16).ToInt64();
         Win32Api.SetWindowLongPtrW(hwnd, -16, new IntPtr(style & ~frameStyles));
+        // Keep the owned dialog out of the taskbar and Alt+Tab before its first Show.
+        const long appWindowStyle = 0x00040000L, toolWindowStyle = 0x00000080L; // WS_EX_APPWINDOW, WS_EX_TOOLWINDOW
+        var extendedStyle = Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64(); // GWL_EXSTYLE
+        Win32Api.SetWindowLongPtrW(hwnd, -20, new IntPtr((extendedStyle & ~appWindowStyle) | toolWindowStyle));
         Win32Api.SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, 0x0020 | 0x0001 | 0x0002 | 0x0004 | 0x0010);
         // Suppress DWM's independent frame; the app draws its own square dialog border.
         uint border = 0xFFFFFFFE;

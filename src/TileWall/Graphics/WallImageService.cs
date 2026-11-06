@@ -15,9 +15,9 @@ public enum WallImageStatus { None, Loaded, Fallback, Missing, Invalid, Cancelle
 public sealed record WallImageResult(ImageSource? Source, WallImageStatus Status, string? Diagnostic = null);
 
 /// <summary>
-/// Bounded read-only image resolution for a tile. Call from the XAML thread: file, shell,
+/// Read-only image resolution for a tile. Call from the XAML thread: file, shell,
 /// PE and WIC work runs on a worker, then WriteableBitmap is created back on the caller thread.
-/// Bounded memory decoding and scoped, disposable image/icon caches share verified source identities.
+/// Decoding and capacity-managed disposable image/icon caches share verified source identities.
 /// </summary>
 public sealed partial class WallImageService : IDisposable
 {
@@ -52,8 +52,8 @@ public sealed partial class WallImageService : IDisposable
         Func<CancellationToken, Task<Prepared>> prepare, int widthPixels, int heightPixels,
         CancellationToken ct)
     {
-        if (widthPixels <= 0 || heightPixels <= 0 || widthPixels > 4096 || heightPixels > 4096)
-            throw new ArgumentOutOfRangeException(nameof(widthPixels), "Physical dimensions must be 1..4096.");
+        if (widthPixels <= 0 || heightPixels <= 0)
+            throw new ArgumentOutOfRangeException(nameof(widthPixels), "Physical dimensions must be positive.");
         if (ct.IsCancellationRequested)
             return new(null, WallImageStatus.Cancelled);
 
@@ -92,87 +92,19 @@ public sealed partial class WallImageService : IDisposable
         }
     }
 
-    private async Task<Prepared> PrepareAutoAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct, bool skipNative = false)
+    private async Task<Prepared> PrepareAutoCoreAsync(string? entryOrTargetPath, int width, int height, CancellationToken ct,
+        string? verifiedPackageTarget = null)
     {
-        ct.ThrowIfCancellationRequested();
-        if (string.IsNullOrWhiteSpace(entryOrTargetPath))
-            return new(WallImageStatus.None, null, 0, 0, null);
-        if (Uri.TryCreate(entryOrTargetPath, UriKind.Absolute, out var uri) &&
-            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
-        {
-            var web = ShellIconPixels.Read(".url", association: true);
-            return web is { } icon
-                ? new(WallImageStatus.Fallback, icon.Pixels, icon.Width, icon.Height, "WebAssociation")
-                : new(WallImageStatus.Fallback, null, 0, 0, "WebEntry");
-        }
-
-        var entry = NormalizePath(entryOrTargetPath);
-        if (entry is null)
-            return new(WallImageStatus.Invalid, null, 0, 0, "InvalidEntryPath");
-        var extension = Path.GetExtension(entry);
-        string? target = entry;
-        string? iconPath = null;
-        int? iconIndex = null;
-        if (extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                var fields = _links.Read(entry);
-                target = NormalizePath(fields.TargetPath);
-                iconPath = fields.IconPath;
-                iconIndex = fields.IconIndex;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or
-                ArgumentException or InvalidOperationException)
-            {
-                target = null;
-            }
-        }
-        else if (extension.Equals(".url", StringComparison.OrdinalIgnoreCase))
-        {
-            target = null;
-            iconPath = ReadUrlIconPath(entry);
-        }
-
-        if (!skipNative && target is not null && Path.GetExtension(target).Equals(".exe", StringComparison.OrdinalIgnoreCase))
-        {
-            var direct = await PreparePeIconAsync(target, iconPath, iconIndex, entry, width, height, ct);
-            if (direct.Pixels is not null || direct.Status == WallImageStatus.Cancelled)
-                return direct;
-        }
-
-        // Shell resolves shortcut IconLocation, file association and folder icons without
-        // executing their targets. An absent/unusable icon leaves a generic UI placeholder.
-        var shellPath = File.Exists(entry) || Directory.Exists(entry) ? entry :
-            iconPath is not null && File.Exists(iconPath) ? iconPath : target;
-        ct.ThrowIfCancellationRequested();
-        if (shellPath is not null && (File.Exists(shellPath) || Directory.Exists(shellPath)))
-        {
-            var shell = ShellIconPixels.Read(shellPath);
-            if (shell is not null)
-                return new(WallImageStatus.Fallback, shell.Value.Pixels, shell.Value.Width, shell.Value.Height, "ShellIcon");
-        }
-        return new(WallImageStatus.Fallback, null, 0, 0, "GenericPlaceholder");
+        using var trace = ImageCandidateTrace.Start("automatic-choice", entryOrTargetPath, width, height);
+        List<IconCandidateSeries> candidates;
+        using (trace?.Measure("collect"))
+            candidates = await CollectIconSeriesAsync(entryOrTargetPath, width, height, verifiedPackageTarget,
+                true, ct).ConfigureAwait(false);
+        var chosen = SelectIconSeriesObserved(candidates, width, height, trace);
+        if (chosen is null) return new(WallImageStatus.None, null, 0, 0, "IconSeriesUnavailable");
+        return chosen.Frames[AutomaticIconSeriesRules.SelectNativeFrame(chosen.Frames, width, height,
+            static frame => (frame.Width, frame.Height))];
     }
-
-    private async Task<Prepared> PreparePeIconAsync(string exe, string? iconPath, int? iconIndex,
-        string entry, int width, int height, CancellationToken ct)
-    {
-        var dependency = NativeIconDependency(exe, iconPath, iconIndex);
-        var key = dependency is null ? null : dependency + $":{width}x{height}";
-        if (key is not null && TryGetCached(key, out var cached))
-            return cached;
-        ct.ThrowIfCancellationRequested();
-        if (dependency is null) return new(WallImageStatus.Fallback, null, 0, 0, "PE:MissingFile");
-        var package = await NativePackageAsync(exe, iconPath, iconIndex, dependency).WaitAsync(ct).ConfigureAwait(false);
-        if (package.Group is null || package.Frames.Count == 0) return new(WallImageStatus.Fallback, null, 0, 0, "PE:NoFrame");
-        var available = package.Group with { Frames = package.Frames.Select(frame => frame.Native).ToArray() };
-        var selected = PeIconResourceReader.SelectFrame(available, Math.Max(width, height));
-        var prepared = package.Frames.First(frame => frame.Native == selected).Decoded;
-        if (key is not null) Cache(key, prepared);
-        return prepared;
-    }
-
     private async Task<Prepared> PrepareFileAsync(string? path, string semantic, int width, int height,
         CancellationToken ct, ManagedMediaReference? media = null)
     {
@@ -181,6 +113,7 @@ public sealed partial class WallImageService : IDisposable
         if (canonicalPath is null)
             return media is null ? new(WallImageStatus.Missing, null, 0, 0, "MissingFile")
                 : new(WallImageStatus.Invalid, null, 0, 0, "InvalidManagedMediaReference");
+        using var ownership = media is null ? null : _formalResourceLease?.Invoke(null, media);
         var verified = media is null ? default : OpenVerifiedMedia(canonicalPath, media);
         using var mediaRead = verified.Lease;
         if (verified.Diagnostic is { } diagnostic)
@@ -239,21 +172,28 @@ public sealed partial class WallImageService : IDisposable
         { return null; }
     }
 
-    private static string? ReadUrlIconPath(string path)
+    private static (string? Path, int? Index) ReadUrlIconLocation(string path)
     {
         try
         {
-            if (new FileInfo(path).Length > 64 * 1024) return null;
-            foreach (var line in File.ReadLines(path))
+            using var source = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (source.Length > TileWall.Core.Entries.EntryObservation.MaximumBytes) return (null, null);
+            var bytes = new byte[checked((int)source.Length)];
+            source.ReadExactly(bytes);
+            if (source.ReadByte() != -1) return (null, null);
+            var metadata = TileWall.Core.Entries.UrlShortcut.ReadMetadata(bytes);
+            int? iconIndex = int.TryParse(metadata.IconIndex, out var parsedIndex) ? parsedIndex : null;
+            string? icon = null;
+            if (metadata.IconFile is { } value)
             {
-                if (!line.StartsWith("IconFile=", StringComparison.OrdinalIgnoreCase)) continue;
-                var value = line["IconFile=".Length..].Trim();
                 var comma = value.LastIndexOf(',');
-                return NormalizePath(comma >= 0 ? value[..comma] : value);
+                if (comma >= 0 && int.TryParse(value[(comma + 1)..], out var index)) { iconIndex ??= index; value = value[..comma]; }
+                icon = NormalizePath(value.Trim('"'));
             }
+            return (icon, iconIndex);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
-        return null;
+        return (null, null);
     }
 
     private bool TryGetCached(string key, out Prepared prepared)
@@ -266,6 +206,11 @@ public sealed partial class WallImageService : IDisposable
                 _lru.AddFirst(node);
                 if (node.Value.Value is Prepared cached)
                 {
+                    if (cached.MemoryValidUntil <= DateTimeOffset.UtcNow)
+                    {
+                        _lru.Remove(node); _cache.Remove(key); _cacheBytes -= node.Value.Bytes;
+                        prepared = null!; return false;
+                    }
                     prepared = cached;
                     return true;
                 }
@@ -275,9 +220,10 @@ public sealed partial class WallImageService : IDisposable
         return false;
     }
 
-    private void Cache(string key, Prepared frame)
+    private void Cache(string key, Prepared frame, bool allowMemoryOnly = false)
     {
-        if (frame.Pixels is null || frame.Pixels.LongLength > CacheLimitBytes / 2) return;
+        if (!frame.MemoryCacheAllowed || !frame.CacheAllowed && !allowMemoryOnly ||
+            frame.Pixels is null || frame.Pixels.LongLength > CacheLimitBytes / 2) return;
         lock (_cacheLock)
         {
             if (_disposed || _cacheLifetime.IsCancellationRequested || _cache.ContainsKey(key)) return;
@@ -309,24 +255,93 @@ public sealed partial class WallImageService : IDisposable
 
     private sealed record CacheItem(string Key, object Value, long Bytes);
     private sealed record Prepared(WallImageStatus Status, byte[]? Pixels, int Width, int Height,
-        string? Diagnostic = null);
+        string? Diagnostic = null)
+    {
+        public bool MemoryCacheAllowed { get; init; } = true;
+        public DateTimeOffset MemoryValidUntil { get; init; } = DateTimeOffset.MaxValue;
+        public bool CacheAllowed { get; init; } = true;
+    }
 
     private static class ShellIconPixels
     {
-        public static (byte[] Pixels, int Width, int Height)? Read(string path, bool association = false)
+        public static (byte[] Pixels, int Width, int Height)? Read(string path, bool association = false, int physicalPixels = 32) =>
+            ShellItemCatalog.InApartment(() => ReadCore(path, association, physicalPixels));
+
+        internal static IReadOnlyList<(byte[] Pixels, int Width, int Height)> ReadSeries(string path, bool association = false) =>
+            ShellItemCatalog.InApartment(() =>
+            {
+                var frames = new List<(byte[] Pixels, int Width, int Height)>();
+                var info = new Win32Api.ShFileInfoW { szDisplayName = string.Empty, szTypeName = string.Empty };
+                var size = (uint)Marshal.SizeOf<Win32Api.ShFileInfoW>();
+                const uint useFileAttributes = 0x10, normalFile = 0x80, systemIconIndex = 0x4000;
+                IntPtr pidl = IntPtr.Zero;
+                try
+                {
+                    if (!association && IsNamespace(path))
+                    {
+                        // This is the same Shell object, not its linked filesystem target.
+                        Marshal.ThrowExceptionForHR(SHParseDisplayName(path, IntPtr.Zero, out pidl, 0, out _));
+                        if (pidl == IntPtr.Zero) throw new IOException("The Shell icon item is unavailable.");
+                    }
+                    if (ReadInfo(systemIconIndex) != IntPtr.Zero)
+                    {
+                        var extra = ReadImageListIcon(info.iIcon, 2);
+                        // Enumerate actual list kinds. A padded Jumbo slot still
+                        // falls back only on the existing exact-pixel proof.
+                        foreach (var kind in new[] { 4, 2, 0, 1, 3 })
+                        {
+                            if (ReadImageListIcon(info.iIcon, kind) is not { } native) continue;
+                            if (extra is { } small && ShellImageListFrameRules.IsPaddedDuplicate(native.Pixels, native.Width,
+                                native.Height, small.Pixels, small.Width, small.Height)) native = small;
+                            if (!frames.Any(frame => frame.Width == native.Width && frame.Height == native.Height)) frames.Add(native);
+                        }
+                    }
+                    var result = ReadInfo(Win32Api.ShgfiIcon | Win32Api.ShgfiLargeicon);
+                    if (result != IntPtr.Zero && info.hIcon != IntPtr.Zero)
+                        try
+                        {
+                            if (ReadIcon(info.hIcon) is { } native && !frames.Any(frame => frame.Width == native.Width && frame.Height == native.Height))
+                                frames.Add(native);
+                        }
+                        finally { Win32Api.DestroyIcon(info.hIcon); }
+                    return (IReadOnlyList<(byte[] Pixels, int Width, int Height)>)frames;
+
+                    IntPtr ReadInfo(uint flags) => pidl != IntPtr.Zero
+                        ? SHGetFileInfoPidlW(pidl, 0, ref info, size, flags | 0x8) // SHGFI_PIDL
+                        : Win32Api.SHGetFileInfoW(path, association ? normalFile : 0, ref info, size,
+                            flags | (association ? useFileAttributes : 0));
+                }
+                finally { if (pidl != IntPtr.Zero) Marshal.FreeCoTaskMem(pidl); }
+            });
+
+        internal static bool IsNamespace(string path) => path.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("::{", StringComparison.Ordinal);
+
+        private static (byte[] Pixels, int Width, int Height)? ReadCore(string path, bool association, int physicalPixels)
         {
-            var info = new Win32Api.ShFileInfoW { szDisplayName = string.Empty, szTypeName = string.Empty };
-            var size = (uint)Marshal.SizeOf<Win32Api.ShFileInfoW>();
-            const uint useFileAttributes = 0x000000010;
-            const uint normalFile = 0x000000080;
-            var result = Win32Api.SHGetFileInfoW(path, association ? normalFile : 0, ref info, size,
-                Win32Api.ShgfiIcon | Win32Api.ShgfiLargeicon | (association ? useFileAttributes : 0));
-            if (result == IntPtr.Zero || info.hIcon == IntPtr.Zero) return null;
-            try { return ReadIcon(info.hIcon); }
-            finally { _ = Win32Api.DestroyIcon(info.hIcon); }
+            var frames = ReadSeries(path, association);
+            var index = AutomaticIconSeriesRules.SelectNativeFrame(frames, physicalPixels, physicalPixels,
+                static frame => (frame.Width, frame.Height));
+            return index < 0 ? null : frames[index];
+        }
+        private static (byte[] Pixels, int Width, int Height)? ReadImageListIcon(int index, int imageList)
+        {
+            var iid = typeof(IImageList).GUID;
+            IImageList? list = null;
+            IntPtr icon = IntPtr.Zero;
+            try
+            {
+                return SHGetImageList(imageList, ref iid, out list) >= 0 && list is not null &&
+                    list.GetIcon(index, 1, out icon) >= 0 && icon != IntPtr.Zero ? ReadIcon(icon) : null;
+            }
+            finally
+            {
+                if (icon != IntPtr.Zero) Win32Api.DestroyIcon(icon);
+                if (list is not null) Marshal.ReleaseComObject(list);
+            }
         }
 
-        private static (byte[] Pixels, int Width, int Height)? ReadIcon(IntPtr icon)
+        internal static (byte[] Pixels, int Width, int Height)? ReadIcon(IntPtr icon)
         {
             var info = new Win32Api.IconInfoW();
             if (!Win32Api.GetIconInfo(icon, ref info)) return null;
@@ -340,7 +355,7 @@ public sealed partial class WallImageService : IDisposable
                 // Monochrome ICONINFO has no color bitmap; its AND and XOR masks
                 // are stacked vertically in a bitmap twice the icon's height.
                 var height = Math.Abs(bitmap.bmHeight) / (info.hbmColor == IntPtr.Zero ? 2 : 1);
-                if (width is < 1 or > 256 || height is < 1 or > 256) return null;
+                if (width < 1 || height < 1 || (long)width * height * 4 > Array.MaxLength) return null;
                 var onBlack = DrawOnColor(icon, width, height, 0);
                 var onWhite = DrawOnColor(icon, width, height, 255);
                 if (onBlack is null || onWhite is null) return null;
@@ -416,5 +431,25 @@ public sealed partial class WallImageService : IDisposable
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool DrawIconEx(IntPtr dc, int x, int y, IntPtr icon,
             int width, int height, uint step, IntPtr brush, uint flags);
+
+        // Windows SDK CommonControls.h: slots preceding IImageList.GetIcon.
+        [ComImport, Guid("46EB5926-582E-4017-9FDF-E8998DAA0950"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IImageList
+        {
+            [PreserveSig] int Add(IntPtr image, IntPtr mask, out int index);
+            [PreserveSig] int ReplaceIcon(int index, IntPtr icon, out int replaced);
+            [PreserveSig] int SetOverlayImage(int image, int overlay);
+            [PreserveSig] int Replace(int index, IntPtr image, IntPtr mask);
+            [PreserveSig] int AddMasked(IntPtr image, uint mask, out int index);
+            [PreserveSig] int Draw(IntPtr parameters);
+            [PreserveSig] int Remove(int index);
+            [PreserveSig] int GetIcon(int index, uint flags, out IntPtr icon);
+        }
+        [DllImport("shell32.dll", ExactSpelling = true)]
+        private static extern int SHGetImageList(int imageList, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IImageList? list);
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        private static extern int SHParseDisplayName(string name, IntPtr bindContext, out IntPtr pidl, uint attributes, out uint returnedAttributes);
+        [DllImport("shell32.dll", EntryPoint = "SHGetFileInfoW", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        private static extern IntPtr SHGetFileInfoPidlW(IntPtr pidl, uint attributes, ref Win32Api.ShFileInfoW info, uint size, uint flags);
     }
 }

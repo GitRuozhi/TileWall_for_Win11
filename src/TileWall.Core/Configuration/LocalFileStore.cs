@@ -19,6 +19,13 @@ public sealed class LocalFileStore : IFileStore
 
     public byte[] ReadAllBytes(string path) => File.ReadAllBytes(path);
 
+    public Stream OpenReadProtected(string path) => new FileStream(path, FileMode.Open, FileAccess.Read,
+        FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+    /// <summary>Same-directory wall-file temporary output; CreateNew never replaces an existing file.</summary>
+    public FileStream CreateNewStream(string path) => new(path, FileMode.CreateNew, FileAccess.ReadWrite,
+        FileShare.None, 64 * 1024, FileOptions.Asynchronous);
+
     public void WriteAllBytes(string path, byte[] bytes)
     {
         using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -27,6 +34,8 @@ public sealed class LocalFileStore : IFileStore
     }
 
     public void Move(string src, string dst, bool overwrite) => File.Move(src, dst, overwrite);
+
+    public void MoveDirectory(string source, string destination) => Directory.Move(source, destination);
 
     public void Copy(string src, string dst, bool overwrite) => File.Copy(src, dst, overwrite);
 

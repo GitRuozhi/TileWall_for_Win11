@@ -5,7 +5,6 @@ using TileWall.Core.Entries;
 namespace TileWall.Core.Import;
 
 public sealed record StartMenuBucket(string Key, string Title, int Order);
-public sealed record StartMenuSelectionMigration(IReadOnlyList<string> SelectedKeys, int RemovedCount);
 public enum StartMenuExclusion { None, WindowsBuiltIn, Uninstall, Maintenance, DocumentOrWeb }
 
 /// <summary>Deterministic local selection policy. It describes purpose, never usage frequency.</summary>
@@ -45,24 +44,6 @@ public static partial class StartMenuSelectionRules
         "{2559A1F3-21D7-11D4-BDAF-00C04F60B9F0}", // Run
     ];
 
-    /// <summary>Keeps previous SelectionKey values that are still addable. Matching is ordinal and ignores display names.</summary>
-    public static StartMenuSelectionMigration MigrateSelection(IEnumerable<string> previousKeys, IEnumerable<string> addableKeys)
-    {
-        ArgumentNullException.ThrowIfNull(previousKeys);
-        ArgumentNullException.ThrowIfNull(addableKeys);
-        var addable = new HashSet<string>(addableKeys.Where(key => !string.IsNullOrEmpty(key)), StringComparer.Ordinal);
-        var selected = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var removed = 0;
-        foreach (var key in previousKeys)
-        {
-            if (string.IsNullOrEmpty(key) || !seen.Add(key)) continue;
-            if (addable.Contains(key)) selected.Add(key);
-            else removed++;
-        }
-        return new StartMenuSelectionMigration(selected, removed);
-    }
-
     public static char Initial(string name)
     {
         var value = name.TrimStart();
@@ -87,7 +68,7 @@ public static partial class StartMenuSelectionRules
         return '#';
     }
 
-    public static StartMenuExclusion Classify(string displayName, LaunchIdentity identity)
+    public static StartMenuExclusion Classify(string displayName, LaunchIdentity identity, bool? targetIsDirectory = null)
     {
         if (identity.IsUrl && Uri.TryCreate(identity.Target, UriKind.Absolute, out var uri) &&
             (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
@@ -138,7 +119,7 @@ public static partial class StartMenuSelectionRules
             (fileName.Equals("msiexec.exe", StringComparison.OrdinalIgnoreCase) && MsiMaintenance().IsMatch(args)))
             return StartMenuExclusion.Maintenance;
         var extension = Path.GetExtension(fileName);
-        if (new[] { ".pdf", ".txt", ".rtf", ".doc", ".docx", ".htm", ".html", ".chm", ".hlp", ".md" }
+        if (targetIsDirectory != true && new[] { ".pdf", ".txt", ".rtf", ".doc", ".docx", ".htm", ".html", ".chm", ".hlp", ".md" }
             .Contains(extension, StringComparer.OrdinalIgnoreCase)) return StartMenuExclusion.DocumentOrWeb;
         if (fileName.Equals("hh.exe", StringComparison.OrdinalIgnoreCase) && args.Contains(".chm", StringComparison.OrdinalIgnoreCase))
             return StartMenuExclusion.DocumentOrWeb;

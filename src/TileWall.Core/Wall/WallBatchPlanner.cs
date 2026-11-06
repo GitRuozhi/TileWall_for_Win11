@@ -11,7 +11,8 @@ public static class WallBatchPlanner
 
     public static WallLayoutResult TryPlan(WallDocument current, IReadOnlyList<TileMember> members,
         string? targetGroupId, int? preferredLaneIndex, string newGroupIdPrefix,
-        double workWidthDip, double workHeightDip, WallMetrics? metrics = null)
+        double workWidthDip, double workHeightDip, WallMetrics? metrics = null,
+        bool appendOnly = false, IReadOnlyDictionary<string, string>? launchIdentityKeys = null)
     {
         ArgumentNullException.ThrowIfNull(current);
         ArgumentNullException.ThrowIfNull(members);
@@ -25,16 +26,17 @@ public static class WallBatchPlanner
         if (errors.Count > 0) return Reject(WallRejection.InvalidDocument, string.Join("; ", errors));
 
         var ordinary = TryPlanCore(current, members, targetGroupId, preferredLaneIndex, newGroupIdPrefix,
-            workWidthDip, workHeightDip, metrics, allowCompression: false);
+            workWidthDip, workHeightDip, metrics, allowCompression: false, appendOnly, launchIdentityKeys);
         return ordinary.Rejection == WallRejection.NoSpace
             ? TryPlanCore(current, members, targetGroupId, preferredLaneIndex, newGroupIdPrefix,
-                workWidthDip, workHeightDip, metrics, allowCompression: true)
+                workWidthDip, workHeightDip, metrics, allowCompression: true, appendOnly, launchIdentityKeys)
             : ordinary;
     }
 
     private static WallLayoutResult TryPlanCore(WallDocument current, IReadOnlyList<TileMember> members,
         string? targetGroupId, int? preferredLaneIndex, string newGroupIdPrefix,
-        double workWidthDip, double workHeightDip, WallMetrics metrics, bool allowCompression)
+        double workWidthDip, double workHeightDip, WallMetrics metrics, bool allowCompression,
+        bool appendOnly, IReadOnlyDictionary<string, string>? launchIdentityKeys)
     {
         var targetLane = -1;
         if (targetGroupId is not null)
@@ -52,8 +54,8 @@ public static class WallBatchPlanner
         if (preferredLaneIndex is < 0 || preferredLaneIndex > current.Columns)
             return Reject(WallRejection.InvalidAction);
         var firstLane = targetLane >= 0 ? targetLane : preferredLaneIndex ?? 0;
-        var laneOrder = Enumerable.Range(firstLane, current.Columns - firstLane)
-            .Concat(Enumerable.Range(0, firstLane)).ToList();
+        var laneOrder = Enumerable.Range(firstLane, current.Columns - firstLane).ToList();
+        if (!appendOnly) laneOrder.AddRange(Enumerable.Range(0, firstLane));
         if (firstLane == current.Columns && current.Columns < MaxLanes)
             laneOrder.Insert(0, firstLane);
 
@@ -83,6 +85,10 @@ public static class WallBatchPlanner
             current.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members).Select(member => member.Id),
             StringComparer.OrdinalIgnoreCase);
         var activeGroupId = targetGroupId;
+        var groupIdentities = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        if (launchIdentityKeys is not null)
+            foreach (var group in current.Lanes.SelectMany(lane => lane.Groups))
+                foreach (var member in group.Members) RememberIdentity(group.Id, member.Id);
         var laneCursor = 0;
         var groupNumber = 1;
 
@@ -92,11 +98,16 @@ public static class WallBatchPlanner
                 return Reject(WallRejection.DuplicateId);
             if (activeGroupId is not null)
             {
+                // A duplicate must not consume capacity or spill out of its requested
+                // group simply because that group is full. Other groups keep their scope.
+                if (launchIdentityKeys is not null && launchIdentityKeys.TryGetValue(incoming.Id, out var identity) &&
+                    groupIdentities.TryGetValue(activeGroupId, out var seen) && seen.Contains(identity)) continue;
                 var item = TryAddToGroup(lanes, incoming, activeGroupId, maxCandidateRows,
                     columns, current.Rows, workWidthDip, workHeightDip, metrics, current.Settings, allowCompression);
                 if (item is not null)
                 {
                     AcceptLocal(lanes, item, accepted, placedIds);
+                    RememberIdentity(activeGroupId, incoming.Id);
                     continue;
                 }
                 activeGroupId = null;
@@ -128,6 +139,7 @@ public static class WallBatchPlanner
                     lanes = trial;
                     AcceptLocal(lanes, item, accepted, placedIds);
                     activeGroupId = id;
+                    RememberIdentity(id, incoming.Id);
                     placed = true;
                     break;
                 }
@@ -139,8 +151,19 @@ public static class WallBatchPlanner
             if (!placed) return Reject(WallRejection.NoSpace, $"Tile {accepted.Count + 1} does not fit.");
         }
 
+        // An all-duplicate request has no mutation and must not advance generation.
+        if (accepted.Count == 0)
+            return new(new(current, WallLayoutEngine.Measure(current, metrics)), WallRejection.None);
         return WallLayoutEngine.TryApply(current,
             new AddBatchAction(current.Generation, accepted), workWidthDip, workHeightDip, metrics);
+
+        void RememberIdentity(string groupId, string memberId)
+        {
+            if (launchIdentityKeys is null || !launchIdentityKeys.TryGetValue(memberId, out var identity)) return;
+            if (!groupIdentities.TryGetValue(groupId, out var seen))
+                groupIdentities[groupId] = seen = new HashSet<string>(StringComparer.Ordinal);
+            seen.Add(identity);
+        }
     }
 
     private static AddBatchItem? TryAddToGroup(List<SimLane> lanes, TileMember incoming, string groupId,

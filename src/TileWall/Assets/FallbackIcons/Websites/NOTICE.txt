@@ -1,0 +1,7 @@
+Website icon provenance
+
+catalog.json records each bundled website icon's content hash, source URL or pinned repository revision, explicit hosts, source dimensions, and the license facts recorded for that source. No single license is asserted for this image set. Repository-level license texts included here identify their source projects; they are not presented as per-image grants. SVGLOGO and Logos Apps source notices are included because their project READMEs describe limits on what their repository licenses cover. Item-specific source terms, where present, remain in the matching catalog entry.
+
+Brand and trademark terms are separate from source-project license records. Official site and official app-listing artwork entries record their original URL and publisher/listing facts; public availability alone is not described as a redistribution grant.
+
+The source originals, pinned license documents, and review metadata are retained in the private repository under Showcase/website-icons. The app uses the packaged local PNG catalog for these bundled icon bytes.

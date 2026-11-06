@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text;
 
 using TileWall.Core.Shell;
 
@@ -26,13 +25,6 @@ public sealed class ShellMessageHost : IDisposable
 {
     public const string WindowClassName = "TileWall_ShellHost_Class";
 
-#if TILEWALL_PACKAGED
-    /// <summary>宿主窗名（packaged 带 .pkg 后缀，M9 设计 §3.3）：dev unpackaged 实例与 packaged 实例互不误寻。</summary>
-    public const string WindowName = "TileWall.ShellHost.pkg.1";
-#else
-    public const string WindowName = "TileWall.ShellHost.1";
-#endif
-
     private static ShellMessageHost? _instance; // WNDPROC 为静态委托：进程内仅一例，经它回查实例
 
     private readonly Win32Api.WndProc _wndProc; // 根引用：防止委托被 GC 回收后原生回调野指针
@@ -51,8 +43,8 @@ public sealed class ShellMessageHost : IDisposable
     /// <summary>Explorer 重启广播（"TaskbarCreated"，系统分配值）。</summary>
     public uint TaskbarCreatedMessage { get; }
 
-    /// <summary>WM_HOTKEY（任一已注册热键；本项目仅 id=1 一个组合）。</summary>
-    public event Action? HotKeyPressed;
+    /// <summary>WM_HOTKEY for one of the two owned registration IDs.</summary>
+    public event Action<int>? HotKeyPressed;
 
     /// <summary>托盘 v4 回调（单击无分支——B9 由分发表结构保证）。</summary>
     public event Action<TrayNotification>? TrayNotified;
@@ -118,7 +110,8 @@ public sealed class ShellMessageHost : IDisposable
         {
             if (msg == Win32Api.WmHotkey)
             {
-                self.HotKeyPressed?.Invoke();
+                var hotKeyId = wParam.ToInt64();
+                if (hotKeyId is 1 or 2) self.HotKeyPressed?.Invoke((int)hotKeyId);
                 return IntPtr.Zero;
             }
 
@@ -178,17 +171,15 @@ public sealed class ShellMessageHost : IDisposable
 
         var cds = Marshal.PtrToStructure<Win32Api.CopyDataStruct>(lParam);
 
-        // 声明 HWND 映像路由过滤在 Core 纯函数完成；本层只做 Win32 解值与接日志。
-        var declaredWindowImage = TryGetWindowImagePath(declaredWindowHwnd, out var declaredWindowDescribe);
-        var verdict = ExplorerAddRoutingFilter.Evaluate(unchecked((uint)cds.DwData.ToInt64()), declaredWindowImage, Environment.ProcessPath);
+        if (cds.CbData <= 0 || cds.LpData == IntPtr.Zero || cds.CbData > ExplorerAddPayload.MaxPayloadBytes ||
+            !ExplorerAddRoutingFilter.HasMagic(unchecked((uint)cds.DwData.ToInt64()))) return false;
+
+        var declaredProcess = TryGetWindowProcess(declaredWindowHwnd, out var declaredWindowDescribe);
+        var selfProcess = ShellProcessIdentity.Read((uint)Environment.ProcessId);
+        var verdict = ExplorerAddRoutingFilter.Evaluate(unchecked((uint)cds.DwData.ToInt64()), declaredProcess, selfProcess);
         if (verdict != ExplorerAddRoutingVerdict.Accept)
         {
             AppLog.Warn("IpcRoute", $"WM_COPYDATA 声明 HWND 路由过滤拒绝（{verdict}）：{declaredWindowDescribe}");
-            return false;
-        }
-
-        if (cds.CbData <= 0 || cds.LpData == IntPtr.Zero || cds.CbData > ExplorerAddPayload.MaxPayloadBytes)
-        {
             return false;
         }
 
@@ -201,7 +192,7 @@ public sealed class ShellMessageHost : IDisposable
     /// 声明 HWND → 所属进程 ID → 进程映像路径。任一步失败返回 null（保守拒绝）。
     /// 过滤拒绝时返回 0 不处理，绝不因过滤失败崩溃或弹窗。
     /// </summary>
-    private static string? TryGetWindowImagePath(IntPtr hwnd, out string describe)
+    private static ExplorerAddProcessIdentity? TryGetWindowProcess(IntPtr hwnd, out string describe)
     {
         describe = $"hwnd=0x{hwnd.ToInt64():X}";
         if (hwnd == IntPtr.Zero)
@@ -215,22 +206,9 @@ public sealed class ShellMessageHost : IDisposable
         }
 
         describe += $" pid={pid}";
-        var process = Win32Api.OpenProcess(Win32Api.ProcessQueryLimitedInformation, bInheritHandle: false, pid);
-        if (process == IntPtr.Zero)
-        {
-            return null;
-        }
-
-        try
-        {
-            var buffer = new StringBuilder(1024);
-            var size = (uint)buffer.Capacity;
-            return Win32Api.QueryFullProcessImageNameW(process, 0, buffer, ref size) ? buffer.ToString() : null;
-        }
-        finally
-        {
-            _ = Win32Api.CloseHandle(process);
-        }
+        var identity = ShellProcessIdentity.Read(pid);
+        // Re-read window ownership after token/image sampling to reject a stale HWND.
+        return Win32Api.GetWindowThreadProcessId(hwnd, out var currentPid) != 0 && currentPid == pid ? identity : null;
     }
 
     /// <summary>销毁宿主窗（R4；须在 UI 线程调用——退出序列保证）。类随进程注销，无需显式 Unregister。</summary>

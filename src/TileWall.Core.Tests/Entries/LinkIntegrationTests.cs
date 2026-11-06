@@ -180,14 +180,14 @@ internal sealed class LinkTestBed : IDisposable
         var before = Store.Open().Document!;
         var plan = Store.PlanEntries(before, WithMember(before.Generation + 1), [change]);
         Assert.NotNull(plan.Request);
-        return Store.Commit(before, plan.Request, true);
+        return Store.Commit(before, plan.Request);
     }
 
     public WallCommitResult Change(WallDocument before, EntryChange change)
     {
         var plan = PlanChange(before, change);
         Assert.NotNull(plan.Request);
-        return Store.Commit(before, plan.Request, true);
+        return Store.Commit(before, plan.Request);
     }
 
     public WallPlanResult PlanChange(WallDocument before, EntryChange change) =>

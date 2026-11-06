@@ -14,6 +14,8 @@ public sealed record HotKeyGesture(uint Modifiers, uint VirtualKey)
     public const uint ModShift = 0x0004;
     public const uint ModWin = 0x0008;
 
+    public static HotKeyGesture DefaultSecondary { get; } = new(ModWin | ModCtrl, 0xC0);
+
     /// <summary>已知修饰位全集；解析时多余位一律剥除（规范化，往返成立的前提）。</summary>
     public const uint KnownModifierMask = ModAlt | ModCtrl | ModShift | ModWin;
 

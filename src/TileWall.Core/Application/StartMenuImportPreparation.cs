@@ -8,7 +8,7 @@ using System.Text;
 
 namespace TileWall.Core.Application;
 
-/// <summary>One observed shortcut is one short STA job; background hashing never occupies the storage queue.</summary>
+/// <summary>One observed shortcut is one short apartment-owned job; background hashing never occupies the storage queue.</summary>
 internal static class StartMenuImportPreparation
 {
     internal static async Task<StartMenuCachedSource> PrepareSourceAsync(IWallStorageExecutor executor,

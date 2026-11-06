@@ -20,9 +20,10 @@ internal static class ActionIcon
         Delete = "\uE74D", Previous = "\uE76B", Next = "\uE76C", Refresh = "\uE72C",
         OpenFile = "\uE8E5", Folder = "\uE8B7", Picture = "\uE8B9", Confirm = "\uE73E",
         PresetSmall = "\uE743", PresetMedium = "\uE744", PresetWide = "\uE745", PresetLarge = "\uE747",
-        Fit = "\uE9A6", Fill = "\uE7A8", Original = "\uE71E", Custom = "\uE70F",
-        // MDL2 has no blur/acrylic glyph; BackgroundToggle is its closest background control.
-        BackgroundBlur = "\uEF1F", Color = "\uE790", Draw = "\uEC87", Erase = "\uE75C", Clock = "\uE121";
+        Fit = "\uE799", Fill = "\uE9A6", Original = "\uE91B", Custom = "\uE932",
+        Photo2 = "\uEB9F", GallerySet = "\uF5ED", Checkbox = "\uE739", OpenFolderHorizontal = "\uED25", Share = "\uE72D",
+        ImportAllMirrored = "\uEA53", PreviousItem = "\uE892", NextItem = "\uE893",
+        BackgroundBlur = "\uED5B", Color = "\uE790", Draw = "\uEC87", Erase = "\uE75C", Clock = "\uE121";
 
     internal static FontIcon Glyph(string glyph, double size = 16) => new()
     {
@@ -60,8 +61,19 @@ internal static class ActionIcon
     }
     private static readonly ConditionalWeakTable<ButtonBase, Registration> RegisteredTips = new();
     private static readonly ConditionalWeakTable<UIElement, DisabledTips> RootTips = new();
-    internal static void SetTip(ButtonBase button, string text)
+    internal static void SetTip(ButtonBase button, string? text)
     {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            if (RegisteredTips.TryGetValue(button, out var previous))
+            {
+                previous.Root?.Stop();
+                previous.Tip.IsOpen = false;
+                previous.Tip.Content = null;
+            }
+            ToolTipService.SetToolTip(button, null);
+            return;
+        }
         if (!RegisteredTips.TryGetValue(button, out var registration))
         {
             registration = new Registration(); RegisteredTips.Add(button, registration);

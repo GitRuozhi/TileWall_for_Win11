@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using TileWall.Core.Imaging;
@@ -17,16 +19,129 @@ public sealed record PuzzleCandidateResult(IReadOnlyList<string> Paths,
 }
 
 public sealed record PuzzleFrameResult(PuzzleFrame? Frame,
-    WallImageStatus Status, string? Diagnostic = null);
+    WallImageStatus Status, string? Diagnostic = null)
+{
+    /// <summary>Whether this result may be reused in the current display session.</summary>
+    public bool MemoryCacheAllowed { get; init; } = true;
+    /// <summary>Whether dependency facts permit reuse from persistent icon caches.</summary>
+    public bool CacheAllowed { get; init; } = true;
+}
 
 public sealed record PuzzleFrame(string CanonicalPath, long SourceBytes, DateTime LastWriteUtc,
     PixelSize SourcePixels, PixelSize SharpDecodedPixels, PixelSize BlurDecodedPixels,
-    ImageSource Sharp, ImageSource? BlurredUnderfill);
+    ImageSource Sharp, ImageSource? BlurredUnderfill)
+{
+    public bool MemoryCacheAllowed { get; init; } = true;
+    internal string? AutomaticStamp { get; init; }
+    internal string? AutomaticPackageTarget { get; init; }
+    internal ManagedMediaReference? AutomaticDisplayMedia { get; init; }
+    internal DateTimeOffset MemoryValidUntil { get; init; } = DateTimeOffset.MaxValue;
+}
 
 public enum MemberImagePurpose { Content, Thumbnail }
 
+public sealed record TargetImageSourceResult(MemberImageSource Source, PuzzleCandidateResult? Candidates)
+{
+    internal string? TargetPath { get; init; }
+    internal string? SourceFingerprint { get; init; }
+    internal bool? TargetIsDirectory { get; init; }
+
+    public WallMember ApplyTo(WallMember member, bool applyDefaults = true) =>
+        MemberPresentationRules.ApplyImageSource(member, Source, applyDefaults);
+}
+
 public sealed partial class WallImageService
 {
+    /// <summary>Infer from readable target contents, using the same candidates as the editor and gallery.</summary>
+    public Task<TargetImageSourceResult?> ResolveTargetSourceAsync(string? target, CancellationToken ct = default) =>
+        StartImageRequest<TargetImageSourceResult?>(token => ResolveTargetSourceCoreAsync(target, token), ct, null);
+
+    private async Task<TargetImageSourceResult?> ResolveTargetSourceCoreAsync(string? target, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(target) || !Path.IsPathFullyQualified(target)) return new(new(), null);
+        var before = await Task.Run(() => ReadTargetFingerprint(target, ct), ct).ConfigureAwait(false);
+        var source = new MemberImageSource();
+        PuzzleCandidateResult? candidates = null;
+        if (before.Directory || !Path.GetExtension(target).Equals(".lnk", StringComparison.OrdinalIgnoreCase))
+        {
+            var proposed = new MemberImageSource
+            { Kind = before.Directory ? MemberImageSourceKind.Folder : MemberImageSourceKind.Single, Path = target };
+            if (before.Directory)
+            {
+                // A confirmation checks this source now. Share any in-flight producer,
+                // but do not accept an old fallback or wait for the periodic deadline.
+                var folder = NormalizeImageFilePath(target);
+                lock (_workGate)
+                    if (folder is not null && _gallerySources.TryGetValue(folder, out var state)) state.Due = DateTimeOffset.MinValue;
+            }
+            candidates = await EnumerateCandidatesCoreAsync(proposed, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            if (candidates.Status == WallImageStatus.Cancelled) throw new OperationCanceledException(ct);
+            if (!candidates.IsComplete || candidates.Status is WallImageStatus.Fallback or WallImageStatus.Invalid)
+                throw new IOException(DescribeCandidateDiagnostic(candidates) ?? "Image source is unavailable.");
+            if (candidates.Paths.Count > 0) source = proposed;
+        }
+        var after = await Task.Run(() => ReadTargetFingerprint(target, ct), ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (before != after) throw new IOException("Target changed while its image source was being read.");
+        return new(source, candidates) { TargetPath = target, SourceFingerprint = before.Fingerprint, TargetIsDirectory = before.Directory };
+    }
+
+    public Task<bool> IsTargetSourceCurrentAsync(TargetImageSourceResult result, CancellationToken ct = default) =>
+        StartImageRequest(token => IsTargetSourceCurrentCoreAsync(result, token), ct, false);
+
+    private async Task<bool> IsTargetSourceCurrentCoreAsync(TargetImageSourceResult result, CancellationToken ct)
+    {
+        await _slots.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(() => result.TargetPath is null ||
+                ReadTargetFingerprint(result.TargetPath, ct).Fingerprint == result.SourceFingerprint, ct).ConfigureAwait(false);
+        }
+        finally { _slots.Release(); }
+    }
+
+    private static (bool Directory, string Fingerprint) ReadTargetFingerprint(string path, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var attributes = File.GetAttributes(path);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        void Add(string value) => hash.AppendData(Encoding.UTF8.GetBytes(value + "\n"));
+        var directory = (attributes & FileAttributes.Directory) != 0;
+        Add(directory ? "directory" : "file");
+        if (directory)
+        {
+            // Materialize the whole listing: an unreadable/incomplete directory is
+            // never an authoritative empty gallery. Only top-level files participate.
+            foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.TopDirectoryOnly)
+                         .OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ThenBy(value => value, StringComparer.Ordinal))
+            {
+                ct.ThrowIfCancellationRequested();
+                var info = new FileInfo(file);
+                if (!info.Exists) throw new IOException("Target directory changed during enumeration.");
+                Add(info.Name); Add(info.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                Add(info.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
+        else
+        {
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var info = new FileInfo(path);
+            Add(file.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            Add(info.LastWriteTimeUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            // Hash possible originals as well as shortcut bytes. Large ordinary
+            // files remain valid launch targets without reading their whole contents.
+            if (file.Length <= TileWall.Core.Storage.PreparedMediaAsset.MaximumBytes)
+            {
+                var buffer = new byte[64 * 1024];
+                int read;
+                while ((read = file.Read(buffer)) != 0) { ct.ThrowIfCancellationRequested(); hash.AppendData(buffer.AsSpan(0, read)); }
+            }
+        }
+        ct.ThrowIfCancellationRequested();
+        return (directory, Convert.ToHexString(hash.GetHashAndReset()));
+    }
+
     public Task<PuzzleCandidateResult> EnumerateMemberCandidatesAsync(
         MemberImageSource source, CancellationToken ct = default) =>
         StartImageRequest(token => EnumerateCandidatesCoreAsync(source, token), ct,
@@ -38,7 +153,7 @@ public sealed partial class WallImageService
         ArgumentNullException.ThrowIfNull(source);
         if (ct.IsCancellationRequested)
             return new([], WallImageStatus.Cancelled);
-        if (source.Kind == MemberImageSourceKind.Automatic)
+        if (source.Kind is MemberImageSourceKind.Automatic or MemberImageSourceKind.None)
             return new([], WallImageStatus.None);
         if (source.Kind == MemberImageSourceKind.Folder) return await RefreshGalleryRequestAsync(source, ct);
 
@@ -115,65 +230,64 @@ public sealed partial class WallImageService
         MemberImagePurpose purpose = MemberImagePurpose.Content)
     {
         ArgumentNullException.ThrowIfNull(member);
-        if (widthPixels is < 1 or > 4096 || heightPixels is < 1 or > 4096)
+        if (member.Images.Kind == MemberImageSourceKind.None) return new(null, WallImageStatus.None);
+        if (member.ResourceOrigin == MemberResourceOrigin.Package &&
+            !(member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is not null ||
+              member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is not null ||
+              member.Images.Kind == MemberImageSourceKind.Folder && member.Images.ManagedGallery is not null))
+            return new(null, WallImageStatus.None, "PackageImageSourceUnavailable");
+        if (widthPixels < 1 || heightPixels < 1)
             throw new ArgumentOutOfRangeException(nameof(widthPixels));
         if (purpose is not (MemberImagePurpose.Content or MemberImagePurpose.Thumbnail))
             throw new ArgumentOutOfRangeException(nameof(purpose));
+        if (member.Images.Kind == MemberImageSourceKind.Automatic && previewImagePath is null)
+            return await LoadAutomaticFrameCoreAsync(entryOrTarget, widthPixels, heightPixels,
+                member.Visual.BackgroundMode == MemberBackgroundMode.Blur, ct, member, purpose: purpose);
         var thumbnail = purpose == MemberImagePurpose.Thumbnail;
-        var reserve = !thumbnail && member.ImageDisplay.Mode == ImageDisplayMode.Custom ? Math.Max(1, member.ImageDisplay.CustomScale) : 1;
-        widthPixels = (int)Math.Clamp(Math.Ceiling(widthPixels * reserve), 1, 4096);
-        heightPixels = (int)Math.Clamp(Math.Ceiling(heightPixels * reserve), 1, 4096);
-        var edge = thumbnail ? Math.Clamp(Math.Max(widthPixels, heightPixels), 64, 256) : 4096;
+        var edge = thumbnail ? Math.Max(1, Math.Max(widthPixels, heightPixels)) : int.MaxValue;
         if (thumbnail) widthPixels = heightPixels = edge;
         var needsBlur = member.Visual.BackgroundMode == MemberBackgroundMode.Blur;
         var budget = new PuzzleDecodeBudget(purpose, widthPixels, heightPixels,
-            !thumbnail && member.ImageDisplay.Mode == ImageDisplayMode.Original, edge, thumbnail ? edge : 512, needsBlur);
+            !thumbnail && member.ImageDisplay.Mode == ImageDisplayMode.Original, edge, thumbnail ? edge : 512, needsBlur)
+            { Display = thumbnail ? null : member.ImageDisplay };
         if (member.Images.Kind == MemberImageSourceKind.Single)
             return await LoadImageFileFrameAsync(member.Images.Media is { } media ? ManagedMediaPath(media) : previewImagePath ?? member.Images.Path,
                 budget, ct, member.Images.Path, member.Images.Media?.Sha256, member.Images.Media);
         if (member.Images.Kind == MemberImageSourceKind.Folder)
         {
-            var selected = previewImagePath;
-            if (selected is null)
+            IDisposable? sourceRead = null;
+            try
             {
-                var candidates = await EnumerateCandidatesCoreAsync(member.Images, ct);
-                selected = candidates.Paths.FirstOrDefault(path =>
-                    StringComparer.OrdinalIgnoreCase.Equals(path, member.Carousel?.CurrentImageId)) ?? candidates.Paths.FirstOrDefault();
+                var selected = previewImagePath;
+                if (selected is null)
+                {
+                    var candidates = await EnumerateCandidatesCoreAsync(member.Images, ct);
+                    selected = candidates.Paths.FirstOrDefault(path =>
+                        StringComparer.OrdinalIgnoreCase.Equals(path, member.Carousel?.CurrentImageId)) ?? candidates.Paths.FirstOrDefault();
+                }
+                // A committed current frame can be prepared without enumerating its
+                // gallery (and without selecting or saving a different image).
+                if (selected is not null && !StringComparer.OrdinalIgnoreCase.Equals(
+                    NormalizeImageFilePath(Path.GetDirectoryName(selected)), NormalizeImageFilePath(member.Images.Path)))
+                    return new(null, WallImageStatus.Invalid, "ImageOutsideGallery");
+                var selectedPath = selected;
+                sourceRead = await Task.Run(() => OpenManagedGalleryRead(member.Images, selectedPath), ct);
+                var cached = GalleryReadPath(member.Images, selected);
+                if (cached.Path is null && selected is not null)
+                    return await LoadImageFileFrameAsync(selected, budget, ct, selected);
+                if (cached.Path is not null && !File.Exists(cached.Path))
+                    await EnsureGalleryOriginalAsync(member.Images, selected, ct);
+                return await LoadImageFileFrameAsync(cached.Path, budget, ct, selected, cached.Hash);
             }
-            var cached = GalleryReadPath(member.Images, selected);
-            if (cached.Path is not null && !File.Exists(cached.Path))
-                await EnsureGalleryOriginalAsync(member.Images, selected, ct);
-            return await LoadImageFileFrameAsync(cached.Path, budget, ct, selected, cached.Hash);
+            finally
+            {
+                if (sourceRead is not null) await Task.Run(sourceRead.Dispose);
+            }
         }
         if (previewImagePath is not null) return await LoadImageFileFrameAsync(previewImagePath, budget, ct);
-        if (widthPixels is < 1 or > 4096 || heightPixels is < 1 or > 4096)
+        if (widthPixels < 1 || heightPixels < 1)
             throw new ArgumentOutOfRangeException(nameof(widthPixels));
-        try
-        {
-            var icon = await TryLoadMemberIconAsync(member, entryOrTarget, widthPixels, ct);
-            if (icon is { Frame: not null }) return icon;
-            await _automaticSlots.WaitAsync(ct);
-            Prepared prepared;
-            try { prepared = await Task.Run(() => PrepareAutoAsync(entryOrTarget, widthPixels, heightPixels, ct,
-                skipNative: icon?.Diagnostic == "NoNativeIcon"), ct); }
-            finally { _automaticSlots.Release(); }
-            ct.ThrowIfCancellationRequested();
-            if (prepared.Pixels is null) return new(null, prepared.Status, prepared.Diagnostic);
-            var sharp = new DecodedImageFrame(entryOrTarget ?? $"automatic:{member.Id}", 0, DateTime.MinValue,
-                prepared.Width, prepared.Height, prepared.Width, prepared.Height, prepared.Pixels);
-            if (member.Visual.BackgroundMode != MemberBackgroundMode.Blur)
-                return new(new PuzzleFrame(sharp.SourcePath, 0, DateTime.MinValue,
-                    new PixelSize(sharp.SourceWidth, sharp.SourceHeight), new PixelSize(sharp.Width, sharp.Height),
-                    default, MakeBitmap(sharp), null), prepared.Status);
-            var blurred = LowResolutionBlur.Apply(sharp);
-            return new(new PuzzleFrame(sharp.SourcePath, 0, DateTime.MinValue,
-                new PixelSize(sharp.SourceWidth, sharp.SourceHeight), new PixelSize(sharp.Width, sharp.Height),
-                new PixelSize(blurred.Width, blurred.Height), MakeBitmap(sharp), MakeBitmap(blurred)), prepared.Status);
-        }
-        catch (OperationCanceledException) { return new(null, WallImageStatus.Cancelled); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or
-            ArgumentException or InvalidOperationException or OverflowException)
-        { return new(null, WallImageStatus.Invalid, ex.GetType().Name); }
+        return await LoadAutomaticFrameCoreAsync(entryOrTarget, widthPixels, heightPixels, needsBlur, ct, member, purpose: purpose);
     }
 
     private async Task<PuzzleFrameResult> LoadImageFileFrameAsync(
@@ -229,6 +343,7 @@ public sealed partial class WallImageService
         var canonicalPath = NormalizeImageFilePath(path);
         if (canonicalPath is null)
             return new(WallImageStatus.Invalid, null, "InvalidPath");
+        using var ownership = media is null ? null : _formalResourceLease?.Invoke(null, media);
         var verified = media is null ? default : OpenVerifiedMedia(canonicalPath, media);
         using var mediaRead = verified.Lease;
         if (verified.Diagnostic is { } diagnostic)
@@ -248,11 +363,12 @@ public sealed partial class WallImageService
             return new(WallImageStatus.Invalid, null, "ImageCacheHashMismatch");
         }
         var derived = ReadDerived(actualHash, budget, identityPath ?? canonicalPath);
-        if (budget.Purpose == MemberImagePurpose.Thumbnail && derived?.Sharp is { } thumbnail && (!budget.NeedsBlur || derived.BlurSource is not null))
+        if ((budget.Purpose == MemberImagePurpose.Thumbnail || budget.CacheSharp) && derived?.Sharp is { } thumbnail && (!budget.NeedsBlur || derived.BlurSource is not null))
         { var hit = new PuzzlePrepared(WallImageStatus.Loaded, derived); if (key is not null) CachePuzzle(key, hit); return hit; }
 
-        var decoded = await _decoder.DecodePuzzlePairAsync(canonicalPath, budget.Width, budget.Height, ct,
-            budget.PreserveSourceResolution, budget.SharpMaxEdge, budget.BlurMaxEdge, budget.NeedsBlur && derived?.BlurSource is null);
+        var decoded = await _decoder.DecodeDisplayPairAsync(canonicalPath, budget.Width, budget.Height, ct,
+            budget.PreserveSourceResolution, budget.SharpMaxEdge, budget.BlurMaxEdge, budget.NeedsBlur && derived?.BlurSource is null,
+            budget.Display);
         if (decoded.Pair is null)
             return new(decoded.Status switch
             {
@@ -283,7 +399,8 @@ public sealed partial class WallImageService
     private static string PuzzleCacheKey(string canonicalPath, long sourceBytes, DateTime lastWriteUtc,
         PuzzleDecodeBudget budget) =>
         $"puzzle:{budget.Purpose}:{budget.Width}x{budget.Height}:{budget.PreserveSourceResolution}:" +
-        $"{budget.SharpMaxEdge}:{budget.BlurMaxEdge}:{budget.NeedsBlur}|{canonicalPath}|{sourceBytes}|{lastWriteUtc.Ticks}";
+            $"{budget.SharpMaxEdge}:{budget.BlurMaxEdge}:{budget.NeedsBlur}:{budget.CacheSharp}:" +
+            $"{budget.Display?.Mode}:{budget.Display?.CustomScale:R}|{canonicalPath}|{sourceBytes}|{lastWriteUtc.Ticks}";
 
     private static string? PuzzleFingerprint(string canonicalPath, PuzzleDecodeBudget budget)
     {
@@ -309,6 +426,7 @@ public sealed partial class WallImageService
                 _lru.Remove(node);
                 _lru.AddFirst(node);
                 prepared = cached;
+                Interlocked.Increment(ref _displayMemoryHits);
                 return true;
             }
         }
@@ -352,5 +470,8 @@ public sealed partial class WallImageService
         string? Diagnostic = null);
 
     private readonly record struct PuzzleDecodeBudget(MemberImagePurpose Purpose, int Width, int Height,
-        bool PreserveSourceResolution, int SharpMaxEdge, int BlurMaxEdge, bool NeedsBlur);
+        bool PreserveSourceResolution, int SharpMaxEdge, int BlurMaxEdge, bool NeedsBlur, bool CacheSharp = false)
+    {
+        internal MemberImageDisplay? Display { get; init; }
+    }
 }

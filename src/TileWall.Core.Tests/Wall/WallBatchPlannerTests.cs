@@ -32,9 +32,12 @@ public sealed class WallBatchPlannerTests
         Rows = 2,
         Lanes = lanes,
         Generation = 7,
+        Settings = new WallSettings { FullScreen = false, ExpandColumns = false },
     };
 
     private static WallLane Lane(params StartGroup[] groups) => new() { Groups = groups };
+    private static WallDocument Empty(int columns, int rows) => WallDocument.Empty(columns, rows) with
+    { Settings = new WallSettings { FullScreen = false, ExpandColumns = false } };
 
     [Fact]
     public void ExistingHoleIsSkippedAndBatchAppendsWithoutMovingNeighbors()
@@ -106,7 +109,7 @@ public sealed class WallBatchPlannerTests
     [Fact]
     public void GroupTitleConsumesCapacity()
     {
-        var empty = WallDocument.Empty(1, 1);
+        var empty = Empty(1, 1);
         var before = WallJson.Serialize(empty);
         Assert.Equal(OneGroupHeight, new WallMetrics().WallHeight(2));
         var beyondMonitor = WallBatchPlanner.TryPlan(empty, [Tile("one")], null, 0,
@@ -139,7 +142,7 @@ public sealed class WallBatchPlannerTests
     [Fact]
     public void SameTitleDistinctIdsSurviveAndGenerationMovesOnlyOnce()
     {
-        var before = WallDocument.Empty(1, 2) with { Generation = 11 };
+        var before = Empty(1, 2) with { Generation = 11 };
         var one = Tile("id-one", title: "Same");
         var two = Tile("id-two", title: "Same");
         var result = WallBatchPlanner.TryPlan(before, [one, two], null, 0,
@@ -160,7 +163,7 @@ public sealed class WallBatchPlannerTests
     [Fact]
     public void BatchKeepsInputMemberSizesWhenSearchingCurrentGroupAndNewGroup()
     {
-        var before = WallDocument.Empty(1, 1);
+        var before = Empty(1, 1);
         var first = Tile("medium-one") with { LocalBounds = new GridRect(7, 8, 2, 2) };
         var second = Tile("medium-two") with { LocalBounds = new GridRect(6, 9, 2, 2) };
 
@@ -202,7 +205,7 @@ public sealed class WallBatchPlannerTests
     [Fact]
     public void MissingTargetAndBadLaneAreRejected()
     {
-        var before = WallDocument.Empty(1, 2);
+        var before = Empty(1, 2);
         Assert.Equal(WallRejection.ObjectNotFound, WallBatchPlanner.TryPlan(before,
             [Tile("one")], "missing", 0, "batch", OneLaneWidth, OneGroupHeight).Rejection);
         Assert.Equal(WallRejection.InvalidAction, WallBatchPlanner.TryPlan(before,

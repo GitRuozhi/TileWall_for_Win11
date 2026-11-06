@@ -1,0 +1,4 @@
+LIBRARY TileWall.ExplorerExtension.dll
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE

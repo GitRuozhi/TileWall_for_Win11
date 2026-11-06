@@ -13,13 +13,7 @@ public sealed partial class WallStore
     {
         var key = IdentityFactKey(kind, hash);
         if (_identityFacts.ContainsKey(key)) return;
-        var identity = _identities.ResolveObservedInput(kind == ManagedEntryKind.Lnk ? EntryKind.Lnk : EntryKind.Url,
-            path, bytes);
-        // A copied URL file may contain only opaque Shell metadata. Preserve the
-        // exact entry without inventing a target, while still deduplicating its bytes.
-        if (identity is null && kind == ManagedEntryKind.Url)
-            identity = new LaunchIdentity("opaque-url:" + hash, path, string.Empty, string.Empty, true);
-        if (identity is null) throw new InvalidDataException("Managed entry has no valid launch identity.");
+        var identity = EntryObservation.Observe(_identities, kind, path, bytes);
         _identityFacts.Add(key, identity);
     }
 

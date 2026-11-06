@@ -51,9 +51,17 @@
         <Border x:Name="StatusPanel" Background="#DC263445" Visibility="Collapsed"
                 HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="8" Padding="8,5">
             <StackPanel Spacing="4">
-                <TextBlock x:Name="StatusText" Foreground="White" TextWrapping="Wrap" />
-                <Button x:Name="RetryViewButton" Content="从已保存状态重建墙面"
+                <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <TextBlock x:Name="StatusText" Foreground="White" TextWrapping="Wrap" />
+                </ScrollViewer>
+                <Button x:Name="RetryViewButton"
                         Visibility="Collapsed" Click="OnRetryViewClicked" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="RetryOpenButton" AutomationProperties.AutomationId="wall-retry-open"
+                            Visibility="Collapsed" Click="OnRetryOpenClicked" />
+                    <Button x:Name="OpenDataFolderButton" AutomationProperties.AutomationId="wall-open-data-folder"
+                            Visibility="Collapsed" Click="OnOpenDataFolderClicked" />
+                </StackPanel>
             </StackPanel>
         </Border>
     </Grid>

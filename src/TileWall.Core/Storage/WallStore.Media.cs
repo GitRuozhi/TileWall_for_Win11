@@ -12,8 +12,13 @@ public sealed partial class WallStore
     }
 
     private static IEnumerable<ManagedMediaReference> MediaReferences(WallDocument document) =>
-        document.EnumerateAllMembers().Select(member => member.Images.Media)
+        document.EnumerateAllMembers().SelectMany(member => ImageMediaReferences(member.Images))
             .Append(document.Settings.BackgroundMedia).OfType<ManagedMediaReference>();
+
+    private static IEnumerable<ManagedMediaReference> ImageMediaReferences(MemberImageSource images) =>
+        (images.Media is { } media ? new[] { media } : [])
+            .Concat(images.IconSeries?.Frames?.Where(frame => frame is not null)
+                .Select(frame => frame.Media).OfType<ManagedMediaReference>() ?? []);
 
     private static Dictionary<string, ManagedMediaReference> MediaById(WallDocument document)
     {
@@ -32,10 +37,29 @@ public sealed partial class WallStore
     {
         foreach (var member in document.EnumerateAllMembers())
         {
+            if (member.Images.Kind == MemberImageSourceKind.None &&
+                (member.Images.Path is not null || member.Images.ManagedGallery is not null ||
+                 member.Images.IconSeries is not null || member.Carousel is not null))
+                yield return "NONE_IMAGE_SOURCE";
+            if (member.ResourceOrigin == MemberResourceOrigin.Package &&
+                !(member.Images.Kind == MemberImageSourceKind.None ||
+                  member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is not null ||
+                  member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is not null ||
+                  member.Images.Kind == MemberImageSourceKind.Folder))
+                yield return "PACKAGE_IMAGE_SOURCE";
             if (member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is null)
                 yield return "SINGLE_MEDIA_REQUIRED";
             if (member.Images.Media is not null && (member.Images.Kind != MemberImageSourceKind.Single ||
                 !PreparedMediaAsset.IsValidReference(member.Images.Media))) yield return "MEDIA_REFERENCE";
+            if (member.Images.IconSeries is { } series &&
+                (member.Images.Kind != MemberImageSourceKind.Automatic ||
+                 member.Images.Media is not null || member.Images.ManagedGallery is not null || member.Images.Path is not null ||
+                 member.Carousel is not null || string.IsNullOrWhiteSpace(series.Identity) || series.Columns <= 0 || series.Rows <= 0 ||
+                 series.Frames is null || series.Frames.Count == 0 || series.SelectedFrame < 0 || series.SelectedFrame >= series.Frames.Count ||
+                 series.Frames.Any(frame => frame is null || frame.Width <= 0 || frame.Height <= 0 ||
+                     !PreparedMediaAsset.IsValidReference(frame.Media) || frame.Media.Extension != ".png") ||
+                 series.Frames.Select(frame => (frame.Width, frame.Height)).Distinct().Count() != series.Frames.Count))
+                yield return "AUTOMATIC_ICON_SERIES";
         }
         if (document.Settings.BackgroundMode == WallBackgroundMode.Custom && document.Settings.BackgroundMedia is null)
             yield return "BACKGROUND_MEDIA_REQUIRED";
@@ -149,7 +173,7 @@ public sealed partial class WallStore
     {
         var installed = journal.Media.Where(media => media.NewlyInstalled).ToArray();
         if (installed.Length == 0) return;
-        var proposedPath = _paths.Under("Staging", journal.CommitId, "config.tmp");
+        var proposedPath = _paths.Under("Staging", journal.CommitId, "state.tmp");
         if (!_files.Exists(proposedPath))
             proposedPath = _paths.Under("Recovery", "Entries", journal.CommitId, "new.snapshot.json");
         if (!_files.Exists(proposedPath) || Hash(_files.ReadAllBytes(proposedPath)) != journal.NewHash ||
@@ -162,7 +186,7 @@ public sealed partial class WallStore
             if (!expected.TryGetValue(operation.Asset.Sha256, out var reference) || reference != operation.Asset)
                 throw new IOException("New media is not owned by the transaction snapshot.");
             // An unreadable retained snapshot makes deletion unsafe. Leaving a known orphan
-            // is preferable to deleting an asset that a previous/undo document still owns.
+            // is preferable to deleting an asset that a current or previous document still owns.
             if (protectedIds is null || protectedIds.Contains(reference.Sha256)) continue;
             // A stage that still exists was never moved into this destination. In particular,
             // do not delete a late file that caused the immutable Move(overwrite:false) to fail.
@@ -180,21 +204,12 @@ public sealed partial class WallStore
 
     private HashSet<string>? ProtectedMediaIds(string excludedCommitId)
     {
-        var result = new HashSet<string>(StringComparer.Ordinal);
-        var snapshots = new List<string> { _paths.Config, _paths.Previous };
-        foreach (var directory in _files.ListDirectories(_paths.RecoveryEntries))
+        try
         {
-            if (Path.GetFileName(directory) == excludedCommitId) continue;
-            snapshots.Add(Path.Combine(directory, "old.snapshot.json"));
-            snapshots.Add(Path.Combine(directory, "new.snapshot.json"));
+            using var protection = CaptureProtectedResourceSet(excludedCommitId);
+            return protection.Complete ? new HashSet<string>(protection.Media, StringComparer.Ordinal) : null;
         }
-        foreach (var path in snapshots)
-        {
-            if (!_files.Exists(path)) continue;
-            if (!TryReadDocument(path, out var document, out _)) return null;
-            result.UnionWith(MediaById(document!).Keys);
-        }
-        return result;
+        catch (Exception ex) when (IsStorageError(ex)) { return null; }
     }
 
     private string MediaStagePath(string commitId, string sha256) =>

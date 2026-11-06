@@ -30,7 +30,7 @@ public sealed record StrokePreview(bool Applicable, StrokeOutcome Outcome, GridR
 /// 布局子草稿会话（M5 设计 §6）：确定性有状态——无时钟/随机/IO（类型级保证 INV-P12 草稿隔离）。
 /// 去抖集合以 WallEdge 规范标识判等（同一边界一次笔画仅首次生效、不反向切换，B06）；
 /// 一次连续笔画（含单击 Begin+Stroke+End）= 一个撤销单元；行列按钮各自一单元；
-/// 会话内快照撤销/重做栈（容量默认 100，关窗即弃），不与主墙单槽撤销互通。
+/// 会话内快照撤销/重做栈（容量默认 100，关窗即弃），仅作用于编辑器草稿。
 /// </summary>
 public sealed class PartitionEditSession
 {

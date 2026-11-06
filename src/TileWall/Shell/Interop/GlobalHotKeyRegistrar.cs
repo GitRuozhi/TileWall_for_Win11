@@ -4,22 +4,24 @@ using TileWall.Core.Settings;
 namespace TileWall.Shell.Interop;
 
 /// <summary>
-/// RegisterHotKey/UnregisterHotKey 封装：落在共享宿主窗上（id=1），带 MOD_NOREPEAT（按住不重复——
+/// RegisterHotKey/UnregisterHotKey 封装：落在共享宿主窗的独立槽（id=1/2），带 MOD_NOREPEAT（按住不重复——
 /// 官方语义，不自造去抖）。注册/注销严格成对：<see cref="TryRegister"/> 内部先注销旧组合，
 /// <see cref="Dispose"/> 是退出/异常路径的兜底注销；ExitCoordinator 释放序中的 Unregister 为常规路径（C11）。
 /// </summary>
 public sealed class GlobalHotKeyRegistrar : IDisposable
 {
-    private const int HotKeyId = 1;
+    private readonly int _hotKeyId;
 
     private readonly ShellMessageHost _host;
 
     private bool _disposed;
 
-    public GlobalHotKeyRegistrar(ShellMessageHost host)
+    public GlobalHotKeyRegistrar(ShellMessageHost host, int hotKeyId)
     {
         ArgumentNullException.ThrowIfNull(host);
+        if (hotKeyId is not (1 or 2)) throw new ArgumentOutOfRangeException(nameof(hotKeyId));
         _host = host;
+        _hotKeyId = hotKeyId;
     }
 
     public bool IsRegistered { get; private set; }
@@ -37,7 +39,7 @@ public sealed class GlobalHotKeyRegistrar : IDisposable
         Unregister(); // 成对原则：先注销旧组合再试新组合
 
         var modifiers = gesture.Modifiers | Win32Api.ModNorepeat;
-        if (Win32Api.RegisterHotKey(_host.Hwnd, HotKeyId, modifiers, gesture.VirtualKey))
+        if (Win32Api.RegisterHotKey(_host.Hwnd, _hotKeyId, modifiers, gesture.VirtualKey))
         {
             IsRegistered = true;
             LastFailureReason = null;
@@ -62,7 +64,7 @@ public sealed class GlobalHotKeyRegistrar : IDisposable
             return;
         }
 
-        _ = Win32Api.UnregisterHotKey(_host.Hwnd, HotKeyId);
+        _ = Win32Api.UnregisterHotKey(_host.Hwnd, _hotKeyId);
         IsRegistered = false;
         CurrentGesture = null;
         RegistrationChanged?.Invoke();

@@ -9,22 +9,25 @@ using Microsoft.UI.Xaml.Media.Imaging;
 using TileWall.Core.Wall;
 using TileWall.Resources;
 using TileWall.Shell;
+using Windows.Foundation;
 using Windows.UI;
 using Windows.UI.ViewManagement;
 
 namespace TileWall.Views;
 
 /// <summary>A fixed Windows destination rail; expanded text overlays the wall.</summary>
-internal sealed class WindowsSidebar : Grid
+internal sealed class WindowsSidebar : Panel
 {
     internal const double ExpandedWidth = WallViewportPolicy.MenuWidthDip;
     private const double CollapsedWidth = 48;
+    private const double RowHeight = 48;
     private sealed record Row(string Key, WindowsShortcut? Shortcut, Button Button, Grid Content, TextBlock Label);
     private readonly List<Row> _rows = [];
     private readonly StackPanel _items = new();
     private readonly Grid _itemsHost = new();
     private readonly Grid _rail = new();
-    private readonly ScrollViewer _scroll;
+    private readonly Row[] _hidePriority;
+    private readonly Button _brand;
     private readonly Action<string> _status;
     private readonly Action<bool> _menuVisibility;
     private readonly AccessibilitySettings _accessibility = new();
@@ -41,25 +44,6 @@ internal sealed class WindowsSidebar : Grid
         Width = CollapsedWidth;
         AutomationProperties.SetAutomationId(this, "windows-sidebar");
         _itemsHost.Children.Add(_items);
-        _scroll = new ScrollViewer
-        {
-            Content = _itemsHost, HorizontalScrollMode = ScrollMode.Disabled,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            VerticalScrollMode = ScrollMode.Enabled, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            VerticalContentAlignment = VerticalAlignment.Stretch, ZoomMode = ZoomMode.Disabled,
-        };
-        AutomationProperties.SetAutomationId(_scroll, "windows-sidebar-scroll");
-        _scroll.SizeChanged += (_, args) =>
-        {
-            // A vertical ScrollViewer measures its content with unlimited height. Give
-            // the arranging Grid a viewport floor so Bottom aligns the actual rows;
-            // the floor never caps a taller list, which keeps short-window scrolling.
-            _itemsHost.MinHeight = args.NewSize.Height;
-            ScrollToAnchor();
-        };
-        _itemsHost.SizeChanged += (_, _) => DispatcherQueue.TryEnqueue(ScrollToAnchor);
-        _items.SizeChanged += (_, _) => ScrollToAnchor();
         // Standard Button visual states provide pointer, pressed, disabled and keyboard
         // focus feedback. Only the rail's transparent resting fill is overridden.
         Resources["ButtonBackground"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
@@ -76,11 +60,14 @@ internal sealed class WindowsSidebar : Grid
         Add("Documents", "\uE7C3", WindowsShortcut.Documents);
         Add("User", "\uE77B", null);
         Add("TileWall", string.Empty, null);
+        string[] hideOrder = ["Music", "Pictures", "Videos", "Network", "Documents", "Profile",
+            "Downloads", "Explorer", "Settings", "User", "Power"];
+        _hidePriority = hideOrder.Select(key => _rows.Single(row => row.Key == key)).ToArray();
+        _brand = _rows.Single(row => row.Key == "TileWall").Button;
         _rail.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         _rail.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var brand = _rows.Single(row => row.Key == "TileWall").Button;
-        Grid.SetRow(brand, 0); _rail.Children.Add(brand);
-        Grid.SetRow(_scroll, 1); _rail.Children.Add(_scroll);
+        Grid.SetRow(_brand, 0); _rail.Children.Add(_brand);
+        Grid.SetRow(_itemsHost, 1); _rail.Children.Add(_itemsHost);
         Children.Add(_rail);
         PointerEntered += (_, args) =>
         {
@@ -147,7 +134,7 @@ internal sealed class WindowsSidebar : Grid
         Grid.SetColumn(label, 1); content.Children.Add(label);
         var button = new Button
         {
-            Content = content, Height = 48, Padding = new Thickness(0), BorderThickness = new Thickness(0),
+            Content = content, Height = RowHeight, Padding = new Thickness(0), BorderThickness = new Thickness(0),
             CornerRadius = new CornerRadius(0), HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
         };
@@ -191,11 +178,10 @@ internal sealed class WindowsSidebar : Grid
             _anchor = anchor;
             var right = anchor is AnchorCorner.TopRight or AnchorCorner.BottomRight;
             var bottom = anchor is AnchorCorner.BottomLeft or AnchorCorner.BottomRight;
-            var brand = _rows.Single(row => row.Key == "TileWall").Button;
             _rail.RowDefinitions[0].Height = bottom ? GridLength.Auto : new GridLength(1, GridUnitType.Star);
             _rail.RowDefinitions[1].Height = bottom ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
-            Grid.SetRow(brand, bottom ? 0 : 1);
-            Grid.SetRow(_scroll, bottom ? 1 : 0);
+            Grid.SetRow(_brand, bottom ? 0 : 1);
+            Grid.SetRow(_itemsHost, bottom ? 1 : 0);
             _items.VerticalAlignment = bottom ? VerticalAlignment.Bottom : VerticalAlignment.Top;
             _items.Children.Clear();
             var entries = _rows.Where(row => row.Key != "TileWall");
@@ -210,8 +196,6 @@ internal sealed class WindowsSidebar : Grid
                 row.Label.Margin = right ? new Thickness(12, 0, 0, 0) : new Thickness(0, 0, 12, 0);
                 if (row.Button.Flyout is { } flyout) flyout.Hide();
             }
-            // For short windows, begin at the anchored end of the independently scrolling rail.
-            DispatcherQueue.TryEnqueue(ScrollToAnchor);
         }
         if (_language != ProductStrings.Language)
         {
@@ -288,8 +272,46 @@ internal sealed class WindowsSidebar : Grid
         if (error is not null) _status(string.Format(ProductStrings.Get("Sidebar.OpenFailed"), error));
     }
 
-    private void ScrollToAnchor() => _scroll.ChangeView(null,
-        _anchor is AnchorCorner.BottomLeft or AnchorCorner.BottomRight ? _scroll.ScrollableHeight : 0, null, true);
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        ApplyHeightBudget(availableSize.Height);
+        _rail.Measure(availableSize);
+        return _rail.DesiredSize;
+    }
+
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        // The final slot can be smaller than the measure constraint. Re-measure
+        // changed visibility before arranging, so every retained row remains whole.
+        if (ApplyHeightBudget(finalSize.Height)) _rail.Measure(finalSize);
+        _rail.Arrange(new Rect(new Point(), finalSize));
+        return finalSize;
+    }
+
+    private bool ApplyHeightBudget(double height)
+    {
+        var slots = double.IsFinite(height)
+            ? (int)Math.Clamp(Math.Floor(height / RowHeight), 0, _rows.Count)
+            : _rows.Count;
+        // Branding stays at the far end when it and at least Power fit. It must
+        // yield the last complete slot to Power instead of clipping that action.
+        var showBrand = slots >= 2;
+        var actionSlots = slots - (showBrand ? 1 : 0);
+        var hiddenCount = _hidePriority.Length - Math.Min(actionSlots, _hidePriority.Length);
+        var changed = SetRowVisibility(_brand, showBrand);
+        for (var i = 0; i < _hidePriority.Length; i++)
+            changed |= SetRowVisibility(_hidePriority[i].Button, i >= hiddenCount);
+        return changed;
+    }
+
+    private static bool SetRowVisibility(Button button, bool visible)
+    {
+        var visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (button.Visibility == visibility) return false;
+        if (!visible) button.Flyout?.Hide();
+        button.Visibility = visibility;
+        return true;
+    }
 
     internal void Collapse()
     {

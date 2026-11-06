@@ -9,7 +9,7 @@ namespace TileWall.Shell.Interop;
 /// （数据由系统在投递期间跨进程封送）。dwData 携带私有魔数（'TWL1'），wParam 携带
 /// 本进程临时 HWND，接收端据此查询其所属进程映像路径作路由过滤；该声明 HWND 不认证实际发送进程。
 /// 临时窗口（<see cref="SenderWindowReference"/>）在当前线程创建并释放，供 COM/二次启动进程使用。
-/// 供 <see cref="SingleInstanceGate.PostPaths"/>（二次启动进程）与 <see cref="ExplorerAddRouter"/>（-Embedding 进程）共用。
+/// 供 <see cref="SingleInstanceGate.PostPaths"/>（二次启动进程）使用；原生菜单通过系统激活进入该通道。
 /// </summary>
 internal static class ExplorerAddChannel
 {

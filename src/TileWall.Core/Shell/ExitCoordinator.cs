@@ -59,7 +59,7 @@ public interface IExitHost
 
 /// <summary>
 /// 退出编排（M7 设计 §9）：草稿三分支 → 固定释放序列 → Exit。
-/// 「保存有效状态」= 零待写确认：所有变更通道（Commit/SaveWithoutUndo）均为即时原子落盘，
+/// 「保存有效状态」= 零待写确认：所有变更均通过 Commit 即时原子落盘，
 /// 不存在退出时未落盘的脏缓冲。中止路径（取消/保存失败）零副作用——不写盘、不解锁、不摘托盘。
 /// </summary>
 public sealed class ExitCoordinator

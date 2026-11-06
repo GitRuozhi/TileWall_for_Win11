@@ -20,7 +20,7 @@ public enum LnkFaultPoint
 
 /// <summary>
 /// ILnkFileService 测试替身：字段状态序列化存入 <see cref="IFileStore"/> 字节内
-/// （与真 .lnk 一样随 store.Move/Copy 自动跟随——回滚/撤销的字节级断言才有意义）。
+/// （与真 .lnk 一样随 store.Move/Copy 自动跟随，供事务回滚与前代恢复的字节级断言使用）。
 /// 故障一次性触发（触发即解除），同步回滚例程不受同一故障二次阻断。
 /// </summary>
 public sealed class FakeLinkFileService(IFileStore files) : ILnkFileService
@@ -45,6 +45,13 @@ public sealed class FakeLinkFileService(IFileStore files) : ILnkFileService
         }
 
         Write(path, new FakeLinkState(target, arguments, workingDirectory, HasIdList: false));
+    }
+
+    public void CreateShell(string path, string parsingName)
+    {
+        Fire(LnkFaultPoint.BeforeCreate, path);
+        if (_files.Exists(path)) throw new IOException($"[伪链服务] 入口已存在：{path}");
+        Write(path, new FakeLinkState(null, "", "", HasIdList: true, ShellParsingName: parsingName));
     }
 
     public LinkFields Read(string path)

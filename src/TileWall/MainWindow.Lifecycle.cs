@@ -9,6 +9,8 @@ using TileWall.Core.Shell;
 using TileWall.Core.Entries;
 using TileWall.Core.Storage;
 using TileWall.Resources;
+using TileWall.Graphics;
+using TileWall.Shell.Interop;
 using TileWall.Views;
 using Windows.Foundation;
 using Windows.Graphics;
@@ -33,13 +35,22 @@ public sealed partial class MainWindow
     internal bool ModalActive => _modal;
     internal IWallDialogSession? ActiveDialog { get; private set; }
     internal WallSettings Settings => _hasDocument ? Document.Settings : new();
+    internal long SettingsGeneration => _hasDocument ? Document.Generation : -1;
+    internal bool SettingsPersistenceBlocked => !_hasDocument || _session.ResultUnknown ||
+        _session.RequiresReopen || _session.RecoveryBlocked;
     internal event Action? HideRequested;
     internal event Action? AutomaticHideRequested;
     internal event Action? SettingsRequested;
     internal event Action? DialogClosed;
     internal event Action? DialogOpened;
 
-    internal void InitializeSession() => OpenWall();
+    internal async Task InitializeSessionAsync()
+    {
+        OpenWall();
+        if (!_welcomeInitializationPending) return;
+        var error = await InitializeWelcomeWallAsync(fresh: true);
+        if (error is not null && !_viewBlocked) Status(error);
+    }
     internal void ShowStatus(string message) => Status(message);
     internal void ShowTransientStatus(string message) => TransientStatus(message);
 
@@ -59,6 +70,7 @@ public sealed partial class MainWindow
         _focusCheckRetry?.Stop();
         CancelTransientState();
         AppWindow.Hide();
+        UpdateWindowZOrder(foregroundInSession: false);
         ReleaseBackdropSnapshot();
         Surface.ClearTransientInteraction();
         _needsVisualRefresh = true;
@@ -78,15 +90,24 @@ public sealed partial class MainWindow
         _focusCheckQueued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             _focusCheckQueued = false;
-            if (_windowClosing || !AppWindow.IsVisible || _modal || _contextMenuOpen) return;
+            if (_windowClosing || !AppWindow.IsVisible) return;
             // XAML popup HWND activation can precede its MenuFlyoutItem.Click route.
             // Let that route finish, then decide from the actual foreground session.
             var foreground = GetForegroundWindow();
             var thread = GetWindowThreadProcessId(foreground, out var processId);
+            if (BackdropTrace.Enabled)
+                BackdropTrace.Write($"FocusCheck reason={reason} foreground={foreground} pid={processId} thread={thread} retryUnknown={retryUnknown} modal={_modal} menu={_contextMenuOpen}");
             if (foreground == IntPtr.Zero || thread == 0)
             {
                 AppLog.Info("WindowFocus", $"Automatic hide deferred: foreground transition reason={reason} retry={retryUnknown}");
-                if (!retryUnknown) return;
+                if (!retryUnknown)
+                {
+                    // Unknown foreground preserves the prepared background;
+                    // it never starts a capture or changes screenshot policy.
+                    RefreshAppearance();
+                    UpdateWindowZOrder(foregroundInSession: false);
+                    return;
+                }
                 if (_focusCheckRetry is null)
                 {
                     _focusCheckRetry = DispatcherQueue.CreateTimer();
@@ -99,8 +120,22 @@ public sealed partial class MainWindow
             }
             var wall = WinRT.Interop.WindowNative.GetWindowHandle(this);
             var inSession = processId == (uint)Environment.ProcessId || GetAncestor(foreground, 3) == wall;
+            if (inSession)
+            {
+                UpdateWindowZOrder(foregroundInSession: true);
+                RefreshAppearance();
+            }
+            if (_modal || _contextMenuOpen)
+            {
+                if (!inSession) UpdateWindowZOrder(foregroundInSession: false);
+                return;
+            }
             AppLog.Info("WindowFocus", $"Automatic hide check reason={reason} foreground={foreground} pid={processId} inSession={inSession}");
-            if (!inSession) AutomaticHideRequested?.Invoke();
+            if (!inSession)
+            {
+                UpdateWindowZOrder(foregroundInSession: false);
+                AutomaticHideRequested?.Invoke();
+            }
         });
     }
 
@@ -116,12 +151,51 @@ public sealed partial class MainWindow
             var activated = SetForegroundWindow(hwnd);
             if (_traceInput) TileWall.Core.Shell.AppLog.Info("WindowFocus", $"Explicit foreground requested hwnd={hwnd} accepted={activated}");
         }
+        UpdateWindowZOrder(IsForegroundWallSession(), raise: true);
+    }
+
+    internal bool IsForegroundWallSession()
+    {
+        var foreground = GetForegroundWindow();
+        return foreground != IntPtr.Zero && GetWindowThreadProcessId(foreground, out var processId) != 0 &&
+            (processId == (uint)Environment.ProcessId ||
+                GetAncestor(foreground, 3) == WinRT.Interop.WindowNative.GetWindowHandle(this));
+    }
+
+    private bool IsForegroundOutsideWallSession()
+    {
+        var foreground = GetForegroundWindow();
+        return foreground != IntPtr.Zero && GetWindowThreadProcessId(foreground, out var processId) != 0 &&
+            processId != (uint)Environment.ProcessId &&
+            GetAncestor(foreground, 3) != WinRT.Interop.WindowNative.GetWindowHandle(this);
+    }
+
+    private void UpdateWindowZOrder(bool foregroundInSession, bool raise = false)
+    {
+        if (AppWindow.Presenter is not OverlappedPresenter presenter) return;
+        // The active wall must cover the taskbar even without persistent topmost.
+        // On an outside focus change, restore the user's background preference.
+        var topmost = Settings.AlwaysOnTop || AppWindow.IsVisible && foregroundInSession;
+        var hwnd = BackdropTrace.Enabled ? WinRT.Interop.WindowNative.GetWindowHandle(this) : IntPtr.Zero;
+        if (BackdropTrace.Enabled)
+            BackdropTrace.Write($"ZOrder before hwnd={hwnd} foreground={GetForegroundWindow()} inSession={foregroundInSession} preference={Settings.AlwaysOnTop} presenter={presenter.IsAlwaysOnTop} actualTopmost={(Shell.Interop.Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64() & 8) != 0} desired={topmost} raise={raise}");
+        if (presenter.IsAlwaysOnTop != topmost) presenter.IsAlwaysOnTop = topmost;
+        if (topmost && raise)
+        {
+            const uint flags = 0x0013; // SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+            if (!Shell.Interop.Win32Api.SetWindowPos(WinRT.Interop.WindowNative.GetWindowHandle(this),
+                    new IntPtr(-1), 0, 0, 0, 0, flags))
+                AppLog.Warn("WindowFocus", "Could not raise the foreground wall above the taskbar.");
+        }
+        if (BackdropTrace.Enabled)
+            BackdropTrace.Write($"ZOrder after hwnd={hwnd} foreground={GetForegroundWindow()} presenter={presenter.IsAlwaysOnTop} actualTopmost={(Shell.Interop.Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64() & 8) != 0}");
     }
 
     internal void CancelTransientState([CallerMemberName] string reason = "")
     {
         TerminateGesture();
         CancelResize(reason);
+        if (_viewportTransition is { AutomaticHeight: true }) StopViewportTransition();
         _windowsSidebar?.Collapse();
     }
 
@@ -153,33 +227,25 @@ public sealed partial class MainWindow
         {
             var mode = ProposeMode(Document, settings);
             if (mode.Proposal is null) return ViewportFailure(mode);
-            // Mode changes that resize/compact the wall are layout transactions. The
-            // non-undo path is reserved for settings/carousel-only commits and keeps
-            // the previous layout undo token when the grid itself did not change.
-            var changesLayout = mode.Proposal.Document.Columns != Document.Columns ||
-                mode.Proposal.Document.Rows != Document.Rows ||
-                !LayoutCoordinates(mode.Proposal.Document).SequenceEqual(LayoutCoordinates(Document));
-            return CommitProposal(mode.Proposal, recordUndo: changesLayout);
+            return CommitProposal(mode.Proposal);
         }
         var next = Document with { Generation = checked(Document.Generation + 1), Settings = settings };
         var fit = WallViewportPolicy.Validate(next, ViewportBudget(settings), _metrics);
         if (fit.Proposal is null) return ViewportFailure(fit);
-        return CommitProposal(fit.Proposal, recordUndo: false);
+        return CommitProposal(fit.Proposal);
     }
-
-    private static IEnumerable<(int Lane, string Group, string Member, TileWall.Core.Grid.GridRect Bounds)> LayoutCoordinates(WallDocument document) =>
-        document.Lanes.SelectMany((lane, index) => lane.Groups.SelectMany(group => group.Members.Select(member =>
-            (index, group.Id, member.Id, member.LocalBounds))));
 
     internal async Task OpenSettingsAsync(Func<SettingsDialogState> read,
         Func<WallSettings, bool, Task<SettingsDialogState>> apply,
-        Action<bool>? hotKeyRecordingChanged = null)
+        Func<int, bool, Task>? hotKeyRecordingChanged = null,
+        Func<Task<SettingsDialogState>>? retryStartReplacement = null)
     {
         if (PersistenceInteractionBlocked || _modal || !_hasDocument) return;
         try
         {
             if (!await BeginModalAsync()) return;
-            var dialog = new SettingsDialog(DialogOwner, read, apply, hotKeyRecordingChanged);
+            var dialog = new SettingsDialog(DialogOwner, ExplorerContextMenuController.Create(_session.DataRoot), read, apply, hotKeyRecordingChanged, retryStartReplacement,
+                token => InitializeWelcomeWallAsync(fresh: false, token));
             ActiveDialog = dialog;
             await dialog.ShowAsync();
         }
@@ -202,11 +268,14 @@ public sealed partial class MainWindow
         if (titleError is not null) { Status(titleError); return false; }
         _modalClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _modal = true;
+        UpdateWallHitTesting();
+        Surface.ClearTransientInteraction();
         UpdateNativeSizingRegion(); // Remove the opt-in native edge before any asynchronous dialog setup.
         UpdatePuzzleGate();
         CancelTransientState();
         DialogOpened?.Invoke();
         _dialogHost = new OwnedDialogWindow(this, () => ActiveDialog?.RequestDismiss());
+        _dialogHost.Activated += (_, _) => QueueAutomaticHideCheck("DialogActivated");
         await _dialogHost.InitializeAsync();
         // Exit can close admission while the host is still bootstrapping, before
         // ActiveDialog exists. Let the caller's finally release that empty host.
@@ -226,6 +295,7 @@ public sealed partial class MainWindow
             _dialogHost?.Release();
             _dialogHost = null;
             _modal = false;
+            UpdateWallHitTesting();
             if (_hasDocument && !_viewBlocked)
             {
                 if (_needsVisualRefresh) { Surface.Render(Document); _needsVisualRefresh = false; }
@@ -241,6 +311,8 @@ public sealed partial class MainWindow
     }
 
     internal Task WaitForModalClosedAsync() => _modalClosed?.Task ?? Task.CompletedTask;
+
+    private void UpdateWallHitTesting() => WallRoot.IsHitTestVisible = !_modal && !PersistenceInteractionBlocked;
 
     internal void QueueEnvironmentRefresh()
     {
@@ -292,7 +364,8 @@ public sealed partial class MainWindow
         }
     }
 
-    private void ApplyViewport(WallDocument? previewDocument = null, WallGeometry? previewGeometry = null, bool animateMode = true)
+    private void ApplyViewport(WallDocument? previewDocument = null, WallGeometry? previewGeometry = null,
+        bool animateMode = true, bool animateHeight = false)
     {
         if (!_hasDocument) return;
         RefreshNativeFrame();
@@ -332,9 +405,8 @@ public sealed partial class MainWindow
         var x = right && !fullScreen ? _screenArea.Right - width : _screenArea.Left;
         var y = bottom && !fullScreen ? _screenArea.Bottom - height : _screenArea.Top;
         PresentViewport(new RectInt32(x, y, Math.Max(1, width), Math.Max(1, height)), fullScreen,
-            document.Settings.AnchorCorner, animateMode, presentationSettings: document.Settings);
-        if (AppWindow.Presenter is OverlappedPresenter presenter)
-            presenter.IsAlwaysOnTop = Settings.AlwaysOnTop;
+            document.Settings.AnchorCorner, animateMode, presentationSettings: document.Settings, animateHeight: animateHeight);
+        UpdateWindowZOrder(IsForegroundWallSession());
         UpdateResizeZones();
     }
 

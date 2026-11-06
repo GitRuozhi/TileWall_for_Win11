@@ -2,671 +2,840 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
-using Microsoft.UI.Xaml.Data;
-using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
+using System.Diagnostics;
+using System.Collections.ObjectModel;
+using System.Globalization;
 using TileWall.ApplicationModel;
 using TileWall.Core.Application;
+using TileWall.Core.Exchange;
+using TileWall.Core.Grid;
 using TileWall.Core.Import;
+using TileWall.Core.Imaging;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
 using TileWall.Graphics;
 using TileWall.Resources;
-using TileWall.Shell.Interop;
 
 namespace TileWall.Views;
 
-/// <summary>A source-keyed draft over the primary session's shared catalog.</summary>
+/// <summary>One source selection session; shared Core owns all grouping and source geometry.</summary>
 internal sealed class ImportDialog : IWallDialogSession
 {
+    private static readonly ImportPageSourceKind[] SourceKinds = [ImportPageSourceKind.StartMenu, ImportPageSourceKind.Desktop,
+        ImportPageSourceKind.InstalledApplications, ImportPageSourceKind.SystemFeatures, ImportPageSourceKind.WallPackage,
+        ImportPageSourceKind.CurrentWall, ImportPageSourceKind.RecycleBin];
+    private static readonly string[] SourceLabels = ["Import.Source.StartMenu", "Import.SourceDesktop", "Import.Source.InstalledApplications",
+        "Import.Source.SystemFeatures", "Import.Source.CustomSettings", "Import.Source.CurrentWall", "Import.Source.RecycleBin"];
+    private static readonly string[] StatisticLabels = ["Import.Stats.Acquired", "Import.Stats.Filtered", "Import.Stats.Candidates", "Import.Stats.Selected",
+        "Import.Stats.SystemFeature", "Import.Stats.Program", "Import.Stats.File", "Import.Stats.Folder", "Import.Stats.WebLink", "Import.Stats.ProtocolLink",
+        "Import.Stats.Component", "Import.Stats.DuplicateTarget", "Import.Stats.MissingTarget", "Import.Stats.NonPrimaryEntry"];
+    private readonly Window _owner;
     private readonly ContentDialog _dialog;
-    private readonly DialogExitPrompt _exit;
     private readonly WallImageService _images;
     private readonly StartMenuImportCoordinator _catalog;
-    private readonly Action _catalogChanged;
-    private readonly Func<StartMenuImportCandidate, int, CancellationToken, Task<PuzzleFrameResult>>? _loadIcon;
-    private readonly Func<IReadOnlyList<ImportBatchItem>, bool, string?> _save;
-    private readonly CancellationTokenSource _lifetime = new();
-    private readonly HashSet<CancellationTokenSource> _rowRequests = [];
-    private readonly CheckBox _selectAll = new() { IsThreeState = true, VerticalAlignment = VerticalAlignment.Center };
-    private readonly ComboBox _source = new() { VerticalAlignment = VerticalAlignment.Center };
-    private readonly ToggleSwitch _autoTrim = new() { IsOn = true, OnContent = string.Empty, OffContent = string.Empty };
-    private readonly ToggleSwitch _recognizeGroups = new() { IsOn = true, OnContent = string.Empty, OffContent = string.Empty };
-    private readonly ToggleSwitch _preserveChanges = new() { IsOn = true, OnContent = string.Empty, OffContent = string.Empty };
-    private readonly ToggleButton _small = new(), _medium = new();
-    private readonly TextBlock _sourceLabel = Label(), _trimLabel = Label(), _groupsLabel = Label(), _sizeLabel = Label(), _preserveLabel = Label();
-    private readonly TextBlock _scannedCount = Label(), _filteredCount = Label(), _candidateCount = Label(), _selectedCount = Label();
-    private readonly TextBlock _development = new() { TextWrapping = TextWrapping.Wrap,
-        HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
-    private readonly ScrollViewer _candidateScroll;
-    private readonly WallMetrics _metrics = new();
+    private readonly WallPackageReader _reader;
+    private readonly Func<CancellationToken, Task<ImportPageContext>> _readContext;
+    private readonly Func<ImportPageSourceKind, string?, CancellationToken, Task<ImportPageSource>> _readSource;
+    private readonly Func<ImportPageContext, ImportPageSource, ImportSourceProjection, CancellationToken, Task<ImportPagePreparation>> _prepare;
+    private readonly Func<ImportPageRequest, Task<ImportPageResult>> _save;
+    private readonly Func<ImportPageExportRequest, Task<ImportPageResult>> _saveExport;
+    private readonly Func<ImportPageContext, bool> _contextCurrent;
+    private readonly Func<ImportSourceCandidate, int, int, CancellationToken, Task<PuzzleFrameResult>>? _loadIcon;
+    private readonly string? _initialExportDirectory;
+    private readonly string _exportFileTimestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+    private readonly Func<IReadOnlyList<string>, long, CancellationToken, Task<string?>>? _restoreRecycled;
     private readonly WallVisualStyle _style;
-    private readonly HashSet<CandidateRow> _rows = [];
-    private readonly Canvas _groupOverlay = new() { IsHitTestVisible = false };
-    private GridViewHeaderItem? _hoveredHeader;
-    private readonly GridView _grid = new() { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = false };
-    private ScrollViewer? _gridScrollViewer;
-    private EventHandler<ScrollViewerViewChangedEventArgs>? _gridViewChanged;
-    private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly WallMetrics _metrics = new();
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly HashSet<Task> _pendingOperations = [], _previewOperations = [];
+    private readonly Dictionary<string, PreviewImageWork> _previewImageWork = new(StringComparer.Ordinal);
+    private readonly LinkedList<PreviewImageWork> _previewImageQueue = new();
+    private readonly Dictionary<string, PreviewImageCompletion> _previewImageCompletions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, PreviewTargetInference> _previewTargetInferences = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _previewImageDesiredWorkKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _selected = new(StringComparer.Ordinal);
-    private readonly Dictionary<ImportIconCacheKey, LinkedListNode<CachedImportIcon>> _iconFrames = [];
-    private readonly LinkedList<CachedImportIcon> _iconFrameLru = [];
-    private string? _projectionNotice;
-    private readonly Dictionary<string, ImportBatchItem> _items = new(StringComparer.Ordinal);
-    private IReadOnlyList<StartMenuImportCandidate> _candidates = [];
-    private IReadOnlyList<StartMenuImportCandidate> _visibleCandidates = [];
-    private Task _pending = Task.CompletedTask;
-    private readonly HashSet<Task> _pendingOperations = [];
-    private CancellationTokenSource? _pageRequest;
-    private Task? _refreshObserver;
-    private bool _saved, _closed, _allowDiscard, _discarded, _scanReceived, _updating;
-    private bool _synchronizingSelection, _refreshingStrings, _shown;
-    private int _sourceEpoch, _tileSize = 1, _skipped, _scanned, _readErrors;
+    private readonly Dictionary<string, ImportProjectedCandidate> _candidateByKey = new(StringComparer.Ordinal);
+    private readonly HashSet<CandidateRow> _rows = [];
+    private readonly Dictionary<string, PuzzleFrame> _frames = new(StringComparer.Ordinal);
+    private const long PreviewFrameLimitBytes = 64L * 1024 * 1024;
+    private const int PreviewImageWorkerLimit = 2;
+    private readonly LinkedList<string> _frameOrder = new();
+    private readonly Dictionary<string, LinkedListNode<string>> _frameNodes = new(StringComparer.Ordinal);
+    private long _frameBytes;
+    private readonly Dictionary<string, ImportTargetRecognition> _recognizedTargets = new(StringComparer.Ordinal);
+    private ImportSourceProjection? _recognitionProjection;
+    private ImportPageContext? _recognitionContext;
+    private IReadOnlyDictionary<string, string>? _recognitionFacts;
+    private bool _recognitionReady;
+    private readonly SemaphoreSlim _packageMediaSlots = new(2, 2);
+    private PackagePreviewSource? _packageSource;
+    private IReadOnlyList<ImportSourceCandidate>? _projectedCandidates;
+    private IReadOnlyDictionary<string, string>? _projectedIdentities;
+    private readonly ComboBox _source = new();
+    private readonly IconSelector _mode = new(ActionIcon.ImportAllMirrored, ActionIcon.Share),
+        _position = new(ActionIcon.PreviousItem, ActionIcon.NextItem);
+    private readonly CheckBox _selectAll = new() { IsThreeState = true };
+    private readonly TextBox _filter = new() { MinWidth = 0, FontSize = 12 };
+    private readonly ToggleSwitch _autoFilter = new() { IsOn = true, OnContent = "", OffContent = "" },
+        _recognizeGroups = new() { IsOn = true, OnContent = "", OffContent = "" };
+    private readonly ToggleButton _small = new(), _medium = new();
+    private readonly Button _chooseFile = new() { MinWidth = 32, Width = 32, Padding = new Thickness(0) };
+    private readonly TextBox _path = new() { IsReadOnly = true, MinWidth = 0, FontSize = 12 };
+    private readonly TextBlock[] _optionLabels = Enumerable.Range(0, 9).Select(_ => Label()).ToArray();
+    private readonly TextBlock[] _numbers = Enumerable.Range(0, 14).Select(_ => new TextBlock { Text = "0", FontSize = 14,
+        HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center,
+        TextAlignment = TextAlignment.Center, TextWrapping = TextWrapping.NoWrap }).ToArray();
+    private readonly TextBlock[] _numberLabels = Enumerable.Range(0, 14).Select(_ => new TextBlock { FontSize = 10,
+        TextWrapping = TextWrapping.Wrap, HorizontalAlignment = HorizontalAlignment.Stretch,
+        VerticalAlignment = VerticalAlignment.Center }).ToArray();
+    private readonly Border[] _statisticCells = new Border[14];
+    private readonly Grid[] _statisticRows = Enumerable.Range(0, 3).Select(_ => new Grid
+        { ColumnSpacing = 4, RowSpacing = 4, HorizontalAlignment = HorizontalAlignment.Left }).ToArray();
+    private readonly StackPanel _statistics = new() { Spacing = 16, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Border _statisticsCard;
+    private readonly Grid _page;
+    private readonly ColumnDefinition _statisticsColumn;
+    private readonly TextBlock _status = Label();
+    private readonly Grid _options = new() { RowSpacing = 6, ColumnSpacing = 8 };
+    private readonly ContentControl _optionsHost;
+    private readonly ItemsRepeater _repeater = new() { HorizontalCacheLength = .5, VerticalCacheLength = .5 };
+    private readonly ImportPreviewLayout _previewLayout = new();
+    private readonly Dictionary<UIElement, (int Epoch, int Index, PreviewItem Item)> _preparedElements = [];
+    private readonly ObservableCollection<string> _previewKeys = [];
+    private readonly Dictionary<string, PreviewItem> _previewMemberItems = new(StringComparer.Ordinal);
+    private readonly ScrollViewer _preview, _statusScroll;
+    private IReadOnlyList<PreviewItem> _previewItems = [];
+    private readonly Action _catalogChanged;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _clockTimer;
+    private CancellationTokenSource? _pageRequest, _previewRequest, _catalogRequest, _pickerRequest, _preparationRequest;
+    private Windows.Foundation.IAsyncOperation<Microsoft.Windows.Storage.Pickers.PickFileResult>? _pickerOperation;
+    private Task _previewLoad = Task.CompletedTask, _addTask = Task.CompletedTask;
+    private ImportPageContext? _context;
+    private ImportPageSource? _sourceData;
+    private ImportSourceProjection? _projection;
+    private ImportSourceProjection? _previewProjection;
+    private string _previewFilter = "";
+    private int _previewTileSize;
+    private double _previewHeight, _previewScale;
+    private XamlRoot? _previewRoot;
+    private ImportSourcePlan? _plan;
+    private string? _packagePath, _exportPath, _notice, _error;
+    private string? _statisticLayoutKey;
+    private readonly double _statisticsMaximumColumnWidth, _statisticsPreviewWidth;
+    private readonly Stopwatch _previewPreparationStopwatch = new();
+    private bool _shown, _closed, _dismissRequested, _reading, _adding, _picking, _refreshingStrings, _readsSuspended,
+        _preparing, _prepared, _synchronizingSelection, _exportPathPicked, _updatingPreviewItems;
+    private bool _previewPreparationStarted, _previewPreparationTerminalTraced, _previewOffscreenBindTraced;
+    private int _previewImageWorkers, _previewImageCandidateCount, _previewImageExpectedCount, _previewImageCancelledCount,
+        _previewImageCurrentTerminalCount;
+    private DateTimeOffset _previewProgressLastTraceAt;
+    private string? _previewProgressPendingCandidateKey, _previewProgressPendingStage;
+    private int _sourceEpoch, _renderEpoch, _preparationEpoch, _tileSize = 1, _catalogRevision, _lastImportSource;
+    private ImportPageMode Mode => _mode.SelectedIndex == 1 ? ImportPageMode.Export : ImportPageMode.Import;
+    private ImportPageSourceKind SourceKind => SourceKinds[Math.Clamp(_source.SelectedIndex, 0, SourceKinds.Length - 1)];
+    private bool IsRecycle => Mode == ImportPageMode.Import && SourceKind == ImportPageSourceKind.RecycleBin;
+    private bool Attributed => Mode == ImportPageMode.Export || SourceKind is ImportPageSourceKind.WallPackage or ImportPageSourceKind.RecycleBin;
 
-    public ImportDialog(Window owner, WallImageService images,
-        StartMenuImportCoordinator catalog,
-        Func<IReadOnlyList<ImportBatchItem>, bool, string?> save, WallVisualStyle style,
-        Func<StartMenuImportCandidate, int, CancellationToken, Task<PuzzleFrameResult>>? loadIcon = null)
+    public ImportDialog(Window owner, WallImageService images, StartMenuImportCoordinator catalog, WallPackageReader reader,
+        Func<CancellationToken, Task<ImportPageContext>> readContext,
+        Func<ImportPageSourceKind, string?, CancellationToken, Task<ImportPageSource>> readSource,
+        Func<ImportPageContext, ImportPageSource, ImportSourceProjection, CancellationToken, Task<ImportPagePreparation>> prepare,
+        Func<ImportPageRequest, Task<ImportPageResult>> save, Func<ImportPageExportRequest, Task<ImportPageResult>> saveExport,
+        Func<ImportPageContext, bool> contextCurrent, WallVisualStyle style,
+        Func<ImportSourceCandidate, int, int, CancellationToken, Task<PuzzleFrameResult>>? loadIcon = null,
+        string? initialExportDirectory = null,
+        Func<IReadOnlyList<string>, long, CancellationToken, Task<string?>>? restoreRecycled = null)
     {
-        _images = images; _catalog = catalog; _save = save; _style = style; _loadIcon = loadIcon;
-        _catalogChanged = () =>
+        _owner = owner; _images = images; _catalog = catalog; _reader = reader;
+        _readContext = readContext; _readSource = readSource; _prepare = prepare; _save = save; _saveExport = saveExport;
+        _contextCurrent = contextCurrent; _style = style; _loadIcon = loadIcon; _initialExportDirectory = initialExportDirectory;
+        _restoreRecycled = restoreRecycled;
+        if (!string.IsNullOrWhiteSpace(initialExportDirectory)) _exportPath = Path.Combine(initialExportDirectory, DefaultExportFileName());
+        _catalogChanged = () => owner.DispatcherQueue.TryEnqueue(() => SourceChanged(ImportPageSourceKind.StartMenu));
+        _clockTimer = owner.DispatcherQueue.CreateTimer(); _clockTimer.Interval = TimeSpan.FromSeconds(1);
+        _clockTimer.Tick += (_, _) =>
         {
-            var epoch = _sourceEpoch;
-            owner.DispatcherQueue.TryEnqueue(() =>
-            {
-                if (!_closed && _source.SelectedIndex == 0 && _sourceEpoch == epoch) ApplySnapshot();
-            });
+            foreach (var row in _rows) row.Clock?.Refresh(DateTimeOffset.Now);
+            TracePreviewPreparationProgress();
         };
-        RefreshItemTemplate();
-        _grid.Width = _metrics.LaneWidth + _metrics.Gap + 16;
-        _grid.Padding = new Thickness(0);
-        ScrollViewer.SetVerticalScrollBarVisibility(_grid, ScrollBarVisibility.Auto);
-        ScrollViewer.SetVerticalScrollMode(_grid, ScrollMode.Enabled);
-        ScrollViewer.SetHorizontalScrollBarVisibility(_grid, ScrollBarVisibility.Disabled);
-        ScrollViewer.SetHorizontalScrollMode(_grid, ScrollMode.Disabled);
-        _grid.Loaded += OnCandidateGridLoaded;
-        _grid.ItemContainerStyle = (Style)XamlReader.Load("""
-            <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="GridViewItem">
-                <Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" />
-                <Setter Property="MinWidth" Value="0" /><Setter Property="MinHeight" Value="0" />
-                <Setter Property="IsTabStop" Value="False" />
-                <Setter Property="HorizontalContentAlignment" Value="Left" />
-                <Setter Property="VerticalContentAlignment" Value="Top" />
-            </Style>
-            """);
-        foreach (var key in new[] { "GridViewItemBackgroundPointerOver", "GridViewItemBackgroundPressed",
-                     "GridViewItemBackgroundSelected", "GridViewItemBorderBrushPointerOver" })
-            _grid.Resources[key] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        _grid.ItemsPanel = (ItemsPanelTemplate)XamlReader.Load("""
-            <ItemsPanelTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
-                <ItemsWrapGrid Orientation="Horizontal" CacheLength="0.5" />
-            </ItemsPanelTemplate>
-            """);
-        // The stock GridViewHeaderItem adds 8 DIP top padding, an 8+1 DIP
-        // divider and 4 DIP bottom margin. The shared wall header already owns
-        // its complete 48 DIP title reservation plus 4 DIP member gap.
-        var headerContainerStyle = (Style)XamlReader.Load("""
-            <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="GridViewHeaderItem">
-                <Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" />
-                <Setter Property="MinWidth" Value="0" /><Setter Property="MinHeight" Value="0" />
-                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                <Setter Property="VerticalContentAlignment" Value="Top" />
-                <Setter Property="IsTabStop" Value="False" />
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="GridViewHeaderItem">
-                            <ContentPresenter x:Name="ContentPresenter"
-                                Content="{TemplateBinding Content}"
-                                ContentTemplate="{TemplateBinding ContentTemplate}"
-                                ContentTransitions="{TemplateBinding ContentTransitions}"
-                                HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-            """);
-        _grid.GroupStyle.Add(new GroupStyle
-        {
-            HeaderTemplate = WallGroupVisualFactory.HeaderTemplate(_metrics),
-            HeaderContainerStyle = headerContainerStyle,
-        });
-        _grid.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(OnCandidatePointerMoved), true);
-        _grid.PointerExited += (_, _) => ClearGroupOutline();
-
         var budget = OwnedDialogWindow.ContentBudget(owner);
-        var width = Math.Min(900, budget.Width);
-        var height = Math.Min(620, budget.Height);
-        // GridView is inside an outer ScrollViewer for source switching. Give it
-        // a finite viewport before the first measure so ItemsWrapGrid can virtualize.
-        _grid.Height = height;
-        var rightWidth = Math.Min(420, width * 0.48);
-        _grid.Width = Math.Min(_grid.Width, width - rightWidth - 24);
-
-        var options = new Grid { RowSpacing = 12, ColumnSpacing = 12 };
-        options.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
-        options.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        AddRow(options, "Import.Source", _sourceLabel, _source);
-        AddOptionRow(options, _selectAll);
-        _selectAll.Content = ProductStrings.Get("Import.SelectAll");
-        AddRow(options, "Import.AutoFilter", _trimLabel, _autoTrim);
-        AddRow(options, "Import.RecognizeGroups", _groupsLabel, _recognizeGroups);
-        AddRow(options, "Import.PreserveChanges", _preserveLabel, _preserveChanges);
+        const double rightWidth = 748, columnGap = 16;
+        var previewWidth = _metrics.WallWidth(1);
+        _statisticsPreviewWidth = previewWidth;
+        _statisticsMaximumColumnWidth = Math.Max(0, budget.Width - previewWidth - columnGap);
+        _options.ColumnDefinitions.Add(new() { Width = new GridLength(92) });
+        _options.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        var pathRow = new Grid { ColumnSpacing = 6 };
+        pathRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        pathRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        pathRow.Children.Add(_path); Grid.SetColumn(_chooseFile, 1); pathRow.Children.Add(_chooseFile);
         var sizes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         sizes.Children.Add(_small); sizes.Children.Add(_medium);
-        AddRow(options, "Editor.TileSize", _sizeLabel, sizes);
-        var counts = new StackPanel { Spacing = 6 };
-        counts.Children.Add(_scannedCount); counts.Children.Add(_filteredCount);
-        counts.Children.Add(_candidateCount); counts.Children.Add(_selectedCount);
-        AddOptionRow(options, counts);
-        AddOptionRow(options, _status);
-
-        var rightCard = VisualStyles.Card(options);
-        rightCard.Width = rightWidth;
-        rightCard.HorizontalAlignment = HorizontalAlignment.Left;
-        var rightScroll = new ScrollViewer { Content = rightCard, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        FrameworkElement[] values = [_mode, _source, pathRow, _autoFilter, _recognizeGroups, sizes, _position, _selectAll, _filter];
+        for (var index = 0; index < values.Length; index++) AddOption(index, values[index]);
+        _optionsHost = new ContentControl { Content = VisualStyles.Card(_options), HorizontalContentAlignment = HorizontalAlignment.Stretch, IsTabStop = false };
+        foreach (var row in _statisticRows)
+        {
+            for (var column = 0; column < 4; column++) row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+            _statistics.Children.Add(row);
+        }
+        for (var statisticIndex = 0; statisticIndex < StatisticLabels.Length; statisticIndex++)
+        {
+            var box = new Grid { ColumnSpacing = 4, Margin = new Thickness(2) };
+            box.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+            box.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+            box.Children.Add(_numbers[statisticIndex]); Grid.SetColumn(_numberLabels[statisticIndex], 1); box.Children.Add(_numberLabels[statisticIndex]);
+            var cell = VisualStyles.InputFrame(); cell.Child = box;
+            _statisticCells[statisticIndex] = cell;
+            var rowIndex = statisticIndex < 4 ? 0 : statisticIndex < 11 ? 1 : 2;
+            var indexInRow = statisticIndex < 4 ? statisticIndex : statisticIndex < 11 ? statisticIndex - 4 : statisticIndex - 11;
+            Grid.SetRow(cell, 0); Grid.SetColumn(cell, indexInRow); _statisticRows[rowIndex].Children.Add(cell);
+            Id(_numbers[statisticIndex], "stat-" + StatisticLabels[statisticIndex][13..].ToLowerInvariant());
+        }
+        var rightBody = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Top };
+        rightBody.Children.Add(_optionsHost);
+        _statisticsCard = VisualStyles.Card(_statistics);
+        rightBody.Children.Add(_statisticsCard);
+        _status.MaxHeight = 70;
+        _statusScroll = new ScrollViewer { Content = _status, MaxHeight = 70, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        rightBody.Children.Add(_statusScroll);
+        var right = new ScrollViewer { Content = rightBody, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        var left = new Grid { RowSpacing = 8 };
-        left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        // ItemsWrapGrid flattens grouped headers/items rather than creating GroupItem
-        // ancestors. Keep the shared outline beside the viewport and clear it on scrolling.
-        var candidateSurface = new Grid { HorizontalAlignment = HorizontalAlignment.Left };
-        candidateSurface.Children.Add(_grid); candidateSurface.Children.Add(_groupOverlay);
-        _candidateScroll = new ScrollViewer { Content = candidateSurface,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollMode = ScrollMode.Disabled,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Disabled };
-        _candidateScroll.SizeChanged += OnCandidateScrollSizeChanged;
-        left.Children.Add(_candidateScroll); left.Children.Add(_development);
-
-        var page = new Grid { Width = width, Height = height, ColumnSpacing = 24, RowSpacing = 8 };
-        page.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        page.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(rightWidth) });
-        page.Children.Add(left); Grid.SetColumn(rightScroll, 1); page.Children.Add(rightScroll);
-
-        var root = (owner.Content as FrameworkElement)?.XamlRoot;
-        _dialog = new ContentDialog { XamlRoot = root, Content = page, DefaultButton = ContentDialogButton.None,
-            IsPrimaryButtonEnabled = false };
-        _dialog.Resources["ContentDialogMaxWidth"] = budget.Width + 48;
-        _dialog.Resources["ContentDialogMaxHeight"] = budget.Height + 180;
-        _exit = new DialogExitPrompt(_dialog);
-        AutomationProperties.SetName(_dialog, ProductStrings.Get("Import.Title"));
-        Id(_dialog, "dialog"); Id(_selectAll, "select-all"); Id(_source, "source"); Id(_autoTrim, "auto-trim");
-        Id(_recognizeGroups, "recognize-groups"); Id(_small, "small"); Id(_medium, "medium");
-        Id(_preserveChanges, "preserve-changes");
-        Id(_scannedCount, "scanned-count"); Id(_filteredCount, "filtered-count");
-        Id(_candidateCount, "candidate-count"); Id(_selectedCount, "selected-count");
-        Id(_grid, "candidates"); Id(_status, "status");
-
-        _grid.ContainerContentChanging += OnContainerContentChanging;
-        _selectAll.Click += (_, _) => ToggleVisibleSelection();
-        _autoTrim.Toggled += (_, _) => RefreshProjection();
-        _recognizeGroups.Toggled += (_, _) => RefreshProjection();
-        _source.SelectionChanged += (_, _) => SourceChanged();
-        _small.Click += (_, _) => SetSize(1);
-        _medium.Click += (_, _) => SetSize(2);
-        _dialog.PrimaryButtonClick += (_, e) =>
+        _repeater.Layout = _previewLayout;
+        _previewLayout.ElementRealized = EnsureElementPrepared;
+        _repeater.ItemTemplate = (DataTemplate)XamlReader.Load("<DataTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><Grid /></DataTemplate>");
+        _repeater.ItemsSource = _previewKeys;
+        _repeater.ElementPrepared += (_, e) => PrepareElement(e.Element, e.Index);
+        _repeater.ElementIndexChanged += (_, e) => PrepareElement(e.Element, e.NewIndex);
+        _repeater.ElementClearing += (_, e) => ClearElement(e.Element);
+        _repeater.Loaded += (_, _) =>
         {
-            if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.SaveAndExit); return; }
-            if (TrySaveNow() is not null) e.Cancel = true;
+            if (_previewRoot is not null || _repeater.XamlRoot is not { } root) return;
+            _previewRoot = root; _previewScale = root.RasterizationScale; root.Changed += OnPreviewRootChanged;
         };
-        _dialog.SecondaryButtonClick += (_, e) =>
-        { if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.DiscardAndExit); } };
-        _dialog.CloseButtonClick += (_, e) =>
+        _preview = new ScrollViewer { Content = _repeater, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Disabled, VerticalScrollMode = ScrollMode.Enabled };
+        _preview.SizeChanged += (_, _) => RefreshPreview();
+        var page = new Grid { Width = previewWidth + columnGap + rightWidth, Height = Math.Min(520, budget.Height), ColumnSpacing = columnGap };
+        _page = page;
+        _statisticsColumn = new() { Width = new GridLength(rightWidth) };
+        page.ColumnDefinitions.Add(new() { Width = new GridLength(previewWidth) }); page.ColumnDefinitions.Add(_statisticsColumn);
+        page.Children.Add(_preview); Grid.SetColumn(right, 1); page.Children.Add(right);
+        rightBody.SizeChanged += (_, e) =>
         {
-            if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); return; }
-            if (!HasUnsavedDraft) return;
-            if (_allowDiscard) { _discarded = true; return; }
-            e.Cancel = true; OfferDiscard();
+            if (e.NewSize.Height > 0) page.Height = Math.Min(budget.Height, Math.Ceiling(e.NewSize.Height));
         };
-        _dialog.Closing += (_, e) =>
+        _dialog = new ContentDialog { XamlRoot = (owner.Content as FrameworkElement)?.XamlRoot, Content = page, DefaultButton = ContentDialogButton.None };
+        _dialog.Resources["ContentDialogMaxWidth"] = budget.Width + 48; _dialog.Resources["ContentDialogMaxHeight"] = budget.Height + 180;
+        Id(_dialog, "dialog"); Id(_mode, "mode"); Id(_source, "source"); Id(_path, "path"); Id(_chooseFile, "choose-wall-file");
+        Id(_autoFilter, "auto-trim"); Id(_recognizeGroups, "recognize-groups"); Id(_small, "small"); Id(_medium, "medium");
+        Id(_position, "position"); Id(_selectAll, "select-all"); Id(_filter, "filter"); Id(_repeater, "candidates"); Id(_status, "status");
+        _mode.SelectionChanged += (_, _) =>
         {
-            try
-            {
-                if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); }
-                else if (!_discarded && HasUnsavedDraft) { e.Cancel = true; OfferDiscard(); }
-            }
-            finally { if (!e.Cancel) StopRequests(); }
+            if (_refreshingStrings || !_shown || _adding) return;
+            _refreshingStrings = true;
+            _source.SelectedIndex = Mode == ImportPageMode.Export ? 5 : _lastImportSource;
+            _refreshingStrings = false; ResetSource();
         };
+        _source.SelectionChanged += (_, _) =>
+        {
+            if (_refreshingStrings || !_shown || _adding) return;
+            if (Mode == ImportPageMode.Import && SourceKind != ImportPageSourceKind.CurrentWall) _lastImportSource = _source.SelectedIndex;
+            ResetSource();
+        };
+        _autoFilter.Toggled += (_, _) => { if (!_refreshingStrings) Reproject(); };
+        _recognizeGroups.Toggled += (_, _) => { if (!_refreshingStrings) Reproject(); };
+        _position.SelectionChanged += (_, _) => { if (!_refreshingStrings) SelectionChanged(); };
+        _small.Click += (_, _) => SetSize(1); _medium.Click += (_, _) => SetSize(2);
+        _filter.TextChanged += (_, _) =>
+        {
+            if (_refreshingStrings || _adding) return;
+            RemoveFilteredSelections();
+            _plan = null;
+            RefreshPreview();
+            SelectionChanged();
+        };
+        _selectAll.Click += (_, _) =>
+        {
+            if (_projection is null || _adding) return;
+            var addable = FilteredAddableCandidates(); var clear = addable.All(IsSelected);
+            foreach (var candidate in addable) Select(candidate, !clear);
+            _error = _notice = null; SelectionChanged();
+        };
+        _chooseFile.Click += (_, _) =>
+        {
+            if (_picking || _adding) return;
+            _picking = true; UpdateAvailability(); Track(PickPathAsync());
+        };
+        _dialog.PrimaryButtonClick += (_, e) => { e.Cancel = true; StartOperation(); };
+        _dialog.CloseButtonClick += (_, e) => { e.Cancel = true; RequestDismiss(); };
+        _dialog.Closing += (_, e) => { if (_adding || _picking) { e.Cancel = true; RequestDismiss(); } else StopRequests(); };
         RefreshStrings();
     }
 
     public async Task ShowAsync()
     {
-        _shown = true;
-        _catalog.Changed += _catalogChanged;
-        StartPageRequest();
+        _shown = true; _catalog.Changed += _catalogChanged; _clockTimer.Start();
+        BeginRead(resetSelection: true);
+        if (SourceKind == ImportPageSourceKind.StartMenu) Track(ObserveCatalogAsync());
         try { await OwnedDialogWindow.ShowAsync(_dialog); }
         finally
         {
-            StopRequests();
-            try { await Task.WhenAll(_pendingOperations); }
-            catch (OperationCanceledException) { }
-            finally { _pageRequest?.Dispose(); _lifetime.Dispose(); }
+            StopRequests(); await DrainOperationsAsync(); ClosePreviewSource();
+            _pendingOperations.Clear(); _previewOperations.Clear(); _previewLoad = Task.CompletedTask;
+            _packageMediaSlots.Dispose(); _lifetime.Dispose();
         }
     }
 
-    private void StartPageRequest(int? epoch = null)
+    private void Track(Task task)
     {
-        _pageRequest?.Cancel(); _pageRequest?.Dispose();
-        _pageRequest = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        _pending = LoadPageAsync(epoch ?? _sourceEpoch, _pageRequest.Token);
-        TrackOperation(_pending);
+        _pendingOperations.RemoveWhere(operation => operation.IsCompletedSuccessfully || operation.IsCanceled);
+        _pendingOperations.Add(task);
     }
 
-    private void TrackOperation(Task operation)
+    private async Task ObserveCatalogAsync()
     {
-        _pendingOperations.RemoveWhere(task => task.IsCompletedSuccessfully || task.IsCanceled);
-        _pendingOperations.Add(operation);
+        _catalogRequest?.Cancel();
+        var request = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token); _catalogRequest = request;
+        try { await _catalog.RequestRefreshAsync().WaitAsync(request.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (!_closed && !_dismissRequested) { _error = ex.Message; UpdateStatus(); } }
+        finally { if (ReferenceEquals(_catalogRequest, request)) _catalogRequest = null; request.Dispose(); }
     }
 
-    private async Task LoadPageAsync(int epoch, CancellationToken token)
+    internal void SourceChanged(ImportPageSourceKind kind)
+    {
+        if (_closed || _dismissRequested || _readsSuspended || _adding || SourceKind != kind) return;
+        _catalogRevision++;
+        if (!_reading) BeginRead();
+    }
+
+    private void ResetSource()
+    {
+        var wasRefreshingStrings = _refreshingStrings;
+        _refreshingStrings = true;
+        try { _filter.Text = ""; }
+        finally { _refreshingStrings = wasRefreshingStrings; }
+        _recognizedTargets.Clear();
+        _previewTargetInferences.Clear(); _previewImageCompletions.Clear();
+        _selected.Clear(); _notice = _error = null; _context = null; _sourceData = null; _projection = null; _plan = null;
+        _projectedCandidates = null; _projectedIdentities = null; _previewProjection = null;
+        _recognitionProjection = null; _recognitionContext = null; _recognitionFacts = null;
+        _candidateByKey.Clear(); ClearFrameCache();
+        ClearPreview(); BeginRead(resetSelection: true);
+        if (SourceKind == ImportPageSourceKind.StartMenu) Track(ObserveCatalogAsync());
+    }
+
+    private void BeginRead(bool resetSelection = false)
+    {
+        if (_closed || _dismissRequested || _adding) return;
+        _readsSuspended = false; _pageRequest?.Cancel(); _preparationRequest?.Cancel();
+        var resetPreview = resetSelection;
+        if (resetPreview)
+        {
+            CancelPreview();
+            foreach (var row in _rows)
+                if (row.Member.Images.Kind == MemberImageSourceKind.Automatic) row.ImageKey = null;
+        }
+        var request = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token); _pageRequest = request;
+        var epoch = ++_sourceEpoch; var revision = _catalogRevision;
+        if (resetSelection) _selected.Clear();
+        _reading = true;
+        ReconcilePreviewImages();
+        if (resetSelection) _prepared = false;
+        UpdateAvailability(); UpdateStatus();
+        Track(ReadPageAsync(epoch, revision, resetPreview, request));
+    }
+
+    private async Task ReadPageAsync(int epoch, int revision, bool resetPreview, CancellationTokenSource request)
     {
         try
         {
-            await _catalog.ReadCachedAsync().WaitAsync(token);
-            if (!IsCurrentRequest(epoch, token)) return;
-            ApplySnapshot();
-            _refreshObserver = ObserveRefreshAsync(_catalog.RequestRefreshAsync(), epoch, token);
-            TrackOperation(_refreshObserver);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            if (IsCurrentRequest(epoch, token))
+            if (resetPreview) { request.Token.ThrowIfCancellationRequested(); ClosePreviewSource(); }
+            request.Token.ThrowIfCancellationRequested();
+            var kind = SourceKind;
+            if (kind == ImportPageSourceKind.WallPackage && _packagePath is null) return;
+            var context = _context is { } cached && _contextCurrent(cached) ? cached : await _readContext(request.Token);
+            var source = await _readSource(kind, _packagePath, request.Token);
+            if (!IsCurrent(epoch, request.Token)) return;
+            var previousSource = _sourceData;
+            var keepPreparation = _prepared && previousSource is not null &&
+                ReferenceEquals(previousSource.Candidates, source.Candidates) &&
+                _context is { } preparedContext && ReferenceEquals(preparedContext, context) &&
+                preparedContext.Document.Generation == context.Document.Generation &&
+                preparedContext.Budget == context.Budget &&
+                previousSource.AvailabilityFacts.Count == source.AvailabilityFacts.Count &&
+                previousSource.AvailabilityFacts.All(pair => source.AvailabilityFacts.GetValueOrDefault(pair.Key) == pair.Value);
+            var nativeRefreshCompleted = kind is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or ImportPageSourceKind.SystemFeatures &&
+                previousSource?.Refreshing == true && !source.Refreshing;
+            if (previousSource?.Package is { } oldPackage && oldPackage.PackageSha256 != source.Package?.PackageSha256)
+            { CancelPreview(); ClosePreviewSource(); }
+            if (_context is { } previousContext && (context.Document.Generation != previousContext.Document.Generation || context.Budget != previousContext.Budget) ||
+                _sourceData?.Package is { } previousPackage && previousPackage.PackageSha256 != source.Package?.PackageSha256)
+            { _selected.Clear(); _notice = ProductStrings.Get("Import.SourceChanged"); }
+            if (_sourceData is { } previous)
+                foreach (var key in _selected.Keys.ToArray())
+                    if (previous.StartMenuSources.TryGetValue(key, out var old) &&
+                        (!source.StartMenuSources.TryGetValue(key, out var current) || old.SourceSha256 != current.SourceSha256)) _selected.Remove(key);
+            _context = context; _sourceData = source; _error = null;
+            if (keepPreparation) _sourceData = source with { AvailabilityPrepared = previousSource!.AvailabilityPrepared };
+            _previewRequest ??= CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            Reproject(prepare: !keepPreparation);
+            if (nativeRefreshCompleted)
             {
-                _status.Text = string.Format(ProductStrings.Get("Import.ScanFailed"), ex.Message);
+                var refreshedKeys = source.Candidates.Where(candidate => candidate.SourceKind == kind &&
+                    candidate.Member.Images.Kind == MemberImageSourceKind.Automatic).Select(candidate => candidate.SourceKey)
+                    .ToHashSet(StringComparer.Ordinal);
+                foreach (var item in _previewImageWork.Values.Where(work => refreshedKeys.Contains(work.Descriptor.SourceCandidate.SourceKey)).ToArray())
+                    CancelPreviewImageWork(item, clearCompletion: true);
+                foreach (var key in _previewImageCompletions.Where(pair => refreshedKeys.Contains(pair.Value.SourceKey))
+                             .Select(pair => pair.Key).ToArray()) _previewImageCompletions.Remove(key);
+                foreach (var key in refreshedKeys)
+                    if (_previewTargetInferences.TryGetValue(key, out var inference) && inference.Result is null)
+                        _previewTargetInferences.Remove(key);
+                foreach (var row in _rows.Where(row => refreshedKeys.Contains(row.Candidate.Source.SourceKey))) row.ImageKey = null;
+                ReconcilePreviewImages();
             }
         }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (IsCurrent(epoch, request.Token)) { _error = ex.Message; _plan = null; } }
+        finally
+        {
+            if (_sourceEpoch == epoch)
+            {
+                _reading = false; if (ReferenceEquals(_pageRequest, request)) _pageRequest = null;
+                UpdateAvailability(); UpdateStatus(); ReconcilePreviewImages();
+                if (!_closed && !_dismissRequested && !_readsSuspended && revision != _catalogRevision) BeginRead();
+            }
+            request.Dispose();
+        }
     }
 
-    private async Task ObserveRefreshAsync(Task refresh, int epoch, CancellationToken token)
+    private bool IsCurrent(int epoch, CancellationToken token) => !_closed && !_dismissRequested && !_readsSuspended &&
+        !token.IsCancellationRequested && epoch == _sourceEpoch;
+
+    private async Task PickPathAsync()
     {
+        var request = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token); _pickerRequest = request;
+        var epoch = _sourceEpoch; var mode = Mode;
         try
         {
-            await refresh.WaitAsync(token);
-            if (IsCurrentRequest(epoch, token)) ApplySnapshot();
+            if (_closed || _dismissRequested || _readsSuspended) return;
+            var owner = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(WinRT.Interop.WindowNative.GetWindowHandle(_owner));
+            Windows.Foundation.IAsyncOperation<Microsoft.Windows.Storage.Pickers.PickFileResult> operation;
+            if (mode == ImportPageMode.Export)
+            {
+                var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(owner)
+                {
+                    SuggestedFileName = _exportPathPicked && _exportPath is not null ? Path.GetFileName(_exportPath) : DefaultExportFileName(),
+                    DefaultFileExtension = ".zip", ShowOverwritePrompt = true,
+                };
+                picker.FileTypeChoices.Add(ProductStrings.Get("Import.WallFileType"), new List<string> { ".zip" });
+                var directory = _exportPath is null ? _initialExportDirectory : Path.GetDirectoryName(_exportPath);
+                if (!string.IsNullOrWhiteSpace(directory)) { picker.SuggestedFolder = directory; picker.SuggestedStartFolder = directory; }
+                operation = picker.PickSaveFileAsync();
+            }
+            else
+            {
+                var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(owner);
+                picker.FileTypeFilter.Add(".zip"); picker.FileTypeFilter.Add(".twpack");
+                TargetItemPicker.SetSuggestedFolder(picker, _packagePath);
+                operation = picker.PickSingleFileAsync();
+            }
+            _pickerOperation = operation;
+            var file = await operation.AsTask(request.Token);
+            request.Token.ThrowIfCancellationRequested();
+            if (!IsCurrent(epoch, request.Token) || mode != Mode || file is null) return;
+            if (mode == ImportPageMode.Export) { _exportPath = file.Path; _exportPathPicked = true; }
+            else
+            {
+                _packagePath = file.Path; ResetSource();
+            }
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex)
+        catch (Exception ex) { if (IsCurrent(epoch, request.Token)) _error = ex.Message; }
+        finally
         {
-            if (IsCurrentRequest(epoch, token))
-                _status.Text = string.Format(ProductStrings.Get("Import.ScanFailed"), ex.Message);
+            _pickerOperation = null; if (ReferenceEquals(_pickerRequest, request)) _pickerRequest = null;
+            request.Dispose(); _picking = false; UpdateAvailability(); UpdateStatus();
+            if (_dismissRequested) FinishDismiss();
         }
     }
 
-    private bool IsCurrentRequest(int epoch, CancellationToken token) =>
-        !_closed && !token.IsCancellationRequested && _source.SelectedIndex == 0 && _sourceEpoch == epoch;
-
-    private void ApplySnapshot()
+    private void CancelPicker()
     {
-        var snapshot = _catalog.Snapshot;
-        _scanReceived = snapshot.Sources.Count != 0 || snapshot.Roots.Count != 0;
-        _updating = snapshot.Refreshing;
-        _scanned = snapshot.ScannedCount; _skipped = snapshot.SkippedDirectories;
-        _readErrors = snapshot.Sources.Count(source => source.ErrorCode is "InvalidTarget" or "SourceUnavailable" or
-            "SourceMissing" or "SourceChanged" or "UnsafeSource" or "SourceTooLarge");
-        _candidates = snapshot.Sources.Select(source => new StartMenuImportCandidate(source.Candidate,
-            new("pending", string.Empty, 0), source.Identity,
-            source.Identity is null ? StartMenuExclusion.None : StartMenuSelectionRules.Classify(source.Candidate.DisplayName, source.Identity),
-            source.ErrorCode ?? (source.Identity?.IsUrl == true && !RegisteredUrlProtocols.IsSupported(source.Identity.Target)
-                ? "UnsupportedProtocol" : null), source.Stale, source.Company, source.SourceSha256,
-            _catalog.IconsDirectory(source.Candidate), source.IconKey)).ToArray();
-        RefreshProjection();
-    }
-
-    private void SourceChanged()
-    {
-        if (!_shown || _refreshingStrings || _closed) return;
-        var epoch = ++_sourceEpoch;
-        var active = _source.SelectedIndex == 0;
-        _pageRequest?.Cancel();
-        foreach (var row in _rows.ToArray()) ReleaseRow(row);
-        _grid.ItemsSource = null;
-        _candidateScroll.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
-        _development.Visibility = active ? Visibility.Collapsed : Visibility.Visible;
-        _autoTrim.IsEnabled = active; _recognizeGroups.IsEnabled = active; _preserveChanges.IsEnabled = active;
-        _small.IsEnabled = active; _medium.IsEnabled = active;
-        if (active) StartPageRequest(epoch);
-        SelectionChanged();
-    }
-
-    private void ToggleVisibleSelection()
-    {
-        var candidates = _visibleCandidates.Where(candidate => candidate.CanAdd).ToArray();
-        if (candidates.Length == 0) return;
-        var clear = candidates.All(IsSelected);
-        foreach (var candidate in candidates)
-        {
-            SetSelection(candidate, !clear, refresh: false);
-        }
-        _projectionNotice = null;
-        SelectionChanged();
-    }
-
-    private void RefreshProjection(bool force = false)
-    {
-        var previous = _visibleCandidates;
-        var projection = StartMenuImportProjection.Project(_candidates, _autoTrim.IsOn, _recognizeGroups.IsOn);
-        var migration = StartMenuCandidateProjection.Migrate(_selected, previous, projection, _candidates);
-        _selected.Clear();
-        foreach (var pair in migration.Selected) _selected.Add(pair.Key, pair.Value);
-        _visibleCandidates = projection;
-        _projectionNotice = migration.RemovedCount > 0
-            ? string.Format(ProductStrings.Get("Import.SelectionRemoved"), migration.RemovedCount) : null;
-        if (!force && _grid.ItemsSource is not null && SameRows(previous, projection))
-        {
-            UpdateRowTooltips(projection);
-            SelectionChanged();
-            return;
-        }
-        foreach (var row in _rows.ToArray()) ReleaseRow(row);
-        _grid.ItemsSource = null;
-        var source = new CollectionViewSource { IsSourceGrouped = true,
-            Source = _visibleCandidates.GroupBy(candidate => candidate.Bucket.Key)
-                .Select(group => new CandidateGroup(group.First().Bucket.Title, group)).ToArray() };
-        if (_source.SelectedIndex == 0) _grid.ItemsSource = source.View;
-        SelectionChanged();
-    }
-
-    private static bool SameRows(IReadOnlyList<StartMenuImportCandidate> left,
-        IReadOnlyList<StartMenuImportCandidate> right)
-    {
-        if (left.Count != right.Count) return false;
-        for (var index = 0; index < left.Count; index++)
-        {
-            var a = left[index]; var b = right[index];
-            var ac = a.Candidate; var bc = b.Candidate;
-            if (a.SelectionKey != b.SelectionKey || a.Identity?.Key != b.Identity?.Key ||
-                a.Identity?.Target != b.Identity?.Target || a.Identity?.Arguments != b.Identity?.Arguments ||
-                a.Identity?.WorkingDirectory != b.Identity?.WorkingDirectory || a.Identity?.IsUrl != b.Identity?.IsUrl ||
-                a.Bucket.Key != b.Bucket.Key || a.Bucket.Title != b.Bucket.Title || a.Bucket.Order != b.Bucket.Order ||
-                ac.FullPath != bc.FullPath || ac.DisplayName != bc.DisplayName || ac.RelativePath != bc.RelativePath ||
-                ac.RootPath != bc.RootPath || ac.Source != bc.Source || ac.Kind != bc.Kind ||
-                ac.IsImportable != bc.IsImportable || !ac.NotImportableReasons.SequenceEqual(bc.NotImportableReasons, StringComparer.Ordinal) ||
-                a.CanAdd != b.CanAdd || a.Exclusion != b.Exclusion || a.ErrorCode != b.ErrorCode ||
-                a.Company != b.Company || a.SourceSha256 != b.SourceSha256 || a.IconDirectory != b.IconDirectory || a.IconKey != b.IconKey ||
-                !SameSelectionSources(a.SelectionSources, b.SelectionSources)) return false;
-        }
-        return true;
-    }
-
-    private static bool SameSelectionSources(IEnumerable<StartMenuSelectionSource> left,
-        IEnumerable<StartMenuSelectionSource> right) => left.OrderBy(source => source.SourceKey, StringComparer.Ordinal)
-        .ThenBy(source => source.IdentityKey, StringComparer.Ordinal)
-        .SequenceEqual(right.OrderBy(source => source.SourceKey, StringComparer.Ordinal)
-            .ThenBy(source => source.IdentityKey, StringComparer.Ordinal));
-
-    private void UpdateRowTooltips(IReadOnlyList<StartMenuImportCandidate> projection)
-    {
-        var current = projection.ToDictionary(candidate => candidate.SelectionKey, StringComparer.Ordinal);
-        foreach (var row in _rows)
-        {
-            if (!current.TryGetValue(row.Candidate.SelectionKey, out var candidate)) continue;
-            var tooltip = CandidateTooltip(candidate);
-            ActionIcon.SetTip(row.Toggle, tooltip);
-            AutomationProperties.SetHelpText(row.Toggle, tooltip);
-            AutomationProperties.SetHelpText(row.Container, tooltip);
-        }
-    }
-
-    private string CandidateTooltip(StartMenuImportCandidate item)
-    {
-        var candidate = item.Candidate;
-        var sourceText = ProductStrings.Get(candidate.Source == SourceKind.User ? "Import.UserSource" : "Import.CommonSource");
-        var reason = item.ErrorCode is { } error ? ErrorText(error) : (item.Exclusion == StartMenuExclusion.None ? string.Empty
-            : ProductStrings.Get("Import.Exclusion." + item.Exclusion));
-        var tooltip = $"{sourceText} · {candidate.FullPath}";
-        if (!string.IsNullOrWhiteSpace(candidate.DisplayName)) tooltip = candidate.DisplayName + "\n" + tooltip;
-        if (item.Stale) tooltip += "\n" + Text("Import.Stale", "来源待核验");
-        if (reason.Length != 0) tooltip += "\n" + reason;
-        if (!candidate.IsImportable) tooltip += "\n" + string.Join("; ", candidate.NotImportableReasons);
-        return tooltip;
-    }
-
-    private PuzzleFrame? GetCachedImportIcon(ImportIconCacheKey key)
-    {
-        if (!_iconFrames.TryGetValue(key, out var node)) return null;
-        _iconFrameLru.Remove(node); _iconFrameLru.AddFirst(node);
-        return node.Value.Frame;
-    }
-
-    private void CacheImportIcon(ImportIconCacheKey key, PuzzleFrame frame)
-    {
-        if (_iconFrames.TryGetValue(key, out var existing))
-        {
-            existing.Value = new(key, frame);
-            _iconFrameLru.Remove(existing); _iconFrameLru.AddFirst(existing);
-            return;
-        }
-        var node = _iconFrameLru.AddFirst(new CachedImportIcon(key, frame)); _iconFrames.Add(key, node);
-        while (_iconFrames.Count > 32)
-        {
-            var last = _iconFrameLru.Last!; _iconFrames.Remove(last.Value.Key); _iconFrameLru.RemoveLast();
-        }
-    }
-
-    private void RefreshItemTemplate()
-    {
-        var slot = _tileSize * _metrics.Pitch;
-        _grid.ItemTemplate = (DataTemplate)XamlReader.Load($"<DataTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><Grid Width=\"{slot}\" Height=\"{slot}\" /></DataTemplate>");
+        _pickerRequest?.Cancel();
+        if (_pickerOperation is { Status: Windows.Foundation.AsyncStatus.Started } operation) operation.Cancel();
     }
 
     private void SetSize(int size)
     {
-        _tileSize = size;
-        _small.IsChecked = size == 1; _medium.IsChecked = size == 2;
-        RefreshItemTemplate(); RefreshProjection(force: true);
+        if (_tileSize == size || _adding) return;
+        _tileSize = size; _small.IsChecked = size == 1; _medium.IsChecked = size == 2;
+        _error = null; _plan = null; RefreshPreview(); SelectionChanged();
     }
 
-    private sealed class CandidateGroup(string title, IEnumerable<StartMenuImportCandidate> items) : List<StartMenuImportCandidate>(items)
+    private void Reproject(bool prepare = true)
     {
-        public string Title { get; } = title;
-    }
-
-    private sealed record CandidateRow(CancellationTokenSource Request, StartMenuImportCandidate Candidate, PuzzleCanvasView View,
-        ToggleButton Toggle, DependencyObject Container, bool CanAdd, RoutedEventHandler Changed, Action ResetInteraction, Border Outline, Border Check);
-
-    private readonly record struct ImportIconCacheKey(string SourceKey, string IconKey, int Pixels);
-    private sealed record CachedImportIcon(ImportIconCacheKey Key, PuzzleFrame Frame);
-
-    private void ReleaseRow(CandidateRow row)
-    {
-        if (!_rows.Remove(row)) return;
-        ReleaseRowRequest(row.Request);
-        row.Toggle.Checked -= row.Changed;
-        row.Toggle.Unchecked -= row.Changed;
-        row.ResetInteraction();
-        row.View.StopTransientFeedback();
-        row.Toggle.IsChecked = false;
-    }
-
-    private void ClearGroupOutline()
-    {
-        _hoveredHeader = null;
-        _groupOverlay.Children.Clear();
-    }
-
-    private void OnCandidateScrollSizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        if (_closed || !double.IsFinite(e.NewSize.Height) || e.NewSize.Height <= 0 ||
-            Math.Abs(_grid.Height - e.NewSize.Height) < 1) return;
-        _grid.Height = e.NewSize.Height;
-    }
-
-    private void OnCandidateGridLoaded(object sender, RoutedEventArgs e)
-    {
-        if (_closed || _gridScrollViewer is not null) return;
-        _grid.ApplyTemplate();
-        _grid.UpdateLayout();
-        _gridScrollViewer = FindGridScrollViewer(_grid);
-        if (_gridScrollViewer is null) return;
-        _gridViewChanged = (_, _) => ClearGroupOutline();
-        _gridScrollViewer.ViewChanged += _gridViewChanged;
-    }
-
-    private static ScrollViewer? FindGridScrollViewer(DependencyObject parent)
-    {
-        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        if (_adding || _context is null || _sourceData is null) return;
+        var filter = !Attributed && _autoFilter.IsOn; var recognize = !Attributed && _recognizeGroups.IsOn;
+        if (_projection is null || _projection.Generation != _context.Document.Generation || _projection.AutoFilter != filter ||
+            _projection.RecognizeGroups != recognize || !ReferenceEquals(_projectedCandidates, _sourceData.Candidates) ||
+            !ReferenceEquals(_projectedIdentities, _context.ExistingIdentities))
         {
-            var child = VisualTreeHelper.GetChild(parent, index);
-            if (child is ScrollViewer scrollViewer) return scrollViewer;
-            if (FindGridScrollViewer(child) is { } nested) return nested;
+            _projection = ImportSourcePlanner.Project(_context.Document, _sourceData.Candidates, recognize, filter, _context.ExistingIdentities);
+            _projectedCandidates = _sourceData.Candidates; _projectedIdentities = _context.ExistingIdentities;
+            var migration = ImportSourcePlanner.MigrateSelection(_selected, _projection);
+            _selected.Clear(); foreach (var pair in migration.Selected) _selected.Add(pair.Key, pair.Value);
+            RemoveFilteredSelections();
+            if (migration.RemovedCount > 0) _notice = string.Format(ProductStrings.Get("Import.SelectionRemoved"), migration.RemovedCount);
         }
-        return null;
+        RefreshPreview(); SelectionChanged();
+        if (Mode == ImportPageMode.Export) { _prepared = _contextCurrent(_context); UpdateAvailability(); }
+        else if (prepare) BeginPreparation();
     }
 
-    private void DetachGridScrollViewer()
+    private void BeginPreparation()
     {
-        if (_gridScrollViewer is { } viewer && _gridViewChanged is { } handler)
-            viewer.ViewChanged -= handler;
-        _gridScrollViewer = null;
-        _gridViewChanged = null;
-        _candidateScroll.SizeChanged -= OnCandidateScrollSizeChanged;
-        _grid.Loaded -= OnCandidateGridLoaded;
-        ClearGroupOutline();
+        if (_closed || _dismissRequested || _readsSuspended || _adding || _context is null || _sourceData is null || _projection is null) return;
+        _preparationRequest?.Cancel();
+        var request = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token); _preparationRequest = request;
+        var epoch = ++_preparationEpoch; var sourceEpoch = _sourceEpoch;
+        _preparing = true; _prepared = false; UpdateAvailability(); UpdateStatus();
+        ReconcilePreviewImages();
+        Track(PrepareAsync(_context, _sourceData, _projection, sourceEpoch, epoch, request));
     }
 
-    private void OnCandidatePointerMoved(object sender, PointerRoutedEventArgs e)
+    private async Task PrepareAsync(ImportPageContext context, ImportPageSource source, ImportSourceProjection projection,
+        int sourceEpoch, int epoch, CancellationTokenSource request)
     {
-        var source = e.OriginalSource as DependencyObject;
-        var header = FindAncestor<GridViewHeaderItem>(source);
-        if (header is null) { ClearGroupOutline(); return; }
-        var y = e.GetCurrentPoint(header).Position.Y;
-        if (y < _metrics.TitleHeight - _metrics.TitleInteractionHeight || y >= _metrics.TitleHeight)
-        { ClearGroupOutline(); return; }
-        if (ReferenceEquals(header, _hoveredHeader)) return;
-        _hoveredHeader = header;
-        SetGroupOutline(source, true);
-    }
-
-    private void SetGroupOutline(DependencyObject? source, bool visible)
-    {
-        _groupOverlay.Children.Clear();
-        if (!visible || source is not FrameworkElement element ||
-            FindAncestor<GridViewHeaderItem>(source) is not { } header) return;
-        var group = element.DataContext as CandidateGroup ?? header.DataContext as CandidateGroup ??
-            header.Content as CandidateGroup ?? (header.Content as ICollectionViewGroup)?.Group as CandidateGroup;
-        if (group is null) return;
-        var origin = header.TransformToVisual(_groupOverlay).TransformPoint(new Windows.Foundation.Point());
-        var top = origin.Y + _metrics.TitleHeight - _metrics.TitleInteractionHeight;
-        var outline = WallGroupVisualFactory.TitleFeedback(_style, element.ActualTheme == ElementTheme.Dark);
-        outline.Width = _metrics.LaneWidth; outline.Height = _metrics.TitleInteractionHeight;
-        outline.Visibility = Visibility.Visible;
-        Canvas.SetLeft(outline, origin.X); Canvas.SetTop(outline, top);
-        _groupOverlay.Children.Add(outline);
-    }
-
-    private static T? FindAncestor<T>(DependencyObject? element) where T : DependencyObject
-    {
-        for (var current = element; current is not null; current = VisualTreeHelper.GetParent(current))
-            if (current is T match) return match;
-        return null;
-    }
-
-    private void OnContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs e)
-    {
-        if (e.ItemContainer.Tag is CandidateRow old)
+        try
         {
-            ReleaseRow(old);
-            e.ItemContainer.Tag = null;
+            await Task.Yield(); request.Token.ThrowIfCancellationRequested();
+            var result = await _prepare(context, source, projection, request.Token);
+            if (!IsCurrent(sourceEpoch, request.Token) || epoch != _preparationEpoch || !ReferenceEquals(source, _sourceData)) return;
+            if (!_contextCurrent(result.Context)) { _notice = ProductStrings.Get("Import.SourceChanged"); return; }
+            _context = result.Context; _sourceData = result.Source; Reproject(prepare: false);
+            _prepared = result.Source.AvailabilityPrepared && result.Context.Covers(_projection!);
         }
-        if (e.ItemContainer.ContentTemplateRoot is not Grid host) return;
-        host.Children.Clear(); e.Handled = true;
-        if (_closed || e.InRecycleQueue || e.Item is not StartMenuImportCandidate item) return;
-        var candidate = item.Candidate;
-        var request = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        _rowRequests.Add(request);
-        var tile = new TileMember { Id = "candidate-" + candidate.FullPath,
-            LocalBounds = new TileWall.Core.Grid.GridRect(0, 0, _tileSize, _tileSize),
-            Visual = new MemberVisual { Title = candidate.DisplayName, TitleMode = MemberTitleMode.Manual }, TargetInput = candidate.FullPath };
-        var size = _metrics.WidthOf(_tileSize);
-        var card = new Grid { Width = size, Height = size,
-            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
-        var tooltip = CandidateTooltip(item);
-        var view = WallMemberVisualFactory.Create(tile, null, _metrics, _dialog.XamlRoot?.RasterizationScale ?? 1,
-            _style, interactive: false, externalInteraction: true);
-        view.IsHitTestVisible = false;
-        card.Children.Add(view);
-        var visual = WallMemberVisualFactory.AddSelection(card, _style);
-        var toggle = new ToggleButton
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (IsCurrent(sourceEpoch, request.Token) && epoch == _preparationEpoch) _error = ex.Message; }
+        finally
         {
-            Content = card, Width = size, Height = size, MinWidth = 0, MinHeight = 0,
-            Padding = new Thickness(0), BorderThickness = new Thickness(0),
-            CornerRadius = WallCornerStyle.Corners(_style), IsEnabled = item.CanAdd,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch,
+            if (epoch == _preparationEpoch)
+            {
+                _preparing = false; if (ReferenceEquals(_preparationRequest, request)) _preparationRequest = null;
+                UpdateAvailability(); UpdateStatus(); ReconcilePreviewImages();
+            }
+            request.Dispose();
+        }
+    }
+
+    private string FilterQuery => _filter.Text.Trim();
+    private bool MatchesFilter(ImportProjectedCandidate candidate)
+    {
+        var query = FilterQuery;
+        return candidate.Visible && (query.Length == 0 || candidate.Source.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase));
+    }
+    private ImportProjectedCandidate[] FilteredAddableCandidates() => _projection?.Candidates
+        .Where(candidate => candidate.CanAdd && MatchesFilter(candidate)).ToArray() ?? [];
+    private string[] FilteredSelectedSourceKeys()
+    {
+        var keys = FilteredAddableCandidates().SelectMany(candidate => candidate.SourceKeys).ToHashSet(StringComparer.Ordinal);
+        return _selected.Keys.Where(keys.Contains).ToArray();
+    }
+    private void RemoveFilteredSelections()
+    {
+        var keys = FilteredAddableCandidates().SelectMany(candidate => candidate.SourceKeys).ToHashSet(StringComparer.Ordinal);
+        foreach (var key in _selected.Keys.Where(key => !keys.Contains(key)).ToArray()) _selected.Remove(key);
+    }
+    private bool IsSelected(ImportProjectedCandidate candidate) => candidate.CanAdd && MatchesFilter(candidate) && candidate.SourceKeys
+        .Any(key => _selected.GetValueOrDefault(key) == candidate.Source.SelectionIdentity);
+    private void Select(ImportProjectedCandidate candidate, bool selected)
+    {
+        if (selected && IsSelected(candidate)) return;
+        if (selected && candidate.CanAdd && MatchesFilter(candidate)) _selected[candidate.SelectionKey] = candidate.Source.SelectionIdentity;
+        else foreach (var key in candidate.SourceKeys) _selected.Remove(key);
+    }
+    private void SelectionChanged() { _plan = null; UpdateSelectionFeedback(); UpdateAvailability(); UpdateStatus(); }
+
+    private void RefreshRecognitionSelection()
+    {
+        // A same-source progress read does not invalidate a completed inference.
+        // Its new facts are compared when that read/preparation has settled.
+        if (_closed || _dismissRequested || _readsSuspended || _reading || _adding || _preparing) return;
+        var ready = !Attributed && !_reading && !_adding && _prepared && !_preparing &&
+            _sourceData?.Refreshing == false && _context is { } currentContext && _projection is { } currentProjection && currentContext.Covers(currentProjection);
+        if (ReferenceEquals(_recognitionProjection, _projection) && ReferenceEquals(_recognitionContext, _context) &&
+            ReferenceEquals(_recognitionFacts, _sourceData?.AvailabilityFacts) && _recognitionReady == ready) return;
+        var becameReady = !_recognitionReady && ready;
+        _recognitionProjection = _projection; _recognitionContext = _context; _recognitionFacts = _sourceData?.AvailabilityFacts;
+        _recognitionReady = ready;
+        var changed = false;
+        if (_sourceData is { Refreshing: false } source)
+        {
+            foreach (var key in _recognizedTargets.Keys.ToArray())
+            {
+                var candidate = source.Candidates.FirstOrDefault(candidate => candidate.SourceKey == key);
+                if (candidate is null || !_recognizedTargets[key].Matches(source, candidate))
+                { _recognizedTargets.Remove(key); changed = true; }
+            }
+            foreach (var key in _previewTargetInferences.Keys.ToArray())
+            {
+                var candidate = source.Candidates.FirstOrDefault(candidate => candidate.SourceKey == key);
+                var fact = candidate is null ? null : ImportTargetRecognition.FactFor(source, candidate);
+                if (candidate is null || _previewTargetInferences[key].SourceFact != fact)
+                { _previewTargetInferences.Remove(key); changed = true; }
+            }
+        }
+        if (becameReady && _sourceData is { } readySource)
+        {
+            foreach (var item in _previewItems)
+            {
+                if (item.Candidate is not { } projected ||
+                    BuildPreviewImageWork(projected, item, readySource) is not { InferTarget: true } descriptor ||
+                    _previewTargetInferences.TryGetValue(descriptor.SourceCandidate.SourceKey, out var inference) &&
+                    inference.SourceFact == descriptor.SourceFact) continue;
+                foreach (var work in _previewImageWork.Values.Where(work => work.Descriptor.WorkKey == descriptor.WorkKey).ToArray())
+                    CancelPreviewImageWork(work, clearCompletion: true);
+                _previewImageCompletions.Remove(descriptor.WorkKey);
+            }
+        }
+        // Preview inference applies to every image-bearing row in the current
+        // projection, independent of viewport realization, selection and capacity.
+        // Rebind visible rows when facts change; offscreen work is reconciled below.
+        if (changed || becameReady) RefreshRecognizedRows();
+        ReconcilePreviewImages();
+    }
+
+    private void RefreshRecognizedRows(string? sourceKey = null)
+    {
+        foreach (var row in _rows.ToArray().Where(row => sourceKey is null || row.Candidate.Source.SourceKey == sourceKey))
+        { row.ImageKey = null; }
+        foreach (var element in _preparedElements.Keys.ToArray())
+            if (sourceKey is null || _preparedElements[element].Item.Candidate?.Source.SourceKey == sourceKey)
+                PrepareElement(element, _repeater.GetElementIndex(element));
+        foreach (var row in _rows.ToArray().Where(row => sourceKey is null || row.Candidate.Source.SourceKey == sourceKey))
+            StartRowImage(row);
+    }
+
+    private void RefreshPreview(bool force = false)
+    {
+        if (_closed || _projection is null || _adding) return;
+        var height = _preview.ViewportHeight; var query = FilterQuery;
+        if (!force && ReferenceEquals(_previewProjection, _projection) && _previewTileSize == _tileSize && _previewHeight == height && _previewFilter == query)
+        {
+            RefreshRealizedMetadata(); return;
+        }
+        _previewProjection = _projection; _previewTileSize = _tileSize; _previewHeight = height; _previewFilter = query;
+        var previewProjection = CreateFilteredPreviewProjection(_projection);
+        var preview = ImportSourcePlanner.BuildSourcePreview(previewProjection, new GridSize(_tileSize, _tileSize), _metrics,
+            singleColumn: true);
+        if (preview.ErrorCode is { } error) _error = ErrorText(error);
+        var groups = preview.Lanes.SelectMany(lane => lane.Groups).ToDictionary(group => group.Id, StringComparer.Ordinal);
+        var members = groups.Values.SelectMany(group => group.Members).ToDictionary(member => member.Id, StringComparer.Ordinal);
+        var items = new List<PreviewItem>(); _candidateByKey.Clear();
+        foreach (var candidate in previewProjection.Candidates) _candidateByKey[candidate.SelectionKey] = candidate;
+        foreach (var group in preview.Geometry.Groups)
+        {
+            var model = groups[group.GroupId];
+            items.Add(new("group:" + group.GroupId, WallGroupVisualFactory.TitleControlBounds(group.TitleBounds, _metrics.TitleInteractionHeight), model, null, null));
+            foreach (var placed in group.Members)
+                if (preview.CandidatesByMemberId.TryGetValue(placed.MemberId, out var candidate))
+                    items.Add(new("member:" + placed.MemberId, placed.Bounds, null, members[placed.MemberId], candidate));
+        }
+        if (force) ClearPreview();
+        _previewFilter = query;
+        _previewItems = items;
+        // Catalog progress and availability preparation can change a single row.
+        // Keep the source and surviving containers stable through those updates.
+        _updatingPreviewItems = true;
+        try
+        {
+            var keys = items.Select(item => item.Key).ToHashSet(StringComparer.Ordinal);
+            for (var index = _previewKeys.Count - 1; index >= 0; index--)
+                if (!keys.Contains(_previewKeys[index])) _previewKeys.RemoveAt(index);
+            var existingKeys = _previewKeys.ToHashSet(StringComparer.Ordinal);
+            for (var index = 0; index < items.Count; index++)
+            {
+                var key = items[index].Key;
+                if (index < _previewKeys.Count && _previewKeys[index] == key) continue;
+                var previous = existingKeys.Contains(key) ? _previewKeys.IndexOf(key) : -1;
+                if (previous >= 0) _previewKeys.RemoveAt(previous);
+                _previewKeys.Insert(index, key);
+            }
+        }
+        finally { _updatingPreviewItems = false; }
+        _previewLayout.SetScene(items.Select(item => item.Bounds).ToArray(), preview.Geometry.WallWidth, preview.Geometry.WallHeight,
+            preserveElements: true);
+        _previewMemberItems.Clear();
+        foreach (var item in items)
+            if (item.Member is not null && item.Candidate is { } candidate)
+                _previewMemberItems[candidate.SelectionKey] = item;
+        foreach (var element in _preparedElements.Keys.ToArray()) PrepareElement(element, _repeater.GetElementIndex(element));
+        RefreshRealizedMetadata();
+        ReconcilePreviewImages();
+    }
+
+    private ImportSourceProjection CreateFilteredPreviewProjection(ImportSourceProjection projection)
+    {
+        var compactRecordedPositions = FilterQuery.Length != 0;
+        var groups = projection.Groups.Select(group => group with
+        {
+            Candidates = group.Candidates.Where(MatchesFilter).Select(candidate =>
+            {
+                if (!compactRecordedPositions || !candidate.Source.HasRecordedPosition) return candidate;
+                // Search results form a temporary, compact preview. Preserve recorded size and
+                // every source fact; only the preview copy ignores recorded position.
+                return candidate with { Source = candidate.Source with { HasRecordedPosition = false } };
+            }).ToArray(),
+        }).Where(group => group.Candidates.Count != 0).ToArray();
+        return projection with { Groups = groups, Candidates = groups.SelectMany(group => group.Candidates).ToArray() };
+    }
+
+    private void RefreshRealizedMetadata()
+    {
+        foreach (var row in _rows)
+        {
+            row.Candidate = _candidateByKey.GetValueOrDefault(row.Candidate.SelectionKey) ?? row.Candidate;
+            UpdateRowTooltip(row);
+            var stamp = IconStamp(row.Candidate);
+            if (row.IconStamp != stamp)
+            {
+                row.IconStamp = stamp; row.ImageKey = null;
+                StartRowImage(row);
+            }
+        }
+    }
+
+    private void OnPreviewRootChanged(XamlRoot sender, XamlRootChangedEventArgs args)
+    {
+        if (_closed || _dismissRequested) return;
+        if (_previewScale != sender.RasterizationScale)
+        { _previewScale = sender.RasterizationScale; RefreshPreview(force: true); }
+        UpdateStatisticLayout();
+    }
+
+    private static bool SamePresentation(PreviewItem left, PreviewItem right)
+    {
+        if (left.Key != right.Key || left.Bounds.Width != right.Bounds.Width || left.Bounds.Height != right.Bounds.Height ||
+            left.Group?.Title != right.Group?.Title) return false;
+        if (left.Member is not { } member) return right.Member is null;
+        if (right.Member is not { } other || member.GetType() != other.GetType() || member.TargetInput != other.TargetInput || member.Visual != other.Visual ||
+            member.Images != other.Images || member.ImageDisplay != other.ImageDisplay ||
+            member.Carousel?.CurrentImageId != other.Carousel?.CurrentImageId) return false;
+        return (member, other) switch
+        {
+            (PuzzleMember puzzle, PuzzleMember next) => puzzle.Partitions.SequenceEqual(next.Partitions),
+            (ClockMember clock, ClockMember next) => clock.TimeFormat == next.TimeFormat && clock.DateFormat == next.DateFormat,
+            _ => true,
         };
-        ActionIcon.SetTip(toggle, tooltip);
-        var accessibleName = string.IsNullOrWhiteSpace(candidate.DisplayName)
-            ? Path.GetFileNameWithoutExtension(candidate.FullPath) ?? candidate.FullPath : candidate.DisplayName;
-        AutomationProperties.SetName(toggle, accessibleName);
-        AutomationProperties.SetHelpText(toggle, tooltip);
-        AutomationProperties.SetAutomationId(toggle, "import-candidate-" + candidate.FullPath);
-        // The default GridViewItem name is the data record's ToString(), which dumps
-        // every candidate field into UIA and screen readers. Give the container the
-        // same concise name as its interactive child.
-        AutomationProperties.SetName(e.ItemContainer, accessibleName);
-        AutomationProperties.SetHelpText(e.ItemContainer, tooltip);
-        var reset = WallMemberVisualFactory.ConfigureInteraction(toggle, card, toggle.CornerRadius, view.SetExternalHover);
+    }
+
+    private void EnsureElementPrepared(UIElement element, int index)
+    {
+        if (!_preparedElements.TryGetValue(element, out var binding) || binding.Epoch != _renderEpoch || binding.Index != index)
+            PrepareElement(element, index);
+    }
+
+    private void PrepareElement(UIElement element, int index)
+    {
+        if (_updatingPreviewItems || element is not Grid host) return;
+        if (index < 0 || index >= _previewItems.Count) return;
+        var item = _previewItems[index];
+        if (item.Candidate is { } sourceCandidate && item.Member is { } sourceMember && _sourceData is { } source &&
+            _recognizedTargets.TryGetValue(sourceCandidate.Source.SourceKey, out var recognition) && recognition.Matches(source, sourceCandidate.Source))
+            item = item with { Member = recognition.Result.ApplyTo(sourceMember) };
+        if (_preparedElements.TryGetValue(host, out var binding) && binding.Epoch == _renderEpoch && SamePresentation(binding.Item, item))
+        {
+            _preparedElements[host] = (_renderEpoch, index, item);
+            if (host.Tag is CandidateRow existing && item.Candidate is { } currentCandidate && item.Member is { } currentMember)
+            { existing.Candidate = currentCandidate; existing.Member = currentMember; }
+            return;
+        }
+        ClearElement(host);
+        _preparedElements[host] = (_renderEpoch, index, item);
+        if (item.Group is { } group)
+        {
+            var feedback = WallGroupVisualFactory.TitleFeedback(_style, host.ActualTheme == ElementTheme.Dark);
+            feedback.Visibility = Visibility.Collapsed; host.Children.Add(feedback);
+            var content = WallGroupVisualFactory.TitleContent(group.Title, item.Bounds.Width); content.Margin = new Thickness(5, 0, 0, 0);
+            host.Children.Add(content);
+            host.PointerEntered += OnEnter; host.PointerExited += OnExit;
+            host.Tag = (Action)(() => { host.PointerEntered -= OnEnter; host.PointerExited -= OnExit; });
+            void OnEnter(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e) => feedback.Visibility = Visibility.Visible;
+            void OnExit(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e) => feedback.Visibility = Visibility.Collapsed;
+            return;
+        }
+        if (item.Member is not { } member || item.Candidate is not { } oldCandidate) return;
+        var candidate = _candidateByKey.GetValueOrDefault(oldCandidate.SelectionKey) ?? oldCandidate;
+        var card = new Grid { Width = item.Bounds.Width, Height = item.Bounds.Height };
+        PuzzleCanvasView? view = null; ClockMemberView? clock = null;
+        if (member is ClockMember clockMember) { clock = new ClockMemberView(clockMember, _metrics, _dialog.XamlRoot?.RasterizationScale ?? 1, _style); card.Children.Add(clock); }
+        else { view = WallMemberVisualFactory.Create(member, null, _metrics, _dialog.XamlRoot?.RasterizationScale ?? 1, _style,
+            interactive: false, externalInteraction: true, targetIsFolder: candidate.Source.TargetKind == ImportTargetKind.Folder);
+            view.IsHitTestVisible = false; card.Children.Add(view); }
+        var selection = WallMemberVisualFactory.AddSelection(card, _style);
+        var toggle = new ToggleButton { Content = card, Width = item.Bounds.Width, Height = item.Bounds.Height,
+            Padding = new Thickness(0), BorderThickness = new Thickness(0), MinWidth = 0, MinHeight = 0,
+            CornerRadius = WallCornerStyle.Corners(_style), HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Stretch };
+        var reset = WallMemberVisualFactory.ConfigureInteraction(toggle, card, toggle.CornerRadius,
+            hover => { view?.SetExternalHover(hover); clock?.SetExternalHover(hover); }, deferHoverExit: true);
+        CandidateRow? row = null;
         RoutedEventHandler changed = (_, _) =>
         {
-            if (!_synchronizingSelection && item.CanAdd) SetSelection(item, toggle.IsChecked == true);
+            if (_synchronizingSelection || _adding || _reading || row is null || !row.Candidate.CanAdd) return;
+            Select(row.Candidate, toggle.IsChecked == true); _error = _notice = null; SelectionChanged();
         };
+        row = new(candidate, member, view, clock, toggle, changed, reset, selection.Outline, selection.Check) { IconStamp = IconStamp(candidate) };
         toggle.Checked += changed; toggle.Unchecked += changed;
-        var row = new CandidateRow(request, item, view, toggle, e.ItemContainer, item.CanAdd, changed, reset, visual.Outline, visual.Check);
-        _rows.Add(row);
-        e.ItemContainer.Tag = row;
-        host.Children.Add(toggle); UpdateSelectionFeedback();
-        var pixels = (int)Math.Ceiling(size * (_dialog.XamlRoot?.RasterizationScale ?? 1));
-        var iconCacheKey = item.IconKey is { } iconKey
-            ? new ImportIconCacheKey(candidate.SourceKey, iconKey, pixels) : (ImportIconCacheKey?)null;
-        if (iconCacheKey is { } cacheKey && GetCachedImportIcon(cacheKey) is { } cachedFrame)
-            view.UpdateFrame(cachedFrame);
-        else TrackOperation(LoadIconAsync(pixels, iconCacheKey));
+        Id(toggle, "candidate-" + candidate.SelectionKey); _rows.Add(row); host.Tag = row; host.Children.Add(toggle);
+        UpdateRowTooltip(row); UpdateSelectionFeedback(); UpdateAvailability(); StartRowImage(row);
+    }
 
-        async Task LoadIconAsync(int pixels, ImportIconCacheKey? iconCacheKey)
-        {
-            try
+    private void ClearElement(UIElement element)
+    {
+        _preparedElements.Remove(element);
+        if (element is not Grid host) return;
+        if (host.Tag is CandidateRow row) ReleaseRow(row); else if (host.Tag is Action reset) reset();
+        host.Tag = null; host.Children.Clear();
+    }
+    private void ClearPreview()
+    {
+        // Clear complete host subtrees, including group handlers, before a pool
+        // can return them for another source without raising ElementPrepared.
+        foreach (var element in _preparedElements.Keys.ToArray()) ClearElement(element);
+        _previewLayout.SetScene([], 1, 1);
+        _previewKeys.Clear(); _previewItems = []; ++_renderEpoch;
+        _previewMemberItems.Clear();
+        _previewFilter = "";
+        CancelPreviewImageWork(clearCompletions: true);
+        _previewPreparationStarted = false; _previewPreparationTerminalTraced = false; _previewOffscreenBindTraced = false;
+        _previewPreparationStopwatch.Stop(); _previewPreparationStopwatch.Reset();
+        _previewImageCandidateCount = _previewImageExpectedCount = _previewImageCancelledCount = 0;
+        _previewImageCurrentTerminalCount = 0;
+        _previewProgressLastTraceAt = default;
+        _previewProgressPendingCandidateKey = _previewProgressPendingStage = null;
+    }
+    private void UpdateRowTooltip(CandidateRow row)
+    {
+        var candidate = row.Candidate;
+        var displayName = candidate.Source.DisplayName == candidate.Source.Member.Id
+            ? ProductStrings.Get(candidate.Source.Member switch
             {
-                var frame = _loadIcon is null ? null : await _loadIcon(item, pixels, request.Token);
-                var fromCachedPackage = frame?.Frame is not null;
-                if (frame?.Frame is null && !request.IsCancellationRequested)
-                    frame = await _images.LoadMemberFrameAsync(tile, candidate.FullPath, pixels, pixels, ct: request.Token);
-                if (fromCachedPackage && frame?.Frame is { } loaded && iconCacheKey is { } key)
-                    CacheImportIcon(key, loaded);
-                if (!request.IsCancellationRequested) view.UpdateFrame(frame?.Frame);
-            }
-            catch (OperationCanceledException) { }
-            catch (ObjectDisposedException) { }
-            finally { ReleaseRowRequest(request); }
-        }
+                ClockMember => "Wall.Clock", PuzzleMember => "Wall.Puzzle", _ => "Wall.Tile",
+            }) : candidate.Source.DisplayName;
+        var diagnostics = new List<string>();
+        if (_sourceData?.StartMenuSources.TryGetValue(candidate.SelectionKey, out var source) == true && source.Stale)
+            diagnostics.Add(ProductStrings.Get("Import.Stale"));
+        if (candidate.ErrorCode is { } error) diagnostics.Add(ErrorText(error));
+        if (candidate.FilterReason != ImportFilterReason.None) diagnostics.Add(FilterText(candidate.FilterReason));
+        WallMemberVisualFactory.SetTargetTooltip(row.Toggle, row.Member, string.Join("\n", diagnostics));
+        AutomationProperties.SetName(row.Toggle, displayName);
     }
-
-    private void SelectionChanged()
-    {
-        _allowDiscard = false; _discarded = false;
-        var addable = _visibleCandidates.Where(candidate => candidate.CanAdd).ToArray();
-        var selectedCount = addable.Count(IsSelected);
-        var active = _source.SelectedIndex == 0;
-        _selectAll.IsEnabled = active && addable.Length != 0;
-        _selectAll.IsChecked = selectedCount == 0 ? false : selectedCount == addable.Length ? true : null;
-        _dialog.IsPrimaryButtonEnabled = active && selectedCount != 0;
-        UpdateSelectionFeedback(); RefreshStrings(); UpdateStatus();
-    }
-
-    private bool IsSelected(StartMenuImportCandidate candidate) => candidate.CanAdd && candidate.SelectionSources
-        .Any(source => _selected.GetValueOrDefault(source.SourceKey) == source.IdentityKey);
-
-    private void SetSelection(StartMenuImportCandidate candidate, bool selected, bool refresh = true)
-    {
-        if (selected && candidate.Identity is { } identity) _selected[candidate.SelectionKey] = identity.Key;
-        else foreach (var source in candidate.SelectionSources) _selected.Remove(source.SourceKey);
-        if (!refresh) return;
-        _projectionNotice = null;
-        SelectionChanged();
-    }
-
     private void UpdateSelectionFeedback()
     {
         _synchronizingSelection = true;
@@ -674,195 +843,998 @@ internal sealed class ImportDialog : IWallDialogSession
         {
             foreach (var row in _rows)
             {
-                var selected = row.CanAdd && IsSelected(row.Candidate);
-                row.Toggle.IsChecked = selected;
-                var visible = selected ? Visibility.Visible : Visibility.Collapsed;
-                row.Outline.Visibility = visible; row.Check.Visibility = visible;
+                row.Toggle.IsChecked = IsSelected(row.Candidate);
+                row.Outline.Visibility = row.Check.Visibility = row.Toggle.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
             }
         }
         finally { _synchronizingSelection = false; }
     }
+    private string IconStamp(ImportProjectedCandidate candidate) =>
+        _sourceData?.StartMenuSources.TryGetValue(candidate.SelectionKey, out var source) == true
+            ? source.SourceSha256 + "|" + source.IconKey
+            : (_sourceData?.Package?.PackageSha256 ?? _sourceData?.AvailabilityFacts.GetValueOrDefault(candidate.SelectionKey) ?? "") + candidate.Source.SelectionIdentity;
+    private void ReleaseRow(CandidateRow row)
+    {
+        if (!_rows.Remove(row)) return;
+        row.Toggle.Checked -= row.Changed; row.Toggle.Unchecked -= row.Changed;
+        row.Reset(); row.View?.StopTransientFeedback(); row.View?.UpdateFrame(null); row.Clock?.StopTransientFeedback();
+    }
+    private void CancelPreview()
+    {
+        _previewRequest?.Cancel();
+        CancelPreviewImageWork(clearCompletions: false);
+    }
+    private void ClosePreviewSource()
+    {
+        _packageSource?.Retire(); _packageSource = null;
+        _previewRequest?.Dispose(); _previewRequest = null;
+    }
+
+
+    private static long FrameBytes(PuzzleFrame frame) => 4L *
+        ((long)frame.SharpDecodedPixels.Width * (long)frame.SharpDecodedPixels.Height +
+         (long)frame.BlurDecodedPixels.Width * (long)frame.BlurDecodedPixels.Height);
+
+    private bool TryGetFrame(string key, out PuzzleFrame frame)
+    {
+        if (!_frames.TryGetValue(key, out frame!)) return false;
+        var node = _frameNodes[key];
+        _frameOrder.Remove(node); _frameOrder.AddLast(node);
+        return true;
+    }
+
+    private void RememberFrame(string key, PuzzleFrame frame)
+    {
+        var bytes = FrameBytes(frame);
+        if (bytes <= 0 || bytes > PreviewFrameLimitBytes) return;
+        ForgetFrame(key);
+        _frames[key] = frame;
+        _frameNodes[key] = _frameOrder.AddLast(key);
+        _frameBytes += bytes;
+        while (_frameBytes > PreviewFrameLimitBytes && _frameOrder.First is { } oldest)
+            ForgetFrame(oldest.Value);
+    }
+
+    private void ForgetFrame(string key)
+    {
+        if (_frames.Remove(key, out var frame)) _frameBytes -= FrameBytes(frame);
+        if (_frameNodes.Remove(key, out var node)) _frameOrder.Remove(node);
+    }
+
+    private void ClearFrameCache()
+    {
+        _frames.Clear(); _frameNodes.Clear(); _frameOrder.Clear(); _frameBytes = 0;
+    }
+
+    private void StartRowImage(CandidateRow row)
+    {
+        if (_closed || _dismissRequested || _readsSuspended || _adding || _reading || _sourceData is null || row.Member is ClockMember) return;
+        if (!_previewMemberItems.TryGetValue(row.Candidate.SelectionKey, out var item) || item.Candidate is not { } projected ||
+            BuildPreviewImageWork(projected, item, _sourceData) is not { } descriptor) return;
+        row.RequestKey = descriptor.WorkKey;
+        if (descriptor.InferTarget && IsPreviewTargetInferenceDeferred(descriptor)) return;
+        var member = PreviewMemberFor(descriptor, item.Member!);
+        var frameKey = PreviewFrameKey(projected, descriptor.SourceCandidate, descriptor.Source, member,
+            descriptor.Width, descriptor.Height, descriptor.DpiScale);
+        if (_previewImageCompletions.TryGetValue(descriptor.WorkKey, out var completion) && completion.FrameKey == frameKey)
+        {
+            if (completion.Outcome == PreviewImageOutcome.Frame && TryGetFrame(frameKey, out var cached))
+            {
+                row.ImageKey = frameKey; row.View?.UpdateFrame(cached);
+                TraceFirstOffscreenBind(completion);
+            }
+            else if (completion.Outcome != PreviewImageOutcome.Frame) row.ImageKey = null;
+            else if (row.ImageKey != frameKey)
+            {
+                row.ImageKey = null;
+                QueuePreviewImageWork(descriptor);
+            }
+            return;
+        }
+        if (_previewImageWork.ContainsKey(descriptor.WorkKey)) return;
+        QueuePreviewImageWork(descriptor);
+    }
+
+    private void ReconcilePreviewImages()
+    {
+        if (_closed || _dismissRequested || _readsSuspended || _adding || _sourceData is null)
+        {
+            CancelPreviewImageWork(clearCompletions: false);
+            return;
+        }
+        _previewRequest ??= CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        if (_previewRequest.IsCancellationRequested) return;
+
+        var descriptors = new Dictionary<string, PreviewImageDescriptor>(StringComparer.Ordinal);
+        foreach (var item in _previewItems)
+            if (item.Candidate is { } projected && BuildPreviewImageWork(projected, item, _sourceData) is { } descriptor)
+                descriptors[descriptor.WorkKey] = descriptor;
+        _previewImageCandidateCount = _previewItems.Count(item => item.Candidate is not null);
+        _previewImageExpectedCount = descriptors.Count;
+        if (!_previewPreparationStarted)
+        {
+            _previewPreparationStarted = true;
+            _previewPreparationStopwatch.Restart();
+            _previewProgressLastTraceAt = DateTimeOffset.UtcNow;
+            _images.TraceImageWork($"preview-full-start:{SourceKind}:elapsedMs=0.0:candidates={_previewImageCandidateCount}:images={_previewImageExpectedCount}");
+        }
+        var previousDesired = _previewImageDesiredWorkKeys.ToHashSet(StringComparer.Ordinal);
+        _previewImageDesiredWorkKeys.Clear();
+        _previewImageDesiredWorkKeys.UnionWith(descriptors.Keys);
+        _previewImageCurrentTerminalCount = _previewImageDesiredWorkKeys.Count(_previewImageCompletions.ContainsKey);
+        if (descriptors.Keys.Any(key => !previousDesired.Contains(key))) _previewPreparationTerminalTraced = false;
+
+        foreach (var work in _previewImageWork.Values.Where(work => !descriptors.ContainsKey(work.Descriptor.WorkKey)).ToArray())
+            CancelPreviewImageWork(work, clearCompletion: false);
+        foreach (var work in _previewImageWork.Values.Where(work =>
+                     descriptors.TryGetValue(work.Descriptor.WorkKey, out var descriptor) && descriptor.InferTarget &&
+                     IsPreviewTargetInferenceDeferred(descriptor)).ToArray())
+            CancelPreviewImageWork(work, clearCompletion: false);
+        _previewProgressPendingCandidateKey = _previewProgressPendingStage = null;
+        foreach (var descriptor in descriptors.Values)
+        {
+            if (descriptor.InferTarget && IsPreviewTargetInferenceDeferred(descriptor))
+            {
+                _previewProgressPendingCandidateKey ??= descriptor.SourceCandidate.SourceKey;
+                _previewProgressPendingStage ??= "target-inference-deferred";
+                continue;
+            }
+            if (_previewImageCompletions.TryGetValue(descriptor.WorkKey, out var completion))
+            {
+                if (completion.Outcome is PreviewImageOutcome.NoImageOrFallback or PreviewImageOutcome.Failed) continue;
+                if (completion.Outcome == PreviewImageOutcome.Frame && !completion.FrameRetained) continue;
+                if (completion.FrameKey is { } readyKey && TryGetFrame(readyKey, out _)) continue;
+            }
+            if (_previewImageWork.ContainsKey(descriptor.WorkKey)) continue;
+            _previewProgressPendingCandidateKey ??= descriptor.SourceCandidate.SourceKey;
+            _previewProgressPendingStage ??= "queueing";
+            QueuePreviewImageWork(descriptor, startWorkers: false);
+        }
+        foreach (var key in _previewImageCompletions.Keys.Where(key => !descriptors.ContainsKey(key)).ToArray())
+            if (_sourceData.Candidates.All(candidate => !_previewImageCompletions[key].SourceKey.Equals(candidate.SourceKey, StringComparison.Ordinal)))
+                _previewImageCompletions.Remove(key);
+        StartPreviewImageWorkers();
+        foreach (var row in _rows.ToArray()) StartRowImage(row);
+        TracePreviewPreparationTerminalIfReady();
+    }
+
+    private PreviewImageDescriptor? BuildPreviewImageWork(ImportProjectedCandidate projected, PreviewItem item, ImportPageSource source)
+    {
+        if (item.Member is not { } member || member is ClockMember || member.Images.Kind == MemberImageSourceKind.None) return null;
+        var candidate = source.Candidates.FirstOrDefault(item => item.SourceKey == projected.Source.SourceKey);
+        if (candidate is null) return null;
+        var scale = _dialog.XamlRoot?.RasterizationScale ?? 1;
+        var width = Math.Clamp((int)Math.Ceiling(_metrics.WidthOf(member.LocalBounds.Width) * scale), 1, 4096);
+        var height = Math.Clamp((int)Math.Ceiling(_metrics.HeightOf(member.LocalBounds.Height) * scale), 1, 4096);
+        var inferTarget = IsTargetInferenceApplicable(projected, source, candidate);
+        var sourceFact = ImportTargetRecognition.FactFor(source, candidate);
+        var workKey = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            Version = 2, CandidateKey = projected.SelectionKey, candidate.SourceKind, candidate.SourceKey,
+            candidate.SelectionIdentity, SourceFact = sourceFact, Stamp = IconStamp(projected),
+            member.Images, member.ImageDisplay, member.Visual.BackgroundMode,
+            CurrentImage = member.Carousel?.CurrentImageId, Width = width, Height = height, DpiScale = scale,
+            InferTarget = inferTarget,
+        });
+        return new(workKey, sourceFact, projected, item, candidate, source, width, height, scale, inferTarget);
+    }
+
+    private WallMember PreviewMemberFor(PreviewImageDescriptor descriptor, WallMember member)
+    {
+        if (_recognizedTargets.TryGetValue(descriptor.SourceCandidate.SourceKey, out var recognition) &&
+            recognition.Matches(descriptor.Source, descriptor.SourceCandidate))
+            return recognition.Result.ApplyTo(member);
+        if (_previewTargetInferences.TryGetValue(descriptor.SourceCandidate.SourceKey, out var inference) &&
+            inference.SourceFact == descriptor.SourceFact && inference.Result is { } inferred)
+            return inferred.ApplyTo(member);
+        return member;
+    }
+
+    private string PreviewFrameKey(ImportProjectedCandidate projected, ImportSourceCandidate candidate,
+        ImportPageSource source, WallMember member, int width, int height, double dpiScale) =>
+        System.Text.Json.JsonSerializer.Serialize(new
+        {
+            Version = 2, CandidateKey = projected.SelectionKey, candidate.SourceKind, candidate.SourceKey,
+            candidate.SelectionIdentity, SourceFact = ImportTargetRecognition.FactFor(source, candidate), Stamp = IconStamp(projected),
+            member.Images, member.ImageDisplay, member.Visual.BackgroundMode,
+            CurrentImage = member.Carousel?.CurrentImageId, Width = width, Height = height, DpiScale = dpiScale,
+        });
+
+    private bool IsTargetInferenceApplicable(ImportProjectedCandidate projected, ImportPageSource source,
+        ImportSourceCandidate candidate)
+    {
+        if (Attributed || !ImportTargetRecognition.AppliesTo(candidate) ||
+            projected.Source.SourceKey != candidate.SourceKey || !MatchesFilter(projected)) return false;
+        if (source.StartMenuSources.TryGetValue(projected.SelectionKey, out var startMenu))
+        {
+            var extension = Path.GetExtension(startMenu.Candidate.FullPath);
+            if (extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".url", StringComparison.OrdinalIgnoreCase)) return false;
+        }
+        if (candidate.Member.SourceShortcutPath is not null) return false;
+        return candidate.Member.TargetInput is { } target && Path.IsPathFullyQualified(target);
+    }
+
+    private bool IsPreviewTargetInferenceDeferred(PreviewImageDescriptor descriptor) =>
+        _reading || _preparing || descriptor.Source.Refreshing;
+
+    private bool CanRunPreviewTargetInference(PreviewImageDescriptor descriptor) =>
+        descriptor.InferTarget && _recognitionReady && !_closed && !_dismissRequested && !_readsSuspended &&
+        !_reading && !_preparing && !_adding && !descriptor.Source.Refreshing &&
+        ReferenceEquals(_sourceData, descriptor.Source);
+
+    private void QueuePreviewImageWork(PreviewImageDescriptor descriptor, bool startWorkers = true)
+    {
+        if (_closed || _dismissRequested || _readsSuspended || _adding || _sourceData is null ||
+            descriptor.InferTarget && IsPreviewTargetInferenceDeferred(descriptor)) return;
+        _previewRequest ??= CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        if (_previewRequest.IsCancellationRequested || _previewImageWork.ContainsKey(descriptor.WorkKey)) return;
+        if (_previewImageCompletions.TryGetValue(descriptor.WorkKey, out var completion) &&
+            completion.Outcome is PreviewImageOutcome.NoImageOrFallback or PreviewImageOutcome.Failed) return;
+        var request = CancellationTokenSource.CreateLinkedTokenSource(_previewRequest.Token);
+        var work = new PreviewImageWork(descriptor, request);
+        if (work.DetailTraceEnabled) work.QueuedAt = Stopwatch.GetTimestamp();
+        work.Stage = "queued";
+        work.QueueNode = _previewImageQueue.AddLast(work);
+        _previewImageWork.Add(descriptor.WorkKey, work);
+        _previewImageDesiredWorkKeys.Add(descriptor.WorkKey);
+        if (_previewPreparationTerminalTraced) _previewPreparationTerminalTraced = false;
+        if (startWorkers) StartPreviewImageWorkers();
+    }
+
+    private void CancelPreviewImageWork(bool clearCompletions)
+    {
+        foreach (var work in _previewImageWork.Values.ToArray()) CancelPreviewImageWork(work, clearCompletion: false);
+        _previewImageQueue.Clear(); _previewImageDesiredWorkKeys.Clear();
+        if (clearCompletions) _previewImageCompletions.Clear();
+    }
+
+    private void CancelPreviewImageWork(PreviewImageWork work, bool clearCompletion)
+    {
+        if (!work.Request.IsCancellationRequested) _previewImageCancelledCount++;
+        work.Request.Cancel();
+        if (work.QueueNode?.List is not null) _previewImageQueue.Remove(work.QueueNode);
+        work.QueueNode = null;
+        if (_previewImageWork.TryGetValue(work.Descriptor.WorkKey, out var current) && ReferenceEquals(current, work))
+            _previewImageWork.Remove(work.Descriptor.WorkKey);
+        if (clearCompletion) _previewImageCompletions.Remove(work.Descriptor.WorkKey);
+        if (!work.IsRunning) work.Request.Dispose();
+    }
+
+    private void StartPreviewImageWorkers()
+    {
+        if (_closed || _dismissRequested || _readsSuspended || _adding || _previewRequest is not { IsCancellationRequested: false }) return;
+        while (_previewImageWorkers < PreviewImageWorkerLimit && _previewImageQueue.First is not null)
+        {
+            _previewImageWorkers++;
+            var worker = RunPreviewImageWorkerAsync();
+            _previewOperations.RemoveWhere(operation => operation.IsCompleted);
+            _previewOperations.Add(worker);
+            _previewLoad = Task.WhenAll(_previewOperations);
+            Track(worker);
+        }
+    }
+
+    private async Task RunPreviewImageWorkerAsync()
+    {
+        await Task.Yield();
+        try
+        {
+            while (_previewRequest is { IsCancellationRequested: false } && _previewImageQueue.First is { } node)
+            {
+                var work = node.Value;
+                _previewImageQueue.RemoveFirst(); work.QueueNode = null;
+                if (!_previewImageWork.TryGetValue(work.Descriptor.WorkKey, out var active) || !ReferenceEquals(active, work) ||
+                    work.Request.IsCancellationRequested)
+                {
+                    work.Request.Dispose();
+                    continue;
+                }
+                work.IsRunning = true;
+                work.Stage = "worker-start";
+                PreviewImageLoadResult? loaded = null;
+                Exception? failure = null;
+                var retained = false;
+                if (work.DetailTraceEnabled)
+                {
+                    work.StartedAt = Stopwatch.GetTimestamp();
+                    TracePreviewImageWork(work, "begin", null, null, false);
+                }
+                var preparationStartedAt = work.DetailTraceEnabled ? Stopwatch.GetTimestamp() : 0;
+                try
+                {
+                    try { loaded = await LoadPreviewImageAsync(work); }
+                    catch (OperationCanceledException ex) { if (work.DetailTraceEnabled) failure = ex; }
+                    catch (ObjectDisposedException ex) when (work.Request.IsCancellationRequested) { if (work.DetailTraceEnabled) failure = ex; }
+                    catch (Exception ex) { if (work.DetailTraceEnabled) failure = ex; /* One failed preview item must not stop the page queue. */ }
+                    finally
+                    {
+                        if (work.DetailTraceEnabled)
+                            work.PreparationElapsedMs = Stopwatch.GetElapsedTime(preparationStartedAt).TotalMilliseconds;
+                    }
+
+                    if (IsCurrentPreviewImageWork(work))
+                    {
+                        retained = loaded?.ReusedCachedFrame == true;
+                        if (loaded?.Frame is { } frame && !loaded.ReusedCachedFrame && loaded.ImageResult is { } result)
+                        {
+                            if (loaded.Member.Images.Kind != MemberImageSourceKind.Automatic && result.CacheAllowed)
+                                RememberFrame(loaded.FrameKey, frame);
+                            else if (loaded.Member.Images.Kind == MemberImageSourceKind.Automatic &&
+                                result.MemoryCacheAllowed && frame.MemoryCacheAllowed &&
+                                (loaded.AutomaticCachePath is not null ? frame.AutomaticStamp is not null :
+                                    HasStableBoundAutomaticFrameFacts(work.Descriptor)))
+                                RememberFrame(loaded.FrameKey, frame);
+                            retained = _frames.ContainsKey(loaded.FrameKey);
+                        }
+                        var offscreen = !_rows.Any(row => row.Candidate.SelectionKey == work.Descriptor.Projected.SelectionKey);
+                        var imageStatus = loaded?.ImageResult?.Status;
+                        var wasPreparedOffscreen = _previewImageCompletions.TryGetValue(work.Descriptor.WorkKey, out var previousCompletion) &&
+                            previousCompletion.PreparedOffscreen;
+                        var outcome = loaded?.Frame is not null ? PreviewImageOutcome.Frame :
+                            loaded is null || imageStatus is WallImageStatus.Invalid or WallImageStatus.Cancelled
+                                ? PreviewImageOutcome.Failed : PreviewImageOutcome.NoImageOrFallback;
+                        var completion = new PreviewImageCompletion(work.Descriptor.SourceCandidate.SourceKey, loaded?.FrameKey,
+                            outcome, retained, offscreen || wasPreparedOffscreen);
+                        var wasMatchingCompletion = _previewImageDesiredWorkKeys.Contains(work.Descriptor.WorkKey) &&
+                            _previewImageCompletions.ContainsKey(work.Descriptor.WorkKey);
+                        _previewImageCompletions[work.Descriptor.WorkKey] = completion;
+                        if (!wasMatchingCompletion && _previewImageDesiredWorkKeys.Contains(work.Descriptor.WorkKey))
+                            _previewImageCurrentTerminalCount++;
+                        if (loaded?.TargetRecognized == true) RefreshRecognizedRows(work.Descriptor.SourceCandidate.SourceKey);
+                        foreach (var row in _rows.Where(row => row.RequestKey == work.Descriptor.WorkKey).ToArray())
+                        {
+                            var rowMember = PreviewMemberFor(work.Descriptor, row.Member);
+                            var rowFrameKey = PreviewFrameKey(work.Descriptor.Projected, work.Descriptor.SourceCandidate,
+                                work.Descriptor.Source, rowMember, work.Descriptor.Width, work.Descriptor.Height, work.Descriptor.DpiScale);
+                            if (loaded?.Frame is { } ready && rowFrameKey == loaded.FrameKey)
+                            {
+                                row.ImageKey = loaded.FrameKey; row.View?.UpdateFrame(ready);
+                                TraceFirstOffscreenBind(completion);
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    if (work.DetailTraceEnabled) TracePreviewImageWork(work, "end", loaded, failure, retained);
+                    work.IsRunning = false;
+                    if (_previewImageWork.TryGetValue(work.Descriptor.WorkKey, out var current) && ReferenceEquals(current, work))
+                        _previewImageWork.Remove(work.Descriptor.WorkKey);
+                    work.Request.Dispose();
+                }
+            }
+        }
+        finally
+        {
+            _previewImageWorkers--;
+            if (_previewImageQueue.Count > 0) StartPreviewImageWorkers();
+            TracePreviewPreparationTerminalIfReady();
+        }
+    }
+
+    private void TracePreviewImageWork(PreviewImageWork work, string state, PreviewImageLoadResult? loaded,
+        Exception? failure, bool retained)
+    {
+        if (!work.DetailTraceEnabled) return;
+        var candidate = work.Descriptor.SourceCandidate;
+        AppLog.Warn("ImportPreviewImagePerf", System.Text.Json.JsonSerializer.Serialize(new
+        {
+            measurement = "preparation-wall-time", state, request = work.QueuedAt, sourceKind = candidate.SourceKind.ToString(),
+            candidate.SourceKey, name = candidate.DisplayName, input = candidate.Member.TargetInput,
+            candidate.Member.SourceShortcutPath, work.Descriptor.Width, work.Descriptor.Height,
+            queueWaitMs = Stopwatch.GetElapsedTime(work.QueuedAt, work.StartedAt).TotalMilliseconds,
+            preparationElapsedMs = state == "end" ? work.PreparationElapsedMs : (double?)null,
+            lastStage = work.Stage,
+            status = loaded?.ImageResult?.Status.ToString() ?? (loaded?.ReusedCachedFrame == true ? "PageFrameCacheHit"
+                : failure is OperationCanceledException ? "Cancelled" : failure is not null ? "Exception" : state == "begin" ? "Pending" : "NoResult"),
+            diagnostic = loaded?.ImageResult?.Diagnostic, exception = failure?.GetType().Name,
+            exceptionMessage = failure?.Message, hasFrame = loaded?.Frame is not null, retained,
+            current = IsCurrentPreviewImageWork(work), cancelled = work.Request.IsCancellationRequested || failure is OperationCanceledException,
+            firstIconAttempted = work.FirstIconStartedAt != 0,
+            firstIconElapsedMs = work.FirstIconElapsedMs ?? (work.FirstIconStartedAt != 0
+                ? Stopwatch.GetElapsedTime(work.FirstIconStartedAt).TotalMilliseconds : (double?)null),
+            firstIconStatus = work.FirstIconResult?.Status.ToString(), firstIconDiagnostic = work.FirstIconResult?.Diagnostic,
+            secondContentAttempted = work.SecondContentStartedAt != 0, secondContentInput = work.SecondContentInput,
+            secondContentElapsedMs = work.SecondContentElapsedMs ?? (work.SecondContentStartedAt != 0
+                ? Stopwatch.GetElapsedTime(work.SecondContentStartedAt).TotalMilliseconds : (double?)null),
+            secondContentStatus = work.SecondContentResult?.Status.ToString(), secondContentDiagnostic = work.SecondContentResult?.Diagnostic,
+        }));
+    }
+
+    private async Task<PreviewImageLoadResult> LoadPreviewImageAsync(PreviewImageWork work)
+    {
+        var descriptor = work.Descriptor;
+        var token = work.Request.Token;
+        var candidate = descriptor.SourceCandidate;
+        var member = PreviewMemberFor(descriptor, descriptor.Item.Member!);
+        var targetRecognized = false;
+        if (CanRunPreviewTargetInference(descriptor) &&
+            (!_previewTargetInferences.TryGetValue(candidate.SourceKey, out var cachedInference) || cachedInference.SourceFact != descriptor.SourceFact))
+        {
+            work.Stage = "target-inference";
+            TargetImageSourceResult? inferred = null;
+            try { inferred = await _images.ResolveTargetSourceAsync(candidate.Member.TargetInput!, token); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
+                InvalidOperationException or OverflowException or System.Runtime.InteropServices.COMException or NotSupportedException)
+            {
+                // A failed preview-only inference keeps the original icon; confirmed add rechecks independently.
+            }
+            token.ThrowIfCancellationRequested();
+            if (!IsCurrentPreviewImageWork(work) || !CanRunPreviewTargetInference(descriptor))
+                throw new OperationCanceledException(token);
+            _previewTargetInferences[candidate.SourceKey] = new(descriptor.SourceFact, inferred);
+            if (inferred is not null)
+            {
+                _recognizedTargets[candidate.SourceKey] = new(descriptor.SourceFact, inferred);
+                member = inferred.ApplyTo(member); targetRecognized = true;
+            }
+        }
+        else if (_previewTargetInferences.TryGetValue(candidate.SourceKey, out var inference) &&
+            inference.SourceFact == descriptor.SourceFact && inference.Result is { } inferred)
+        {
+            member = inferred.ApplyTo(member); targetRecognized = true;
+        }
+
+        var frameKey = PreviewFrameKey(descriptor.Projected, candidate, descriptor.Source, member,
+            descriptor.Width, descriptor.Height, descriptor.DpiScale);
+        var automaticCachePath = descriptor.Source.Package is null && member.Images.Kind == MemberImageSourceKind.Automatic
+            ? AutomaticFrameValidationPath(candidate) : null;
+        work.Stage = "page-frame-cache-check";
+        if (TryGetFrame(frameKey, out var cached))
+        {
+            if (member.Images.Kind != MemberImageSourceKind.Automatic || automaticCachePath is null ||
+                !cached.MemoryCacheAllowed || cached.AutomaticStamp is null)
+                return new(frameKey, member, cached, null, true, targetRecognized, automaticCachePath);
+            work.Stage = "automatic-source-validate";
+            var current = await _images.IsAutomaticFrameCurrentAsync(cached, automaticCachePath, token);
+            token.ThrowIfCancellationRequested();
+            if (!IsCurrentPreviewImageWork(work)) throw new OperationCanceledException(token);
+            if (current) return new(frameKey, member, cached, null, true, targetRecognized, automaticCachePath);
+            ForgetFrame(frameKey);
+        }
+
+        var width = descriptor.Width; var height = descriptor.Height;
+        var packageWidth = width;
+        var packageHeight = height;
+        PuzzleFrameResult? result = null;
+        PackagePreviewSource? packageSource = null;
+        if (descriptor.Source.Package is { } package)
+        {
+            _packageSource ??= new PackagePreviewSource(_reader, package, _previewRequest!.Token);
+            packageSource = _packageSource; packageSource.Enter();
+        }
+        try
+        {
+            if (packageSource is not null && (member.Images.Media is not null || member.Images.ManagedGallery is not null || member.Images.IconSeries is not null))
+            {
+                work.Stage = "package-slot-wait";
+                await _packageMediaSlots.WaitAsync(token);
+                try
+                {
+                    work.Stage = "package-open";
+                    var batch = await packageSource.OpenAsync();
+                    work.Stage = "package-media-read";
+                    await packageSource.ReadGate.WaitAsync(token);
+                    TileWall.Core.Storage.PreparedMediaAsset asset;
+                    PixelSize? referenceSize = null;
+                    MemberImageDisplay? packageDisplay = member.ImageDisplay;
+                    try
+                    {
+                        if (member.Images.IconSeries is { } series)
+                        {
+                            var request = ImageDecodeSizing.ForSeries(series, width, height, member.ImageDisplay);
+                            asset = (await batch.PrepareMediaAsync([series.Frames[request.FrameIndex].Media], token: token)).Single();
+                            packageWidth = request.Width; packageHeight = request.Height;
+                            var reference = series.Frames[series.SelectedFrame];
+                            referenceSize = new(reference.Width, reference.Height);
+                            packageDisplay = null;
+                        }
+                        else asset = member.Images.ManagedGallery is { } gallery
+                            ? await batch.ReadGalleryImageAsync(gallery.ContentId, token)
+                            : (await batch.PrepareMediaAsync([member.Images.Media!], token: token)).Single();
+                    }
+                    finally { packageSource.ReadGate.Release(); }
+                    result = await _images.LoadPackageFrameAsync(asset, packageWidth, packageHeight,
+                        member.Visual.BackgroundMode == MemberBackgroundMode.Blur, token, packageDisplay, referenceSize);
+                }
+                finally { _packageMediaSlots.Release(); }
+            }
+            else if (packageSource is null && member.Images.Kind == MemberImageSourceKind.Automatic && _loadIcon is not null)
+            {
+                // The image service applies CustomScale once and returns the Q1 display plane.
+                work.Stage = "automatic-icon-load";
+                if (work.DetailTraceEnabled) work.FirstIconStartedAt = Stopwatch.GetTimestamp();
+                result = await _loadIcon(candidate, width, height, token);
+                if (work.DetailTraceEnabled)
+                {
+                    work.FirstIconElapsedMs = Stopwatch.GetElapsedTime(work.FirstIconStartedAt).TotalMilliseconds;
+                    work.FirstIconResult = result;
+                }
+            }
+            if (result?.Frame is null && descriptor.Source.Package is null)
+            {
+                var path = descriptor.Source.StartMenuSources.TryGetValue(descriptor.Projected.SelectionKey, out var startMenu)
+                    ? startMenu.Candidate.FullPath : member.SourceShortcutPath ?? candidate.Identity?.Target ?? member.TargetInput;
+                work.Stage = "member-content-load";
+                if (work.DetailTraceEnabled)
+                {
+                    work.SecondContentInput = path;
+                    work.SecondContentStartedAt = Stopwatch.GetTimestamp();
+                }
+                result = await _images.LoadMemberFrameAsync(member, path, width, height,
+                    ct: token, purpose: MemberImagePurpose.Content);
+                if (work.DetailTraceEnabled)
+                {
+                    work.SecondContentElapsedMs = Stopwatch.GetElapsedTime(work.SecondContentStartedAt).TotalMilliseconds;
+                    work.SecondContentResult = result;
+                }
+            }
+            token.ThrowIfCancellationRequested();
+            if (!IsCurrentPreviewImageWork(work)) throw new OperationCanceledException(token);
+            work.Stage = "frame-ready";
+            return new(frameKey, member, result?.Frame, result, false, targetRecognized, automaticCachePath);
+        }
+        finally { packageSource?.Release(); }
+    }
+
+    private bool IsCurrentPreviewImageWork(PreviewImageWork work) => !_closed && !_dismissRequested && !_readsSuspended && !_adding &&
+        !work.Request.IsCancellationRequested && _previewImageDesiredWorkKeys.Contains(work.Descriptor.WorkKey) &&
+        _previewImageWork.TryGetValue(work.Descriptor.WorkKey, out var current) && ReferenceEquals(current, work);
+
+    private void TraceFirstOffscreenBind(PreviewImageCompletion completion)
+    {
+        if (!_previewPreparationTerminalTraced || !completion.PreparedOffscreen || _previewOffscreenBindTraced) return;
+        _previewOffscreenBindTraced = true; _images.TraceImageWork("preview-first-offscreen-bind");
+    }
+
+    private void TracePreviewPreparationProgress()
+    {
+        if (!_previewPreparationStarted || _previewPreparationTerminalTraced || _closed || _dismissRequested ||
+            Environment.GetEnvironmentVariable("TILEWALL_PERF") != "1") return;
+        var now = DateTimeOffset.UtcNow;
+        if (_previewProgressLastTraceAt != default && now - _previewProgressLastTraceAt < TimeSpan.FromSeconds(1)) return;
+        var matched = _previewImageCurrentTerminalCount;
+
+        var active = _previewImageWork.Values.Where(work => work.IsRunning).Take(PreviewImageWorkerLimit)
+            .Select(work => $"{TracePreviewKey(work.Descriptor.SourceCandidate.SourceKey)}@{work.Stage}").ToArray();
+        var focus = active.Length > 0 ? string.Join("|", active) :
+            _previewImageQueue.First is { } queued
+                ? $"{TracePreviewKey(queued.Value.Descriptor.SourceCandidate.SourceKey)}@queued"
+                : _previewProgressPendingCandidateKey is { } pending
+                    ? $"{TracePreviewKey(pending)}@{_previewProgressPendingStage ?? "pending"}"
+                    : "none@idle";
+        var blockers = new List<string>();
+        if (_reading) blockers.Add("reading");
+        if (_preparing) blockers.Add("preparing");
+        if (_sourceData?.Refreshing == true) blockers.Add("source-refreshing");
+        if (_previewImageDesiredWorkKeys.Count != _previewImageExpectedCount) blockers.Add("desired-count-mismatch");
+        if (_previewImageQueue.Count != 0) blockers.Add("queued");
+        if (_previewImageWork.Count != 0) blockers.Add("work-present");
+        if (_previewImageWorkers != 0) blockers.Add("workers-running");
+        if (matched != _previewImageExpectedCount) blockers.Add("missing-completions");
+        if (_previewRequest?.IsCancellationRequested == true) blockers.Add("preview-cancelled");
+        var gate = blockers.Count == 0 ? "ready" : string.Join("+", blockers);
+        _images.TraceImageWork($"preview-progress:{SourceKind}:sourceRefreshing={_sourceData?.Refreshing == true}:reading={_reading}:preparing={_preparing}:recognitionReady={_recognitionReady}:desired={_previewImageDesiredWorkKeys.Count}:expected={_previewImageExpectedCount}:work={_previewImageWork.Count}:queue={_previewImageQueue.Count}:workers={_previewImageWorkers}:completionsMatched={matched}/{_previewImageExpectedCount}:completionsStale={Math.Max(0, _previewImageCompletions.Count - matched)}:terminalGate={gate}:candidate={focus}");
+        _previewProgressLastTraceAt = now;
+    }
+
+    private static string TracePreviewKey(string sourceKey) => sourceKey.Length <= 72 ? sourceKey : sourceKey[..72];
+
+    private void TracePreviewPreparationTerminalIfReady()
+    {
+        if (!_previewPreparationStarted || _previewPreparationTerminalTraced || _closed || _dismissRequested || _reading || _preparing ||
+            _sourceData is null || _sourceData.Refreshing || _previewImageQueue.Count != 0 || _previewImageWork.Count != 0 || _previewImageWorkers != 0 ||
+            _previewImageDesiredWorkKeys.Count != _previewImageExpectedCount ||
+            _previewImageDesiredWorkKeys.Any(key => !_previewImageCompletions.ContainsKey(key))) return;
+        _previewPreparationTerminalTraced = true;
+        var elapsedMs = _previewPreparationStopwatch.Elapsed.TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture);
+        var current = _previewImageDesiredWorkKeys.Select(key => _previewImageCompletions[key]).ToArray();
+        var frames = current.Count(item => item.Outcome == PreviewImageOutcome.Frame);
+        var retained = current.Count(item => item.Outcome == PreviewImageOutcome.Frame &&
+            item.FrameKey is { } key && _frames.ContainsKey(key));
+        var unretained = frames - retained;
+        var fallbacks = current.Count(item => item.Outcome == PreviewImageOutcome.NoImageOrFallback);
+        var failures = current.Count(item => item.Outcome == PreviewImageOutcome.Failed);
+        _images.TraceImageWork($"preview-full-terminal:{SourceKind}:elapsedMs={elapsedMs}:candidates={_previewImageCandidateCount}:images={_previewImageExpectedCount}:frames={frames}:framesRetained={retained}:framesUnretained={unretained}:noImageOrFallback={fallbacks}:failures={failures}:cancelled={_previewImageCancelledCount}");
+    }
+
+    private static string? AutomaticFrameValidationPath(ImportSourceCandidate candidate) =>
+        candidate.SourceKind is ImportPageSourceKind.CurrentWall or ImportPageSourceKind.RecycleBin or ImportPageSourceKind.WallPackage
+            ? null : candidate.Member.SourceShortcutPath ?? candidate.Member.TargetInput ?? candidate.Identity?.Target;
+
+    private static bool HasStableBoundAutomaticFrameFacts(PreviewImageDescriptor descriptor) =>
+        descriptor.Source.Package is not null ||
+        descriptor.SourceCandidate.SourceKind is ImportPageSourceKind.CurrentWall or ImportPageSourceKind.RecycleBin;
+
+    private void StartOperation()
+    {
+        if (_closed || _dismissRequested || _adding || _reading || _picking || _context is null || _projection is null ||
+            _sourceData is null || _sourceData.Refreshing || !_prepared || _preparing || !_projection.Candidates.Any(IsSelected)) return;
+        if (!_contextCurrent(_context)) { _notice = ProductStrings.Get("Import.SourceChanged"); BeginRead(resetSelection: true); return; }
+        var epoch = _sourceEpoch; var source = _sourceData; var projection = _projection;
+        Func<Task<ImportPageResult>> operation;
+        if (IsRecycle)
+        {
+            if (_restoreRecycled is null) return;
+            var ids = projection.Candidates.Where(IsSelected).Select(candidate => candidate.Source.Member.Id).ToArray();
+            var generation = _context.Document.Generation;
+            operation = async () => new ImportPageResult(await _restoreRecycled(ids, generation, CancellationToken.None));
+        }
+        else if (Mode == ImportPageMode.Export)
+        {
+            if (string.IsNullOrWhiteSpace(_exportPath)) return;
+            if (!_exportPathPicked && File.Exists(_exportPath))
+            {
+                _picking = true; UpdateAvailability(); Track(ConfirmDefaultExportPathAsync()); return;
+            }
+            var selected = projection.Candidates.Where(IsSelected).Select(candidate => candidate.Source.Member.Id).ToArray();
+            var request = new ImportPageExportRequest(_context, source, selected, _exportPath,
+                () => epoch == _sourceEpoch && ReferenceEquals(_sourceData, source) && ReferenceEquals(_projection, projection));
+            operation = () => _saveExport(request);
+        }
+        else
+        {
+            _plan = ImportSourcePlanner.TryPlan(_context.Document, _context.Document.Generation, projection,
+                FilteredSelectedSourceKeys(), new GridSize(_tileSize, _tileSize), _position.SelectedIndex == 1 ? ImportInsertionPosition.Tail : ImportInsertionPosition.Head,
+                _metrics, _context.Budget);
+            if (_plan.Status != ImportPlanStatus.Ready) { UpdateStatus(); return; }
+            var plan = _plan;
+            var request = new ImportPageRequest(_context, source, projection, plan,
+                () => epoch == _sourceEpoch && ReferenceEquals(_plan, plan) && ReferenceEquals(_sourceData, source))
+            { RecognizedTargets = new Dictionary<string, ImportTargetRecognition>(_recognizedTargets, StringComparer.Ordinal) };
+            operation = () => _save(request);
+        }
+        _adding = true; _error = null; CancelPreview(); UpdateAvailability(); UpdateStatus();
+        // Registration precedes preview drain, snapshot/commit or export publication.
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _addTask = completed.Task; Track(_addTask); _ = ExecuteOperationAsync(operation, completed);
+    }
+
+    private async Task ConfirmDefaultExportPathAsync()
+    {
+        await PickPathAsync();
+        if (_exportPathPicked) StartOperation();
+    }
+
+    private async Task ExecuteOperationAsync(Func<Task<ImportPageResult>> operation, TaskCompletionSource completed)
+    {
+        try
+        {
+            await _previewLoad; ClosePreviewSource();
+            var result = await operation();
+            if (result.Error is null) _dismissRequested = true;
+            else
+            {
+                _error = result.Error;
+                if (result.RefreshRequired && !_dismissRequested) { _selected.Clear(); _context = null; _notice = ProductStrings.Get("Import.SourceChanged"); }
+            }
+            _adding = false;
+            if (!_dismissRequested && !_readsSuspended && result.RefreshRequired) BeginRead(resetSelection: true);
+            UpdateAvailability(); UpdateStatus();
+        }
+        catch (Exception ex) { _error = ex.Message; _adding = false; UpdateAvailability(); UpdateStatus(); }
+        finally { _adding = false; if (_dismissRequested) FinishDismiss(); completed.TrySetResult(); }
+    }
+
+    private void UpdateAvailability()
+    {
+        var idle = !_closed && !_dismissRequested && !_adding && !_picking;
+        var export = Mode == ImportPageMode.Export;
+        _optionsHost.IsEnabled = idle;
+        for (var index = 0; index < _source.Items.Count; index++)
+            if (_source.Items[index] is ComboBoxItem item) item.IsEnabled = export == (SourceKinds[index] == ImportPageSourceKind.CurrentWall);
+        _source.IsEnabled = idle && !export;
+        var pathEnabled = export || SourceKind == ImportPageSourceKind.WallPackage;
+        _path.IsEnabled = pathEnabled; _chooseFile.IsEnabled = idle && pathEnabled;
+        var path = export ? _exportPath : _packagePath;
+        _path.Text = pathEnabled ? path is null ? ProductStrings.Get(export ? "Import.Path.ExportEmpty" : "Import.Path.Empty") : export ? path : Path.GetFileName(path)
+            : ProductStrings.Get("Import.Path.System");
+        ToolTipService.SetToolTip(_path, pathEnabled ? path : ProductStrings.Get("Import.Path.System"));
+        AutomationProperties.SetHelpText(_path, pathEnabled ? path ?? "" : ProductStrings.Get("Import.Path.System"));
+        _autoFilter.IsEnabled = !Attributed;
+        _recognizeGroups.IsEnabled = !Attributed && SourceKind != ImportPageSourceKind.SystemFeatures;
+        _small.IsEnabled = _medium.IsEnabled = !Attributed && (_sourceData?.Candidates.Any(candidate => !candidate.HasRecordedSize) ?? true);
+        _position.SetEnabled(!export && !IsRecycle);
+        var reason = ProductStrings.Get(export ? "Import.Option.ImportOnly" : "Import.Option.RecordedAttributes");
+        AutomationProperties.SetHelpText(_autoFilter, _autoFilter.IsEnabled ? "" : reason);
+        AutomationProperties.SetHelpText(_recognizeGroups, _recognizeGroups.IsEnabled ? "" :
+            !Attributed && SourceKind == ImportPageSourceKind.SystemFeatures ? ProductStrings.Get("Import.Option.SystemGroups") : reason);
+        AutomationProperties.SetHelpText(_small, _small.IsEnabled ? "" : reason);
+        AutomationProperties.SetHelpText(_medium, _medium.IsEnabled ? "" : reason);
+        AutomationProperties.SetHelpText(_position, export || IsRecycle ? reason : "");
+        foreach (var button in _position.Children.OfType<ToggleButton>())
+            AutomationProperties.SetHelpText(button, export || IsRecycle ? reason : "");
+        var addable = FilteredAddableCandidates();
+        var count = addable.Count(IsSelected);
+        _selectAll.IsEnabled = idle && !_reading && addable.Length > 0;
+        _selectAll.IsChecked = count == 0 ? false : count == addable.Length ? true : null;
+        _dialog.IsPrimaryButtonEnabled = idle && !_reading && !_preparing && _sourceData?.Refreshing == false && _prepared && count > 0 &&
+            (!export || !string.IsNullOrWhiteSpace(_exportPath)) && (!IsRecycle || _restoreRecycled is not null) && _context is not null && _contextCurrent(_context);
+        foreach (var row in _rows) row.Toggle.IsEnabled = idle && !_reading && row.Candidate.CanAdd && MatchesFilter(row.Candidate);
+        var primaryText = ProductStrings.Get(export ? "Import.ExportConfirm" : IsRecycle ? "Recycle.Restore" : "Import.Confirm");
+        if (_dialog.PrimaryButtonText != primaryText)
+        {
+            _dialog.PrimaryButtonText = primaryText;
+            ActionIcon.DecorateDialog(_dialog, export ? ActionIcon.Save : IsRecycle ? ActionIcon.Undo : ActionIcon.Import, ActionIcon.Delete, ActionIcon.Cancel);
+        }
+        if (!_adding) RefreshRecognitionSelection();
+    }
 
     private void UpdateStatus()
     {
-        var active = _source.SelectedIndex == 0;
-        _scannedCount.Text = string.Format(Text("Import.ScannedCount", "已扫描 {0} 项"), active ? _scanned : 0);
-        _filteredCount.Text = string.Format(Text("Import.FilteredCount", "已过滤 {0} 项"),
-            active && _autoTrim.IsOn ? _candidates.Count(candidate => candidate.Exclusion != StartMenuExclusion.None) : 0);
-        _candidateCount.Text = string.Format(Text("Import.CandidateCount", "候选 {0} 项"), active ? _visibleCandidates.Count : 0);
-        _selectedCount.Text = string.Format(Text("Import.SelectedCount", "已选 {0} 项"), active ? _visibleCandidates.Count(IsSelected) : 0);
-        if (!active) { _status.Text = Text("Import.Developing", "正在开发中"); return; }
-        if (_projectionNotice is not null) { _status.Text = _projectionNotice; return; }
+        var stats = _projection?.Statistics;
+        var counts = new int[14];
+        counts[0] = stats?.AcquiredCount ?? _sourceData?.Scanned ?? 0;
+        counts[1] = stats?.FilteredCount ?? 0; counts[2] = stats?.CandidateCount ?? 0;
+        counts[3] = _projection?.Candidates.Count(IsSelected) ?? 0;
+        ImportTargetKind[] kinds = [ImportTargetKind.SystemFeature, ImportTargetKind.Program, ImportTargetKind.File, ImportTargetKind.Folder,
+            ImportTargetKind.WebLink, ImportTargetKind.ProtocolLink, ImportTargetKind.Component];
+        for (var index = 0; index < kinds.Length; index++) counts[index + 4] = stats?.ContentCounts.GetValueOrDefault(kinds[index]) ?? 0;
+        ImportFilterReason[] reasons = [ImportFilterReason.DuplicateTarget, ImportFilterReason.MissingTarget, ImportFilterReason.NonPrimaryEntry];
+        for (var index = 0; index < reasons.Length; index++) counts[index + 11] = stats?.PrimaryFilterCounts.GetValueOrDefault(reasons[index]) ?? 0;
+        for (var index = 0; index < counts.Length; index++)
+        {
+            _numbers[index].Text = counts[index].ToString(System.Globalization.CultureInfo.CurrentCulture);
+            AutomationProperties.SetName(_numbers[index], ProductStrings.Get(StatisticLabels[index]) + ": " + _numbers[index].Text);
+        }
+        UpdateStatisticLayout();
         var messages = new List<string>();
-        if (_updating || !_scanReceived) messages.Add(Text("Import.Updating", "正在更新来源…"));
-        if (_readErrors != 0 || _skipped != 0)
-            messages.Add(string.Format(Text("Import.ReadErrors", "读取失败 {0} 项，未完整读取 {1} 个目录"), _readErrors, _skipped));
-        if (_catalog.Snapshot.ErrorCode is { } code) messages.Add(ErrorText(code));
+        if (_adding) messages.Add(ProductStrings.Get(IsRecycle ? "Settings.Saving" : Mode == ImportPageMode.Export ? "Import.Exporting" : "Import.Adding"));
+        else if (_reading || _preparing || _sourceData?.Refreshing == true) messages.Add(ProductStrings.Get("Import.Updating"));
+        else if (_sourceData?.IconPreparing == true) messages.Add(ProductStrings.Get("Import.PreparingImages"));
+        if (_notice is not null) messages.Add(_notice); if (_error is not null) messages.Add(_error);
+        if (_sourceData is { } source && (source.ReadErrors != 0 || source.Skipped != 0)) messages.Add(string.Format(ProductStrings.Get("Import.ReadErrors"), source.ReadErrors, source.Skipped));
+        if (_sourceData?.ErrorCode is { } error) messages.Add(ErrorText(error));
+        if (IsRecycle && !_reading && !_preparing && _sourceData?.Candidates.Count == 0) messages.Add(ProductStrings.Get("Recycle.Empty"));
+        if (_plan?.Status == ImportPlanStatus.Rejected) messages.Add(ProductStrings.Get("Import.LayoutRejected"));
         _status.Text = string.Join("\n", messages);
+        _statusScroll.Visibility = messages.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    private void ReleaseRowRequest(CancellationTokenSource request)
+    public bool HasUnsavedDraft => false;
+    public string? TrySaveNow() => ProductStrings.Get("Import.Confirm");
+    public void DiscardDraft() { _selected.Clear(); UpdateSelectionFeedback(); }
+    public Task<ExitDecision> ConfirmExitAsync() => Task.FromResult(ExitDecision.DiscardAndExit);
+    public async Task WaitForPendingAsync()
     {
-        if (!_rowRequests.Remove(request)) return;
-        request.Cancel(); request.Dispose();
+        _readsSuspended = true; CancelPicker(); _catalogRequest?.Cancel(); _pageRequest?.Cancel(); _preparationRequest?.Cancel(); CancelPreview();
+        await _addTask; await DrainOperationsAsync();
     }
-
+    private async Task DrainOperationsAsync()
+    {
+        while (true)
+        {
+            var pending = _pendingOperations.Where(task => !task.IsCompleted).ToArray();
+            if (pending.Length == 0) return;
+            try { await Task.WhenAll(pending); } catch (OperationCanceledException) { }
+        }
+    }
+    public void Close() => RequestDismiss();
+    public void RequestDismiss()
+    {
+        if (_closed) return;
+        _dismissRequested = true; CancelPicker(); _pageRequest?.Cancel(); _preparationRequest?.Cancel(); CancelPreview(); UpdateAvailability();
+        if (!_adding && !_picking) FinishDismiss();
+    }
+    private void FinishDismiss() { StopRequests(); _dialog.Hide(); }
     private void StopRequests()
     {
         if (_closed) return;
-        _closed = true; _lifetime.Cancel(); _pageRequest?.Cancel();
-        _catalog.Changed -= _catalogChanged;
-        DetachGridScrollViewer();
-        foreach (var row in _rows.ToArray()) ReleaseRow(row);
-        foreach (var request in _rowRequests.ToArray()) ReleaseRowRequest(request);
-        _iconFrames.Clear(); _iconFrameLru.Clear();
+        _closed = true; _clockTimer.Stop(); CancelPicker(); _lifetime.Cancel(); _pageRequest?.Cancel(); _preparationRequest?.Cancel(); CancelPreview();
+        if (_previewRoot is not null) _previewRoot.Changed -= OnPreviewRootChanged;
+        _catalog.Changed -= _catalogChanged; ClearPreview(); ClearFrameCache();
+        _sourceData = null; _projection = _previewProjection = null; _projectedCandidates = null;
+        _context = null; _plan = null; _projectedIdentities = null;
+        _candidateByKey.Clear(); _selected.Clear(); _recognizedTargets.Clear();
+        _recognitionProjection = null; _recognitionContext = null; _recognitionFacts = null;
     }
-
-    public bool HasUnsavedDraft => !_saved && _selected.Count != 0;
-    public async Task WaitForPendingAsync()
-    {
-        // The page stops waiting. The primary lifetime drains the shared producer only after exit is confirmed.
-        if (!_closed) _pageRequest?.Cancel();
-        try { await _pending; }
-        catch (OperationCanceledException) { }
-        if (_refreshObserver is { } observer)
-        {
-            try { await observer; }
-            catch (OperationCanceledException) { }
-        }
-    }
-    public Task<ExitDecision> ConfirmExitAsync() => _exit.ConfirmAsync();
-    public void RequestDismiss() => _dialog.Hide();
-    public void Close() { _discarded = true; StopRequests(); _dialog.Hide(); }
-    public void DiscardDraft()
-    {
-        _selected.Clear();
-        UpdateSelectionFeedback(); _discarded = true;
-    }
-
-    private ImportBatchItem[] SelectedItems() => _visibleCandidates
-        .Where(IsSelected).Select(candidate =>
-        {
-            var scanned = candidate.Candidate;
-            if (!_items.TryGetValue(candidate.SelectionKey, out var item))
-                _items[candidate.SelectionKey] = item = ImportBatchItem.Create(scanned.FullPath, scanned.DisplayName);
-            var size = _tileSize;
-            return item with
-            {
-                Member = item.Member with { LocalBounds = new TileWall.Core.Grid.GridRect(0, 0, size, size) },
-                GroupBucketKey = candidate.Bucket.Key, GroupTitle = candidate.Bucket.Title, GroupOrder = candidate.Bucket.Order,
-                SourceRoot = scanned.RootPath, RelativePath = scanned.RelativePath,
-                CandidateSnapshot = scanned, ExpectedIdentityKey = candidate.Identity!.Key,
-                ExpectedSourceSha256 = candidate.SourceSha256,
-                IconDirectory = candidate.IconDirectory, IconKey = candidate.IconKey,
-            };
-        }).ToArray();
-
-    public string? TrySaveNow()
-    {
-        if (_source.SelectedIndex != 0)
-            return Fail(Text("Import.Developing", "正在开发中"));
-        if (!_visibleCandidates.Any(IsSelected))
-            return Fail(ProductStrings.Get("Import.SelectFirst"));
-        try
-        {
-            var error = _save(SelectedItems(), _preserveChanges.IsOn);
-            if (error is not null) return Fail(error);
-            _saved = true; return null;
-        }
-        catch (Exception ex) { return Fail(string.Format(ProductStrings.Get("Import.Failed"), ex.Message)); }
-    }
-
-    private string Fail(string error) { _status.Text = error; return error; }
-    private void OfferDiscard() { _allowDiscard = true; RefreshStrings(); _status.Text = ProductStrings.Get("Common.UnsavedDraft"); }
 
     public void RefreshStrings()
     {
-        if (_exit.IsActive) return;
-        _dialog.PrimaryButtonText = ProductStrings.Get("Import.Confirm");
-        _dialog.CloseButtonText = ProductStrings.Get(_allowDiscard ? "Common.Discard" : "Common.Cancel");
-        _selectAll.Content = ProductStrings.Get("Import.SelectAll");
-        _sourceLabel.Text = ProductStrings.Get("Import.Source");
-        _trimLabel.Text = Text("Import.AutoFilter", "自动过滤");
-        _groupsLabel.Text = ProductStrings.Get("Import.RecognizeGroups");
-        _preserveLabel.Text = Text("Import.PreserveChanges", "保留已有改动");
-        _sizeLabel.Text = ProductStrings.Get("Editor.TileSize");
-        _development.Text = Text("Import.Developing", "正在开发中");
+        if (!_exportPathPicked && !string.IsNullOrWhiteSpace(_initialExportDirectory))
+            _exportPath = Path.Combine(_initialExportDirectory, DefaultExportFileName());
         _refreshingStrings = true;
         try
         {
-            var selected = _source.SelectedIndex;
-            var names = new[] { ProductStrings.Get("Import.Source.StartMenu"),
-                Text("Import.SourceDesktop", "本机桌面"),
-                Text("Import.Source.InstalledApplications", "已安装应用"),
-                Text("Import.Source.CustomSettings", "自定义设置") };
-            if (_source.Items.Count != names.Length)
-            {
-                _source.Items.Clear();
-                foreach (var name in names) _source.Items.Add(new ComboBoxItem { Content = name });
-            }
-            else for (var index = 0; index < names.Length; index++) ((ComboBoxItem)_source.Items[index]).Content = names[index];
-            _source.SelectedIndex = selected is >= 0 and <= 3 ? selected : 0;
+            var mode = _mode.SelectedIndex; var source = _source.SelectedIndex; var position = _position.SelectedIndex;
+            _mode.SetItems([ProductStrings.Get("Import.Mode.Import"), ProductStrings.Get("Import.Mode.Export")],
+                showLabels: true, notifyOnReselect: false);
+            Id(_mode.Children[0], "mode-import"); Id(_mode.Children[1], "mode-export");
+            _mode.SelectedIndex = mode < 0 || mode == 1 ? 1 : 0;
+            _source.Items.Clear(); foreach (var key in SourceLabels) _source.Items.Add(new ComboBoxItem { Content = ProductStrings.Get(key) });
+            _source.SelectedIndex = source >= 0 && source < SourceKinds.Length ? source : Mode == ImportPageMode.Export ? 5 : 0;
+            _position.SetItems([ProductStrings.Get("Import.Position.Head"), ProductStrings.Get("Import.Position.Tail")],
+                showLabels: true, notifyOnReselect: false);
+            Id(_position.Children[0], "position-head"); Id(_position.Children[1], "position-tail");
+            _position.SelectedIndex = position == 1 ? 1 : 0;
         }
         finally { _refreshingStrings = false; }
-        ToolTipService.SetToolTip(_source, ProductStrings.Get("Import.Source.Tooltip"));
-        ActionIcon.SetTip(_selectAll, ProductStrings.Get("Import.SelectAll.Tooltip"));
-        ToolTipService.SetToolTip(_autoTrim, Text("Import.AutoFilter.Tooltip", "过滤系统自带、卸载、维护及文档网址入口"));
-        ToolTipService.SetToolTip(_preserveChanges, Text("Import.PreserveChanges.Tooltip", "保留已有磁贴的外观、尺寸和标题，并重新排列位置"));
-        ToolTipService.SetToolTip(_recognizeGroups, ProductStrings.Get("Import.RecognizeGroups.Tooltip"));
-        AutomationProperties.SetName(_source, ProductStrings.Get("Import.Source"));
-        AutomationProperties.SetHelpText(_source, ProductStrings.Get("Import.Source.Tooltip"));
-        AutomationProperties.SetName(_selectAll, ProductStrings.Get("Import.SelectAll"));
-        AutomationProperties.SetHelpText(_selectAll, ProductStrings.Get("Import.SelectAll.Tooltip"));
-        AutomationProperties.SetName(_autoTrim, Text("Import.AutoFilter", "自动过滤"));
-        AutomationProperties.SetName(_recognizeGroups, ProductStrings.Get("Import.RecognizeGroups"));
-        AutomationProperties.SetName(_preserveChanges, Text("Import.PreserveChanges", "保留已有改动"));
-        AutomationProperties.SetLabeledBy(_source, _sourceLabel); AutomationProperties.SetLabeledBy(_autoTrim, _trimLabel);
-        AutomationProperties.SetLabeledBy(_recognizeGroups, _groupsLabel);
-        AutomationProperties.SetLabeledBy(_preserveChanges, _preserveLabel);
+        string[] labels = ["Import.Mode", "Import.Source", "Import.Path", "Import.AutoFilter", "Import.RecognizeGroups", "Import.DefaultTileSize", "Import.Position", "Import.SelectAll", "Import.Filter"];
+        for (var index = 0; index < labels.Length; index++) _optionLabels[index].Text = ProductStrings.Get(labels[index]);
+        for (var index = 0; index < StatisticLabels.Length; index++) _numberLabels[index].Text = ProductStrings.Get(StatisticLabels[index]);
+        _filter.PlaceholderText = ProductStrings.Get("Import.Filter.Placeholder");
+        _selectAll.Content = "";
+        _dialog.Title = ProductStrings.Get("Import.Title"); _dialog.CloseButtonText = ProductStrings.Get("Common.Cancel");
+        ActionIcon.SetIcon(_chooseFile, ProductStrings.Get("Import.ChoosePath"), ActionIcon.OpenFolderHorizontal);
         ActionIcon.SetIcon(_small, ProductStrings.Get("Import.Small"), ActionIcon.PresetSmall);
         ActionIcon.SetIcon(_medium, ProductStrings.Get("Import.Medium"), ActionIcon.PresetMedium);
         _small.IsChecked = _tileSize == 1; _medium.IsChecked = _tileSize == 2;
-        AutomationProperties.SetLabeledBy(_small, _sizeLabel); AutomationProperties.SetLabeledBy(_medium, _sizeLabel);
         ActionIcon.DecorateDialog(_dialog, ActionIcon.Import, ActionIcon.Delete, ActionIcon.Cancel);
+        if (_shown && !_adding) RefreshPreview(force: true);
+        UpdateAvailability(); UpdateStatus();
     }
 
-    private static string ErrorText(string code) => code switch
-    {
-        "InvalidTarget" => ProductStrings.Get("Import.InvalidTarget"),
-        "UnsupportedProtocol" => ProductStrings.Get("Import.UnsupportedProtocol"),
-        "SourceChanged" => Text("Import.SourceChanged", "来源已变化，请更新后重新确认"),
-        "SourceTooLarge" => Text("Import.SourceTooLarge", "快捷方式文件过大，无法读取"),
-        "UnsafeSource" => Text("Import.UnsafeSource", "来源位置不安全，无法导入"),
-        "CacheInvalid" or "CacheWriteFailed" => Text("Import.CacheUnavailable", "来源缓存不可用，正在尝试从原位置更新"),
-        "RefreshFailed" => Text("Import.RefreshFailed", "来源更新失败，可稍后重试"),
-        _ => Text("Import.SourceUnavailable", "来源暂不可用，请检查原位置"),
-    };
+    private string DefaultExportFileName() => string.Format(CultureInfo.InvariantCulture,
+        ProductStrings.Get("Import.ExportFileNameFormat"), _exportFileTimestamp) + ".zip";
 
-    private static string Text(string key, string fallback)
+    private static string FilterText(ImportFilterReason reason) => ProductStrings.Get("Import.FilterReason." + reason);
+    private static string ErrorText(string code) => ProductStrings.Get(code switch
     {
-        var value = ProductStrings.Get(key);
-        return value == key ? fallback : value;
+        "InvalidTarget" => "Import.InvalidTarget", "UnsupportedProtocol" => "Import.UnsupportedProtocol",
+        "SourceNotApplicable" => "Import.SourceNotApplicable",
+        "SourceChanged" => "Import.SourceChanged", "SourceTooLarge" => "Import.SourceTooLarge", "UnsafeSource" => "Import.UnsafeSource",
+        "INVALID_SOURCE_GEOMETRY" or "MEMBER_SIZE_LIMIT" or "SOURCE_LAYOUT_LIMIT" => "Import.LayoutRejected",
+        "CacheInvalid" or "CacheWriteFailed" => "Import.CacheUnavailable", "RefreshFailed" => "Import.RefreshFailed", _ => "Import.SourceUnavailable",
+    });
+    private void AddOption(int index, FrameworkElement value)
+    {
+        _options.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        var label = _optionLabels[index]; Grid.SetRow(label, index); Grid.SetRow(value, index); Grid.SetColumn(value, 1);
+        AutomationProperties.SetLabeledBy(value, label); _options.Children.Add(label); _options.Children.Add(value);
     }
-
-    private static void AddOptionRow(Grid form, FrameworkElement value)
-    {
-        var row = form.RowDefinitions.Count;
-        form.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetColumnSpan(value, 2); Grid.SetRow(value, row); form.Children.Add(value);
-    }
-
-    private static void AddRow(Grid form, string key, TextBlock label, FrameworkElement value)
-    {
-        var row = form.RowDefinitions.Count;
-        form.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        label.Text = ProductStrings.Get(key);
-        AutomationProperties.SetLabeledBy(value, label);
-        Grid.SetRow(label, row); form.Children.Add(label);
-        Grid.SetRow(value, row); Grid.SetColumn(value, 1); form.Children.Add(value);
-    }
-
-
     private static TextBlock Label() => new() { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+    private void UpdateStatisticLayout()
+    {
+        const double numberFontSize = 14, cardGap = 4, cardBorderAndMargin = 6;
+        var numberSample = _numbers[0];
+        var numberText = numberSample.Text;
+        numberSample.Text = "000";
+        numberSample.FontSize = numberFontSize;
+        numberSample.Width = double.NaN;
+        numberSample.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        var numberWidth = Math.Ceiling(numberSample.DesiredSize.Width);
+        var numberHeight = Math.Ceiling(numberSample.DesiredSize.Height);
+        numberSample.Text = numberText;
+
+        var labelSample = _numberLabels[0];
+        var labelText = labelSample.Text;
+        // Ten half-width characters are approximately five Chinese characters.
+        labelSample.Text = "中中中中中";
+        labelSample.Width = double.NaN;
+        labelSample.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        var labelWidth = Math.Ceiling(labelSample.DesiredSize.Width);
+        labelSample.Text = labelText;
+        var labelHeight = 0d;
+        foreach (var label in _numberLabels)
+        {
+            label.Width = labelWidth;
+            label.Measure(new Windows.Foundation.Size(labelWidth, double.PositiveInfinity));
+            labelHeight = Math.Max(labelHeight, Math.Ceiling(label.DesiredSize.Height));
+        }
+
+        var cardWidth = numberWidth + labelWidth + 4 + 4 + 2;
+        var cardHeight = Math.Ceiling(Math.Max(numberHeight, labelHeight) + cardBorderAndMargin);
+        foreach (var number in _numbers)
+        {
+            number.Width = double.NaN;
+            number.FontSize = numberFontSize;
+            number.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            if (number.Text.Length > 3 && number.DesiredSize.Width > 0)
+            {
+                var size = Math.Max(6, numberFontSize * Math.Min(3d / number.Text.Length, numberWidth / number.DesiredSize.Width));
+                number.FontSize = size;
+                number.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+                while (number.DesiredSize.Width > numberWidth && number.FontSize > 6)
+                {
+                    number.FontSize = Math.Max(6, number.FontSize - .5);
+                    number.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+                }
+            }
+            number.Width = numberWidth;
+        }
+        foreach (var label in _numberLabels) label.Width = labelWidth;
+
+        // The requested default viewport shows exactly four whole cards.
+        // On a narrower work area, use only whole columns and wrap within each of the three groups.
+        var desiredContentWidth = cardWidth * 4 + cardGap * 3;
+        var availableColumnWidth = Math.Max(cardWidth + 24, _statisticsMaximumColumnWidth);
+        var columnWidth = Math.Min(desiredContentWidth + 24, availableColumnWidth);
+        var contentWidth = Math.Max(cardWidth, columnWidth - 24);
+        var key = string.Join("\n", _numberLabels.Select(label => label.Text)) +
+            $"\n{numberWidth}:{numberHeight}:{labelWidth}:{labelHeight}:{contentWidth}:{cardHeight}";
+        if (_statisticLayoutKey == key) return;
+        _statisticLayoutKey = key;
+        foreach (var cell in _statisticCells) { cell.Width = cardWidth; cell.Height = cardHeight; }
+        _statistics.Width = contentWidth;
+        _statisticsCard.Width = columnWidth;
+        var columns = Math.Clamp((int)Math.Floor((contentWidth + cardGap) / (cardWidth + cardGap)), 1, 4);
+        int[] groupCounts = [4, 7, 3];
+        int[] starts = [0, 4, 11];
+        for (var groupIndex = 0; groupIndex < _statisticRows.Length; groupIndex++)
+        {
+            var rowCount = (groupCounts[groupIndex] + columns - 1) / columns;
+            _statisticRows[groupIndex].RowDefinitions.Clear();
+            for (var row = 0; row < rowCount; row++)
+                _statisticRows[groupIndex].RowDefinitions.Add(new() { Height = GridLength.Auto });
+            for (var index = 0; index < groupCounts[groupIndex]; index++)
+            {
+                Grid.SetRow(_statisticCells[starts[groupIndex] + index], index / columns);
+                Grid.SetColumn(_statisticCells[starts[groupIndex] + index], index % columns);
+            }
+        }
+        _statisticsColumn.Width = new GridLength(columnWidth);
+        _page.Width = _statisticsPreviewWidth + 16 + columnWidth;
+    }
+
+    private sealed class PackagePreviewSource(WallPackageReader reader, WallPackagePreview preview, CancellationToken parent)
+    {
+        private readonly CancellationTokenSource _lifetime = CancellationTokenSource.CreateLinkedTokenSource(parent);
+        private Task<WallPackageImport>? _import;
+        private int _users;
+        private bool _retired, _disposed;
+        internal SemaphoreSlim ReadGate { get; } = new(1, 1);
+        internal void Enter() => _users++;
+        internal Task<WallPackageImport> OpenAsync()
+        {
+            if (_import is { IsFaulted: true } or { IsCanceled: true }) _import = null;
+            return _import ??= reader.OpenImportAsync(preview, _lifetime.Token);
+        }
+        internal void Release() { _users--; TryDispose(); }
+        internal void Retire() { _retired = true; _lifetime.Cancel(); TryDispose(); }
+        private void TryDispose()
+        {
+            if (!_retired || _users != 0 || _disposed) return;
+            _disposed = true;
+            if (_import?.IsCompletedSuccessfully == true) _import.Result.Dispose();
+            ReadGate.Dispose(); _lifetime.Dispose();
+        }
+    }
     private static void Id(DependencyObject element, string id) => AutomationProperties.SetAutomationId(element, "import-" + id);
+    private sealed record PreviewItem(string Key, DipRect Bounds, StartGroup? Group, WallMember? Member, ImportProjectedCandidate? Candidate);
+    private sealed record PreviewImageDescriptor(string WorkKey, string SourceFact, ImportProjectedCandidate Projected,
+        PreviewItem Item, ImportSourceCandidate SourceCandidate, ImportPageSource Source,
+        int Width, int Height, double DpiScale, bool InferTarget);
+    private sealed class PreviewImageWork(PreviewImageDescriptor descriptor, CancellationTokenSource request)
+    {
+        public PreviewImageDescriptor Descriptor { get; } = descriptor;
+        public CancellationTokenSource Request { get; } = request;
+        public LinkedListNode<PreviewImageWork>? QueueNode { get; set; }
+        public bool IsRunning { get; set; }
+        public string Stage { get; set; } = "queued";
+        public bool DetailTraceEnabled { get; } = Environment.GetEnvironmentVariable("TILEWALL_PERF_DETAIL") == "1";
+        public long QueuedAt { get; set; }
+        public long StartedAt { get; set; }
+        public double PreparationElapsedMs { get; set; }
+        public long FirstIconStartedAt { get; set; }
+        public double? FirstIconElapsedMs { get; set; }
+        public PuzzleFrameResult? FirstIconResult { get; set; }
+        public long SecondContentStartedAt { get; set; }
+        public string? SecondContentInput { get; set; }
+        public double? SecondContentElapsedMs { get; set; }
+        public PuzzleFrameResult? SecondContentResult { get; set; }
+    }
+    private sealed record PreviewImageLoadResult(string FrameKey, WallMember Member, PuzzleFrame? Frame,
+        PuzzleFrameResult? ImageResult, bool ReusedCachedFrame, bool TargetRecognized, string? AutomaticCachePath);
+    private sealed record PreviewImageCompletion(string SourceKey, string? FrameKey, PreviewImageOutcome Outcome,
+        bool FrameRetained, bool PreparedOffscreen);
+    private sealed record PreviewTargetInference(string SourceFact, TargetImageSourceResult? Result);
+    private enum PreviewImageOutcome { Frame, NoImageOrFallback, Failed }
+    private sealed class CandidateRow(ImportProjectedCandidate candidate, WallMember member, PuzzleCanvasView? view, ClockMemberView? clock,
+        ToggleButton toggle, RoutedEventHandler changed, Action reset, Border outline, Border check)
+    {
+        public ImportProjectedCandidate Candidate { get; set; } = candidate;
+        public WallMember Member { get; set; } = member;
+        public PuzzleCanvasView? View { get; } = view;
+        public ClockMemberView? Clock { get; } = clock;
+        public ToggleButton Toggle { get; } = toggle;
+        public RoutedEventHandler Changed { get; } = changed;
+        public Action Reset { get; } = reset;
+        public Border Outline { get; } = outline;
+        public Border Check { get; } = check;
+        public string? ImageKey { get; set; }
+        public string? RequestKey { get; set; }
+        public string IconStamp { get; set; } = "";
+    }
 }

@@ -6,9 +6,11 @@ using TileWall.Core.Application;
 using TileWall.Core.Configuration;
 using TileWall.Core.Shell;
 using TileWall.Core.Storage;
+using TileWall.Core.Imaging;
 using TileWall.Core.Wall;
 using TileWall.Graphics;
 using TileWall.Resources;
+using TileWall.Views;
 using Windows.Foundation;
 
 namespace TileWall;
@@ -19,19 +21,29 @@ public sealed partial class MainWindow
     {
         Width = WallViewportPolicy.MenuWidthDip, HorizontalAlignment = HorizontalAlignment.Left,
         VerticalAlignment = VerticalAlignment.Top, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Visibility = Visibility.Collapsed,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Padding = new Thickness(0, 8, 0, 8),
+        Visibility = Visibility.Collapsed,
     };
     private MenuGroupExpansion _menuExpansion = new();
     private MenuStartStateStore? _menuStateStore;
     private Task? _menuStateWrite;
-    private CancellationTokenSource? _menuIconsCancellation;
-    private readonly HashSet<Task> _menuIconWork = [];
+    private readonly Dictionary<string, List<Image>> _menuIcons = new(StringComparer.Ordinal);
     private bool _menuImagesActive;
+    private sealed class MenuImageRequest(PuzzleFrame frame, int edge)
+    {
+        public PuzzleFrame Frame { get; } = frame;
+        public int Edge { get; } = edge;
+        public ImageSource? Display;
+    }
+    private readonly Dictionary<string, MenuImageRequest> _menuImageRequests = new(StringComparer.Ordinal);
+    private readonly HashSet<Task> _menuImageLoads = [];
+    private CancellationTokenSource _menuImageCancellation = new();
 
     private void InitializeMenuStart()
     {
         AutomationProperties.SetAutomationId(_menuStart, "menu-start-list");
         WallRoot.Children.Insert(1, _menuStart);
+        _puzzles.FrameChanged += UpdateMenuFrame;
         _menuStateStore = new(new LocalFileStore(), _session.DataRoot);
         try { _menuExpansion = _menuStateStore.Read(); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
@@ -41,10 +53,10 @@ public sealed partial class MainWindow
     private void RenderMenuStart(WallDocument document)
     {
         _menuStart.Visibility = document.Settings.MenuStart ? Visibility.Visible : Visibility.Collapsed;
-        _menuIconsCancellation?.Cancel();
-        _menuIconsCancellation?.Dispose();
-        _menuIconsCancellation = new();
-        var token = _menuIconsCancellation.Token;
+        _menuImageCancellation.Cancel(); _menuImageCancellation.Dispose();
+        _menuImageCancellation = new();
+        _menuImageRequests.Clear();
+        _menuIcons.Clear();
         if (_menuExpansion.Retain(document.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id))) SaveMenuExpansion();
         if (!document.Settings.MenuStart || !_menuImagesActive) { _menuStart.Content = null; return; }
         var panel = new StackPanel { Spacing = 0 };
@@ -103,18 +115,21 @@ public sealed partial class MainWindow
                 var action = ProductStrings.Get(expanded ? "MenuStart.Collapse" : "MenuStart.Expand");
                 AutomationProperties.SetName(toggle, action + " " + groupTitle);
                 ToolTipService.SetToolTip(toggle, action);
+                foreach (var member in entries) _menuIcons.Remove(member.Id);
                 entryPanel.Children.Clear();
                 if (!expanded) return;
                 foreach (var member in entries)
                 {
-                    var content = new Grid();
+                    var content = new Grid { Margin = new Thickness(16, 0, 0, 0) };
                     content.ColumnDefinitions.Add(new() { Width = new GridLength(44) });
                     content.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-                    var icon = new Image { Width = 24, Height = 24, Stretch = Stretch.Uniform };
+                    var icon = new Image { Width = 24, Height = 24, Stretch = Stretch.Uniform,
+                        Source = _puzzles.FrameFor(member.Id)?.Sharp };
                     content.Children.Add(icon);
-                    _menuIconWork.RemoveWhere(work => work.IsCompleted);
-                    _menuIconWork.Add(LoadMenuIconAsync(member, icon, token));
-                    var label = new TextBlock { Text = member.Visual.Title ?? MemberPresentationRules.ResolveTitle(member),
+                    if (!_menuIcons.TryGetValue(member.Id, out var icons)) _menuIcons[member.Id] = icons = [];
+                    icons.Add(icon);
+                    UpdateMenuFrame(member.Id, _puzzles.FrameFor(member.Id), 1);
+                    var label = new TextBlock { Text = WallMemberVisualFactory.ResolveTitle(member),
                         VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
                         Margin = new Thickness(0, 0, 12, 0) };
                     Grid.SetColumn(label, 1); content.Children.Add(label);
@@ -126,7 +141,7 @@ public sealed partial class MainWindow
                     row.Click += (_, _) => LaunchMember(id);
                     AutomationProperties.SetAutomationId(row, "menu-member-" + id);
                     AutomationProperties.SetName(row, label.Text);
-                    ToolTipService.SetToolTip(row, label.Text);
+                    WallMemberVisualFactory.SetTargetTooltip(row, member);
                     entryPanel.Children.Add(row);
                 }
             }
@@ -137,16 +152,37 @@ public sealed partial class MainWindow
         PositionMenuStart(_scrollRegion);
     }
 
-    private async Task LoadMenuIconAsync(WallMember member, Image icon, CancellationToken token)
+    private void UpdateMenuFrame(string memberId, PuzzleFrame? frame, double progress)
+    {
+        if (_windowClosing || ShutdownStarted || !_menuIcons.TryGetValue(memberId, out var icons)) return;
+        if (frame is null) { foreach (var icon in icons) icon.Source = null; _menuImageRequests.Remove(memberId); return; }
+        var edge = Math.Max(1, checked((int)Math.Ceiling(24 * Scale)));
+        if (_menuImageRequests.TryGetValue(memberId, out var existing) && ReferenceEquals(existing.Frame, frame) && existing.Edge == edge)
+        {
+            if (existing.Display is { } display) foreach (var icon in icons) icon.Source = display;
+            return;
+        }
+        var request = new MenuImageRequest(frame, edge);
+        _menuImageRequests[memberId] = request;
+        var work = PrepareMenuImageAsync(memberId, request, _menuImageCancellation.Token);
+        _menuImageLoads.Add(work);
+        _ = work.ContinueWith(_ => DispatcherQueue.TryEnqueue(() => _menuImageLoads.Remove(work)),
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private async Task PrepareMenuImageAsync(string memberId, MenuImageRequest request, CancellationToken token)
     {
         try
         {
-            var frame = await _images.LoadMemberFrameAsync(member, _session.ManagedEntryPath(member) ?? member.TargetInput,
-                24, 24, ct: token, purpose: MemberImagePurpose.Thumbnail);
-            if (!token.IsCancellationRequested && !_windowClosing && !ShutdownStarted) icon.Source = frame.Frame?.Sharp;
+            var result = await _images.PrepareDisplayFrameAsync(request.Frame, request.Edge, request.Edge,
+                new() { Mode = ImageDisplayMode.Fit }, token);
+            if (token.IsCancellationRequested || _windowClosing || ShutdownStarted ||
+                !_menuImageRequests.TryGetValue(memberId, out var current) || !ReferenceEquals(current, request)) return;
+            request.Display = result.Sharp;
+            if (_menuIcons.TryGetValue(memberId, out var icons)) foreach (var icon in icons) icon.Source = result.Sharp;
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { if (!token.IsCancellationRequested) AppLog.Warn("MenuStart", ex.GetType().Name); }
+        catch (Exception ex) { AppLog.Warn("MenuImages", ex.Message); }
     }
 
     private void SaveMenuExpansion()
@@ -164,13 +200,15 @@ public sealed partial class MainWindow
 
     private async Task ShutdownMenuStartAsync()
     {
-        _menuIconsCancellation?.Cancel();
+        _puzzles.FrameChanged -= UpdateMenuFrame;
+        _menuImageCancellation.Cancel();
+        if (_menuImageLoads.Count != 0) await Task.WhenAll(_menuImageLoads.ToArray());
+        _menuImageLoads.Clear(); _menuImageRequests.Clear();
+        _menuImageCancellation.Dispose();
         if (_menuStateWrite is { } write)
             try { await write; }
             catch (Exception ex) { AppLog.Warn("MenuStart", $"UI preference write did not finish: {ex.GetType().Name}"); }
-        await Task.WhenAll(_menuIconWork);
-        _menuIconWork.Clear(); _menuStart.Content = null;
-        _menuIconsCancellation?.Dispose(); _menuIconsCancellation = null;
+        _menuIcons.Clear(); _menuStart.Content = null;
     }
 
     private void SetMenuImagesActive(bool active)
@@ -185,7 +223,8 @@ public sealed partial class MainWindow
         if (!_hasDocument || !PresentedViewportSettings.MenuStart) return;
         var right = _sidebarAnchor is AnchorCorner.TopRight or AnchorCorner.BottomRight;
         var width = Math.Max(1, (AppWindow.Size.Width - _frameWidth) / Scale);
-        _menuStart.Height = Math.Max(1, (AppWindow.Size.Height - _frameHeight) / Scale);
+        var clientHeight = Math.Max(1, (AppWindow.Size.Height - _frameHeight) / Scale);
+        _menuStart.Height = clientHeight;
         _menuStart.Margin = new Thickness(right ? Math.Max(0, width - WallViewportPolicy.FixedWidth(true))
             : WallViewportPolicy.SidebarWidthDip, 0, 0, 0);
     }

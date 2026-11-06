@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace TileWall.Core.Entries;
@@ -29,8 +30,43 @@ public sealed class ShellLinkFileService : ILnkFileService
         Save(link, path);
     }
 
-    public LinkFields Read(string path)
+    public void CreateShell(string path, string parsingName)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(parsingName);
+        Marshal.ThrowExceptionForHR(SHParseDisplayName(parsingName, IntPtr.Zero, out var pidl, 0, out _));
+        if (pidl == IntPtr.Zero) throw new InvalidDataException("The native Shell target is unavailable.");
+        try
+        {
+            var link = (IShellLinkW)(object)new ShellLink();
+            link.SetIDList(pidl);
+            Save(link, path);
+        }
+        finally { Marshal.FreeCoTaskMem(pidl); }
+    }
+
+    public void CreateShell(string path, NativeShellTargetSnapshot target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        target.ConfirmCurrent();
+        var bytes = target.CopyIdList();
+        if (Convert.ToHexString(SHA256.HashData(bytes)) != target.IdListSha256)
+            throw new InvalidDataException("The native Shell snapshot is corrupt.");
+        var pidl = Marshal.AllocCoTaskMem(bytes.Length);
+        try
+        {
+            Marshal.Copy(bytes, 0, pidl, bytes.Length);
+            var link = (IShellLinkW)(object)new ShellLink();
+            link.SetIDList(pidl);
+            Save(link, path);
+        }
+        finally { Marshal.FreeCoTaskMem(pidl); }
+    }
+
+    public LinkFields Read(string path) => ReadWithIdList(path, out _);
+
+    public LinkFields ReadWithIdList(string path, out ReadOnlyMemory<byte> idList)
+    {
+        idList = default;
         // Keep COM and persisted path fields on the same read-only file snapshot.
         using var source = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         var link = Load(path);
@@ -52,15 +88,19 @@ public sealed class ShellLinkFileService : ILnkFileService
         // 普通路径链接同样可能带 IDList（Shell 依路径自动解析），不能单独作为判据。
         var hasIdList = targetText.Length == 0 && pidl != IntPtr.Zero;
         string? shellName = null;
+        string? idListHash = null;
         if (pidl != IntPtr.Zero)
         {
             try
             {
-                // SIGDN_DESKTOPABSOLUTEPARSING; reading identity never resolves or executes the link.
-                if (hasIdList && SHGetNameFromIDList(pidl, 0x80028000, out var name) >= 0 && name != IntPtr.Zero)
+                // Read the link object's persisted parsing property. Do not bind
+                // arbitrary package PIDLs to namespace handlers to request a name.
+                if (hasIdList)
                 {
-                    try { shellName = Marshal.PtrToStringUni(name); }
-                    finally { Marshal.FreeCoTaskMem(name); }
+                    var bytes = CopyIdList(pidl);
+                    idList = bytes;
+                    idListHash = Convert.ToHexString(SHA256.HashData(bytes));
+                    shellName = ReadStringProperty(link, in LinkTargetParsingPath);
                 }
             }
             finally
@@ -76,7 +116,25 @@ public sealed class ShellLinkFileService : ILnkFileService
             iconText.Length > 0 ? iconText : null,
             iconIndex,
             showCmd,
-            hasIdList) { ShellParsingName = shellName };
+            hasIdList) { ShellParsingName = shellName, ShellIdListHash = idListHash };
+    }
+
+    /// <summary>Fingerprint a valid PIDL returned by Shell, without resolving a namespace name.</summary>
+    internal static string IdListHash(IntPtr pidl)
+        => Convert.ToHexString(SHA256.HashData(CopyIdList(pidl)));
+
+    internal static byte[] CopyIdList(IntPtr pidl)
+    {
+        // GetIDList/SHGetIDListFromObject supply valid, Shell-owned PIDLs. ILGetSize
+        // is not a validator for arbitrary pointers. The LNK IDListSize field is UInt16;
+        // reject anything that cannot be persisted before allocating our bounded copy.
+        if (pidl == IntPtr.Zero) throw new InvalidDataException("The Shell IDList is unavailable.");
+        var size = ILGetSize(pidl);
+        if (size is < 2 or > ushort.MaxValue)
+            throw new InvalidDataException("The Shell IDList exceeds the shortcut budget.");
+        var bytes = new byte[size];
+        Marshal.Copy(pidl, bytes, 0, checked((int)size));
+        return bytes;
     }
 
     public void EditTargetOnly(string path, string newTarget)
@@ -130,14 +188,11 @@ public sealed class ShellLinkFileService : ILnkFileService
         link.GetIDList(out var pidl);
         try
         {
-            if (pidl != IntPtr.Zero && SHGetNameFromIDList(pidl, 0x80058000, out var name) >= 0 && name != IntPtr.Zero)
-            {
-                try
-                {
-                    if (string.Equals(Marshal.PtrToStringUni(name), observed, StringComparison.Ordinal)) return observed;
-                }
-                finally { Marshal.FreeCoTaskMem(name); }
-            }
+            // Convert the stored filesystem ID list to its path; do not resolve
+            // the target, expand aliases, or request a namespace display name.
+            var path = new StringBuilder(32768);
+            if (pidl != IntPtr.Zero && SHGetPathFromIDListEx(pidl, path, (uint)path.Capacity, 0) &&
+                string.Equals(path.ToString(), observed, StringComparison.Ordinal)) return observed;
         }
         finally { if (pidl != IntPtr.Zero) Marshal.FreeCoTaskMem(pidl); }
         throw new InvalidDataException("The shortcut target cannot be read with confirmed completeness.");
@@ -246,6 +301,13 @@ public sealed class ShellLinkFileService : ILnkFileService
     [DllImport("ole32.dll")]
     private static extern int PropVariantClear(ref PropVariant value);
 
-    [DllImport("shell32.dll")]
-    private static extern int SHGetNameFromIDList(IntPtr pidl, uint nameKind, out IntPtr name);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SHGetPathFromIDListEx(IntPtr pidl, StringBuilder path, uint characterCount, int flags);
+
+    [DllImport("shell32.dll", ExactSpelling = true)]
+    private static extern uint ILGetSize(IntPtr pidl);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHParseDisplayName(string name, IntPtr bindContext, out IntPtr pidl, uint attributes, out uint returnedAttributes);
 }

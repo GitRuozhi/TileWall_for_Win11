@@ -74,7 +74,6 @@
             </Style>
             <Style TargetType="RepeatButton">
                 <Setter Property="CornerRadius" Value="0" />
-                <Setter Property="MinHeight" Value="30" />
                 <Setter Property="UseSystemFocusVisuals" Value="True" />
             </Style>
             <Style TargetType="TextBox">

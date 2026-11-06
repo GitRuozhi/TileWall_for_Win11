@@ -5,6 +5,59 @@ namespace TileWall.Core.Wall;
 /// <summary>Model rules shared by persistence validation, editors and rendering.</summary>
 public static class MemberPresentationRules
 {
+    /// <summary>Retain a view across placement, bookkeeping and equivalent frozen icon series.</summary>
+    internal static bool CanReuseVisualScene(WallMember original, WallMember replacement,
+        bool retainsPreparedAutomaticFrame = false)
+    {
+        if (ReferenceEquals(original, replacement)) return true;
+        if (original.GetType() != replacement.GetType() || original.LocalBounds.Size != replacement.LocalBounds.Size)
+            return false;
+        // The caller must prove that the coordinator retained the exact displayed
+        // frame while accepting its prepared series; model similarity alone is insufficient.
+        if (!AutomaticIconSeriesRules.SameSeries(original.Images.IconSeries, replacement.Images.IconSeries) &&
+            !(retainsPreparedAutomaticFrame && original.ResourceOrigin == MemberResourceOrigin.Local &&
+              replacement.ResourceOrigin == MemberResourceOrigin.Local &&
+              original.Images.Kind == MemberImageSourceKind.Automatic &&
+              replacement.Images.Kind == MemberImageSourceKind.Automatic &&
+              original.Images.IconSeries is null && replacement.Images.IconSeries is not null))
+            return false;
+        if (original is PuzzleMember a && replacement is PuzzleMember b)
+        {
+            if (!a.Partitions.SequenceEqual(b.Partitions)) return false;
+            original = a with { Partitions = b.Partitions };
+        }
+        return (original with
+        {
+            LocalBounds = replacement.LocalBounds, UserClaimed = replacement.UserClaimed,
+            ImportSource = replacement.ImportSource, Carousel = replacement.Carousel,
+            // Unknown optional fields round-trip through storage but are not rendered.
+            ExtensionData = replacement.ExtensionData,
+            Visual = original.Visual with { ExtensionData = replacement.Visual.ExtensionData },
+            ImageDisplay = original.ImageDisplay with { ExtensionData = replacement.ImageDisplay.ExtensionData },
+            Images = original.Images with
+            {
+                IconSeries = replacement.Images.IconSeries,
+                ExtensionData = replacement.Images.ExtensionData,
+            },
+        }) == replacement;
+    }
+
+    /// <summary>Apply a newly selected source; the caller decides whether its visual defaults still apply.</summary>
+    public static WallMember ApplyImageSource(WallMember member, MemberImageSource source, bool applyDefaults = true)
+    {
+        ArgumentNullException.ThrowIfNull(member);
+        ArgumentNullException.ThrowIfNull(source);
+        return member with
+        {
+            Images = source, Carousel = null,
+            Visual = !applyDefaults ? member.Visual : member.Visual with
+            {
+                BackgroundMode = source.Kind == MemberImageSourceKind.Automatic ? MemberBackgroundMode.Default : MemberBackgroundMode.Blur,
+                BackgroundTransparency = source.Kind == MemberImageSourceKind.Automatic ? 50 : member.Visual.BackgroundTransparency,
+            },
+        };
+    }
+
     public static string? Validate(WallMember member)
     {
         ArgumentNullException.ThrowIfNull(member);
@@ -14,10 +67,14 @@ public static class MemberPresentationRules
         if (visual.BackgroundMode == MemberBackgroundMode.Color && !IsColor(visual.BackgroundColor))
             return "VISUAL_COLOR";
         if (member.Images is not { } images || !Enum.IsDefined(images.Kind)) return "IMAGE_SOURCE";
-        if ((images.Kind == MemberImageSourceKind.Folder ||
+        if ((images.Kind == MemberImageSourceKind.Folder && images.ManagedGallery is null ||
             images.Kind == MemberImageSourceKind.Single && images.Media is null) && string.IsNullOrWhiteSpace(images.Path))
             return "IMAGE_SOURCE_PATH";
         if (images.Media is not null && images.Kind != MemberImageSourceKind.Single) return "IMAGE_SOURCE_MEDIA";
+        if (!Enum.IsDefined(member.ResourceOrigin)) return "RESOURCE_ORIGIN";
+        if (images.Kind == MemberImageSourceKind.None && (images.Path is not null || images.Media is not null || images.ManagedGallery is not null || member.Carousel is not null))
+            return "EMPTY_IMAGE_SOURCE";
+        if (member.SourceShortcutPath is { Length: > 32768 } || member.TargetDisplayName is { Length: > 32768 }) return "ENTRY_PRESENTATION";
         if (member.ImageDisplay is not { } display || !Enum.IsDefined(display.Mode) ||
             !double.IsFinite(display.CustomScale) || display.CustomScale <= 0 ||
             display.Mode == ImageDisplayMode.Custom && (display.CustomScale < MemberImageGeometry.MinimumCustomScale || display.CustomScale > MemberImageGeometry.MaximumCustomScale)) return "IMAGE_DISPLAY";
@@ -52,7 +109,8 @@ public static class MemberPresentationRules
         ArgumentNullException.ThrowIfNull(replacement);
         if (original.GetType() != replacement.GetType() || original.LocalBounds != replacement.LocalBounds ||
             original.Visual != replacement.Visual || original.Entry != replacement.Entry ||
-            original.TargetInput != replacement.TargetInput || original.Images != replacement.Images ||
+            original.TargetInput != replacement.TargetInput || original.SourceShortcutPath != replacement.SourceShortcutPath ||
+            original.TargetDisplayName != replacement.TargetDisplayName || original.ResourceOrigin != replacement.ResourceOrigin || HasImageSourceChanges(original.Images, replacement.Images) ||
             original.ImageDisplay != replacement.ImageDisplay || original.RotationInterval != replacement.RotationInterval)
             return true;
         return (original, replacement) switch
@@ -63,9 +121,21 @@ public static class MemberPresentationRules
         };
     }
 
+    private static bool HasImageSourceChanges(MemberImageSource? original, MemberImageSource? replacement)
+    {
+        if (original is null || replacement is null) return original != replacement;
+        if ((original with { IconSeries = null }) != (replacement with { IconSeries = null })) return true;
+        // Binding a legacy automatic source is acquisition bookkeeping. Once bound,
+        // changing the confirmed image is a source edit; selecting its resolution is not.
+        if (original.Kind != MemberImageSourceKind.Automatic || original.IconSeries is null) return false;
+        return replacement.IconSeries is not { } next || original.IconSeries.Identity != next.Identity ||
+            original.IconSeries.Frames is null || next.Frames is null ||
+            !original.IconSeries.Frames.SequenceEqual(next.Frames);
+    }
+
     public static string ResolveTitle(WallMember member, bool targetIsFolder = false) =>
         member.Visual.TitleMode == MemberTitleMode.Manual ? member.Visual.Title ?? string.Empty :
-            AutomaticTitle(member.TargetInput, targetIsFolder);
+            member.TargetDisplayName ?? AutomaticTitle(member.SourceShortcutPath ?? member.TargetInput, targetIsFolder);
 
     /// <summary>Uses the selected shortcut's own name, never its resolved executable's name.</summary>
     public static string AutomaticTitle(string? targetInput, bool targetIsFolder = false)

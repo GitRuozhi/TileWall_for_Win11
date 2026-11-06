@@ -4,7 +4,7 @@ using TileWall.Core.Configuration;
 
 namespace TileWall.Core.Storage;
 
-/// <summary>A small, replaceable UI preference; expanding a menu never commits or undoes wall content.</summary>
+/// <summary>A small, replaceable UI preference; expanding a menu never commits wall content.</summary>
 public sealed class MenuStartStateStore
 {
     private readonly IFileStore _files;

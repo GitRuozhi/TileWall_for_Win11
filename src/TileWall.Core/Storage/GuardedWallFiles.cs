@@ -26,6 +26,12 @@ internal sealed class GuardedWallFiles(IFileStore inner, WallStoragePaths paths)
         return _inner.ReadAllBytes(path);
     }
 
+    public Stream OpenReadProtected(string path)
+    {
+        _paths.Guard(path);
+        return _inner.OpenReadProtected(path);
+    }
+
     public void WriteAllBytes(string path, byte[] bytes)
     {
         _paths.Guard(path);
@@ -44,6 +50,15 @@ internal sealed class GuardedWallFiles(IFileStore inner, WallStoragePaths paths)
         _paths.Guard(src, allowExternalRead: true);
         _paths.Guard(dst);
         _inner.Copy(src, dst, overwrite);
+    }
+
+    public void MoveDirectory(string source, string destination)
+    {
+        _paths.GuardTree(source);
+        _paths.Guard(destination);
+        if (_inner.GetPathInfo(destination).Exists) throw new IOException("Immutable directory already exists.");
+        _inner.MoveDirectory(source, destination);
+        _paths.GuardTree(destination);
     }
 
     public void Delete(string path)

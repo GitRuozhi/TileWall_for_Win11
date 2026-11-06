@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using TileWall.Core.Grid;
 
 namespace TileWall.Core.Imaging;
@@ -7,6 +9,9 @@ public enum ImageDisplayMode { Fit, Fill, Original, Custom }
 /// <summary>CustomScale is a multiplier of each image's fill scale. There is no translation.</summary>
 public sealed record MemberImageDisplay
 {
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? ExtensionData { get; init; }
+
     public ImageDisplayMode Mode { get; init; } = ImageDisplayMode.Fill;
     public double CustomScale { get; init; } = 1;
 }

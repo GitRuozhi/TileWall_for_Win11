@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
@@ -15,13 +16,29 @@ namespace TileWall.Views;
 /// <summary>Shared projection and presentation. The caller owns all activation and drag behavior.</summary>
 internal static class WallMemberVisualFactory
 {
+    internal const double TitleBandHeight = 23;
+
     private static ControlTemplate? _memberButtonTemplate;
     private static ControlTemplate? _memberToggleTemplate;
     private static readonly Windows.UI.ViewManagement.UISettings MotionSettings = new();
 
+    internal static string ResolveTitle(WallMember member, bool? targetIsFolder = null) =>
+        MemberPresentationRules.ResolveTitle(member, targetIsFolder ??
+            (member.Visual.TitleMode == MemberTitleMode.Automatic && member.ResourceOrigin == MemberResourceOrigin.Local &&
+                Directory.Exists(member.SourceShortcutPath ?? member.TargetInput)));
+
+    /// <summary>Every member surface shows its model target, without resolving it or falling back to its title.</summary>
+    internal static void SetTargetTooltip(ButtonBase button, WallMember member, string? diagnostic = null)
+    {
+        var text = string.Join("\n", new[] { member.TargetInput, diagnostic }
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
+        ActionIcon.SetTip(button, text);
+        AutomationProperties.SetHelpText(button, text);
+    }
+
     /// <summary>Shared pointer/focus states for wall, import and gallery buttons; hit targets never move.</summary>
     internal static Action ConfigureInteraction(ButtonBase button, Grid content, CornerRadius corners,
-        Action<bool>? hoverChanged = null, bool drawHoverEdge = true)
+        Action<bool>? hoverChanged = null, bool drawHoverEdge = true, bool deferHoverExit = false)
     {
         // Stock button templates add theme-dependent fills over image content.
         // Keep its activation/accessibility behavior while drawing our shared states once.
@@ -57,6 +74,7 @@ internal static class WallMemberVisualFactory
         var pointerPressed = false;
         var keyPressed = false;
         var displayedHover = false;
+        var hoverRevision = 0;
         var cueAnimations = new Dictionary<Border, Storyboard>();
         var cueTargets = new Dictionary<Border, double>();
 
@@ -105,11 +123,25 @@ internal static class WallMemberVisualFactory
         }
         void Reset()
         {
+            ++hoverRevision;
             hovering = keyboardFocus = pointerPressed = keyPressed = false;
             Update(immediate: true);
         }
-        button.PointerEntered += (_, _) => { hovering = true; Update(); };
-        button.PointerExited += (_, _) => { hovering = pointerPressed = false; Update(); };
+        button.PointerEntered += (_, _) => { ++hoverRevision; hovering = true; Update(); };
+        button.PointerExited += (_, _) =>
+        {
+            pointerPressed = false;
+            if (!deferHoverExit) { hovering = false; Update(); return; }
+            Update();
+            // Popup/child transitions can exit and re-enter the same tile in one
+            // input turn. Preserve that hover instead of restarting its title.
+            var revision = ++hoverRevision;
+            if (!button.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (revision != hoverRevision) return;
+                hovering = false; Update();
+            })) { hovering = false; Update(); }
+        };
         button.GotFocus += (_, _) => { keyboardFocus = button.FocusState == FocusState.Keyboard; Update(); };
         button.LostFocus += (_, _) => { keyboardFocus = keyPressed = false; Update(); };
         button.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, e) =>
@@ -160,7 +192,9 @@ internal static class WallMemberVisualFactory
     internal static PuzzleMember Project(WallMember member) => member as PuzzleMember ?? new PuzzleMember
     {
         Id = member.Id, LocalBounds = member.LocalBounds, Visual = member.Visual, Entry = member.Entry,
-        TargetInput = member.TargetInput, Images = member.Images, ImageDisplay = member.ImageDisplay,
+        TargetInput = member.TargetInput, SourceShortcutPath = member.SourceShortcutPath,
+        TargetDisplayName = member.TargetDisplayName, ResourceOrigin = member.ResourceOrigin,
+        Images = member.Images, ImageDisplay = member.ImageDisplay,
         RotationInterval = member.RotationInterval, Carousel = member.Carousel,
         ImportSource = member.ImportSource, UserClaimed = member.UserClaimed,
         Partitions = [new GridRect(0, 0, member.LocalBounds.Width, member.LocalBounds.Height)],
@@ -168,11 +202,11 @@ internal static class WallMemberVisualFactory
 
     internal static PuzzleCanvasView Create(WallMember member, PuzzleFrame? frame, WallMetrics metrics,
         double scale, WallVisualStyle style, Action<Button, int>? partitionCreated = null, bool interactive = true,
-        bool externalInteraction = false)
+        bool externalInteraction = false, bool? targetIsFolder = null)
     {
         var view = new PuzzleCanvasView { Interactive = interactive, ExternalInteraction = externalInteraction };
         if (partitionCreated is not null) view.PartitionCreated += partitionCreated;
-        view.SetScene(Project(member), frame, metrics, scale, style);
+        view.SetScene(Project(member), frame, metrics, scale, style, targetIsFolder);
         return view;
     }
 
@@ -195,6 +229,19 @@ internal static class WallMemberVisualFactory
 
 internal static class WallGroupVisualFactory
 {
+    internal static Grid TitleContent(string? title, double width)
+    {
+        var content = new Grid { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        content.Children.Add(Label(title, width));
+        return content;
+    }
+
+    internal static DipRect TitleControlBounds(DipRect row, double interactionHeight)
+    {
+        var height = Math.Min(interactionHeight, row.Height);
+        return new(row.X, row.Y + row.Height - height, row.Width, height);
+    }
+
     internal static TextBlock Label(string? title, double width) => new()
     {
         Text = title ?? string.Empty, Width = Math.Max(0, width - 5), FontSize = 14,

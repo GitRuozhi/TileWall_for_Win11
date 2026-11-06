@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "value": {
+    "anchorCorner": 0,
+    "fullScreen": false,
+    "expandColumns": false,
+    "menuStart": true,
+    "windowedColumns": null,
+    "windowedRows": null,
+    "windowedViewportWidthDip": null,
+    "manualWindowedViewportWidthDip": null,
+    "visualStyle": 0,
+    "themeMode": 0,
+    "backgroundMode": 0,
+    "backgroundTransparency": 5,
+    "backgroundImagePath": null,
+    "backgroundMedia": null,
+    "alwaysOnTop": true,
+    "stayVisibleOnFocusLoss": false,
+    "showGrid": false,
+    "languageMode": 0,
+    "hotKey": "Win\u002BOem3",
+    "replaceStartMenu": false,
+    "runAtLogin": false
+  }
+}

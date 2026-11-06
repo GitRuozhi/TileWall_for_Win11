@@ -1,6 +1,7 @@
 using TileWall.Core.Configuration;
 using System.Threading.Channels;
 using System.Text;
+using System.Security.Cryptography;
 using TileWall.Core.Application;
 using TileWall.Core.Grid;
 using TileWall.Core.Storage;
@@ -12,6 +13,247 @@ namespace TileWall.Core.Tests.Application;
 
 public sealed class WallSessionAsyncTests
 {
+    [Fact]
+    public async Task StartupRetryIsSingleFlightAndRepeatedInterruptionPreservesData()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-retry-" + Guid.NewGuid().ToString("N")));
+        files.WriteAllBytes(Path.Combine(root, "state.init.tmp"), Encoding.UTF8.GetBytes("interrupted"));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        Assert.Equal(WallOpenBlockReason.InitializationInterrupted, session.Open(1, 6).BlockReason);
+        var executor = new Executor();
+        var acceptance = new AcceptanceQueue();
+        session.ConfigureAsyncExecution(executor, acceptance.AcceptAsync);
+        var before = files.SnapshotFiles();
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var operation = session.RetryInitialOpenAsync(1, 6);
+            Assert.True(session.WritePending);
+            Assert.Throws<InvalidOperationException>(() => { _ = session.RetryInitialOpenAsync(1, 6); });
+            Assert.Throws<InvalidOperationException>(() => session.Open(1, 6));
+            Assert.Equal(1, executor.Count);
+            await executor.RunNextAsync();
+            (await acceptance.TakeAsync())();
+            var result = await operation;
+            Assert.Equal(WallOpenBlockReason.InitializationInterrupted, result.BlockReason);
+            Assert.Null(result.Document);
+            Assert.True(session.RecoveryBlocked);
+            Assert.False(session.WritePending);
+            Assert.False(session.RefreshViewFromCurrent());
+        }
+        Assert.Equal(before.Keys.Order(), files.SnapshotFiles().Keys.Order());
+        foreach (var (path, bytes) in before) Assert.Equal(bytes, files.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public async Task StartupRetryAcceptsOnUiThenAllowsSaveAndReopen()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-success-" + Guid.NewGuid().ToString("N")));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        files.ReparsePaths.Add(root);
+        Assert.Equal(WallOpenBlockReason.UnsafePath, session.Open(1, 6).BlockReason);
+        files.ReparsePaths.Clear();
+        var executor = new Executor();
+        var acceptance = new AcceptanceQueue();
+        session.ConfigureAsyncExecution(executor, acceptance.AcceptAsync);
+
+        var operation = session.RetryInitialOpenAsync(1, 6);
+        await executor.RunNextAsync();
+        var accept = await acceptance.TakeAsync();
+        Assert.Throws<InvalidOperationException>(() => session.Current);
+        Assert.True(session.RecoveryBlocked);
+        accept();
+        var opened = await operation;
+
+        Assert.True(opened.InitializedFresh);
+        Assert.False(session.RecoveryBlocked);
+        Assert.False(session.WritePending);
+        Assert.True(session.RefreshViewFromCurrent());
+        Assert.True(session.Commit(Add(session)).Committed);
+        var restarted = new WallSession(root, files, new FakeLinkFileService(files));
+        Assert.Equal(WallOpenStatus.Loaded, restarted.Open(1, 6).Status);
+        Assert.Equal(1, restarted.Current.Generation);
+        Assert.Single(restarted.Current.EnumerateAllMembers());
+        Assert.Throws<InvalidOperationException>(() => { _ = session.RetryInitialOpenAsync(1, 6); });
+    }
+
+    [Fact]
+    public async Task UncertainStartupRetryRequiresFullReopen()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-unknown-" + Guid.NewGuid().ToString("N")));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        session.ConfigureAsyncExecution(new UncertainExecutor(), _ => Task.CompletedTask);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.RetryInitialOpenAsync(1, 6));
+
+        Assert.True(session.ResultUnknown);
+        Assert.False(session.WritePending);
+        Assert.False(session.RefreshViewFromCurrent());
+        Assert.Throws<InvalidOperationException>(() => { _ = session.RetryInitialOpenAsync(1, 6); });
+        Assert.Empty(files.FilePaths);
+    }
+
+    [Fact]
+    public async Task StartupDispatcherWithoutAcceptanceCannotPublishLateResult()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-late-" + Guid.NewGuid().ToString("N")));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        var executor = new Executor();
+        Action? lateAcceptance = null;
+        session.ConfigureAsyncExecution(executor, accept => { lateAcceptance = accept; return Task.CompletedTask; });
+
+        var operation = session.RetryInitialOpenAsync(1, 6);
+        await executor.RunNextAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await operation);
+
+        Assert.True(session.RequiresReopen);
+        Assert.False(session.WritePending);
+        Assert.Throws<InvalidOperationException>(() => session.Current);
+        lateAcceptance!();
+        Assert.Throws<InvalidOperationException>(() => session.Current);
+        Assert.False(session.RefreshViewFromCurrent());
+        Assert.Throws<InvalidOperationException>(() => { _ = session.RetryInitialOpenAsync(1, 6); });
+        Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
+        Assert.False(session.RequiresReopen);
+    }
+
+    [Fact]
+    public async Task StartupDispatcherDuplicateCallbackAndPostAcceptanceFailureKeepAcceptedSnapshot()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-accepted-" + Guid.NewGuid().ToString("N")));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        var executor = new Executor();
+        Action? savedAcceptance = null;
+        session.ConfigureAsyncExecution(executor, accept =>
+        {
+            savedAcceptance = accept;
+            accept();
+            accept();
+            return Task.FromException(new InvalidOperationException("dispatcher failed after acceptance"));
+        });
+
+        var operation = session.RetryInitialOpenAsync(1, 6);
+        await executor.RunNextAsync();
+        var result = await operation;
+
+        Assert.True(result.InitializedFresh);
+        Assert.False(session.RequiresReopen);
+        Assert.False(session.ResultUnknown);
+        Assert.False(session.WritePending);
+        Assert.True(session.Commit(Add(session)).Committed);
+        var current = session.Current;
+        savedAcceptance!();
+        Assert.Same(current, session.Current);
+        Assert.Equal(1, session.Current.Generation);
+    }
+
+    [Fact]
+    public async Task StartupRetryOnDiskPreservesInterruptionThenSavesAndRestarts()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-disk-" + Guid.NewGuid().ToString("N")));
+        var files = new LocalFileStore();
+        files.CreateDirectory(root);
+        var marker = Path.Combine(root, "state.init.tmp");
+        var interrupted = Encoding.UTF8.GetBytes("disk interruption fixture");
+        files.WriteAllBytes(marker, interrupted);
+        try
+        {
+            var session = new WallSession(root, files, new FakeLinkFileService(files));
+            Assert.Equal(WallOpenBlockReason.InitializationInterrupted, session.Open(1, 6).BlockReason);
+            var executor = new Executor();
+            var acceptance = new AcceptanceQueue();
+            session.ConfigureAsyncExecution(executor, acceptance.AcceptAsync);
+            var refused = session.RetryInitialOpenAsync(1, 6);
+            await executor.RunNextAsync();
+            (await acceptance.TakeAsync())();
+            Assert.Equal(WallOpenBlockReason.InitializationInterrupted, (await refused).BlockReason);
+            Assert.Equal(interrupted, files.ReadAllBytes(marker));
+            Assert.False(files.Exists(Path.Combine(root, "state.json")));
+
+            // This fixture explicitly removes its own marker to model a corrected
+            // directory. The product retry never removes unproven init material.
+            files.Delete(marker);
+            var retried = session.RetryInitialOpenAsync(1, 6);
+            await executor.RunNextAsync();
+            (await acceptance.TakeAsync())();
+            Assert.True((await retried).InitializedFresh);
+            Assert.True(session.Commit(Add(session), [new EntryChange.CreateUrl("tile1", "https://disk.example/")]).Committed);
+
+            var restarted = new WallSession(root, files, new FakeLinkFileService(files));
+            Assert.Equal(WallOpenStatus.Loaded, restarted.Open(1, 6).Status);
+            Assert.Equal(1, restarted.Current.Generation);
+            var member = Assert.Single(restarted.Current.EnumerateAllMembers());
+            Assert.Contains("https://disk.example/", Encoding.UTF8.GetString(files.ReadAllBytes(restarted.ManagedEntryPath(member)!)));
+        }
+        finally { files.DeleteDirectory(root); }
+    }
+
+    [Fact]
+    public async Task AsyncEntryPreconditionsFreezeBeforeQueueAndRejectWithoutLatchingRecovery()
+    {
+        var (session, files, _, executor, _) = Harness();
+        Assert.True(session.Commit(Add(session), [new EntryChange.CreateUrl("tile1", "https://original.example/")]).Committed);
+        var member = session.Current.EnumerateAllMembers().Single();
+        var path = session.ManagedEntryPath(member)!;
+        var expected = new Dictionary<string, string>
+        { [member.Id] = Convert.ToHexString(SHA256.HashData(files.ReadAllBytes(path))) };
+        var proposal = session.Propose(new ReplaceMemberAction(session.Current.Generation, member.Id,
+            member with { Visual = member.Visual with { ShowTitle = false } }), 500, 500).Proposal!;
+        var operation = session.CommitAsync(proposal, [new EntryChange.CreateUrl(member.Id, "https://imported.example/")],
+            expectedEntrySha256: expected);
+        var external = TileWall.Core.Entries.UrlShortcut.CreateContent("https://external.example/");
+        files.WriteAllBytes(path, external);
+        expected[member.Id] = Convert.ToHexString(SHA256.HashData(external));
+        await executor.RunNextAsync();
+
+        var result = await operation;
+
+        Assert.False(result.Committed);
+        Assert.Contains(WallStore.ImportDestinationChanged, result.Diagnostics);
+        Assert.Equal(1, session.Current.Generation);
+        Assert.False(session.ResultUnknown);
+        Assert.False(session.RecoveryBlocked);
+        Assert.False(session.ViewBlocked);
+        Assert.False(session.WritePending);
+        Assert.Equal(external, files.ReadAllBytes(path));
+    }
+
+    private sealed class UncertainExecutor : IWallStorageExecutor
+    {
+        public Task<T> ExecuteAsync<T>(Func<T> work) => Task.FromException<T>(new InvalidOperationException("uncertain store result"));
+        public Task ShutdownAsync() => Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task UnknownAsyncResultRejectsRefreshAndFailedOpenUntilSuccessfulReopen()
+    {
+        var (session, files, root, _, _) = Harness();
+        session.ConfigureAsyncExecution(new UncertainExecutor(), _ => Task.CompletedTask);
+        var refreshes = 0; session.SetViewRefresh(_ => refreshes++);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.CommitAsync(Add(session)));
+        Assert.True(session.ResultUnknown);
+        Assert.False(session.WritePending);
+        Assert.False(session.RefreshViewFromCurrent());
+        Assert.Equal(0, refreshes);
+        Assert.True(session.ViewBlocked);
+        var config = Path.Combine(root, "state.json");
+        var bytes = files.ReadAllBytes(config);
+        files.WriteAllBytes(config, Encoding.UTF8.GetBytes("{"));
+        Assert.Equal(WallOpenStatus.CorruptBlocked, session.Open(1, 6).Status);
+        Assert.True(session.ResultUnknown);
+        Assert.False(session.RefreshViewFromCurrent());
+        files.WriteAllBytes(config, bytes);
+        Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
+        Assert.False(session.ResultUnknown);
+        Assert.True(session.RefreshViewFromCurrent());
+        Assert.Equal(1, refreshes);
+    }
+
     private sealed class FaultingFiles(IFileStore inner) : IFileStore
     {
         public List<Func<string, string?, string?, bool>> Rules { get; } = [];
@@ -35,6 +277,7 @@ public sealed class WallSessionAsyncTests
         public void Copy(string source, string destination, bool overwrite)
         { Trip("copy", source, destination); inner.Copy(source, destination, overwrite); }
         public void Delete(string path) { Trip("delete", path, null); inner.Delete(path); }
+        public void MoveDirectory(string source, string destination) => inner.MoveDirectory(source, destination);
         public void CreateDirectory(string path) { Trip("mkdir", null, path); inner.CreateDirectory(path); }
         public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);
@@ -128,13 +371,12 @@ public sealed class WallSessionAsyncTests
         Assert.Same(before, session.Current);
         Assert.False(session.Commit(proposal).Committed);
         Assert.False((await session.CommitAsync(proposal)).Committed);
-        Assert.False(session.Undo().Committed);
         Assert.Null(session.Propose(new RemoveMemberAction(0, "tile1"), 500, 500).Proposal);
         Assert.Equal(1, executor.Count);
 
         await executor.RunNextAsync();
         var apply = await acceptance.TakeAsync();
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
         Assert.Same(before, session.Current);
         Assert.Null(refreshed);
         Assert.True(session.WritePending);
@@ -146,13 +388,11 @@ public sealed class WallSessionAsyncTests
         Assert.False(session.WritePending);
         Assert.Same(session.Current, refreshed);
         Assert.Equal(acceptanceThread, refreshThread);
-        Assert.True(session.CanUndo);
-        Assert.True(session.Undo().Committed);
-        Assert.Empty(session.Current.Lanes[0].Groups);
+        Assert.Single(session.Current.Lanes[0].Groups[0].Members);
     }
 
     [Fact]
-    public async Task FailedTransactionKeepsCommittedSnapshotAndExistingUndo()
+    public async Task FailedTransactionKeepsCommittedSnapshot()
     {
         var (session, files, root, executor, acceptance) = Harness();
         Assert.True(session.Commit(Add(session)).Committed);
@@ -167,10 +407,8 @@ public sealed class WallSessionAsyncTests
         Assert.False(result.Committed);
         Assert.False(session.WritePending);
         Assert.Same(before, session.Current);
-        Assert.True(session.CanUndo);
-        Assert.Equal(before.Generation, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(before.Generation, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
         files.InjectedFault = FaultPoint.None;
-        Assert.True(session.Undo().Committed);
     }
 
     [Fact]
@@ -186,13 +424,11 @@ public sealed class WallSessionAsyncTests
         Assert.True(result.ViewFailed);
         Assert.True(session.ViewBlocked);
         Assert.False(session.RequiresReopen);
-        Assert.True(session.CanUndo);
         Assert.Equal(1, session.Current.Generation);
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
         Assert.False((await session.CommitAsync(Add(session))).Committed);
         session.SetViewRefresh(_ => { });
         Assert.True(session.RefreshViewFromCurrent());
-        Assert.True(session.Undo().Committed);
     }
 
     [Fact]
@@ -236,7 +472,6 @@ public sealed class WallSessionAsyncTests
         Assert.False(session.RefreshViewFromCurrent());
         Assert.Equal(0, refreshCount);
         Assert.Null(session.Propose(new RemoveMemberAction(before.Generation, "tile1"), 500, 500).Proposal);
-        Assert.False(session.Undo().Committed);
 
         var reopened = session.Open(1, 6);
         Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
@@ -246,7 +481,7 @@ public sealed class WallSessionAsyncTests
         Assert.True(session.RefreshViewFromCurrent());
         Assert.Equal(1, refreshCount);
         Assert.NotNull(session.Propose(new RemoveMemberAction(session.Current.Generation, "tile1"), 500, 500).Proposal);
-        Assert.Equal(before.Generation, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(before.Generation, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 
     [Fact]
@@ -283,7 +518,7 @@ public sealed class WallSessionAsyncTests
         Assert.True(session.RequiresReopen);
         Assert.False(session.RefreshViewFromCurrent());
         Assert.False(session.WritePending);
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 
     [Fact]
@@ -329,9 +564,9 @@ public sealed class WallSessionAsyncTests
         await executor.RunNextAsync();
         await Assert.ThrowsAsync<InvalidOperationException>(async () => await operation);
 
-        var configPath = Path.Combine(root, "config.json");
+        var configPath = Path.Combine(root, "state.json");
         var committedBytes = files.ReadAllBytes(configPath);
-        Assert.Equal(2, WallJson.Deserialize(committedBytes).Generation);
+        Assert.Equal(2, UserDataSnapshotJson.ReadManifest(committedBytes).Generation);
         Assert.Same(before, session.Current);
         Assert.True(session.RequiresReopen);
         Assert.True(session.ViewBlocked);
@@ -343,15 +578,13 @@ public sealed class WallSessionAsyncTests
         Assert.False(session.RefreshViewFromCurrent());
         Assert.Equal(0, refreshes);
         Assert.Null(session.Propose(new RemoveMemberAction(before.Generation, "tile1"), 500, 500).Proposal);
-        Assert.True(session.CanUndo);
         var rejectedCommit = session.Commit(proposal);
         Assert.False(rejectedCommit.Committed);
         Assert.Contains("reopen", string.Join(" ", rejectedCommit.Diagnostics), StringComparison.OrdinalIgnoreCase);
         Assert.False((await session.CommitAsync(proposal)).Committed);
-        Assert.False(session.Undo().Committed);
-        Assert.Equal(2, WallJson.Deserialize(files.ReadAllBytes(configPath)).Generation);
+        Assert.Equal(2, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(configPath)).Generation);
 
-        var previousPath = Path.Combine(root, "Recovery", "config.prev.json");
+        var previousPath = Path.Combine(root, "Recovery", "state.prev.json");
         Assert.True(files.Exists(previousPath));
         var previousBytes = files.ReadAllBytes(previousPath);
         files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes("{"));
@@ -369,7 +602,6 @@ public sealed class WallSessionAsyncTests
         Assert.Equal(2, session.Current.Generation);
         Assert.False(session.RequiresReopen);
         Assert.False(session.ViewBlocked);
-        Assert.False(session.CanUndo);
         WallDocument? rendered = null;
         session.SetViewRefresh(document => rendered = document);
         Assert.True(session.RefreshViewFromCurrent());
@@ -397,6 +629,6 @@ public sealed class WallSessionAsyncTests
         Assert.False(session.ViewBlocked);
         Assert.False(session.WritePending);
         Assert.Equal(1, session.Current.Generation);
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 }

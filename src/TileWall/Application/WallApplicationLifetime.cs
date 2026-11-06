@@ -10,13 +10,15 @@ using TileWall.Views;
 namespace TileWall.ApplicationModel;
 
 /// <summary>The single owner of process resources, visibility decisions and settings side effects.</summary>
-internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
+internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
 {
     private readonly MainWindow _window;
     private readonly ShellMessageHost _host;
     private readonly SingleInstanceGate _instance;
     private readonly ShellNotifyIconHost _tray;
+    private readonly ExplorerAddNotification _notifications;
     private readonly GlobalHotKeyRegistrar _hotKey;
+    private readonly GlobalHotKeyRegistrar _secondaryHotKey;
     private readonly LoginStartupController _login;
     private readonly Microsoft.UI.Xaml.Application _application;
     private readonly WallShowMachine _show;
@@ -26,18 +28,24 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
     private int _queuedPaths;
     private bool? _loginEnabled;
     private bool _settingsBusy;
-    private bool _hotKeyRecording;
-    private HotKeyGesture? _recordingPreviousHotKey;
+    private int _hotKeyRecordingSlots;
+    private int _pausedHotKeySlots;
+    private bool _hotKeyRecording => _hotKeyRecordingSlots != 0;
+    private string? _hotKeyError, _secondaryHotKeyError;
     private bool _exitPending;
     private bool _tearingDown;
     private bool _started;
     private Task? _startup;
     private bool _showWhenStarted;
     private bool _drainQueued;
+    private Task? _addDrain;
+    private CancellationTokenSource? _addPreparation;
     private bool _inAddSequence;
     private int _addSucceeded, _addFailed, _addCount;
     private string? _lastAddFailure;
     private bool _addTruncated;
+    private CancellationTokenSource? _animationPreparation;
+    private long _animationGeneration;
 
     public WallApplicationLifetime(RuntimeScope scope, SingleInstanceGate instance,
         Microsoft.UI.Xaml.Application application)
@@ -46,13 +54,21 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         _application = application;
         _host = new ShellMessageHost(scope.ShellWindowName);
         _host.ActivateRequested += () => Request(WallShowTrigger.Show);
-        _hotKey = new GlobalHotKeyRegistrar(_host);
+        _hotKey = new GlobalHotKeyRegistrar(_host, 1);
+        _secondaryHotKey = new GlobalHotKeyRegistrar(_host, 2);
         _tray = new ShellNotifyIconHost(_host, Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"), scope.IsTest);
         _login = new LoginStartupController(scope);
         _window = new MainWindow(scope);
+        _isTest = scope.IsTest;
+        _startReplacement = new StartReplacementService(QueueStartReplacementToggle);
+        _startReplacement.Faulted += QueueStartReplacementFault;
         _show = new WallShowMachine(WallShowState.Hidden, this);
         _animation = new ShowHideAnimator(_window.WallContent);
-        _animation.ShowCompleted += _show.ShowAnimationCompleted;
+        _animation.ShowCompleted += () =>
+        {
+            _show.ShowAnimationCompleted();
+            if (_show.State == WallShowState.Visible) _window.CompleteBackdropAnimation(visible: true);
+        };
         _animation.HideCompleted += _show.HideAnimationCompleted;
         _exit = new ExitCoordinator(this);
         _window.HideRequested += () => Request(WallShowTrigger.Hide);
@@ -62,7 +78,11 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         };
         _window.SettingsRequested += OpenSettings;
         _window.DialogClosed += QueueAddDrain;
-        _window.ImportReadinessChanged += () => { if (_window.CanProcessExternalImport) QueueAddDrain(); };
+        _window.ImportReadinessChanged += () =>
+        {
+            if (_window.CanProcessExternalImport) QueueAddDrain();
+            if (_started && _window.SettingsPersistenceBlocked) _ = StopInputForBlockedPersistenceAsync();
+        };
         _window.DialogOpened += () => _show.Request(WallShowTrigger.Show);
         _window.AppWindow.Closing += (sender, e) =>
         {
@@ -73,10 +93,17 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         _tray.ShowOrFocusRequested += () => Request(WallShowTrigger.Show);
         _tray.SettingsRequested += OpenSettings;
         _tray.ExitRequested += RequestExit;
-        _host.HotKeyPressed += () => { if (!_hotKeyRecording) Request(WallShowTrigger.Toggle); };
-        _host.DisplayChanged += _window.QueueEnvironmentRefresh;
+        _host.HotKeyPressed += HandleGlobalHotKey;
+        _host.DisplayChanged += () =>
+        {
+            _startReplacement.InvalidateButtons();
+            _window.QueueEnvironmentRefresh();
+        };
         _host.AcceptPaths = ReceiveAdd;
         _hotKey.RegistrationChanged += UpdateTray;
+        _secondaryHotKey.RegistrationChanged += UpdateTray;
+        _notifications = new ExplorerAddNotification(scope.IsTest, () =>
+            _window.DispatcherQueue.TryEnqueue(() => Request(WallShowTrigger.Show)));
     }
 
     public Task StartAsync(StartupIntent intent) => _startup ??= StartCoreAsync(intent);
@@ -85,24 +112,31 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         try
         {
+            _notifications.Register(intent.NotificationActivation);
             // No Activate/Show is needed to open the committed session or register process resources.
-            _window.InitializeSession();
+            await _window.InitializeSessionAsync();
+            if (_exitPending || _tearingDown) return;
             _window.ScheduleStartMenuStartupRefresh();
             ProductStrings.ApplyLanguage(_window.Settings.LanguageMode);
             _window.RefreshAppearance();
             _window.RefreshProductStrings();
-            if (HotKeyGesture.TryParse(_window.Settings.HotKey, out var gesture)) _hotKey.TryRegister(gesture!);
+            RestoreCommittedHotKeys();
             var login = await _login.ReadAsync();
             _loginEnabled = login.Enabled;
+            await InitializeStartReplacementAsync();
             _started = true;
             if (_exitPending || _tearingDown) return;
             QueueAddDrain();
             if (intent.Add is { } add) ReceiveAdd(add);
-            if (!intent.Background || _showWhenStarted || intent.Add is not null) Request(WallShowTrigger.Show);
-            if (!_hotKey.IsRegistered) _window.ShowStatus(ProductStrings.Get("Wall.HotKeyUnavailable"));
+            // External adds use the same background lifetime as login startup;
+            // only an explicit show request may bring that cold start forward.
+            if (_showWhenStarted || !intent.Background && intent.Add is null) Request(WallShowTrigger.Show);
+            if (!_hotKey.IsRegistered && !_secondaryHotKey.IsRegistered) _window.ShowStatus(ProductStrings.Get("Wall.HotKeyUnavailable"));
             if (login.Error is not null) _window.ShowStatus(login.Error);
+            if (_startReplacementError is not null) _window.ShowStatus(_startReplacementError);
             UpdateTray();
         }
+        catch (OperationCanceledException) when (_exitPending) { }
         catch (Exception ex)
         {
             AppLog.Error("Startup", ex.ToString());
@@ -129,90 +163,14 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         if (!_started || _tearingDown || _exitPending || _window.PersistenceBusy) return;
         if (_window.ModalActive) { _window.FocusTopSession(); return; }
         Request(WallShowTrigger.Show);
-        _ = _window.OpenSettingsAsync(CurrentSettingsState, ApplySettingsAsync, SetHotKeyRecording);
-    }
-
-    private void SetHotKeyRecording(bool recording)
-    {
-        if (_hotKeyRecording == recording || _tearingDown) return;
-        _hotKeyRecording = recording;
-        if (recording)
-        {
-            // Unregister as well as suppressing WM_HOTKEY so the actual keys reach
-            // the recorder (including the application's current Win+~ chord).
-            _recordingPreviousHotKey = _hotKey.CurrentGesture;
-            _hotKey.Unregister();
-        }
-        else
-        {
-            var previous = _recordingPreviousHotKey; _recordingPreviousHotKey = null;
-            if (previous is not null && !_hotKey.TryRegister(previous))
-                _window.ShowStatus(ProductStrings.Get("Wall.HotKeyUnavailable"));
-        }
-    }
-
-    private SettingsDialogState CurrentSettingsState() => new(_window.Settings,
-        _hotKey.CurrentGesture?.ToConfigString(), _loginEnabled);
-
-    private async Task<SettingsDialogState> ApplySettingsAsync(WallSettings proposed, bool restoreDefaults)
-    {
-        if (_window.PersistenceMutationBlocked) return CurrentSettingsState() with { Error = ProductStrings.Get("Wall.SettingsSaving") };
-        if (_settingsBusy) return CurrentSettingsState() with { Error = ProductStrings.Get("Wall.SettingsSaving") };
-        if (!HotKeyGesture.TryParse(proposed.HotKey, out var nextKey, out var error))
-            return CurrentSettingsState() with { Error = error };
-        _settingsBusy = true;
-        var old = _window.Settings;
-        var oldKey = _hotKey.CurrentGesture;
-        var oldLogin = await _login.ReadAsync();
-        var hotKeyChanged = oldKey != nextKey;
-        var loginChanged = proposed.RunAtLogin != old.RunAtLogin ||
-            restoreDefaults && proposed.RunAtLogin != (oldLogin.Enabled ?? old.RunAtLogin);
-        try
-        {
-            if (hotKeyChanged && !_hotKey.TryRegister(nextKey!))
-                return await RollbackAsync(_hotKey.LastFailureReason ?? ProductStrings.Get("Wall.HotKeyFailed"), false);
-            if (loginChanged)
-            {
-                if (oldLogin.Enabled is null) return await RollbackAsync(oldLogin.Error ?? ProductStrings.Get("Wall.LoginReadFailed"), false);
-                var result = await _login.SetAsync(proposed.RunAtLogin);
-                _loginEnabled = result.Enabled;
-                if (result.Error is not null || result.Enabled != proposed.RunAtLogin)
-                    return await RollbackAsync(result.Error ?? ProductStrings.Get("Wall.LoginFailed"), true);
-            }
-            error = _window.CommitSettings(proposed with { HotKey = nextKey!.ToConfigString() });
-            if (error is not null) return await RollbackAsync(error, loginChanged);
-            ProductStrings.ApplyLanguage(proposed.LanguageMode);
-            _window.RefreshAppearance();
-            _window.RefreshProductStrings();
-            UpdateTray();
-            return CurrentSettingsState();
-        }
-        catch (Exception ex) { return await RollbackAsync(string.Format(ProductStrings.Get("Wall.OperationFailed"), ex.Message), loginChanged); }
-        finally { _settingsBusy = false; }
-
-        async Task<SettingsDialogState> RollbackAsync(string failure, bool restoreLogin)
-        {
-            if (hotKeyChanged)
-            {
-                if (oldKey is null) _hotKey.Unregister();
-                else if (!_hotKey.TryRegister(oldKey)) failure += " " + string.Format(ProductStrings.Get("Wall.HotKeyRestoreFailed"), _hotKey.LastFailureReason);
-            }
-            if (restoreLogin && oldLogin.Enabled is { } enabled)
-            {
-                var restored = await _login.SetAsync(enabled);
-                _loginEnabled = restored.Enabled;
-                if (restored.Error is not null) failure += " " + string.Format(ProductStrings.Get("Wall.LoginRestoreFailed"), restored.Error);
-            }
-            else _loginEnabled = (await _login.ReadAsync()).Enabled;
-            UpdateTray();
-            return CurrentSettingsState() with { Error = failure };
-        }
+        _ = _window.OpenSettingsAsync(CurrentSettingsState, ApplySettingsAsync,
+            SetHotKeyRecordingAsync, RetryStartReplacementAsync);
     }
 
     private bool ReceiveAdd(ExplorerAddMessage message)
     {
         if (_tearingDown || _exitPending) return false;
-        if (_pendingAdds.Count >= 64 || _queuedPaths + message.Paths.Count > 4096)
+        if (_pendingAdds.Count + (_addPreparation is null ? 0 : 1) >= 64 || _queuedPaths + message.Paths.Count > 4096)
         {
             _window.DispatcherQueue.TryEnqueue(() =>
             {
@@ -230,30 +188,53 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
 
     private void QueueAddDrain()
     {
-        if (_drainQueued || _pendingAdds.Count == 0 || _tearingDown) return;
+        if (_drainQueued || _addDrain is { IsCompleted: false } || _pendingAdds.Count == 0 || _tearingDown || _exitPending) return;
         _drainQueued = _window.DispatcherQueue.TryEnqueue(DrainNextAdd);
     }
 
     private void DrainNextAdd()
     {
         _drainQueued = false;
+        if (_addDrain is { IsCompleted: false }) return;
+        var operation = DrainNextAddAsync();
+        _addDrain = operation.IsCompleted ? null : operation;
+    }
+
+    private async Task DrainNextAddAsync()
+    {
         if (!_started || _tearingDown || _exitPending || _pendingAdds.Count == 0) return;
         if (!_window.CanProcessExternalImport)
         {
-            if (_window.CanShowExternalImportNotice) Request(WallShowTrigger.Show);
             _window.ShowStatus($"{ProductStrings.Get("Wall.PendingAdd")} ({_pendingAdds.Count})");
             return;
         }
         var message = _pendingAdds.Dequeue();
-        _queuedPaths -= message.Paths.Count;
         if (!_inAddSequence)
         {
             _addSucceeded = _addFailed = _addCount = 0;
             _lastAddFailure = null;
             _addTruncated = false;
         }
-        Request(WallShowTrigger.Show);
-        var result = _window.ImportExternalBatch(message);
+        using var preparation = new CancellationTokenSource();
+        _addPreparation = preparation;
+        ExternalImportResult result;
+        try { result = await _window.ImportExternalBatchAsync(message, preparation.Token); }
+        catch (OperationCanceledException) when (preparation.IsCancellationRequested)
+        {
+            _inAddSequence = false;
+            return;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("ExternalAdd", ex.ToString());
+            result = new(string.Format(ProductStrings.Get("Import.Failed"), ex.Message), false, 0);
+        }
+        finally
+        {
+            _queuedPaths -= message.Paths.Count;
+            if (ReferenceEquals(_addPreparation, preparation)) _addPreparation = null;
+            _addDrain = null;
+        }
         if (result.Succeeded) { _addSucceeded++; _addCount += result.AddedCount; }
         else { _addFailed++; _lastAddFailure = result.Message; }
         _addTruncated |= message.Truncated;
@@ -264,15 +245,26 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         if (_addFailed == 0 && !_addTruncated) _window.ShowTransientStatus(resultMessage);
         else _window.ShowStatus(resultMessage);
         _inAddSequence = _pendingAdds.Count != 0;
+        // ImportExternalBatchAsync returns a positive count only after the formal
+        // commit succeeds. Notification delivery is outside that transaction.
+        if (!_inAddSequence && !_exitPending && !_tearingDown && _addCount > 0)
+            _notifications.ShowAdded(_addCount, _addFailed != 0 || _addTruncated);
         QueueAddDrain();
     }
-    private void UpdateTray() => _tray.UpdateTooltip(_hotKey.IsRegistered
-        ? $"TileWall · {_hotKey.CurrentGesture?.ToDisplayString()}" : $"TileWall · {ProductStrings.Get("Wall.HotKeyUnavailable")}");
+    private void UpdateTray()
+    {
+        var available = new[] { _hotKey.CurrentGesture, _secondaryHotKey.CurrentGesture }
+            .OfType<HotKeyGesture>().Select(gesture => gesture.ToDisplayString());
+        var combinations = string.Join(" / ", available);
+        _tray.UpdateTooltip($"TileWall · {(combinations.Length != 0 ? combinations : ProductStrings.Get("Wall.HotKeyUnavailable"))}");
+    }
 
     private void RequestExit()
     {
         if (_exitPending || _tearingDown) return;
         _exitPending = true;
+        _window.CancelWelcomeInitialization();
+        _addPreparation?.Cancel();
         // Tray commands and AppWindow.Closing arrive inside native callbacks. Let
         // their menus/closing frames unwind before destroying any HWND or XAML state.
         if (!_window.DispatcherQueue.TryEnqueue(() => _ = RequestExitAsync()))
@@ -289,6 +281,7 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
             // In packaged runs the login-state read can yield during startup.
             // Its continuation must finish before any owned resource is stopped.
             if (_startup is { } startup) await startup;
+            if (_addDrain is { } adding) await adding;
             var titleError = _window.FinishActiveTitleEditForExit();
             if (titleError is not null)
             {
@@ -319,7 +312,9 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
             // otherwise queued layout callbacks can still read a closed AppWindow.
             await modalClosed;
             _window.TraceExit("dialog-closed");
+            if (!await StopInputForExitAsync()) return;
             _window.TraceExit("shutdown-workers");
+            CancelAnimations(); // Cancel a pending backdrop fence before appearance drains it.
             try { await _window.ShutdownPersistenceAsync(); }
             catch (Exception ex) { AppLog.Warn("Exit", $"Storage worker shutdown: {ex.Message}"); }
             _tearingDown = true;
@@ -330,23 +325,98 @@ internal sealed class WallApplicationLifetime : IWallShowHost, IExitHost
         finally
         {
             if (!_tearingDown) _window.ResumePersistenceAdmission();
-            _exitPending = false; QueueAddDrain();
+            _exitPending = false;
+            if (!_tearingDown) await RestoreInputAfterCanceledExitAsync();
+            QueueAddDrain();
         }
     }
 
-    public void BeginShowAnimation() => _animation.BeginShow();
-    public void BeginHideAnimation() => _animation.BeginHide();
-    public void CancelAnimations() => _animation.Cancel();
-    public void SnapShow() { _animation.ResetVisual(); _window.ShowWall(); }
-    public void SnapHide() { _animation.ResetVisual(); _window.HideWall(); }
+    public void BeginShowAnimation() => BeginWallAnimation(show: true);
+    public void BeginHideAnimation() => BeginWallAnimation(show: false);
+
+    private void BeginWallAnimation(bool show)
+    {
+        CancelAnimationPreparation();
+        var request = new CancellationTokenSource();
+        _animationPreparation = request;
+        _ = BeginWallAnimationAsync(show, _animationGeneration, request);
+    }
+
+    private async Task BeginWallAnimationAsync(bool show, long generation, CancellationTokenSource request)
+    {
+        bool IsCurrent() => !request.IsCancellationRequested && generation == _animationGeneration &&
+            _show.State == (show ? WallShowState.Showing : WallShowState.Hiding) && !_tearingDown;
+        try
+        {
+            var ready = await _window.PrepareBackdropForAnimationAsync(request.Token);
+            if (!IsCurrent()) return;
+            if (ready)
+            {
+                if (show) _animation.BeginShow();
+                else _animation.BeginHide();
+            }
+            else FinishWithoutAnimation();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            AppLog.Warn("BackdropCommit", $"Animation preparation unavailable: {ex.GetType().Name}");
+            if (IsCurrent()) FinishWithoutAnimation();
+        }
+        finally
+        {
+            if (ReferenceEquals(_animationPreparation, request)) _animationPreparation = null;
+            request.Dispose();
+        }
+
+        void FinishWithoutAnimation()
+        {
+            // A failed detach must never fade a snapshot over live native alpha.
+            // Use the existing physical terminal operation for this transition.
+            if (show)
+            {
+                _animation.ResetVisual();
+                _show.ShowAnimationCompleted();
+                _window.CompleteBackdropAnimation(visible: true);
+            }
+            else _show.HideAnimationCompleted();
+        }
+    }
+
+    private void CancelAnimationPreparation()
+    {
+        _animationGeneration++;
+        _animationPreparation?.Cancel();
+        _animationPreparation = null; // The owning async finally disposes it.
+    }
+
+    public void CancelAnimations() { CancelAnimationPreparation(); _animation.Cancel(); }
+    public void SnapShow()
+    {
+        CancelAnimationPreparation();
+        _animation.ResetVisual();
+        _window.ShowWall();
+        if (_show.State == WallShowState.Visible) _window.CompleteBackdropAnimation(visible: true);
+    }
+    public void SnapHide()
+    {
+        CancelAnimationPreparation();
+        _animation.ResetVisual();
+        _window.HideWall();
+        _window.CompleteBackdropAnimation(visible: false);
+    }
     public void FocusWall() => _window.FocusTopSession();
     public IExitParticipant? TopParticipant => _window.ActiveDialog;
     public void CloseTopSession() => _window.ActiveDialog?.Close();
     public void CancelTransientState() => _window.CancelTransientState();
     public void SnapHideWall() => SnapHide();
-    public void UnregisterHotKey() => _hotKey.Dispose();
+    public void UnregisterHotKey() { _hotKey.Dispose(); _secondaryHotKey.Dispose(); }
     public void RemoveTrayIcon() => _tray.Dispose();
-    public void DestroyShellHostWindow() => _host.Dispose();
+    public void DestroyShellHostWindow()
+    {
+        _notifications.Dispose();
+        _host.Dispose();
+    }
     public void ReleaseSingleInstanceMutex()
     {
         // The next owner must never acquire the gate while this process still

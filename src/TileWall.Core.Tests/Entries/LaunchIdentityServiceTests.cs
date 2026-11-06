@@ -83,4 +83,46 @@ public sealed class LaunchIdentityServiceTests
         Assert.Equal(service.ResolveInput(@"C:\Start\One.lnk")!.Key, service.ResolveInput(@"C:\Managed\Copy.lnk")!.Key);
         Assert.NotEqual(service.ResolveInput(@"C:\Start\One.lnk")!.Key, service.ResolveInput(@"C:\Start\Two.lnk")!.Key);
     }
+
+    [Fact]
+    public void RealPidlDigestWinsOverMissingLocalizedOrConflictingParsingDescriptions()
+    {
+        var files = new InMemoryFileStore();
+        var service = new LaunchIdentityService(files, new FakeLinkFileService(files));
+        var hash = new string('A', 64);
+        var expected = LaunchIdentityService.ForShellIdList(hash);
+        foreach (var description in new string?[] { null, "", "Computer", "此电脑", "shell:Different.PropertyValue" })
+        {
+            var fields = new LinkFields(null, "", "", null, 0, 1, true)
+            { ShellIdListHash = hash, ShellParsingName = description };
+            var observed = service.ResolveObservedInput(EntryKind.Lnk, @"C:\Start\Native.lnk", [1, 2, 3], fields)!;
+            Assert.Equal(expected.Key, observed.Key);
+            Assert.StartsWith("shell:pidl:", observed.Key);
+            Assert.False(observed.IsUrl);
+            Assert.Equal(string.IsNullOrWhiteSpace(description) ? "pidl:" + hash : description, observed.Target);
+        }
+        Assert.NotEqual(LaunchIdentityService.ForShellIdList(hash, "Same label").Key,
+            LaunchIdentityService.ForShellIdList(new string('B', 64), "Same label").Key);
+    }
+
+    [Fact]
+    public void PidlIdentityPreservesArgumentsAndWorkingDirectoryWithoutDependingOnLabel()
+    {
+        var hash = new string('C', 64);
+        var baseline = LaunchIdentityService.ForShellIdList(hash, "Computer", "--profile A", @"C:\Work");
+        Assert.Equal(baseline.Key, LaunchIdentityService.ForShellIdList(hash.ToLowerInvariant(), "此电脑", "--profile A", @"c:\work").Key);
+        Assert.NotEqual(baseline.Key, LaunchIdentityService.ForShellIdList(hash, "Computer", "--profile B", @"C:\Work").Key);
+        Assert.NotEqual(baseline.Key, LaunchIdentityService.ForShellIdList(hash, "Computer", "--profile A", @"C:\Other").Key);
+    }
+
+    [Fact]
+    public void OrdinaryPathStillWinsWhenShortcutAlsoContainsPidlMetadata()
+    {
+        var files = new InMemoryFileStore();
+        var service = new LaunchIdentityService(files, new FakeLinkFileService(files));
+        var fields = new LinkFields(@"C:\Apps\Example.exe", "--keep", @"C:\Work", null, 0, 1, true)
+        { ShellIdListHash = new string('D', 64), ShellParsingName = "Computer" };
+        var observed = service.ResolveObservedInput(EntryKind.Lnk, @"C:\Start\File.lnk", [1], fields)!;
+        Assert.Equal(LaunchIdentityService.ForPath(fields.TargetPath!, fields.Arguments, fields.WorkingDirectory).Key, observed.Key);
+    }
 }

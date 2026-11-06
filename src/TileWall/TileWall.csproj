@@ -2,10 +2,10 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
-    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <TargetPlatformMinVersion>10.0.18362.0</TargetPlatformMinVersion>
     <RootNamespace>TileWall</RootNamespace>
     <DefaultLanguage>en-US</DefaultLanguage>
-    <Version>0.3.3</Version>
+    <Version>1.4.6</Version>
     <!-- exe 内嵌 Win32 图标：任务栏/资源管理器显示用（托盘走运行时加载 Assets/AppIcon.ico，两者同源） -->
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -27,7 +27,7 @@
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <AnalysisLevel>latest</AnalysisLevel>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <!-- M9：自有 Main（-Embedding → COM 服务器分支；否则原序列启动 WinUI）。
+    <!-- 自有 Main 处理管理命令和打包激活参数，再按生成入口顺序启动 WinUI。
          生成文件 App.g.i.cs 的 #if !DISABLE_XAML_GENERATED_MAIN 分支实证该开关存在。 -->
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
   </PropertyGroup>
@@ -35,14 +35,34 @@
   <!--
     M9 打包模式编译开关：仅当命令行/CI 以 -p:WindowsPackageType=MSIX 全局属性覆盖本工程的
     WindowsPackageType=None 时生效（全局属性优先级高于工程内默认）。TILEWALL_PACKAGED 只被
-    应用工程消费（数据目录/单实例身份/登录启动后端/Explorer COM 扩展的编译期分支）；
+    应用工程消费（数据目录/单实例身份/登录启动后端/菜单管理边界的编译期分支）；
     Core 工程零 WinRT 引用的基线不破坏。出包还须显式 -p:PublishAppxPackage=true（publish 链）。
   -->
   <PropertyGroup Condition="'$(WindowsPackageType)'=='MSIX'">
     <DefineConstants>$(DefineConstants);TILEWALL_PACKAGED</DefineConstants>
+    <ExplorerExtensionOutputDirectory Condition="'$(ExplorerExtensionOutputDirectory)'==''">$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\artifacts\.build\native-shell'))</ExplorerExtensionOutputDirectory>
   </PropertyGroup>
 
+  <ItemGroup Condition="'$(WindowsPackageType)'=='MSIX'">
+    <Content Include="$(ExplorerExtensionOutputDirectory)\TileWall.ExplorerExtension.dll" Link="TileWall.ExplorerExtension.dll"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="BuildTileWallExplorerExtension" BeforeTargets="PrepareForBuild"
+          Condition="'$(WindowsPackageType)'=='MSIX' and '$(DesignTimeBuild)'!='true'">
+    <Error Condition="'$(Platform)'!='x64' or '$(RuntimeIdentifier)'!='win-x64'" Text="The packaged Explorer extension requires Platform=x64 and RuntimeIdentifier=win-x64." />
+    <Exec Command="pwsh -NoProfile -File &quot;$(MSBuildProjectDirectory)\..\..\tools\BuildExplorerExtension.ps1&quot; -OutputDirectory &quot;$(ExplorerExtensionOutputDirectory)&quot;" />
+  </Target>
+
   <ItemGroup>
+    <Content Include="Assets\WelcomeWall\Seasons\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\WelcomeWall\Links\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\FallbackIcons\Generic\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\FallbackIcons\Generic\assets.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\FallbackIcons\System\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\FallbackIcons\System\assets.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\FallbackIcons\Websites\*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\FallbackIcons\Websites\catalog.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\FallbackIcons\Websites\*.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets\SplashScreen.scale-200.png" />
     <Content Include="Assets\LockScreenLogo.scale-200.png" />
     <Content Include="Assets\Square150x150Logo.scale-200.png" />
@@ -56,6 +76,15 @@
     <Content Include="Assets\Wide310x150Logo.scale-200.png" />
     <Content Include="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Licenses\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Publish profiles remain MSBuild imports; they are not application payload.
+       Remove the items because MSIX AutoInclude overrides CopyToPublishDirectory metadata. -->
+  <ItemGroup>
+    <Content Remove="Properties\PublishProfiles\**" />
+    <None Remove="Properties\PublishProfiles\**" />
+    <Content Remove=".gitignore;Properties\launchSettings.json" />
+    <None Remove=".gitignore;Properties\launchSettings.json" />
   </ItemGroup>
 
   <ItemGroup>
@@ -89,9 +118,61 @@
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.9" />
     <!-- Preserve the existing component version rather than falling back to WinUI's minimum. -->
     <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" Version="2.1.9" />
+    <!-- The component-only self-contained payload omits the Insights resource DLL.
+         Read just that file from the matching cached runtime package; do not import
+         its deployment targets or introduce a framework package dependency. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.5.1"
+                      GeneratePathProperty="true" ExcludeAssets="all" />
     <PackageReference Include="AsmResolver.PE.Win32Resources" Version="6.0.1" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.6.1" />
   </ItemGroup>
+
+  <UsingTask TaskName="ExtractTileWallInsightsResource" TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <PackageFile ParameterType="System.String" Required="true" />
+      <RuntimeBinary ParameterType="System.String" Required="true" />
+      <DestinationFile ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Reference Include="$(MSBuildToolsPath)\ref\netstandard.dll" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.IO.Compression" />
+      <Using Namespace="System.Security.Cryptography" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        using (var package = ZipFile.OpenRead(PackageFile))
+        using (var packagedRuntime = package.GetEntry("Microsoft.WindowsAppRuntime.dll").Open())
+        using (var componentRuntime = File.OpenRead(RuntimeBinary))
+        using (var sha = SHA256.Create())
+        {
+            if (!Convert.ToBase64String(sha.ComputeHash(packagedRuntime)).Equals(
+                    Convert.ToBase64String(sha.ComputeHash(componentRuntime)), StringComparison.Ordinal))
+                throw new InvalidDataException("Windows App SDK Insights resource must match the referenced runtime binary.");
+            Directory.CreateDirectory(Path.GetDirectoryName(DestinationFile));
+            using (var resource = package.GetEntry("Microsoft.WindowsAppRuntime.Insights.Resource.dll").Open())
+            using (var output = File.Create(DestinationFile)) resource.CopyTo(output);
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="IncludeTileWallInsightsResource" BeforeTargets="AssignTargetPaths;CoreCompile"
+          DependsOnTargets="AddMicrosoftWindowsAppSDKPayloadFilesFromComponents"
+          Condition="'$(WindowsAppSDKSelfContained)'=='true'">
+    <PropertyGroup>
+      <TileWallInsightsResourceFile>$(IntermediateOutputPath)WindowsAppSDKInsights\Microsoft.WindowsAppRuntime.Insights.Resource.dll</TileWallInsightsResourceFile>
+    </PropertyGroup>
+    <ItemGroup>
+      <_TileWallComponentRuntime Include="@(MicrosoftWindowsAppSDKDllFiles)"
+                                 Condition="'%(Filename)%(Extension)'=='Microsoft.WindowsAppRuntime.dll'" />
+    </ItemGroup>
+    <ExtractTileWallInsightsResource
+      PackageFile="$(PkgMicrosoft_WindowsAppSDK_Runtime)\tools\MSIX\win10-$(NativePlatform)\Microsoft.WindowsAppRuntime.2.msix"
+      RuntimeBinary="@(_TileWallComponentRuntime)" DestinationFile="$(TileWallInsightsResourceFile)" />
+    <ItemGroup>
+      <Content Include="$(TileWallInsightsResourceFile)" Link="Microsoft.WindowsAppRuntime.Insights.Resource.dll"
+               CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 
   <!--
     Defining the "HasPackageAndPublishMenuAddedByProject" property here allows the Solution

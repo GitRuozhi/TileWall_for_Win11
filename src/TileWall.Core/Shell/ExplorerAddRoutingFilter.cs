@@ -1,26 +1,23 @@
 namespace TileWall.Core.Shell;
 
-/// <summary>WM_COPYDATA 声明 HWND 映像路由过滤结果。</summary>
+/// <summary>Read-only facts from a live process owning the declared window.</summary>
+public sealed record ExplorerAddProcessIdentity(string ImagePath, string UserSid, int SessionId, bool IsTileWall);
+
+/// <summary>WM_COPYDATA declared-window routing result.</summary>
 public enum ExplorerAddRoutingVerdict
 {
-    /// <summary>魔数匹配，且声明 HWND 所属进程映像路径匹配当前进程。</summary>
     Accept,
-
-    /// <summary>dwData 魔数不符。</summary>
     RejectBadMagic,
-
-    /// <summary>声明 HWND 所属进程映像路径与当前进程不一致。</summary>
-    RejectImagePathMismatch,
-
-    /// <summary>本进程主模块路径不可得，无法进行路由过滤。</summary>
     RejectSelfImageUnavailable,
+    RejectProcessUnavailable,
+    RejectUserMismatch,
+    RejectSessionMismatch,
+    RejectImagePathMismatch,
 }
 
 /// <summary>
-/// WM_COPYDATA 声明 HWND 映像路由过滤——纯函数，无 Win32 依赖：
-/// 私有魔数（dwData，'TWL1' little-endian）与声明 HWND 所属进程映像路径共同过滤消息。
-/// Win32 侧（wParam HWND → GetWindowThreadProcessId → OpenProcess → QueryFullProcessImageName）
-/// 留在 UI Interop。本过滤器不认证实际发送进程，也不证明消息来源可信。
+/// Filters misrouted messages across copies belonging to the same user and login
+/// session. A declared HWND is a routing hint, never proof of the actual sender.
 /// </summary>
 public static class ExplorerAddRoutingFilter
 {
@@ -45,22 +42,29 @@ public static class ExplorerAddRoutingFilter
     }
 
     /// <summary>综合路由过滤（接收端 WndProc 的唯一入口）。</summary>
-    public static ExplorerAddRoutingVerdict Evaluate(uint dwData, string? declaredWindowImagePath, string? selfImagePath)
+    public static ExplorerAddRoutingVerdict Evaluate(uint dwData,
+        ExplorerAddProcessIdentity? declared, ExplorerAddProcessIdentity? self)
     {
         if (!HasMagic(dwData))
         {
             return ExplorerAddRoutingVerdict.RejectBadMagic;
         }
 
-        if (string.IsNullOrWhiteSpace(selfImagePath))
+        if (!Complete(self))
         {
             return ExplorerAddRoutingVerdict.RejectSelfImageUnavailable;
         }
 
-        return DeclaredWindowImageMatches(declaredWindowImagePath, selfImagePath)
-            ? ExplorerAddRoutingVerdict.Accept
-            : ExplorerAddRoutingVerdict.RejectImagePathMismatch;
+        if (!Complete(declared)) return ExplorerAddRoutingVerdict.RejectProcessUnavailable;
+        if (!string.Equals(declared!.UserSid, self!.UserSid, StringComparison.Ordinal))
+            return ExplorerAddRoutingVerdict.RejectUserMismatch;
+        if (declared.SessionId != self.SessionId) return ExplorerAddRoutingVerdict.RejectSessionMismatch;
+        return DeclaredWindowImageMatches(declared.ImagePath, self.ImagePath) || declared.IsTileWall && self.IsTileWall
+            ? ExplorerAddRoutingVerdict.Accept : ExplorerAddRoutingVerdict.RejectImagePathMismatch;
     }
+
+    private static bool Complete(ExplorerAddProcessIdentity? process) => process is not null &&
+        !string.IsNullOrWhiteSpace(process.ImagePath) && !string.IsNullOrWhiteSpace(process.UserSid) && process.SessionId >= 0;
 
     private static string Normalize(string path) => path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 }

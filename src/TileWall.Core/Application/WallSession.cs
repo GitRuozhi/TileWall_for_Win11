@@ -1,5 +1,6 @@
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
+using TileWall.Core.Exchange;
 using TileWall.Core.Shell;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
@@ -14,9 +15,7 @@ internal sealed class WallSession
     private readonly object _gate = new();
     private readonly bool _commitPerformanceEnabled = Environment.GetEnvironmentVariable("TILEWALL_PERF") == "1";
     private WallDocument? _current;
-    private WallDocument? _undoPrevious;
-    private WallDocument? _undoCommitted;
-    private WallUndoToken? _undoToken;
+    private string? _manifestSha256;
     private Action<WallDocument>? _refreshView;
     private IWallStorageExecutor? _executor;
     private Func<Action, Task>? _acceptOnUi;
@@ -40,7 +39,6 @@ internal sealed class WallSession
     public string DataRoot { get; }
     public ILnkFileService LinkFiles { get; }
     public WallDocument Current => _current ?? throw new InvalidOperationException("Wall is not open.");
-    public bool CanUndo => _undoToken is not null;
     public bool ViewBlocked { get; private set; }
     public bool RequiresReopen { get; private set; }
     public bool RecoveryBlocked => _storeRecoveryBlocked;
@@ -64,7 +62,7 @@ internal sealed class WallSession
 
     public bool RefreshViewFromCurrent()
     {
-        lock (_gate) return !_writePending && !RequiresReopen && !_storeRecoveryBlocked && RefreshViewCore();
+        lock (_gate) return !_writePending && !RequiresReopen && !_storeRecoveryBlocked && !_resultUnknown && RefreshViewCore();
     }
 
     private bool RefreshViewCore()
@@ -94,43 +92,238 @@ internal sealed class WallSession
     public string? ManagedMediaPath(ManagedMediaReference? media) =>
         media is null ? null : _store.ManagedMediaPath(media);
 
+    public string ManagedGalleryPath(ManagedGalleryReference gallery) => _store.ManagedGalleryPath(gallery);
+
+    public IDisposable AcquireResourceReadLease(ManagedGalleryReference? gallery = null, ManagedMediaReference? media = null) =>
+        _store.AcquireResourceReadLease(gallery, media);
+
+    public Task<WallPackageSnapshot> CapturePackageSnapshotAsync(long expectedGeneration,
+        IEnumerable<string> selectedMemberIds, CancellationToken token = default)
+    {
+        ArgumentNullException.ThrowIfNull(selectedMemberIds);
+        var selected = selectedMemberIds.ToArray();
+        token.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_writePending || ViewBlocked || RequiresReopen || _storeRecoveryBlocked || _resultUnknown)
+                throw new InvalidOperationException("Wall is unavailable for export.");
+            if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            var current = Current;
+            if (current.Generation != expectedGeneration) throw new IOException("Committed wall changed before export.");
+            _writePending = true;
+            return CapturePackageSnapshotReservedAsync(current, expectedGeneration, selected, _manifestSha256!, _executor, token);
+        }
+    }
+
+    public Task<IReadOnlyList<ManagedMediaReference>> ReusablePackageMediaAsync(long expectedGeneration,
+        CancellationToken token = default)
+    {
+        token.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_writePending || ViewBlocked || RequiresReopen || _storeRecoveryBlocked || _resultUnknown || Current.Generation != expectedGeneration)
+                throw new InvalidOperationException("Wall is unavailable for original reuse observation.");
+            if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            _writePending = true;
+            return ReadReusablePackageMediaReservedAsync(Current, _manifestSha256!, _executor, token);
+        }
+    }
+
+    public Task<RecycleBinSnapshot> ReadRecycleBinAsync(long expectedGeneration, CancellationToken token = default)
+    {
+        token.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_writePending || ViewBlocked || RequiresReopen || _storeRecoveryBlocked || _resultUnknown || Current.Generation != expectedGeneration)
+                throw new InvalidOperationException("Wall is unavailable for recycle-bin observation.");
+            if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            _writePending = true;
+            return ReadRecycleBinReservedAsync(Current, expectedGeneration, _manifestSha256!, _executor, token);
+        }
+    }
+
+    private async Task<RecycleBinSnapshot> ReadRecycleBinReservedAsync(WallDocument current, long generation,
+        string manifestSha256, IWallStorageExecutor executor, CancellationToken token)
+    {
+        try { return await executor.ExecuteAsync(() => _store.ReadRecycleBin(current, generation, token, manifestSha256)).ConfigureAwait(false); }
+        finally { lock (_gate) _writePending = false; }
+    }
+
+    public Task<IReadOnlyList<ManagedGalleryReference>> ReusablePackageGalleriesAsync(long expectedGeneration,
+        CancellationToken token = default)
+    {
+        token.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_writePending || ViewBlocked || RequiresReopen || _storeRecoveryBlocked || _resultUnknown || Current.Generation != expectedGeneration)
+                throw new InvalidOperationException("Wall is unavailable for gallery reuse observation.");
+            if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            _writePending = true;
+            return ReadReusablePackageGalleriesReservedAsync(Current, _manifestSha256!, _executor, token);
+        }
+    }
+
+    private async Task<IReadOnlyList<ManagedGalleryReference>> ReadReusablePackageGalleriesReservedAsync(WallDocument current,
+        string manifestSha256, IWallStorageExecutor executor, CancellationToken token)
+    {
+        try { return await executor.ExecuteAsync(() => { token.ThrowIfCancellationRequested(); return _store.ReusablePackageGalleries(current, manifestSha256); }).ConfigureAwait(false); }
+        finally { lock (_gate) _writePending = false; }
+    }
+
+    private async Task<IReadOnlyList<ManagedMediaReference>> ReadReusablePackageMediaReservedAsync(WallDocument current,
+        string manifestSha256, IWallStorageExecutor executor, CancellationToken token)
+    {
+        try { return await executor.ExecuteAsync(() => { token.ThrowIfCancellationRequested(); return _store.ReusablePackageMedia(current, manifestSha256); }).ConfigureAwait(false); }
+        finally { lock (_gate) _writePending = false; }
+    }
+
+    private async Task<WallPackageSnapshot> CapturePackageSnapshotReservedAsync(WallDocument current, long generation,
+        string[] selected, string manifestSha256, IWallStorageExecutor executor, CancellationToken token)
+    {
+        try { return await executor.ExecuteAsync(() => _store.CapturePackageSnapshot(current, generation, selected, token, manifestSha256)).ConfigureAwait(false); }
+        finally { lock (_gate) _writePending = false; }
+    }
+
+    public Task<LaunchIdentity> ObservePackageEntryAsync(ManagedEntryKind kind, ReadOnlyMemory<byte> bytes,
+        CancellationToken token = default)
+    {
+        token.ThrowIfCancellationRequested();
+        if (bytes.Length is < 1 or > EntryObservation.MaximumBytes) throw new InvalidDataException("Invalid shortcut byte budget.");
+        var frozen = bytes.ToArray();
+        lock (_gate)
+        {
+            if (_executor is null) throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            return _executor.ExecuteAsync(() => _store.ObservePackageEntry(kind, frozen, token));
+        }
+    }
+
     public WallOpenResult Open(int initialColumns, int initialRows)
     {
         lock (_gate)
         {
             if (_writePending) throw new InvalidOperationException("A storage operation is pending.");
-            var result = _store.Open();
-            if (result.Status == WallOpenStatus.Fresh)
-                result = _store.InitializeFresh(WallDocument.Empty(initialColumns, initialRows));
-            if (result.Document is not null && result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious)
-            {
-                _current = result.Document;
-                _undoPrevious = null;
-                _undoCommitted = null;
-                _undoToken = null;
-                RequiresReopen = false;
-                _storeRecoveryBlocked = false;
-                _resultUnknown = false;
-                ViewBlocked = false;
-            }
-            else if (result.Status == WallOpenStatus.RecoveryBlocked)
-            {
-                MarkStoreRecoveryBlocked();
-            }
-            else if (result.Status == WallOpenStatus.OpenFailed)
-            {
-                // No recovery latch. An existing document or latch stays blocked.
-                if (RequiresReopen || _storeRecoveryBlocked || _resultUnknown || _current is not null)
-                    ViewBlocked = true;
-            }
-            else if (RequiresReopen || _storeRecoveryBlocked || _resultUnknown)
-            {
-                // A failed attempt to read the committed snapshot must not unlock the
-                // old in-memory document or make it look current again.
-                ViewBlocked = true;
-            }
-            return result;
+            return AcceptOpenResult(ReadOpenResult(initialColumns, initialRows));
         }
+    }
+
+    // Only the startup error page may retry in-process. A loaded session must obey
+    // the existing exit/reopen contract, including after an uncertain commit.
+    public Task<WallOpenResult> RetryInitialOpenAsync(int initialColumns, int initialRows)
+    {
+        lock (_gate)
+        {
+            if (_writePending || _current is not null || RequiresReopen || _resultUnknown)
+                throw new InvalidOperationException("The current session requires a full reopen or has pending storage work.");
+            if (_executor is null || _acceptOnUi is null)
+                throw new InvalidOperationException("Asynchronous storage has not been configured.");
+            _writePending = true;
+            return RetryInitialOpenReservedAsync(initialColumns, initialRows, _executor, _acceptOnUi);
+        }
+    }
+
+    private async Task<WallOpenResult> RetryInitialOpenReservedAsync(int columns, int rows,
+        IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
+    {
+        WallOpenResult? stored = null, accepted = null;
+        var live = true;
+        try
+        {
+            stored = await executor.ExecuteAsync(() => ReadOpenResult(columns, rows)).ConfigureAwait(false);
+            await acceptOnUi(() =>
+            {
+                lock (_gate)
+                {
+                    if (!live || accepted is not null) return;
+                    accepted = AcceptOpenResult(stored);
+                }
+            }).ConfigureAwait(false);
+            lock (_gate)
+            {
+                live = false;
+                if (accepted is null)
+                    throw new InvalidOperationException("The UI dispatcher completed without accepting the opened snapshot.");
+                return accepted;
+            }
+        }
+        catch
+        {
+            // Initialization/recovery may have published a manifest before an
+            // executor or acceptance failure. Never offer another in-process try.
+            lock (_gate)
+            {
+                live = false;
+                if (accepted is not null) return accepted;
+                if (stored?.Document is not null) MarkRequiresReopen();
+                else MarkResultUnknown();
+            }
+            throw;
+        }
+        finally { lock (_gate) { live = false; _writePending = false; } }
+    }
+
+    public string ValidatedDataRoot() => _store.ValidatedDataRoot();
+
+    private WallOpenResult ReadOpenResult(int initialColumns, int initialRows)
+    {
+        var result = _store.Open();
+        if (result.Status == WallOpenStatus.Fresh)
+        {
+            result = _store.InitializeFresh(WallDocument.Empty(initialColumns, initialRows));
+            if (result.Status == WallOpenStatus.Loaded && result.Document is not null)
+                result = result with { InitializedFresh = true };
+        }
+        else if (result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious &&
+            result.Document is { } document && UserDataSnapshotJson.RequiresUpgrade(document))
+        {
+            // Upgrade the complete trusted snapshot before it becomes editable UI state.
+            // This uses the ordinary joint transaction, independently of icon preparation.
+            if (document.Generation == long.MaxValue)
+                return new(WallOpenStatus.OpenFailed, null, ["Data upgrade generation overflow."])
+                    { BlockReason = WallOpenBlockReason.StorageAccess };
+            var upgraded = _store.Commit(document, new(document.Generation,
+                document with { Generation = document.Generation + 1 }, [])
+                { ExpectedManifestSha256 = result.ManifestSha256 });
+            if (upgraded.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup &&
+                upgraded.CommittedDocument is { } committed)
+                result = result with { Document = committed, ManifestSha256 = upgraded.ManifestSha256,
+                    Diagnostics = result.Diagnostics.Concat(upgraded.Diagnostics).ToArray() };
+            else
+                return new(upgraded.Status == WallCommitStatus.RecoveryBlocked ? WallOpenStatus.RecoveryBlocked : WallOpenStatus.OpenFailed,
+                    null, upgraded.Diagnostics)
+                    { BlockReason = upgraded.Status == WallCommitStatus.RecoveryBlocked ? WallOpenBlockReason.RecoveryMaterials : WallOpenBlockReason.StorageAccess };
+        }
+        return result;
+    }
+
+    private WallOpenResult AcceptOpenResult(WallOpenResult result)
+    {
+        if (result.Document is not null && result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious)
+        {
+            result = result with { Document = result.Document.ActiveView() };
+            _manifestSha256 = result.ManifestSha256 ?? throw new InvalidOperationException("The opened manifest fingerprint is unavailable.");
+            _current = result.Document;
+            RequiresReopen = false;
+            _storeRecoveryBlocked = false;
+            _resultUnknown = false;
+            ViewBlocked = false;
+        }
+        else if (result.Status == WallOpenStatus.RecoveryBlocked)
+        {
+            MarkStoreRecoveryBlocked();
+        }
+        else if (result.Status == WallOpenStatus.OpenFailed)
+        {
+            // No recovery latch. An existing document or latch stays blocked.
+            if (RequiresReopen || _storeRecoveryBlocked || _resultUnknown || _current is not null)
+                ViewBlocked = true;
+        }
+        else if (RequiresReopen || _storeRecoveryBlocked || _resultUnknown)
+        {
+            // A failed attempt to read the committed snapshot must not unlock the
+            // old in-memory document or make it look current again.
+            ViewBlocked = true;
+        }
+        return result;
     }
 
     public WallLayoutResult Propose(WallAction action, double workWidthDip, double workHeightDip,
@@ -147,7 +340,9 @@ internal sealed class WallSession
     }
 
     public WallSessionResult Commit(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
-        bool recordUndo = true, IReadOnlyList<PreparedMediaAsset>? mediaAssets = null)
+        IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
     {
         var timings = CreateCommitTimings();
         var total = timings?.Measure("session.total");
@@ -167,9 +362,15 @@ internal sealed class WallSession
                 generation = before.Generation;
                 // The store plans and validates the same request inside Commit; planning here
                 // duplicated the full-wall traversal for every save.
-                var request = new WallCommitRequest(before.Generation, proposal.Document, changes ?? [], mediaAssets);
+                var request = new WallCommitRequest(before.Generation, proposal.Document, changes ?? [], mediaAssets,
+                    expectedEntrySha256?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal), managedGalleries?.ToArray())
+                {
+                    PreserveStoredRecycleBin = true, RecycleBin = FreezeRecycleBin(proposal.RecycleBin),
+                    ClearRecycleBin = proposal.ClearRecycleBin,
+                    ExpectedManifestSha256 = _manifestSha256,
+                };
                 WallCommitResult result;
-                try { result = _store.Commit(before, request, recordUndo, timings); }
+                try { result = _store.Commit(before, request, timings); }
                 catch (Exception)
                 {
                     MarkResultUnknown();
@@ -184,7 +385,7 @@ internal sealed class WallSession
                     return new(false, false, result.Diagnostics);
                 }
 
-                var accepted = AcceptCommitted(before, result, committedDocument, recordUndo, timings);
+                var accepted = AcceptCommitted(result, committedDocument, timings);
                 if (timings is not null && accepted.ViewFailed) outcome += ":view-failed";
                 return accepted;
             }
@@ -199,7 +400,7 @@ internal sealed class WallSession
                 {
                     AppLog.Warn("CommitPerformance", JsonSerializer.Serialize(new
                     {
-                        schema = 1, measurement = "wall-time", generation, recordUndo,
+                        schema = 1, measurement = "wall-time", generation,
                         entryChanges = changes?.Count ?? 0, outcome,
                         stages = timings.Snapshot(),
                     }));
@@ -210,7 +411,9 @@ internal sealed class WallSession
     }
 
     public Task<WallSessionResult> CommitAsync(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
-        bool recordUndo = true, IReadOnlyList<PreparedMediaAsset>? mediaAssets = null)
+        IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
     {
         lock (_gate)
         {
@@ -219,18 +422,21 @@ internal sealed class WallSession
             if (_executor is null || _acceptOnUi is null)
                 throw new InvalidOperationException("Asynchronous storage has not been configured.");
             var before = Current;
-            var frozen = proposal with { Document = WallJson.Freeze(proposal.Document) };
+            var frozen = proposal with { Document = WallJson.Freeze(proposal.Document), RecycleBin = FreezeRecycleBin(proposal.RecycleBin) };
             var entryChanges = changes?.ToArray() ?? [];
             var preparedMedia = mediaAssets?.ToArray() ?? [];
+            var preconditions = expectedEntrySha256?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
             var reservation = new UiCommitReservation();
             _writePending = true;
             _activeUiCommit = reservation;
-            return CommitReservedAsync(before, frozen, entryChanges, recordUndo, preparedMedia, reservation, _executor, _acceptOnUi);
+            return CommitReservedAsync(before, frozen, entryChanges, preparedMedia, managedGalleries?.ToArray() ?? [], preconditions, _manifestSha256!, reservation, _executor, _acceptOnUi);
         }
     }
 
     private async Task<WallSessionResult> CommitReservedAsync(WallDocument before, WallProposal proposal,
-        IReadOnlyList<EntryChange> changes, bool recordUndo, IReadOnlyList<PreparedMediaAsset> mediaAssets, UiCommitReservation reservation,
+        IReadOnlyList<EntryChange> changes, IReadOnlyList<PreparedMediaAsset> mediaAssets,
+        IReadOnlyList<PreparedManagedGallery> managedGalleries, IReadOnlyDictionary<string, string>? expectedEntrySha256,
+        string manifestSha256, UiCommitReservation reservation,
         IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
     {
         var timings = CreateCommitTimings();
@@ -247,8 +453,13 @@ internal sealed class WallSession
                 storageThread = Environment.CurrentManagedThreadId;
                 // Commit owns planning; a second PlanEntries here duplicated the full wall.
                 return _store.Commit(before,
-                    new WallCommitRequest(before.Generation, proposal.Document, changes, mediaAssets),
-                    recordUndo, timings);
+                    new WallCommitRequest(before.Generation, proposal.Document, changes, mediaAssets, expectedEntrySha256, managedGalleries)
+                    {
+                        PreserveStoredRecycleBin = true, RecycleBin = proposal.RecycleBin,
+                        ClearRecycleBin = proposal.ClearRecycleBin,
+                        ExpectedManifestSha256 = manifestSha256,
+                    },
+                    timings);
             }).ConfigureAwait(false);
             outcome = stored.Status.ToString();
             if (stored.Status == WallCommitStatus.RecoveryBlocked)
@@ -287,7 +498,7 @@ internal sealed class WallSession
                     // once. Only the live reservation can publish this disk snapshot.
                     if (!ReferenceEquals(_activeUiCommit, reservation) || accepted is not null) return;
                     acceptanceThread = Environment.CurrentManagedThreadId;
-                    accepted = AcceptCommitted(before, stored, committedDocument, recordUndo, timings);
+                    accepted = AcceptCommitted(stored, committedDocument, timings);
                 }
             }).ConfigureAwait(false);
             lock (_gate)
@@ -343,7 +554,7 @@ internal sealed class WallSession
                 {
                     AppLog.Warn("CommitPerformance", JsonSerializer.Serialize(new
                     {
-                        schema = 2, measurement = "wall-time", generation = before.Generation, recordUndo,
+                        schema = 2, measurement = "wall-time", generation = before.Generation,
                         entryChanges = changes.Count, outcome, asynchronous = true,
                         storageThread, acceptanceThread, stages = timings.Snapshot(),
                     }));
@@ -353,18 +564,13 @@ internal sealed class WallSession
         }
     }
 
-    private WallSessionResult AcceptCommitted(WallDocument before, WallCommitResult result,
-        WallDocument committedDocument, bool recordUndo, WallCommitTimings? timings)
+    private WallSessionResult AcceptCommitted(WallCommitResult result,
+        WallDocument committedDocument, WallCommitTimings? timings)
     {
         // Called only on the UI acceptance path; disk replacement is the commit point.
         // WallStore returns a frozen snapshot from every accepting path.
-        using (timings?.Measure("session.publish")) _current = committedDocument;
-        if (recordUndo)
-        {
-            _undoPrevious = result.Undo is null ? null : before;
-            _undoCommitted = result.Undo is null ? null : committedDocument;
-            _undoToken = result.Undo;
-        }
+        _manifestSha256 = result.ManifestSha256 ?? throw new InvalidOperationException("The committed manifest fingerprint is unavailable.");
+        using (timings?.Measure("session.publish")) _current = committedDocument.ActiveView();
         bool viewOkay;
         using (timings?.Measure("session.viewRefresh")) viewOkay = RefreshViewCore();
         return new(true, result.Status == WallCommitStatus.CommittedNeedsCleanup,
@@ -372,6 +578,11 @@ internal sealed class WallSession
     }
 
     private static WallSessionResult BusyResult() => new(false, false, ["A storage operation is pending."]);
+
+    private static RecycleBinSnapshot? FreezeRecycleBin(RecycleBinSnapshot? snapshot) => snapshot is null ? null : snapshot with
+    {
+        Members = WallJson.Freeze(WallDocument.Empty(1, 1) with { InactiveMembers = snapshot.Members }).InactiveMembers,
+    };
 
     private WallSessionResult BlockedViewResult() =>
         new(false, false, [ViewBlockedDiagnostic()]);
@@ -409,47 +620,6 @@ internal sealed class WallSession
         catch { return null; }
     }
 
-    public WallSessionResult Undo(Func<WallDocument, string?>? preflight = null)
-    {
-        lock (_gate)
-        {
-            if (_writePending) return BusyResult();
-            if (ViewBlocked) return BlockedViewResult();
-            if (_undoPrevious is null || _undoCommitted is null || _undoToken is null)
-                return new(false, false, ["没有可撤销的操作。"]);
-            // Store undo preserves current settings and can therefore restore a layout
-            // created in a different viewport mode. Check that exact geometry under the
-            // same lock before touching disk or consuming the active undo material.
-            var prepared = WallStore.PrepareUndoCandidate(_undoPrevious, _undoCommitted, Current);
-            if (prepared.Proposal is not { } undoProposal)
-                return new(false, false, [prepared.Detail ?? prepared.Rejection.ToString()]);
-            var candidate = undoProposal.Document;
-            if (preflight?.Invoke(candidate) is { } rejection)
-                return new(false, false, [rejection]);
-            WallCommitResult result;
-            try { result = _store.Undo(Current, _undoPrevious, _undoToken, Current.Generation, candidate); }
-            catch (Exception)
-            {
-                MarkResultUnknown();
-                throw;
-            }
-            if (result.Status is not (WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup) ||
-                result.CommittedDocument is null)
-            {
-                if (result.Status == WallCommitStatus.RecoveryBlocked)
-                    MarkStoreRecoveryBlocked();
-                return new(false, false, result.Diagnostics);
-            }
-            _current = result.CommittedDocument;
-            _undoPrevious = null;
-            _undoCommitted = null;
-            _undoToken = null;
-            var viewOkay = RefreshViewCore();
-            return new(true, result.Status == WallCommitStatus.CommittedNeedsCleanup,
-                viewOkay ? result.Diagnostics : [.. result.Diagnostics, "Undo committed on disk; view refresh failed."],
-                !viewOkay);
-        }
-    }
 }
 
 internal sealed record WallSessionResult(bool Committed, bool NeedsCleanup,

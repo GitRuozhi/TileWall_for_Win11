@@ -11,13 +11,15 @@ public sealed partial class MainWindow
 {
     private StaStorageExecutor? _storageExecutor;
     private Task<string?>? _pendingPersistence;
+    private Task? _pendingInitialOpen;
+    private bool _openingWall;
     private Task? _shutdown;
     private bool _shutdownStarted;
     private bool ShutdownStarted => _shutdownStarted;
     private bool _persistencePending, _persistenceAdmissionClosed, _pendingCarouselCommit;
     private bool _environmentAfterPersistence;
     private readonly ExitDraftSavePermission _exitDraftSave = new();
-    private bool PersistenceInteractionBlocked => _persistencePending || _persistenceAdmissionClosed;
+    private bool PersistenceInteractionBlocked => _persistencePending || _persistenceAdmissionClosed || _openingWall;
     internal bool PersistenceBusy => PersistenceInteractionBlocked;
     internal void TraceExit(string stage) => TraceInput("Exit " + stage);
     internal bool PersistenceMutationBlocked =>
@@ -40,8 +42,7 @@ public sealed partial class MainWindow
         _session.ConfigureAsyncExecution(_storageExecutor, AcceptStorageOnUiAsync);
         _images.ConfigureStorage(_session.DataRoot,
             action => _storageExecutor.ExecuteAsync(() => { action(); return true; }),
-            id => !_hasDocument || _windowClosing ? null : _session.Current.Lanes.SelectMany(lane => lane.Groups)
-                .SelectMany(group => group.Members).Concat(_session.Current.InactiveMembers).FirstOrDefault(member => member.Id == id));
+            _session.AcquireResourceReadLease);
     }
 
     private Task AcceptStorageOnUiAsync(Action accept)
@@ -64,8 +65,10 @@ public sealed partial class MainWindow
     }
 
     private Task<string?> CommitProposalAsync(WallProposal proposal,
-        IReadOnlyList<EntryChange>? changes = null, bool recordUndo = true, bool carousel = false,
-        Action<string?>? settle = null)
+        IReadOnlyList<EntryChange>? changes = null, bool carousel = false,
+        Action<string?>? settle = null, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
     {
         Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
         if (PersistenceInteractionBlocked) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
@@ -75,23 +78,25 @@ public sealed partial class MainWindow
         _persistencePending = true;
         _pendingCarouselCommit = carousel;
         _puzzles.SetPersistenceBusy(true);
-        WallRoot.IsHitTestVisible = false;
+        UpdateWallHitTesting();
         Surface.IsHitTestVisible = false;
         UpdateResizeZones();
-        var operation = CommitProposalAsyncCore(proposal, changes, recordUndo, settle);
+        var operation = CommitProposalAsyncCore(proposal, changes, settle, preparedMedia, expectedEntrySha256, managedGalleries);
         _pendingPersistence = operation.IsCompleted ? null : operation;
         return operation;
     }
 
     private async Task<string?> CommitProposalAsyncCore(WallProposal proposal,
-        IReadOnlyList<EntryChange>? changes, bool recordUndo, Action<string?>? settle)
+        IReadOnlyList<EntryChange>? changes, Action<string?>? settle, IReadOnlyList<PreparedMediaAsset>? preparedMedia,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256, IReadOnlyList<PreparedManagedGallery>? managedGalleries)
     {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         string? error = null;
         try
         {
-            var media = await PrepareFormalMediaAsync(proposal);
-            var result = await _session.CommitAsync(media.Proposal, changes, recordUndo, media.Assets);
+            var media = await PrepareFormalMediaAsync(proposal, changes, Scale);
+            var result = await _session.CommitAsync(media.Proposal, changes,
+                AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia), expectedEntrySha256, managedGalleries);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);
             error = DescribeCommit(result);
         }
@@ -123,7 +128,7 @@ public sealed partial class MainWindow
                 if (!_windowClosing)
                 {
                     Surface.IsHitTestVisible = !_viewBlocked && !_persistenceAdmissionClosed;
-                    WallRoot.IsHitTestVisible = !_persistenceAdmissionClosed;
+                    UpdateWallHitTesting();
                     _puzzles.SetPersistenceBusy(_persistenceAdmissionClosed);
                     UpdateResizeZones();
                     if (_environmentAfterPersistence)
@@ -137,12 +142,18 @@ public sealed partial class MainWindow
         return error;
     }
 
-    private void SettleReleasePersistence(string? error)
+    private void SettleReleasePersistence(string? error, bool automaticHeight = false)
     {
         _performance.End(error is null ? "release" : "commit-rejected", Surface.VisualCreationCount, Surface.GridCreationCount);
         if (error is not null)
         {
-            if (!_viewBlocked) { Surface.Render(Document); ApplyViewport(animateMode: false); }
+            if (!_viewBlocked && !_windowClosing && !ShutdownStarted)
+            {
+                if (automaticHeight && !Settings.FullScreen && Surface.Geometry?.WallHeight != _metrics.WallHeight(Document.Rows))
+                    Surface.BeginAutomaticHeightPresentation();
+                Surface.Render(Document);
+                ApplyViewport(animateMode: false, animateHeight: automaticHeight);
+            }
             Status(error);
         }
     }
@@ -151,7 +162,7 @@ public sealed partial class MainWindow
     {
         _persistenceAdmissionClosed = true;
         _puzzles.SetPersistenceBusy(true);
-        WallRoot.IsHitTestVisible = false;
+        UpdateWallHitTesting();
         Surface.IsHitTestVisible = false;
         UpdateResizeZones();
         CancelTransientState();
@@ -162,7 +173,7 @@ public sealed partial class MainWindow
         _persistenceAdmissionClosed = false;
         if (_windowClosing) return;
         _puzzles.SetPersistenceBusy(_persistencePending);
-        WallRoot.IsHitTestVisible = !_persistencePending;
+        UpdateWallHitTesting();
         Surface.IsHitTestVisible = !_persistencePending && !_viewBlocked;
         UpdateResizeZones();
         ImportReadinessChanged?.Invoke();
@@ -170,6 +181,7 @@ public sealed partial class MainWindow
 
     internal async Task DrainPersistenceAsync()
     {
+        while (_pendingInitialOpen is { } opening) await opening;
         while (_pendingPersistence is { } pending) await pending;
     }
 
@@ -178,10 +190,13 @@ public sealed partial class MainWindow
     private async Task ShutdownPersistenceCoreAsync()
     {
         _shutdownStarted = true;
+        CancelWelcomeInitialization();
+        await WaitForWelcomeInitializationAsync();
         _statusTimer.Stop();
         _clockTimer.Stop();
         _focusCheckRetry?.Stop();
         _viewportTransition = null;
+        Surface.EndAutomaticHeightPresentation();
         CancelTransientState();
         StopFrameSubscriptionIfIdle();
         await ShutdownInteractionSchedulingAsync();

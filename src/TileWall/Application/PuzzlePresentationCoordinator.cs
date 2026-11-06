@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Microsoft.UI.Dispatching;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
 using TileWall.Core.Imaging;
+using TileWall.Core.Storage;
 using TileWall.Graphics;
 using TileWall.Resources;
 using Windows.Foundation.Metadata;
@@ -30,7 +32,10 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         public long FlipStarted;
         public bool Flipping;
         public bool NeedsInitial = true;
-        public bool RestoreEvictedFrame;
+        public bool CurrentPrepared;
+        public bool PreparingCurrent;
+        public PreparedAutomaticIconSeries? PreparedAutomaticSeries;
+        public bool ValidateAutomatic;
         public bool FrameLoadUnavailable;
         public bool Persisting;
         public int PendingPages;
@@ -42,8 +47,17 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         public int TargetHeight;
     }
 
+    private sealed record CurrentFrameKey(MemberImageSource Source, MemberResourceOrigin Origin,
+        string? Entry, string? Target, string? SourceShortcut, int Width, int Height, MemberImageDisplay Display,
+        bool Blur, string? Image, string? SourceVersion, string? IconIdentity, AutomaticIconFrame? IconFrame,
+        AutomaticIconFrame? DisplayFrame);
+
     private readonly Dictionary<string, State> _states = new(StringComparer.Ordinal);
+    private readonly Dictionary<CurrentFrameKey, Task<PuzzleFrameResult>> _currentLoads = [];
+    private readonly ConditionalWeakTable<PuzzleFrame, CurrentFrameKey> _frameKeys = new();
     private HashSet<string> _visibleMembers = new(StringComparer.Ordinal);
+    private bool _preparationAllowed = true;
+    private bool _presentedBefore;
     private readonly WallImageService _images;
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _timer;
@@ -79,6 +93,32 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     public event Action<string, PuzzleFrame?, double>? FrameChanged;
     public event Action<MemberImageSource, PuzzleCandidateResult>? GalleryCandidatesChanged;
     public Func<WallMember, string?>? ResolveEntryPath { get; set; }
+    public Func<WallMember, PreparedAutomaticIconSeries, Func<bool>, Task<string?>>? PersistAutomaticSeries { get; set; }
+
+    internal (int Members, int Frames, int Bitmaps, long PixelBytes) ResidentMemory
+    {
+        get
+        {
+            var frames = new HashSet<PuzzleFrame>(ReferenceEqualityComparer.Instance);
+            var bitmaps = new HashSet<object>(ReferenceEqualityComparer.Instance);
+            var members = 0;
+            long bytes = 0;
+            foreach (var state in _states.Values)
+            {
+                if (state.Frame is not null) members++;
+                foreach (var frame in new[] { state.Frame, state.NextFrame, state.PreviousFrame })
+                {
+                    if (frame is null || !frames.Add(frame)) continue;
+                    if (bitmaps.Add(frame.Sharp)) bytes += 4L * (long)frame.SharpDecodedPixels.Width * (long)frame.SharpDecodedPixels.Height;
+                    if (frame.BlurredUnderfill is { } blur && bitmaps.Add(blur))
+                        bytes += 4L * (long)frame.BlurDecodedPixels.Width * (long)frame.BlurDecodedPixels.Height;
+                }
+            }
+            // Counts XAML bitmap pixels, including current transition layers. The
+            // service history cache and any device copies are separate allocations.
+            return (members, frames.Count, bitmaps.Count, bytes);
+        }
+    }
 
     public PuzzlePresentationCoordinator(WallImageService images, DispatcherQueue dispatcher,
         Func<double> scale, Func<string, ImageCarouselState, Func<bool>, Task<string?>> persist,
@@ -109,16 +149,18 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         }
     }
 
-    public PuzzleFrame? FrameFor(string id) => IsResident(id) && _states.TryGetValue(id, out var state)
+    public PuzzleFrame? FrameFor(string id) => _states.TryGetValue(id, out var state)
         ? VisibleFrame(state) : null;
+    public PreparedAutomaticIconSeries? PreparedSeriesFor(string id) => _states.TryGetValue(id, out var state)
+        ? state.PreparedAutomaticSeries : null;
     public double ProgressFor(string id) => _states.TryGetValue(id, out var state) ? state.Progress : 1;
-    public MemberTransition? TransitionFor(string id) => IsResident(id) && _states.TryGetValue(id, out var state)
+    public MemberTransition? TransitionFor(string id) => _states.TryGetValue(id, out var state)
         ? state.Flipping
             ? new(state.PreviousFrame, state.NextFrame, state.Effect, state.Progress, state.PartitionOrdinals)
             : new(null, state.Frame, MemberTransitionEffect.None, 1)
         : null;
 
-    /// <summary>The caller supplies the viewport plus its preload margin. Until supplied, no wall frames load.</summary>
+    /// <summary>Visibility controls presentation and carousel commits; the wall owns every current frame.</summary>
     public void SetVisibleMembers(IReadOnlySet<string> ids)
     {
         ArgumentNullException.ThrowIfNull(ids);
@@ -126,13 +168,29 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         var previous = _visibleMembers;
         _visibleMembers = new HashSet<string>(ids, StringComparer.Ordinal);
         foreach (var state in _states.Values)
-            if (previous.Contains(state.Member.Id) && !IsResident(state.Member.Id)) ReleaseFrames(state);
+            if (previous.Contains(state.Member.Id) && !IsPresented(state.Member.Id)) SuspendPresentation(state);
         CancelUnusedGalleryRequests();
         UpdateAnimationClock();
         QueueCheck(false);
     }
 
-    private bool IsResident(string id) => _gate != MemberCarouselGate.Hidden && _visibleMembers.Contains(id);
+    private bool IsPresented(string id) => _gate != MemberCarouselGate.Hidden && _visibleMembers.Contains(id);
+
+    public void SetPreparationAllowed(bool allowed)
+    {
+        if (_disposed || _stopping || _preparationAllowed == allowed) return;
+        _preparationAllowed = allowed;
+        if (!allowed)
+            foreach (var state in _states.Values) Cancel(state);
+        QueueCheck(false);
+    }
+
+    private void SuspendPresentation(State state)
+    {
+        if (!state.PreparingCurrent && !(state.PreparedAutomaticSeries is not null && _gate == MemberCarouselGate.Ready))
+            Cancel(state);
+        if (state.Flipping) FinishFlip(state);
+    }
 
     private bool ReadAnimationsEnabled()
     {
@@ -163,11 +221,17 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     {
         if (_disposed || _stopping) return;
         foreach (var state in _states.Values)
-            if (IsResident(state.Member.Id) && state.Member is PuzzleMember && CouldAdvance(state)) state.PendingPages++;
+            if (IsPresented(state.Member.Id) && state.Member is PuzzleMember && CouldAdvance(state)) state.PendingPages++;
         QueueCheck(false);
     }
 
     private static bool CouldAdvance(State state) => state.Member.Images.Kind == MemberImageSourceKind.Folder;
+
+    private static bool ReadableSource(WallMember member) => member.ResourceOrigin != MemberResourceOrigin.Package ||
+        member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is not null ||
+        member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is not null ||
+        member.Images.Kind == MemberImageSourceKind.Folder && member.Images.ManagedGallery is not null ||
+        member.Images.Kind == MemberImageSourceKind.None;
 
     public void SetEditorGallerySource(MemberImageSource? source)
     {
@@ -184,7 +248,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             .Where(m => m is TileMember or PuzzleMember).ToDictionary(p => p.Id, StringComparer.Ordinal);
         foreach (var id in _states.Keys.Except(members.Keys).ToArray())
         {
-            Cancel(_states[id]);
+            ReleaseFrames(_states[id]);
             _states.Remove(id);
         }
         foreach (var (id, member) in members)
@@ -194,9 +258,11 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 _states[id] = new State(member) { TargetWidth = width, TargetHeight = height };
             else
             {
-                var changed = !SameSource(state.Member.Images, member.Images) ||
-                    state.Member.Images.Kind == MemberImageSourceKind.Automatic &&
-                    (state.Member.TargetInput != member.TargetInput || state.Member.Entry != member.Entry);
+                var automaticEntryChanged = state.Member.Images.Kind == MemberImageSourceKind.Automatic &&
+                    (state.Member.TargetInput != member.TargetInput || state.Member.Entry != member.Entry ||
+                     state.Member.SourceShortcutPath != member.SourceShortcutPath);
+                var changed = state.Member.ResourceOrigin != member.ResourceOrigin ||
+                    !SameSource(state.Member.Images, member.Images) || automaticEntryChanged;
                 var qualityChanged = state.Member.ImageDisplay != member.ImageDisplay;
                 var sizeChanged = state.TargetWidth != width || state.TargetHeight != height;
                 var partitionsChanged = state.Member is PuzzleMember previousPuzzle && member is PuzzleMember puzzle &&
@@ -207,15 +273,40 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                     state.Member.Carousel?.CurrentImageId, member.Carousel?.CurrentImageId);
                 var blurChanged = (state.Member.Visual.BackgroundMode == MemberBackgroundMode.Blur)
                     != (member.Visual.BackgroundMode == MemberBackgroundMode.Blur);
+                // Only acceptance of this state's already displayed capture can bind
+                // formal media without replacing the frame. A different source or
+                // display demand must still reject/cancel the old preparation below.
+                var adoptPrepared = changed && !automaticEntryChanged && !sizeChanged && !qualityChanged &&
+                    !blurChanged && !selectedChanged && !partitionsChanged && !state.Flipping &&
+                    state.CurrentPrepared && !state.FrameLoadUnavailable && state.Frame is not null &&
+                    state.Member.ResourceOrigin == MemberResourceOrigin.Local && member.ResourceOrigin == MemberResourceOrigin.Local &&
+                    state.Member.Images.Kind == MemberImageSourceKind.Automatic && state.Member.Images.IconSeries is null &&
+                    state.PreparedAutomaticSeries is { } prepared &&
+                    AutomaticIconSeriesRules.SameSeries(prepared.Series, member.Images.IconSeries) &&
+                    SameSource(state.Member.Images, member.Images with { IconSeries = null });
                 state.Member = member;
+                if (adoptPrepared)
+                {
+                    changed = false;
+                    state.PreparedAutomaticSeries = null;
+                    state.NeedsInitial = false;
+                    state.ValidateAutomatic = false;
+                    var frame = state.Frame!;
+                    _frameKeys.Remove(frame);
+                    _frameKeys.Add(frame, FrameKeyFor(state, null, null));
+                    Trace($"AdoptedAutomaticSeries member={member.Id}");
+                }
                 if (partitionsChanged && state.Flipping) FinishFlip(state);
                 if (changed || sizeChanged || qualityChanged || blurChanged || selectedChanged && !state.Persisting)
                 {
                     Cancel(state);
                     // A captured next image is already the committed carousel image. Never
                     // leave its old half-frame behind when editing or replacing a source.
-                    // A blur-demand change cannot keep a frame decoded for the other demand.
-                    state.Frame = changed || blurChanged ? null : state.NextFrame ?? state.Frame;
+                    // Size/quality/underfill changes can keep the valid sharp frame
+                    // while its replacement is prepared.
+                    state.Frame = changed || selectedChanged && !state.Persisting ? null : state.NextFrame ?? state.Frame;
+                    state.CurrentPrepared = false;
+                    state.ValidateAutomatic = false;
                     state.Flipping = false;
                     state.Capture = null;
                     state.NextFrame = null;
@@ -225,7 +316,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                     state.PartitionOrdinals = null;
                     // Only a different image source invalidates the enumerated snapshot.
                     // Size, display quality, blur demand and the selected image reload frames from it.
-                    if (changed) { state.Candidates = null; state.SourceVersion = null; state.PendingGallery = null; }
+                    if (changed) { state.Candidates = null; state.SourceVersion = null; state.PendingGallery = null; state.PreparedAutomaticSeries = null; }
                     state.NeedsInitial = true;
                     state.FrameLoadUnavailable = false;
                     state.Runtime = new(false, 0, [], null);
@@ -236,6 +327,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         UpdateAnimationClock();
         CancelUnusedGalleryRequests();
         QueueCheck(false);
+        TraceResidentMemory();
     }
 
     public void SetGate(MemberCarouselGate gate)
@@ -243,18 +335,22 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         if (_disposed || _stopping || _gate == gate) return;
         var previousGate = _gate;
         _gate = gate;
+        if (gate == MemberCarouselGate.Ready && previousGate == MemberCarouselGate.Hidden)
+        {
+            if (_presentedBefore)
+                foreach (var state in _states.Values)
+                    state.ValidateAutomatic = state.Member.Images.Kind == MemberImageSourceKind.Automatic &&
+                        state.Member.Images.IconSeries is null &&
+                        state.Frame is { MemoryCacheAllowed: true };
+            _presentedBefore = true;
+        }
         Trace($"Gate={gate}");
         _timer.Stop();
         if (gate != MemberCarouselGate.Ready)
         {
             foreach (var state in _states.Values.ToArray())
             {
-                if (gate == MemberCarouselGate.Hidden) ReleaseFrames(state);
-                else
-                {
-                    Cancel(state);
-                    if (state.Flipping) FinishFlip(state);
-                }
+                SuspendPresentation(state);
             }
             Trace("HideCancelOrSuspend");
         }
@@ -274,7 +370,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     private void UpdateAnimationClock()
     {
         var needed = !_disposed && !_stopping && _gate == MemberCarouselGate.Ready &&
-            _states.Values.Any(s => IsResident(s.Member.Id) && s.Flipping);
+            _states.Values.Any(s => IsPresented(s.Member.Id) && s.Flipping);
         if (needed == _animationClockRunning) return;
         _animationClockRunning = needed;
         if (needed) _animationTimer.Start();
@@ -286,7 +382,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         if (_disposed || _stopping || _gate != MemberCarouselGate.Ready) return;
         foreach (var state in _states.Values.ToArray())
         {
-            if (!IsResident(state.Member.Id) || !state.Flipping) continue;
+            if (!IsPresented(state.Member.Id) || !state.Flipping) continue;
             state.Progress = Math.Clamp(Stopwatch.GetElapsedTime(state.FlipStarted).TotalMilliseconds /
                 PartitionTransitionTiming.DurationMilliseconds(state.PartitionOrdinals?.Count ?? 1), 0, 1);
             if (state.Progress >= 1) FinishFlip(state);
@@ -312,6 +408,15 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         _queuedExplicit |= explicitCheck;
         if (_disposed || _stopping) return;
         _timer.Stop();
+        if (!_preparationAllowed) return;
+        // These reads never select a different gallery image or save carousel state.
+        // Queue the first viewport first, then actively prepare the rest of the wall.
+        foreach (var state in _states.Values.OrderByDescending(state => _visibleMembers.Contains(state.Member.Id)).ToArray())
+            if (state.Cancellation is null)
+            {
+                if (!state.CurrentPrepared) TrackWork(PrepareCurrentAsync(state));
+                else if (state.ValidateAutomatic) TrackWork(ValidateCurrentAutomaticAsync(state));
+            }
         // Directory deadlines belong to visible sources, independently of the
         // carousel's modal/gesture/save gate and of empty/passive shuffle queues.
         var wake = CheckGallerySources();
@@ -322,7 +427,15 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         ApplyAnimationPreference();
         foreach (var state in _states.Values.ToArray())
         {
-            if (!IsResident(state.Member.Id)) continue;
+            // Native captures belong to every held wall frame. Adopt them while
+            // the wall is ready, including members outside the current viewport.
+            if (state.PreparedAutomaticSeries is not null)
+            {
+                if (state.Cancellation is null && state.NeedsInitial && (!state.Runtime.Passive || explicitCheck))
+                    TrackWork(LoadInitialAsync(state));
+                continue;
+            }
+            if (!IsPresented(state.Member.Id)) continue;
             if (state.PendingGallery is { } snapshot && state.Cancellation is null && !state.Flipping)
             { state.PendingGallery = null; ApplyGallerySnapshot(state, snapshot); }
             if (state.Flipping)
@@ -339,11 +452,12 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 TrackWork(LoadNextAsync(state, NextPageDecision(state), manual: true));
                 continue;
             }
-            if (explicitCheck && state.Member.Images.Kind == MemberImageSourceKind.Folder)
+            if (explicitCheck && state.Member.Images.Kind == MemberImageSourceKind.Folder &&
+                (state.Frame is null || state.FrameLoadUnavailable))
                 state.NeedsInitial = true;
             if (state.NeedsInitial)
             {
-                if (!state.Runtime.Passive || state.RestoreEvictedFrame || explicitCheck) TrackWork(LoadInitialAsync(state));
+                if (!state.Runtime.Passive || explicitCheck) TrackWork(LoadInitialAsync(state));
                 continue;
             }
             if (state.Member.Images.Kind != MemberImageSourceKind.Folder) continue;
@@ -368,7 +482,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
 
     private TimeSpan? CheckGallerySources()
     {
-        IEnumerable<MemberImageSource> wallSources = _states.Values.Where(state => IsResident(state.Member.Id)).Select(state => state.Member.Images)
+        IEnumerable<MemberImageSource> wallSources = _states.Values.Where(state => IsPresented(state.Member.Id) && ReadableSource(state.Member)).Select(state => state.Member.Images)
             .Where(source => source.Kind == MemberImageSourceKind.Folder);
         IEnumerable<MemberImageSource> editorSources = _editorGallery is { } editor ? [editor] : [];
         var sources = wallSources.Concat(editorSources)
@@ -391,7 +505,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     }
 
     private bool HasResidentSource(MemberImageSource source) => _states.Values.Any(state =>
-        IsResident(state.Member.Id) && SameSource(state.Member.Images, source));
+        IsPresented(state.Member.Id) && ReadableSource(state.Member) && SameSource(state.Member.Images, source));
 
     private void CancelUnusedGalleryRequests()
     {
@@ -410,7 +524,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             var wallVisible = HasResidentSource(source);
             if (_editorGallery is { } editor && SameSource(editor, source)) GalleryCandidatesChanged?.Invoke(source, snapshot);
             if (wallVisible)
-                foreach (var state in _states.Values.Where(state => IsResident(state.Member.Id) && SameSource(state.Member.Images, source)))
+                foreach (var state in _states.Values.Where(state => IsPresented(state.Member.Id) && ReadableSource(state.Member) && SameSource(state.Member.Images, source)))
                     state.PendingGallery = snapshot;
             if (WallImageService.DescribeCandidateDiagnostic(snapshot) is { Length: > 0 } diagnostic && wallVisible && _galleryDiagnostics.GetValueOrDefault(key) != diagnostic)
                 _error(diagnostic);
@@ -455,26 +569,117 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         { state.NeedsInitial = true; state.Runtime = new(false, 0, [], null); }
     }
 
+    private async Task PrepareCurrentAsync(State state)
+    {
+        var (generation, token) = BeginRequest(state, preparingCurrent: true);
+        try
+        {
+            var folder = state.Member.Images.Kind == MemberImageSourceKind.Folder;
+            var current = state.Member.Carousel?.CurrentImageId;
+            if (!ReadableSource(state.Member))
+            {
+                state.CurrentPrepared = true;
+                state.NeedsInitial = false;
+                state.Frame = null;
+                Publish(state);
+                return;
+            }
+            // A gallery with no committed selection belongs to the normal visible
+            // initialization transaction. Do not enumerate or consume its queue here.
+            if (folder && string.IsNullOrWhiteSpace(current))
+            { state.CurrentPrepared = true; return; }
+            if (state.Member.Images.Kind == MemberImageSourceKind.Automatic && state.Member.Images.IconSeries is null &&
+                state.Member.ResourceOrigin == MemberResourceOrigin.Local && state.PreparedAutomaticSeries is null)
+            {
+                var requested = state.Member;
+                var entry = ResolveEntryPath?.Invoke(requested) ?? requested.SourceShortcutPath ?? requested.TargetInput;
+                var prepared = await _images.PrepareAutomaticIconSeriesAsync(requested, entry,
+                    state.TargetWidth, state.TargetHeight, token);
+                if (!Current(state, generation)) return;
+                if (prepared is not null)
+                    state.PreparedAutomaticSeries = prepared;
+            }
+            var result = state.PreparedAutomaticSeries is { } draftSeries
+                ? await _images.LoadPreparedAutomaticIconFrameAsync(state.Member, draftSeries,
+                    state.TargetWidth, state.TargetHeight, token)
+                : await RequestFrameAsync(state, folder ? current : null, token);
+            if (!Current(state, generation)) return;
+            state.CurrentPrepared = true;
+            if (result.Frame is { } frame) state.Frame = frame;
+            else if (result.Status == WallImageStatus.None) state.Frame = null;
+            var available = result.Frame is not null || result.Status == WallImageStatus.None;
+            state.FrameLoadUnavailable = !available;
+            state.NeedsInitial = folder ? !available || state.Member.Carousel?.LastSwitchUtc is null
+                : state.PreparedAutomaticSeries is not null || !available;
+            state.Runtime = new(!available, 0, [], null);
+            Publish(state);
+            Trace($"PreparedCurrent member={state.Member.Id} status={result.Status} hidden={_gate == MemberCarouselGate.Hidden} diagnostic={result.Diagnostic}");
+            TraceResidentMemory();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            if (Current(state, generation))
+            { state.CurrentPrepared = true; Fail(state, ex); }
+        }
+        finally { EndRequest(state, generation); }
+    }
+
+    private async Task ValidateCurrentAutomaticAsync(State state)
+    {
+        var (generation, token) = BeginRequest(state, preparingCurrent: true);
+        var frame = state.Frame!;
+        try
+        {
+            var valid = await _images.IsAutomaticFrameCurrentAsync(frame,
+                ResolveEntryPath?.Invoke(state.Member) ?? state.Member.TargetInput, token, heldByCurrentWall: true);
+            if (!Current(state, generation) || !ReferenceEquals(frame, state.Frame)) return;
+            state.ValidateAutomatic = false;
+            if (!valid)
+            {
+                _frameKeys.Remove(frame);
+                state.CurrentPrepared = false;
+                state.NeedsInitial = true;
+                state.Runtime = new(false, 0, [], null);
+            }
+            Trace($"ValidateCurrent member={state.Member.Id} current={valid}");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            if (Current(state, generation))
+            { state.ValidateAutomatic = false; AppLog.Warn("PuzzleSourceValidation", ex.GetType().Name); }
+        }
+        finally { EndRequest(state, generation); }
+    }
+
     private async Task LoadInitialAsync(State state)
     {
         var (generation, token) = BeginRequest(state);
-        var resumePassive = state.RestoreEvictedFrame && state.Runtime.Passive;
-        var resumedRuntime = state.Runtime;
         try
         {
+            if (!ReadableSource(state.Member)) { state.NeedsInitial = false; return; }
+            if (state.PreparedAutomaticSeries is { } prepared && PersistAutomaticSeries is { } persist)
+            {
+                var error = await persist(state.Member, prepared, () => Current(state, generation) &&
+                    _gate == MemberCarouselGate.Ready);
+                if (!Current(state, generation)) return;
+                if (error is not null)
+                { state.Runtime = state.Runtime with { Passive = true }; _error(error); }
+                return;
+            }
             if (state.Member.Images.Kind != MemberImageSourceKind.Folder)
             {
-                var staticFrame = await _images.LoadMemberFrameAsync(state.Member,
-                    ResolveEntryPath?.Invoke(state.Member) ?? state.Member.TargetInput,
-                    state.TargetWidth, state.TargetHeight, ct: token);
+                var staticFrame = await RequestFrameAsync(state, null, token);
                 Trace($"StaticFrame member={state.Member.Id} status={staticFrame.Status} diagnostic={staticFrame.Diagnostic}");
                 if (!Current(state, generation)) return;
                 if (staticFrame.Frame is { } loaded) state.Frame = loaded;
                 else if (staticFrame.Status == WallImageStatus.None) state.Frame = null;
-                state.NeedsInitial = false;
-                state.RestoreEvictedFrame = false;
+                var available = staticFrame.Frame is not null || staticFrame.Status == WallImageStatus.None;
+                state.NeedsInitial = !available;
+                state.FrameLoadUnavailable = !available;
                 state.Progress = 1;
-                state.Runtime = new(false, 0, [], null);
+                state.Runtime = new(!available, 0, [], null);
                 Publish(state);
                 return;
             }
@@ -491,15 +696,14 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             if (candidates.Count == 0)
             {
                 if (candidateSnapshot?.IsComplete != false) { state.Frame = null; Publish(state); }
-                state.NeedsInitial = false; state.RestoreEvictedFrame = false;
+                state.NeedsInitial = candidateSnapshot?.IsComplete == false;
+                state.FrameLoadUnavailable = state.NeedsInitial;
                 state.Runtime = new(true, 0, [], null); return;
             }
             var current = state.Member.Carousel?.CurrentImageId;
             var restoring = candidates.FirstOrDefault(path => StringComparer.OrdinalIgnoreCase.Equals(path, current));
             var tentative = state.Member.Carousel;
-            // Rehydrating an evicted passive member may restore its committed image,
-            // but does not retry a rejected formal switch or consume a different queue entry.
-            var attempts = resumePassive ? (restoring is null ? 0 : 1) : Math.Min(3, candidates.Count);
+            var attempts = Math.Min(3, candidates.Count);
             for (var attempt = 0; attempt < attempts; attempt++)
             {
                 var restore = attempt == 0 && restoring is not null;
@@ -512,15 +716,14 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 if (result.Frame is not { } frame) continue;
                 state.FrameLoadUnavailable = false;
                 state.NeedsInitial = false;
-                state.RestoreEvictedFrame = false;
                 state.Progress = 1;
-                state.Runtime = resumePassive ? resumedRuntime : new(false, 0, [], null);
+                state.Runtime = new(false, 0, [], null);
                 if (!restore && tentative is not null)
                     state.Runtime = state.Runtime with { PendingImageId = candidate, PendingState = tentative };
                 if (state.Frame is { } previous &&
                     !StringComparer.OrdinalIgnoreCase.Equals(previous.CanonicalPath, frame.CanonicalPath))
                 {
-                    // Undo/restoration may need a visual flip from the previous frame without changing
+                    // Restoration may need a visual flip from the previous frame without changing
                     // the time already committed for this exact image.
                     var restoreSaved = StringComparer.OrdinalIgnoreCase.Equals(frame.CanonicalPath, current) &&
                         state.Member.Carousel?.LastSwitchUtc is not null;
@@ -543,7 +746,6 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                 return;
             }
             state.FrameLoadUnavailable = true;
-            state.RestoreEvictedFrame = false;
             state.Runtime = state.Runtime with { Passive = true };
             Trace($"InitialUnavailable member={state.Member.Id} generation={generation}");
         }
@@ -558,6 +760,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         var (generation, token) = BeginRequest(state);
         try
         {
+            if (!ReadableSource(state.Member)) return;
             // A folder is sampled at a due read, never polled while hidden or watched in the background.
             // Sync discards the candidate snapshot on source changes; until then, reuse it.
             if ((state.Candidates is null || state.RefreshCandidatesOnResume) &&
@@ -609,19 +812,71 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             state.Member.RotationInterval, manual: true);
 
     private Task<PuzzleFrameResult> LoadAsync(State state, string path, CancellationToken token) =>
-        _images.LoadMemberFrameAsync(state.Member, ResolveEntryPath?.Invoke(state.Member) ?? state.Member.TargetInput,
-            state.TargetWidth, state.TargetHeight, path, token);
+        RequestFrameAsync(state, path, token);
+
+    private static CurrentFrameKey FrameKeyFor(State state, string? image, string? entry)
+    {
+        var boundAutomatic = state.Member.Images.Kind == MemberImageSourceKind.Automatic && state.Member.Images.IconSeries is not null;
+        var series = boundAutomatic ? state.Member.Images.IconSeries : null;
+        return new CurrentFrameKey(state.Member.Images with { IconSeries = null }, state.Member.ResourceOrigin, boundAutomatic ? null : entry,
+            state.Member.Images.Kind == MemberImageSourceKind.Automatic ? state.Member.TargetInput : null,
+            state.Member.Images.Kind == MemberImageSourceKind.Automatic ? state.Member.SourceShortcutPath : null,
+            state.TargetWidth, state.TargetHeight, state.Member.ImageDisplay,
+            state.Member.Visual.BackgroundMode == MemberBackgroundMode.Blur, image, state.SourceVersion,
+            series?.Identity, series is null ? null : series.Frames[series.SelectedFrame], series is null ? null :
+                series.Frames[AutomaticIconSeriesRules.SelectForDisplay(series, state.TargetWidth, state.TargetHeight, state.Member.ImageDisplay)]);
+    }
+
+    private async Task<PuzzleFrameResult> RequestFrameAsync(State state, string? image, CancellationToken token)
+    {
+        var entry = state.Member.Images.Kind == MemberImageSourceKind.Automatic
+            ? ResolveEntryPath?.Invoke(state.Member) ?? state.Member.TargetInput : null;
+        var key = FrameKeyFor(state, image, entry);
+        foreach (var other in _states.Values)
+            if (other.Frame is { MemoryCacheAllowed: true } held &&
+                _frameKeys.TryGetValue(held, out var heldKey) && heldKey == key)
+            {
+                return new(held, WallImageStatus.Loaded);
+            }
+        PuzzleFrameResult result;
+        if (state.Member.Images.Kind == MemberImageSourceKind.Automatic)
+        {
+            // Some native results explicitly prohibit cross-request reuse. Their
+            // owning member still retains its display frame for the whole session.
+            result = await _images.LoadMemberFrameAsync(state.Member, entry,
+                state.TargetWidth, state.TargetHeight, image, token);
+        }
+        else
+        {
+            if (!_currentLoads.TryGetValue(key, out var shared))
+            {
+                shared = _images.LoadMemberFrameAsync(state.Member, entry,
+                    state.TargetWidth, state.TargetHeight, image, _lifetime.Token);
+                _currentLoads.Add(key, shared);
+                TrackWork(shared);
+                var producer = shared;
+                _ = shared.ContinueWith(_ => _dispatcher.TryEnqueue(() =>
+                {
+                    if (_currentLoads.TryGetValue(key, out var current) && ReferenceEquals(current, producer))
+                        _currentLoads.Remove(key);
+                }), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+            result = await shared.WaitAsync(token);
+        }
+        token.ThrowIfCancellationRequested();
+        if (result.Frame is { } loaded) _frameKeys.GetValue(loaded, _ => key);
+        return result;
+    }
 
     private (int Width, int Height) TargetSize(WallMember member) =>
-        (Math.Clamp((int)Math.Ceiling((member.LocalBounds.Width * _metrics.Pitch - _metrics.Gap) * _scale()), 1, 4096),
-         Math.Clamp((int)Math.Ceiling((member.LocalBounds.Height * _metrics.Pitch - _metrics.Gap) * _scale()), 1, 4096));
+        (Math.Max(1, (int)Math.Ceiling((member.LocalBounds.Width * _metrics.Pitch - _metrics.Gap) * _scale())),
+         Math.Max(1, (int)Math.Ceiling((member.LocalBounds.Height * _metrics.Pitch - _metrics.Gap) * _scale())));
 
     private async Task StartFlipAsync(State state, PuzzleFrame frame, long generation, bool captureSwitch = true)
     {
         state.PreviousFrame = state.Frame;
         state.Capture = captureSwitch ? MemberCarouselRules.EnterFlip(state.Member.Carousel, state.Runtime,
             frame.CanonicalPath, DateTimeOffset.UtcNow) : null;
-        if (state.Capture is { } capture) state.Runtime = capture.Runtime;
         if (!await PersistCaptureAsync(state) || !Current(state, generation)) return;
         state.NextFrame = frame;
         _animationsEnabled = ReadAnimationsEnabled();
@@ -670,7 +925,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         if (!Current(state, generation) || !ReferenceEquals(state.Capture, capture)) return false;
         if (error is not null)
         {
-            // A failed switch never survives into a later edit/undo generation as a stale capture.
+            // A failed switch never survives into a later edit generation as a stale capture.
             state.Frame = state.PreviousFrame;
             state.PreviousFrame = null;
             state.NextFrame = null;
@@ -689,20 +944,26 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             return false;
         }
         state.Member = state.Member with { Carousel = capture.NextPersistedState };
+        // Both direct initial presentation and animated switches finish their pending
+        // queue operation here. Keeping PendingImageId after the save suppresses every
+        // later deadline in Evaluate, even though the captured image is already committed.
+        state.Runtime = capture.Runtime;
         state.Capture = null;
         Trace($"Persisted member={state.Member.Id} image={capture.NextPersistedState.CurrentImageId} utc={capture.EnteredFlipUtc:O}");
         return true;
     }
 
-    private (long Generation, CancellationToken Token) BeginRequest(State state)
+    private (long Generation, CancellationToken Token) BeginRequest(State state, bool preparingCurrent = false)
     {
+        state.PreparingCurrent = preparingCurrent;
         state.Cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         var generation = ++state.Generation;
         Trace($"Request member={state.Member.Id} generation={generation}");
         return (generation, state.Cancellation.Token);
     }
-    private bool Current(State state, long generation) => !_disposed && !_stopping && _gate == MemberCarouselGate.Ready &&
-        IsResident(state.Member.Id) &&
+    private bool Current(State state, long generation) => !_disposed && !_stopping && _preparationAllowed &&
+        (state.PreparingCurrent || _gate == MemberCarouselGate.Ready &&
+            (IsPresented(state.Member.Id) || state.PreparedAutomaticSeries is not null)) &&
         state.Generation == generation && _states.TryGetValue(state.Member.Id, out var existing) &&
         ReferenceEquals(existing, state) && state.Cancellation?.IsCancellationRequested == false;
     private void EndRequest(State state, long generation)
@@ -710,6 +971,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         if (state.Generation != generation) return;
         state.Cancellation?.Dispose();
         state.Cancellation = null;
+        state.PreparingCurrent = false;
         state.ManualLoading = false;
         QueueCheck(false);
     }
@@ -722,12 +984,12 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         state.Cancellation?.Cancel();
         state.Cancellation?.Dispose();
         state.Cancellation = null;
+        state.PreparingCurrent = false;
         state.Runtime = MemberCarouselRules.AbandonPending(state.Runtime);
     }
 
     private void ReleaseFrames(State state)
     {
-        state.RestoreEvictedFrame |= state.Frame is not null || state.NextFrame is not null || state.PreviousFrame is not null;
         Cancel(state);
         state.Frame = state.NextFrame = state.PreviousFrame = null;
         state.Capture = null;
@@ -737,8 +999,8 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         state.PartitionOrdinals = null;
         state.PendingPages = 0;
         state.NeedsInitial = true;
-        state.RefreshCandidatesOnResume = state.Member.Images.Kind == MemberImageSourceKind.Folder;
-        Publish(state); // Existing views drop both transition layers and their ImageSource references.
+        state.CurrentPrepared = false;
+        Publish(state);
     }
     private void Fail(State state, Exception error)
     {
@@ -748,16 +1010,25 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     }
     private static PuzzleFrame? VisibleFrame(State state) => state.Flipping && state.Progress >= 0.5
         ? state.NextFrame : state.Frame;
-    private void Publish(State state) => FrameChanged?.Invoke(state.Member.Id, VisibleFrame(state), state.Progress);
+    private void Publish(State state) => FrameChanged?.Invoke(state.Member.Id,
+        VisibleFrame(state), state.Progress);
     private static TimeSpan Earlier(TimeSpan? first, TimeSpan second) => first is { } value && value < second ? value : second;
     private static uint RandomIndex() => (uint)Random.Shared.Next();
     private static bool SameSource(MemberImageSource left, MemberImageSource right) => left.Kind == right.Kind &&
-        StringComparer.OrdinalIgnoreCase.Equals(left.Path, right.Path) && left.Media == right.Media;
+        StringComparer.OrdinalIgnoreCase.Equals(left.Path, right.Path) && left.Media == right.Media &&
+        left.ManagedGallery == right.ManagedGallery && AutomaticIconSeriesRules.SameSelectedFrame(left.IconSeries, right.IconSeries);
     private void Trace(string message)
     {
         if (!_trace) return;
         AppLog.Warn("Phase3Puzzle", message);
         AppLog.Flush();
+    }
+
+    private void TraceResidentMemory()
+    {
+        if (!_trace) return;
+        var memory = ResidentMemory;
+        Trace($"Residency members={memory.Members} frames={memory.Frames} bitmaps={memory.Bitmaps} xamlBitmapBytes={memory.PixelBytes}");
     }
 
     private void TrackWork(Task task)
@@ -789,6 +1060,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         _animationClockRunning = false;
         _lifetime.Cancel();
         foreach (var state in _states.Values) ReleaseFrames(state);
+        _currentLoads.Clear();
     }
 
     public void Dispose()

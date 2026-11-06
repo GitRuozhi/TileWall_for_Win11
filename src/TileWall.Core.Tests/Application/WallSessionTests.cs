@@ -10,7 +10,7 @@ using Xunit;
 
 namespace TileWall.Core.Tests.Application;
 
-public sealed class WallSessionTests
+public sealed partial class WallSessionTests
 {
     private sealed class FaultingFiles(IFileStore inner) : IFileStore
     {
@@ -35,6 +35,7 @@ public sealed class WallSessionTests
         public void Copy(string source, string destination, bool overwrite)
         { Trip("copy", source, destination); inner.Copy(source, destination, overwrite); }
         public void Delete(string path) { Trip("delete", path, null); inner.Delete(path); }
+        public void MoveDirectory(string source, string destination) => inner.MoveDirectory(source, destination);
         public void CreateDirectory(string path) { Trip("mkdir", null, path); inner.CreateDirectory(path); }
         public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);
@@ -65,7 +66,7 @@ public sealed class WallSessionTests
         }, null, 0, 0, "group1"), 500, 500);
 
     [Fact]
-    public void FreshCommitFailureKeepsCurrentThenUndoRestoresLayoutAndEntry()
+    public void FreshCommitFailureKeepsCurrentLayoutAndEntry()
     {
         var (session, files, _) = Harness();
         Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
@@ -91,19 +92,13 @@ public sealed class WallSessionTests
         Assert.False(failed.Committed);
         Assert.Equal(1, session.Current.Generation);
         Assert.Equal("First", session.Current.Lanes[0].Groups[0].Members[0].Visual.Title);
-
-        var undone = session.Undo();
-        Assert.True(undone.Committed, string.Join("; ", undone.Diagnostics));
-        Assert.Equal(2, session.Current.Generation);
-        Assert.Empty(session.Current.Lanes[0].Groups);
-        Assert.False(session.CanUndo);
     }
 
     [Fact]
     public void FutureDataBlocksWithoutCreatingEmptyWall()
     {
         var (session, files, root) = Harness();
-        files.WriteAllBytes(Path.Combine(root, "config.json"),
+        files.WriteAllBytes(Path.Combine(root, "state.json"),
             Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion + 1}}}"));
         var result = session.Open(1, 6);
         Assert.Equal(WallOpenStatus.UnsupportedFormatBlocked, result.Status);
@@ -123,7 +118,7 @@ public sealed class WallSessionTests
         Assert.True(session.ViewBlocked);
         Assert.False(session.RequiresReopen);
         Assert.Equal(1, session.Current.Generation);
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
         Assert.False(session.Commit(added.Proposal!).Committed);
 
         WallDocument? rendered = null;
@@ -174,7 +169,6 @@ public sealed class WallSessionTests
         Assert.Equal(0, refreshCount);
         Assert.Null(session.Propose(new RemoveMemberAction(before.Generation, "tile1"), 500, 500).Proposal);
         Assert.False(session.Commit(changed.Proposal!).Committed);
-        Assert.False(session.Undo().Committed);
 
         var reopened = session.Open(1, 6);
         Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
@@ -184,32 +178,7 @@ public sealed class WallSessionTests
         Assert.True(session.RefreshViewFromCurrent());
         Assert.Equal(1, refreshCount);
         Assert.NotNull(session.Propose(new RemoveMemberAction(session.Current.Generation, "tile1"), 500, 500).Proposal);
-        Assert.Equal(before.Generation, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
-    }
-
-    [Fact]
-    public void FailedUndoRetainsSlotAndCanRetryToCurrentDiskGeneration()
-    {
-        var (session, files, root) = Harness();
-        session.Open(1, 6);
-        session.SetViewRefresh(_ => { });
-        var added = Add(session);
-        Assert.True(session.Commit(added.Proposal!,
-            [new EntryChange.CreateUrl("tile1", "https://example.com")]).Committed);
-        files.InjectedFault = FaultPoint.BeforeMove;
-        var failed = session.Undo();
-        Assert.False(failed.Committed);
-        Assert.True(session.CanUndo);
-        Assert.Equal(1, session.Current.Generation);
-
-        files.InjectedFault = FaultPoint.None;
-        var retried = session.Undo();
-        Assert.True(retried.Committed, string.Join("; ", retried.Diagnostics));
-        Assert.False(session.CanUndo);
-        Assert.Equal(2, session.Current.Generation);
-        var disk = WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json")));
-        Assert.Equal(session.Current.Generation, disk.Generation);
-        Assert.Empty(disk.Lanes[0].Groups);
+        Assert.Equal(before.Generation, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 
     [Fact]
@@ -227,7 +196,8 @@ public sealed class WallSessionTests
         files.InjectedFault = FaultPoint.None;
         Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
         var current = session.Current;
-        files.Delete(Path.Combine(root, "config.json"));
+        files.Delete(Path.Combine(root, "state.json"));
+        files.DeleteDirectory(Path.Combine(root, "Snapshots")); // Recreate a genuinely fresh root, including the new immutable data.
         files.InjectedFault = FaultPoint.BeforeMove;
         var again = session.Open(1, 6);
         Assert.Equal(WallOpenStatus.OpenFailed, again.Status);
@@ -237,10 +207,10 @@ public sealed class WallSessionTests
         Assert.Null(session.Propose(new RemoveMemberAction(current.Generation, "missing"), 500, 500).Proposal);
 
         var blocked = new WallSession(root + "-blocked", files, new FakeLinkFileService(files));
-        files.WriteAllBytes(Path.Combine(root + "-blocked", "config.init.tmp"), Encoding.UTF8.GetBytes("{}"));
+        files.WriteAllBytes(Path.Combine(root + "-blocked", "state.init.tmp"), Encoding.UTF8.GetBytes("{}"));
         Assert.Equal(WallOpenStatus.RecoveryBlocked, blocked.Open(1, 6).Status);
         Assert.True(blocked.RecoveryBlocked);
-        files.Delete(Path.Combine(root + "-blocked", "config.init.tmp"));
+        files.Delete(Path.Combine(root + "-blocked", "state.init.tmp"));
         files.InjectedFault = FaultPoint.BeforeMove;
         Assert.Equal(WallOpenStatus.OpenFailed, blocked.Open(1, 6).Status);
         Assert.True(blocked.RecoveryBlocked);
@@ -263,9 +233,14 @@ public sealed class WallSessionTests
         Assert.True(session.ResultUnknown);
         Assert.False(session.RequiresReopen);
         Assert.True(session.ViewBlocked);
+        var refreshes = 0;
+        session.SetViewRefresh(_ => refreshes++);
+        Assert.False(session.RefreshViewFromCurrent());
+        Assert.Equal(0, refreshes);
+        Assert.True(session.ViewBlocked);
+        Assert.True(session.ResultUnknown);
         Assert.Null(session.Propose(new RemoveMemberAction(session.Current.Generation, "tile1"), 500, 500).Proposal);
         Assert.False(session.Commit(added.Proposal!).Committed);
-        Assert.False(session.Undo().Committed);
         files.ThrowOnWrite = false;
         Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
         Assert.False(session.ResultUnknown);
@@ -286,6 +261,7 @@ public sealed class WallSessionTests
         public void Move(string source, string destination, bool overwrite) => inner.Move(source, destination, overwrite);
         public void Copy(string source, string destination, bool overwrite) => inner.Copy(source, destination, overwrite);
         public void Delete(string path) => inner.Delete(path);
+        public void MoveDirectory(string source, string destination) => inner.MoveDirectory(source, destination);
         public void CreateDirectory(string path) => inner.CreateDirectory(path);
         public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);

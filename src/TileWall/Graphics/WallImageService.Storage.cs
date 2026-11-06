@@ -12,7 +12,7 @@ public sealed partial class WallImageService
 {
     private ManagedImageCache? _disk;
     private Func<Action, Task>? _publishCache;
-    private Func<string, WallMember?>? _formalMember;
+    private Func<ManagedGalleryReference?, ManagedMediaReference?, IDisposable>? _formalResourceLease;
     private readonly CancellationTokenSource _cacheLifetime = new();
     private readonly object _workGate = new();
     private readonly HashSet<Task> _cacheWork = [];
@@ -20,12 +20,13 @@ public sealed partial class WallImageService
     private readonly Dictionary<string, string> _verifiedContentHashes = new(StringComparer.OrdinalIgnoreCase);
     private static readonly JsonSerializerOptions CacheJson = new() { PropertyNameCaseInsensitive = false };
 
-    public void ConfigureStorage(string dataRoot, Func<Action, Task> publishShortCacheAction, Func<string, WallMember?> formalMemberLookup)
+    public void ConfigureStorage(string dataRoot, Func<Action, Task> publishShortCacheAction,
+        Func<ManagedGalleryReference?, ManagedMediaReference?, IDisposable>? formalResourceLease = null)
     {
-        ArgumentNullException.ThrowIfNull(publishShortCacheAction); ArgumentNullException.ThrowIfNull(formalMemberLookup);
+        ArgumentNullException.ThrowIfNull(publishShortCacheAction);
         if (!Path.IsPathFullyQualified(dataRoot)) throw new ArgumentException("A full data root is required.", nameof(dataRoot));
         _disk = new ManagedImageCache(dataRoot); _disk.Guard(_disk.Root);
-        _publishCache = publishShortCacheAction; _formalMember = formalMemberLookup;
+        _publishCache = publishShortCacheAction; _formalResourceLease = formalResourceLease;
     }
 
     public Task<PreparedMediaAsset> PrepareMediaAsync(string path, CancellationToken ct = default)
@@ -47,20 +48,57 @@ public sealed partial class WallImageService
     }
 
     private sealed record VerifiedOriginal(PreparedMediaAsset Asset, byte[] Bytes);
+
+    public Task<bool> VerifyPackageImageAsync(ReadOnlyMemory<byte> bytes, string extension, CancellationToken ct = default)
+    {
+        lock (_workGate)
+        {
+            if (_cacheStopping || _disposed || ct.IsCancellationRequested)
+                return Task.FromCanceled<bool>(new CancellationToken(true));
+            var request = CancellationTokenSource.CreateLinkedTokenSource(ct, _cacheLifetime.Token);
+            return TrackCacheWork(VerifyPackageImageCoreAsync(bytes, extension, request));
+        }
+    }
+
+    private static async Task<bool> VerifyPackageImageCoreAsync(ReadOnlyMemory<byte> bytes, string extension,
+        CancellationTokenSource request)
+    {
+        using (request)
+        {
+            try
+            {
+                var actual = await Task.Run(() => ProbeOriginalBytesAsync(bytes, request.Token), request.Token).ConfigureAwait(false);
+                return PreparedMediaAsset.NormalizeExtension(extension) == actual;
+            }
+            catch (Exception ex) when (ex is InvalidDataException or ArgumentException or
+                System.Runtime.InteropServices.COMException or OverflowException)
+            {
+                return false;
+            }
+        }
+    }
+
     private static async Task<VerifiedOriginal> VerifyOriginalAsync(string path, CancellationToken ct)
     {
         var full = NormalizeImageFilePath(path) ?? throw new IOException("Invalid image path.");
-        var before = new FileInfo(full);
-        if (!before.Exists || before.Length is < 1 or > PreparedMediaAsset.MaximumBytes) throw new IOException("Missing or oversized image.");
-        var length = before.Length; var modified = before.LastWriteTimeUtc;
-        var bytes = await File.ReadAllBytesAsync(full, ct).ConfigureAwait(false);
-        before.Refresh();
-        if (!before.Exists || before.Length != length || before.LastWriteTimeUtc != modified || bytes.LongLength != length)
-            throw new IOException("Image changed while being prepared.");
+        await using var source = BoundedOriginalFileRead.OpenRead(full);
+        var bytes = await BoundedOriginalFileRead.ReadAsync(source, PreparedMediaAsset.MaximumBytes, ct).ConfigureAwait(false);
+        var extension = await ProbeOriginalBytesAsync(bytes, ct).ConfigureAwait(false);
+        // The decoder probe and PreparedMediaAsset hash both consume this one frozen byte array.
+        return new(PreparedMediaAsset.FromVerifiedImage(bytes, extension), bytes);
+    }
+
+    private static async Task<string> ProbeOriginalBytesAsync(ReadOnlyMemory<byte> bytes, CancellationToken ct)
+    {
+        if (bytes.Length is < 1 or > PreparedMediaAsset.MaximumBytes)
+            throw new InvalidDataException("Image byte length exceeds the source budget.");
+        ct.ThrowIfCancellationRequested();
         using var stream = new InMemoryRandomAccessStream();
-        using (var writer = new DataWriter(stream)) { writer.WriteBytes(bytes); await writer.StoreAsync().AsTask(ct).ConfigureAwait(false); writer.DetachStream(); }
+        var buffer = System.Runtime.InteropServices.MemoryMarshal.TryGetArray(bytes, out var segment) &&
+            segment.Offset == 0 && segment.Count == segment.Array!.Length ? segment.Array : bytes.ToArray();
+        using (var writer = new DataWriter(stream)) { writer.WriteBytes(buffer); await writer.StoreAsync().AsTask(ct).ConfigureAwait(false); writer.DetachStream(); }
         stream.Seek(0); var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(ct).ConfigureAwait(false); ct.ThrowIfCancellationRequested();
-        if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 || (long)decoder.PixelWidth * decoder.PixelHeight > 80_000_000)
+        if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0)
             throw new InvalidDataException("Image dimensions exceed the source budget.");
         var sample = await decoder.GetPixelDataAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied,
             new BitmapTransform { ScaledWidth = 1, ScaledHeight = 1 }, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb).AsTask(ct).ConfigureAwait(false);
@@ -68,13 +106,69 @@ public sealed partial class WallImageService
         ct.ThrowIfCancellationRequested();
         var extension = decoder.DecoderInformation.FileExtensions.FirstOrDefault()
             ?? throw new InvalidDataException("Image codec supplies no file extension.");
-        return new(PreparedMediaAsset.FromVerifiedImage(bytes, extension), bytes);
+        return PreparedMediaAsset.NormalizeExtension(extension);
     }
 
     private string? ManagedMediaPath(ManagedMediaReference? media)
     {
         if (_disk is null || !PreparedMediaAsset.IsValidReference(media)) return null;
         return _disk.Under("Media", media!.Sha256, "original" + media.Extension);
+    }
+
+    private IDisposable? OpenManagedGalleryRead(MemberImageSource source, string? selected = null)
+    {
+        if (source.ManagedGallery is not { } reference) return null;
+        if (_disk is not { } disk || !PreparedManagedGallery.IsValidReference(reference))
+            throw new IOException("Invalid managed gallery reference.");
+        var directory = disk.Under("Sources", reference.ContentId);
+        if (!StringComparer.OrdinalIgnoreCase.Equals(directory, NormalizePath(source.Path)))
+            throw new IOException("Managed gallery path differs from its reference.");
+        var resources = new FormalImageRead();
+        try
+        {
+            if (_formalResourceLease is { } acquire) resources.Items.Add(acquire(reference, null));
+            FileStream Open(string path, long limit)
+            {
+                disk.Guard(path);
+                var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                resources.Items.Add(stream);
+                if (stream.Length is < 1 || stream.Length > limit) throw new IOException("Oversized managed gallery file.");
+                return stream;
+            }
+            var manifestRead = Open(Path.Combine(directory, "manifest.json"), 1024 * 1024);
+            var bytes = new byte[checked((int)manifestRead.Length)]; manifestRead.ReadExactly(bytes);
+            var manifest = PreparedManagedGallery.ReadManifest(bytes, reference);
+            if (selected is null)
+            {
+                disk.Guard(directory);
+                var actual = Directory.EnumerateFileSystemEntries(directory).ToArray();
+                var allowed = manifest.Files.Select(file => file.RelativePath).Append("manifest.json").ToHashSet(StringComparer.Ordinal);
+                if (actual.Length != allowed.Count || actual.Any(path => !allowed.Contains(Path.GetFileName(path))))
+                    throw new IOException("Managed gallery contains unexpected files.");
+            }
+            var candidates = selected is null ? manifest.Files : manifest.Files.Where(file =>
+                StringComparer.OrdinalIgnoreCase.Equals(Path.Combine(directory, file.RelativePath), selected)).ToArray();
+            if (selected is not null && !candidates.Any()) throw new IOException("Image is outside its managed gallery.");
+            foreach (var item in candidates)
+            {
+                var stream = Open(Path.Combine(directory, item.RelativePath), PreparedMediaAsset.MaximumBytes);
+                if (stream.Length != item.Media.Length || Convert.ToHexString(SHA256.HashData(stream)) != item.Media.Sha256)
+                    throw new IOException("Managed gallery original differs from its digest.");
+                stream.Position = 0;
+            }
+            return resources;
+        }
+        catch { resources.Dispose(); throw; }
+    }
+
+    private sealed class FormalImageRead : IDisposable
+    {
+        internal List<IDisposable> Items { get; } = [];
+        public void Dispose()
+        {
+            for (var index = Items.Count - 1; index >= 0; index--) Items[index].Dispose();
+            Items.Clear();
+        }
     }
     public Task<WallImageResult> LoadBackgroundAsync(ManagedMediaReference? media, string? sourcePath,
         int widthPixels, int heightPixels, CancellationToken ct = default) =>

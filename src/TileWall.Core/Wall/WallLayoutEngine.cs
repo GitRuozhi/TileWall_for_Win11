@@ -22,6 +22,13 @@ public sealed record MoveMemberAction(long ExpectedGeneration, string MemberId, 
 public sealed record MoveGroupAction(long ExpectedGeneration, string GroupId, int LaneIndex, int GroupInsertIndex) : WallAction(ExpectedGeneration);
 public sealed record RemoveMemberAction(long ExpectedGeneration, string MemberId) : WallAction(ExpectedGeneration);
 public sealed record UnpinMemberAction(long ExpectedGeneration, string MemberId) : WallAction(ExpectedGeneration);
+public sealed record UnpinMembersAction(long ExpectedGeneration, IReadOnlyList<string> MemberIds,
+    bool ConfirmOverflow = false) : WallAction(ExpectedGeneration);
+public sealed record RestoreRecycledMembersAction(long ExpectedGeneration, IReadOnlyList<string> MemberIds,
+    string NewGroupId, string GroupTitle, IReadOnlyDictionary<string, string> LaunchIdentityKeys) : WallAction(ExpectedGeneration);
+public sealed record DeleteRecycledMembersAction(long ExpectedGeneration, IReadOnlyList<string> MemberIds) : WallAction(ExpectedGeneration);
+public sealed record SetRecycleBinEnabledAction(long ExpectedGeneration, bool Enabled) : WallAction(ExpectedGeneration);
+public sealed record ClearRecycleBinAction(long ExpectedGeneration) : WallAction(ExpectedGeneration);
 public sealed record RenameGroupAction(long ExpectedGeneration, string GroupId, string? Title) : WallAction(ExpectedGeneration);
 public sealed record ResizeWallAction(long ExpectedGeneration, int Columns, int Rows) : WallAction(ExpectedGeneration);
 
@@ -37,8 +44,14 @@ public enum WallRejection
     WorkAreaTooSmall,
 }
 
-/// <summary>A complete document and geometry proposal. The caller persists Document before adopting it.</summary>
-public sealed record WallProposal(WallDocument Document, WallGeometry Geometry);
+/// <summary>A document and geometry proposal. The caller persists it before adopting its active view.</summary>
+public sealed record WallProposal(WallDocument Document, WallGeometry Geometry)
+{
+    /// <summary>Explicit recycle-bin replacement based on an observed committed snapshot; null preserves disk content.</summary>
+    public RecycleBinSnapshot? RecycleBin { get; init; }
+    /// <summary>Explicitly clears retained content together with the wall transaction.</summary>
+    public bool ClearRecycleBin { get; init; }
+}
 public sealed record WallLayoutResult(WallProposal? Proposal, WallRejection Rejection, string? Detail = null)
 {
     public bool Success => Proposal is not null;
@@ -47,9 +60,9 @@ public sealed record WallLayoutResult(WallProposal? Proposal, WallRejection Reje
 /// <summary>Pure, deterministic layout decisions. No UI state or disk operations are performed here.</summary>
 public static class WallLayoutEngine
 {
-    private const int CellsPerLane = 8;
+    public const int CellsPerLane = 8;
     private const int MaxColumns = 64;
-    private const int MaxRows = 256;
+    public const int MaxRows = 256;
 
     /// <summary>Normalizes the same candidate that callers preview and commit; does not advance its generation.</summary>
     public static WallLayoutResult NormalizeExpanded(WallDocument candidate, WallMetrics? metrics = null)
@@ -98,6 +111,19 @@ public static class WallLayoutEngine
             return Reject(WallRejection.StaleGeneration, "Proposal was based on an older generation.");
         }
 
+        if (action is UnpinMemberAction single)
+            return RecycleBinRules.Unpin(current, [single.MemberId], false, workWidthDip, workHeightDip, metrics);
+        if (action is UnpinMembersAction unpinBatch)
+            return RecycleBinRules.Unpin(current, unpinBatch.MemberIds, unpinBatch.ConfirmOverflow, workWidthDip, workHeightDip, metrics);
+        if (action is RestoreRecycledMembersAction restore)
+            return RecycleBinRules.Restore(current, restore, workWidthDip, workHeightDip, metrics);
+        if (action is DeleteRecycledMembersAction delete)
+            return RecycleBinRules.Delete(current, delete.MemberIds, workWidthDip, workHeightDip, metrics);
+        if (action is ClearRecycleBinAction)
+            return RecycleBinRules.Delete(current, current.InactiveMembers.Select(member => member.Id).ToArray(), workWidthDip, workHeightDip, metrics, allowEmpty: true);
+        if (action is SetRecycleBinEnabledAction policy)
+            return RecycleBinRules.SetEnabled(current, policy.Enabled, workWidthDip, workHeightDip, metrics);
+
         var lanes = current.Lanes.Select(l => l.Groups.ToList()).ToList();
         var inactive = current.InactiveMembers.ToList();
         var laneSources = new Dictionary<List<StartGroup>, WallLane>(ReferenceEqualityComparer.Instance);
@@ -123,11 +149,6 @@ public static class WallLayoutEngine
                 break;
             case RemoveMemberAction remove:
                 rejection = RemoveMember(lanes, remove.MemberId);
-                break;
-            case UnpinMemberAction unpin:
-                var retained = FindMember(lanes, unpin.MemberId);
-                rejection = retained is null ? WallRejection.ObjectNotFound : RemoveMember(lanes, unpin.MemberId);
-                if (rejection == WallRejection.None) inactive.Add(retained!.Value.Member);
                 break;
             case RenameGroupAction rename:
                 rejection = RenameGroup(lanes, rename.GroupId, rename.Title);
@@ -186,6 +207,17 @@ public static class WallLayoutEngine
         }
 
         return new WallLayoutResult(new WallProposal(proposed, MeasureValidated(proposed, metrics)), WallRejection.None);
+    }
+
+    internal static WallLayoutResult FinishContentChange(WallDocument candidate, double width, double height, WallMetrics metrics)
+    {
+        var errors = Validate(candidate);
+        if (errors.Count != 0) return Reject(WallRejection.InvalidAction, string.Join("; ", errors));
+        var requiredHeight = RequiredHeight(candidate, metrics);
+        candidate = candidate with { Rows = Math.Max(candidate.Rows, Math.Min(MaxRows, RowsForHeight(requiredHeight, metrics))) };
+        var fit = FitCapacity(ref candidate, requiredHeight, true, width, height, metrics, out var detail);
+        if (fit != WallRejection.None) return Reject(fit, detail);
+        return NormalizeExpanded(candidate, metrics);
     }
 
     /// <summary>Geometry-only batch probe; final TryApply still owns validation, placement and the proposal.</summary>
@@ -258,8 +290,9 @@ public static class WallLayoutEngine
         return WallRejection.WorkAreaTooSmall;
     }
 
-    public static IReadOnlyList<string> Validate(WallDocument document)
+    public static IReadOnlyList<string> Validate(WallDocument document, CancellationToken token = default)
     {
+        token.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(document);
         var errors = new List<string>();
         if (document.SchemaVersion != WallDocument.CurrentSchemaVersion) errors.Add("SCHEMA_VERSION");
@@ -310,6 +343,7 @@ public static class WallLayoutEngine
                 var members = group.Members;
                 for (var i = 0; i < members.Count; i++)
                 {
+                    token.ThrowIfCancellationRequested();
                     var member = members[i];
                     if (member is null) { errors.Add("MEMBER_NULL"); continue; }
                     CheckId(member.Id, ids, errors);
@@ -317,27 +351,36 @@ public static class WallLayoutEngine
                     ValidateMember(member, errors);
 
                     for (var j = 0; j < i; j++)
-                        if (members[j] is not null && IntersectsSafe(b, members[j].LocalBounds)) errors.Add("MEMBER_OVERLAP");
+                    {
+                        if ((j & 255) == 0) token.ThrowIfCancellationRequested();
+                        if (members[j] is not null && IntersectsSafe(b, members[j].LocalBounds))
+                        { errors.Add("MEMBER_OVERLAP"); break; }
+                    }
                 }
             }
         }
 
         if (document.InactiveMembers is null) errors.Add("INACTIVE_NULL");
-        else foreach (var member in document.InactiveMembers)
+        else
         {
-            if (member is null) { errors.Add("MEMBER_NULL"); continue; }
-            CheckId(member.Id, ids, errors);
-            ValidateMember(member, errors);
+            if (document.InactiveMembers.Count > RecycleBinRules.Capacity) errors.Add("RECYCLE_CAPACITY");
+            if (!document.RecycleBinEnabled && document.InactiveMembers.Count != 0) errors.Add("RECYCLE_DISABLED_CONTENT");
+            foreach (var member in document.InactiveMembers)
+            {
+                if (member is null) { errors.Add("MEMBER_NULL"); continue; }
+                CheckId(member.Id, ids, errors);
+                ValidateMember(member, errors);
+            }
         }
         return errors;
     }
 
     /// <summary>Checks persisted geometry against saved Rows, independent of the current monitor.</summary>
-    public static IReadOnlyList<string> ValidateGeometry(WallDocument document, WallMetrics? metrics = null)
+    public static IReadOnlyList<string> ValidateGeometry(WallDocument document, WallMetrics? metrics = null, CancellationToken token = default)
     {
         ArgumentNullException.ThrowIfNull(document);
         metrics ??= new WallMetrics();
-        var errors = Validate(document).ToList();
+        var errors = Validate(document, token).ToList();
         if (!metrics.IsValid)
         {
             errors.Add("METRICS");
@@ -365,28 +408,69 @@ public static class WallLayoutEngine
     }
 
     // Only called after this exact immutable proposal has passed ValidateGeometry.
-    private static WallGeometry MeasureValidated(WallDocument document, WallMetrics metrics)
+    private static WallGeometry MeasureValidated(WallDocument document, WallMetrics metrics) =>
+        MeasureLanes(document.Lanes, document.Columns, metrics.WallHeight(document.Rows), metrics);
+
+    /// <summary>Measures read-only source content, including sources larger than a formal wall. Never validates or admits a document.</summary>
+    public static WallGeometry MeasureSource(IReadOnlyList<WallLane> lanes, WallMetrics? metrics = null)
+    {
+        ArgumentNullException.ThrowIfNull(lanes);
+        metrics ??= new();
+        if (!metrics.IsValid) throw new ArgumentException("Invalid wall metrics.", nameof(metrics));
+        var height = lanes.Select(lane => RequiredLaneHeight(lane.Groups, metrics)).DefaultIfEmpty(metrics.TopMargin).Max();
+        return MeasureLanes(lanes, Math.Max(1, lanes.Count), height, metrics);
+    }
+
+    private static WallGeometry MeasureLanes(IReadOnlyList<WallLane> lanes, int columns, double height, WallMetrics metrics)
     {
         var positions = new List<GroupPlacement>();
-        for (var laneIndex = 0; laneIndex < document.Lanes.Count; laneIndex++)
+        for (var laneIndex = 0; laneIndex < lanes.Count; laneIndex++)
         {
             var x = metrics.Margin + laneIndex * (metrics.LaneWidth + metrics.ColumnGap);
             var y = metrics.TopMargin;
-            foreach (var group in document.Lanes[laneIndex].Groups)
+            foreach (var group in lanes[laneIndex].Groups)
             {
                 var title = new DipRect(x, y, metrics.LaneWidth, metrics.TitleHeight);
                 var membersY = y + metrics.TitleHeight + metrics.TitleToMembersGap;
                 var occupiedRows = group.Members.Max(m => m.LocalBounds.Bottom);
-                var height = metrics.TitleHeight + metrics.TitleToMembersGap + metrics.HeightOf(occupiedRows);
+                var groupHeight = metrics.TitleHeight + metrics.TitleToMembersGap + metrics.HeightOf(occupiedRows);
                 var members = MemberLayoutOrder.Order(group.Members).Select(m => new MemberPlacement(m.Id,
                     metrics.MemberRect(m.LocalBounds, x, membersY))).ToArray();
                 positions.Add(new GroupPlacement(group.Id, laneIndex, title,
-                    new DipRect(x, y, metrics.LaneWidth, height), members));
-                y += height + metrics.GroupGap;
+                    new DipRect(x, y, metrics.LaneWidth, groupHeight), members));
+                y += groupHeight + metrics.GroupGap;
             }
         }
 
-        return new WallGeometry(metrics.WallWidth(document.Columns), metrics.WallHeight(document.Rows), positions);
+        return new WallGeometry(metrics.WallWidth(columns), height, positions);
+    }
+
+    /// <summary>Shared complete-group packing. Null limits allow a scrollable source preview, never a formal wall proposal.</summary>
+    public static IReadOnlyList<WallLane>? ArrangeSourceLanes(IReadOnlyList<StartGroup> groups,
+        double availableHeightDip, WallMetrics? metrics = null, int? maximumLanes = null, bool allowOversizedGroups = true)
+    {
+        ArgumentNullException.ThrowIfNull(groups);
+        metrics ??= new();
+        if (!metrics.IsValid || !double.IsFinite(availableHeightDip) || availableHeightDip <= 0 || maximumLanes is < 1)
+            throw new ArgumentException("Invalid source layout bounds.");
+        var output = new List<List<StartGroup>> { new() };
+        var usedHeight = metrics.TopMargin + metrics.Margin;
+        foreach (var group in groups)
+        {
+            if (group.Members.Count == 0) continue;
+            var groupHeight = metrics.TitleHeight + metrics.TitleToMembersGap + metrics.HeightOf(group.Members.Max(member => member.LocalBounds.Bottom));
+            var gap = output[^1].Count == 0 ? 0 : metrics.GroupGap;
+            if (usedHeight + gap + groupHeight > availableHeightDip + 1e-9 && output[^1].Count != 0)
+            {
+                if (maximumLanes is { } maximum && output.Count >= maximum) return null;
+                output.Add([]); usedHeight = metrics.TopMargin + metrics.Margin; gap = 0;
+            }
+            if (!allowOversizedGroups && usedHeight + gap + groupHeight > availableHeightDip + 1e-9) return null;
+            output[^1].Add(group); usedHeight += gap + groupHeight;
+        }
+        if (maximumLanes is { } laneCount)
+            while (output.Count < laneCount) output.Add([]);
+        return output.Select(groupList => new WallLane { Groups = groupList.ToArray() }).ToArray();
     }
 
     private static double RequiredHeight(WallDocument document, WallMetrics metrics)
@@ -665,6 +749,12 @@ public static class WallLayoutEngine
         return WallRejection.None;
     }
 
+    // Import first tries the original lane arrangement, before permitting whole-group reflow.
+    internal static WallRejection FitImportLanes(List<List<StartGroup>> lanes, int columns, int rows,
+        int currentRows, WallMetrics metrics, bool allowReflow) => allowReflow
+        ? ResizeLanes(lanes, columns, rows, currentRows, metrics)
+        : ResizeOriginalLanes(lanes, columns, rows, currentRows, metrics);
+
     private static WallRejection ResizeLanes(List<List<StartGroup>> lanes, int columns, int rows,
         int currentRows, WallMetrics metrics)
     {
@@ -704,7 +794,7 @@ public static class WallLayoutEngine
         return WallRejection.None;
     }
 
-    private static StartGroup CompactGroupFully(StartGroup group)
+    internal static StartGroup CompactGroupFully(StartGroup group)
     {
         var occupied = new bool[group.Members.Max(member => member.LocalBounds.Bottom)];
         foreach (var member in group.Members)

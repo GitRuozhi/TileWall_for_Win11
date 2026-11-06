@@ -9,7 +9,8 @@ namespace TileWall;
 public sealed partial class MainWindow
 {
     private sealed record ViewportTransition(RectInt32 From, RectInt32 To, Rect FromClip, Rect ToClip,
-        bool FullScreen, WallSettings Settings, long Started, long SegmentStarted, double Scale);
+        bool FullScreen, WallSettings Settings, long Started, long SegmentStarted, double Scale,
+        bool AutomaticHeight = false);
     private ViewportTransition? _viewportTransition;
     private bool? _lastPresentedFullScreen;
     private bool _processingFrame;
@@ -70,7 +71,7 @@ public sealed partial class MainWindow
     }
 
     private void PresentViewport(RectInt32 rectangle, bool fullScreen, AnchorCorner anchor, bool animate,
-        WallSettings? presentationSettings = null)
+        WallSettings? presentationSettings = null, bool animateHeight = false)
     {
         var settings = presentationSettings ?? Settings;
         _presentedViewportSettings = settings;
@@ -88,6 +89,7 @@ public sealed partial class MainWindow
             // The OS applies the WM_SIZING rectangle. Never race it with application
             // MoveAndResize or a mode-animation endpoint while its modal loop is active.
             _viewportTransition = null;
+            Surface.EndAutomaticHeightPresentation();
             _lastPresentedFullScreen = fullScreen;
             SetScrollRegion(fullScreen, toClip);
             return;
@@ -101,12 +103,29 @@ public sealed partial class MainWindow
         // Ordinary edge resizing is direct. Query the system animation setting only
         // when a mode transition can actually be created or continued.
         var animationsEnabled = false;
-        if (_viewportTransition is not null || animate && changedMode)
+        if (_viewportTransition is not null || animate && changedMode || animateHeight)
         {
             try { animationsEnabled = _appearanceSettings.AnimationsEnabled; }
             catch { animationsEnabled = true; }
         }
         var now = Stopwatch.GetTimestamp();
+        if (!fullScreen && !changedMode && animateHeight && !_modal && !_windowClosing && !ShutdownStarted &&
+            animationsEnabled && from.Height > 0 && fromClip.Height > 0 && from.Height != rectangle.Height)
+        {
+            // Only edit-drag height changes enter here. A new endpoint starts at this
+            // displayed frame; repeated identical endpoints returned above never restart.
+            Surface.BeginAutomaticHeightPresentation();
+            _viewportTransition = new(from, rectangle, fromClip, toClip, fullScreen, settings, now, now, Scale,
+                AutomaticHeight: true);
+            SetScrollRegion(fullScreen, fromClip, updateSurface: false);
+            EnsureFrameSubscription();
+            return;
+        }
+        if (_viewportTransition is { AutomaticHeight: true })
+        {
+            _viewportTransition = null;
+            Surface.EndAutomaticHeightPresentation();
+        }
         if (_viewportTransition is { } active && active.FullScreen == fullScreen && active.Scale == Scale &&
             animationsEnabled && (now - active.Started) * 1000d / Stopwatch.Frequency < 200)
         {
@@ -130,6 +149,7 @@ public sealed partial class MainWindow
             return;
         }
         _viewportTransition = null;
+        Surface.EndAutomaticHeightPresentation();
         SetScrollRegion(fullScreen, toClip);
         MoveWindowIfChanged(rectangle);
         StopFrameSubscriptionIfIdle();
@@ -142,10 +162,19 @@ public sealed partial class MainWindow
         {
             StopViewportTransition(); return;
         }
+        if (transition.AutomaticHeight)
+        {
+            bool animationsEnabled;
+            try { animationsEnabled = _appearanceSettings.AnimationsEnabled; }
+            catch { animationsEnabled = true; }
+            if (!animationsEnabled) { StopViewportTransition(); return; }
+        }
         var elapsed = (Stopwatch.GetTimestamp() - transition.SegmentStarted) * 1000d / Stopwatch.Frequency;
-        var remaining = Math.Max(0, 200d - (transition.SegmentStarted - transition.Started) * 1000d / Stopwatch.Frequency);
+        var duration = transition.AutomaticHeight ? 180d : 200d;
+        var remaining = Math.Max(0, duration - (transition.SegmentStarted - transition.Started) * 1000d / Stopwatch.Frequency);
         var t = remaining <= 0 ? 1 : Math.Clamp(elapsed / remaining, 0, 1);
         var p = t * t * (3 - 2 * t);
+        if (transition.AutomaticHeight) Surface.AdvanceAutomaticHeightPresentation(p);
         static double L(double a, double b, double p) => a + (b - a) * p;
         var clip = new Rect(L(transition.FromClip.X, transition.ToClip.X, p),
             L(transition.FromClip.Y, transition.ToClip.Y, p), L(transition.FromClip.Width, transition.ToClip.Width, p),
@@ -158,14 +187,16 @@ public sealed partial class MainWindow
         if (t == 1)
         {
             _viewportTransition = null;
+            Surface.EndAutomaticHeightPresentation();
             SetScrollRegion(transition.FullScreen, transition.ToClip, presentationSettings: transition.Settings);
         }
     }
 
     private void StopViewportTransition()
     {
-        if (_viewportTransition is not { } transition) return;
+        if (_viewportTransition is not { } transition) { Surface.EndAutomaticHeightPresentation(); return; }
         _viewportTransition = null;
+        Surface.EndAutomaticHeightPresentation();
         SetScrollRegion(transition.FullScreen, transition.ToClip, presentationSettings: transition.Settings);
         MoveWindowIfChanged(transition.To);
         StopFrameSubscriptionIfIdle();

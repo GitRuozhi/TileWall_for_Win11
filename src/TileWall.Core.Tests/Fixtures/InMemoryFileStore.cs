@@ -32,7 +32,7 @@ public sealed class InMemoryFileStore : IFileStore
 
     public void Move(string src, string dst, bool overwrite)
     {
-        if (InjectedFault == FaultPoint.BeforeMove && dst.EndsWith(Path.DirectorySeparatorChar + "config.json", StringComparison.OrdinalIgnoreCase))
+        if (InjectedFault == FaultPoint.BeforeMove && dst.EndsWith(Path.DirectorySeparatorChar + "state.json", StringComparison.OrdinalIgnoreCase))
             throw new IOException("Injected config replacement failure.");
         Trip(EntryFaultPoint.BeforeEntrySwap,
             src.Contains(Staging, StringComparison.OrdinalIgnoreCase) && dst.Contains(Objects, StringComparison.OrdinalIgnoreCase));
@@ -48,6 +48,22 @@ public sealed class InMemoryFileStore : IFileStore
         if (!_files.TryGetValue(src, out var bytes)) throw new FileNotFoundException($"[memory store] Missing source: {src}", src);
         if (!overwrite && _files.ContainsKey(dst)) throw new IOException($"[memory store] Existing destination: {dst}");
         _files[dst] = [.. bytes];
+    }
+
+    public void MoveDirectory(string source, string destination)
+    {
+        if (GetPathInfo(destination).Exists || _files.Keys.Any(path => path.StartsWith(destination + Path.DirectorySeparatorChar, StringComparison.Ordinal)))
+            throw new IOException("Existing directory destination.");
+        if (!GetPathInfo(source).Exists) throw new DirectoryNotFoundException(source);
+        var prefix = source + Path.DirectorySeparatorChar;
+        foreach (var path in _files.Keys.Where(path => path.StartsWith(prefix, StringComparison.Ordinal)).ToArray())
+        {
+            _files[destination + path[source.Length..]] = _files[path]; _files.Remove(path);
+        }
+        foreach (var path in _directories.Where(path => path == source || path.StartsWith(prefix, StringComparison.Ordinal)).ToArray())
+        {
+            _directories.Remove(path); _directories.Add(destination + path[source.Length..]);
+        }
     }
 
     public void Delete(string path) => _files.Remove(path);
@@ -86,4 +102,27 @@ public sealed class InMemoryFileStore : IFileStore
         _entryFault = EntryFaultPoint.None;
         throw new IOException($"Injected {point} failure.");
     }
+}
+
+/// <summary>Explicit complete-snapshot fixtures; never emulates the removed config.json format.</summary>
+internal static class SnapshotTestData
+{
+    public static byte[] Install(IFileStore files, string root, TileWall.Core.Wall.WallDocument document,
+        string? manifestPath = null)
+    {
+        var snapshot = TileWall.Core.Storage.UserDataSnapshotJson.Prepare(document);
+        var directory = Path.Combine(root, "Snapshots", snapshot.Manifest.SnapshotId);
+        files.CreateDirectory(root);
+        files.CreateDirectory(Path.Combine(root, "Snapshots"));
+        files.CreateDirectory(directory);
+        foreach (var (name, bytes) in snapshot.Files) files.WriteAllBytes(Path.Combine(directory, name), bytes);
+        files.WriteAllBytes(manifestPath ?? Path.Combine(root, "state.json"), snapshot.ManifestBytes);
+        return snapshot.ManifestBytes;
+    }
+
+    public static TileWall.Core.Wall.WallDocument Read(IFileStore files, string root, byte[] manifestBytes) =>
+        TileWall.Core.Storage.UserDataSnapshotJson.Read(TileWall.Core.Storage.UserDataSnapshotJson.ReadManifest(manifestBytes),
+            name => files.ReadAllBytes(Path.Combine(root, "Snapshots",
+                TileWall.Core.Storage.UserDataSnapshotJson.ReadManifest(manifestBytes).SnapshotId, name)),
+            reference => Path.Combine(root, "Sources", reference.ContentId));
 }

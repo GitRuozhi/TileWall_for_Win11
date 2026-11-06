@@ -39,13 +39,13 @@ public static class StartMenuPresetRules
         new("microsoft", "Microsoft", ["Microsoft", "Microsoft VS Code", "Microsoft OneDrive", "Microsoft Edge"], ["Microsoft Edge", "Microsoft OneDrive", "Microsoft Teams", "Visual Studio Code", "Microsoft PowerToys"], ["Microsoft Corporation"]),
     ];
 
-    public static StartMenuBucket? Match(StartMenuCandidate candidate, LaunchIdentity identity, string? company = null)
+    public static StartMenuBucket? Match(string displayName, string relativeDirectory, LaunchIdentity identity, string? company = null)
     {
         var target = identity.Target.Replace('/', '\\');
         var file = target[(target.LastIndexOf('\\') + 1)..];
         var host = new[] { "explorer.exe", "rundll32.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "msiexec.exe", "wscript.exe", "cscript.exe" }
             .Contains(file, StringComparer.OrdinalIgnoreCase);
-        var folders = candidate.RelativeDir.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
+        var folders = relativeDirectory.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
         var segments = target.Split('\\', StringSplitOptions.RemoveEmptyEntries);
         var packageTarget = target.StartsWith("shell:AppsFolder\\", StringComparison.OrdinalIgnoreCase) ? target :
             host && identity.Arguments.Trim().Trim('"').StartsWith("shell:AppsFolder\\", StringComparison.OrdinalIgnoreCase)
@@ -55,8 +55,8 @@ public static class StartMenuPresetRules
         {
             var companyMatch = !identity.IsUrl && !host && company is not null && rule.Companies.Contains(company.Trim(), StringComparer.OrdinalIgnoreCase);
             var pathMatch = !identity.IsUrl && !host && segments.Any(segment => rule.Paths.Any(path => InstallationSegment(segment, path)));
-            var nameMatch = !identity.IsUrl && rule.Names.Any(name => TokenPrefix(candidate.DisplayName, name) || folders.Any(folder => TokenPrefix(folder, name)));
-            if (rule.Key == "visual-studio" && TokenPrefix(candidate.DisplayName, "Visual Studio Code")) nameMatch = false;
+            var nameMatch = !identity.IsUrl && rule.Names.Any(name => TokenPrefix(displayName, name) || folders.Any(folder => TokenPrefix(folder, name)));
+            if (rule.Key == "visual-studio" && TokenPrefix(displayName, "Visual Studio Code")) nameMatch = false;
             if (rule.Key is "nvidia" or "amd" or "intel" or "logitech" or "razer")
                 pathMatch &= nameMatch || companyMatch;
             // Common Office executable names alone are not sufficient: use Microsoft publisher or its install path.
@@ -85,58 +85,4 @@ public static class StartMenuPresetRules
         var version = value[alias.Length..].TrimStart(' ', '-', '_', '.');
         return version.Length != 0 && char.IsDigit(version[0]);
     }
-}
-
-public sealed record StartMenuGroupingItem(StartMenuCandidate Candidate, LaunchIdentity? Identity, bool CanAdd, string? Company = null);
-
-public static class StartMenuGroupingRules
-{
-    /// <summary>Selection is not an input; counts are calculated from the caller's current visible candidate set.</summary>
-    public static IReadOnlyList<StartMenuBucket> Assign(IReadOnlyList<StartMenuGroupingItem> items, bool recognizePresets = true)
-    {
-        ArgumentNullException.ThrowIfNull(items);
-        if (!recognizePresets) return AssignExistingFoldersAndLetters(items);
-
-        var presets = items.Select(item => item.Identity is null ? null : StartMenuPresetRules.Match(item.Candidate, item.Identity, item.Company)).ToArray();
-        var presetCounts = items.Select((item, index) => (item, index))
-            .Where(pair => pair.item.CanAdd && pair.item.Identity is not null && presets[pair.index] is not null)
-            .GroupBy(pair => presets[pair.index]!.Key, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.Select(pair => pair.item.Identity!.Key)
-                .Distinct(StringComparer.Ordinal).Count(), StringComparer.OrdinalIgnoreCase);
-        var folderCounts = items.Select((item, index) => (item, index))
-            .Where(pair => pair.item.CanAdd && pair.item.Identity is not null && presets[pair.index] is null)
-            .Select(pair => (Folder: TopFolder(pair.item.Candidate), pair.item.Identity))
-            .Where(pair => pair.Folder.Length != 0)
-            .GroupBy(pair => pair.Folder, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.Select(pair => pair.Identity!.Key)
-                .Distinct(StringComparer.Ordinal).Count(), StringComparer.OrdinalIgnoreCase);
-        return items.Select((item, index) =>
-        {
-            if (presets[index] is { } preset)
-                return presetCounts.GetValueOrDefault(preset.Key) > 1 ? preset : Letter(item.Candidate);
-            var folder = TopFolder(item.Candidate);
-            if (folder.Length != 0 && folderCounts.GetValueOrDefault(folder) > 1)
-                return Folder(folder);
-            return Letter(item.Candidate);
-        }).ToArray();
-    }
-
-    private static IReadOnlyList<StartMenuBucket> AssignExistingFoldersAndLetters(IReadOnlyList<StartMenuGroupingItem> items) =>
-        items.Select(item =>
-        {
-            var folder = TopFolder(item.Candidate);
-            return folder.Length == 0 ? Letter(item.Candidate) : Folder(folder);
-        }).ToArray();
-
-    private static StartMenuBucket Folder(string folder) =>
-        new("folder:" + folder.ToUpperInvariant(), folder, 100);
-
-    private static StartMenuBucket Letter(StartMenuCandidate candidate)
-    {
-        var initial = StartMenuSelectionRules.Initial(candidate.DisplayName);
-        return new StartMenuBucket("letter:" + initial, initial.ToString(), initial == '#' ? 0 : initial - 'A' + 1);
-    }
-
-    private static string TopFolder(StartMenuCandidate candidate) =>
-        candidate.RelativeDir.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
 }

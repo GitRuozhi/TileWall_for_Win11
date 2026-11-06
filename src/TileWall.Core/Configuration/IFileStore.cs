@@ -12,10 +12,17 @@ public interface IFileStore
 
     byte[] ReadAllBytes(string path);
 
+    /// <summary>Hold an immutable original for one wall-file export. Local storage denies writes/deletion;
+    /// the default supports existing in-memory fault fixtures.</summary>
+    Stream OpenReadProtected(string path) => new MemoryStream(ReadAllBytes(path), writable: false);
+
     void WriteAllBytes(string path, byte[] bytes);
 
     /// <summary>同卷原子替换（唯一提交点）。</summary>
     void Move(string src, string dst, bool overwrite);
+
+    /// <summary>Publish a complete immutable directory on the same volume; destination must not exist.</summary>
+    void MoveDirectory(string source, string destination) => throw new NotSupportedException("Directory publication is unsupported by this file store.");
 
     void Copy(string src, string dst, bool overwrite);
 
@@ -36,7 +43,7 @@ public interface IFileStore
     /// </summary>
     IReadOnlyList<string> ListFiles(string directoryPath);
 
-    /// <summary>尽力递归删除目录；不存在时静默（Directory.Delete 语义）。M4：暂存区/撤销材料清理。</summary>
+    /// <summary>尽力递归删除目录；不存在时静默（Directory.Delete 语义）。用于暂存区和事务恢复材料清理。</summary>
     void DeleteDirectory(string directoryPath);
 }
 

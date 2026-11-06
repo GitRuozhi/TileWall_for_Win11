@@ -33,9 +33,11 @@ public sealed partial class WallStoreTests
         public bool Exists(string path) => inner.Exists(path);
         public byte[] ReadAllBytes(string path) => inner.ReadAllBytes(path);
         public void WriteAllBytes(string path, byte[] bytes) { Trip("write", null, path); inner.WriteAllBytes(path, bytes); }
-        public void Move(string src, string dst, bool overwrite) { Trip("move", src, dst); inner.Move(src, dst, overwrite); }
+        public void Move(string src, string dst, bool overwrite)
+        { Trip("move", src, dst); inner.Move(src, dst, overwrite); Trip("after-move", src, dst); }
         public void Copy(string src, string dst, bool overwrite) { Trip("copy", src, dst); inner.Copy(src, dst, overwrite); }
         public void Delete(string path) { Trip("delete", path, null); inner.Delete(path); }
+        public void MoveDirectory(string source, string destination) => inner.MoveDirectory(source, destination);
         public void CreateDirectory(string path) { Trip("mkdir", null, path); inner.CreateDirectory(path); }
         public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);
@@ -80,7 +82,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
+            new EntryChange.CreateUrl("a", "https://example.com")));
         Assert.Equal(WallCommitStatus.Committed, added.Status);
 
         var current = added.CommittedDocument!;
@@ -91,7 +93,7 @@ public sealed partial class WallStoreTests
         };
         var request = Plan(store, current, candidate);
         if (leaveStagingJournal) files.EntryFault = EntryFaultPoint.BeforeStagingCleanup;
-        var result = store.Commit(current, request, true);
+        var result = store.Commit(current, request);
         string commitId;
         string journalPath;
         if (leaveStagingJournal)
@@ -104,7 +106,7 @@ public sealed partial class WallStoreTests
         else
         {
             Assert.Equal(WallCommitStatus.Committed, result.Status);
-            commitId = result.Undo!.CommitId;
+            commitId = Path.GetFileName(Assert.Single(files.ListDirectories(Path.Combine(root, "Recovery", "Entries"))));
             journalPath = Path.Combine(root, "Recovery", "Entries", commitId, "journal.json");
         }
 
@@ -131,7 +133,7 @@ public sealed partial class WallStoreTests
         Assert.Equal(WallOpenStatus.Loaded, store.Open().Status);
         var next = Wall(Tile("a", "Alpha")) with { Generation = 1 };
         var request = Plan(store, initial, next, new EntryChange.CreateUrl("a", "https://example.com"));
-        var commit = store.Commit(initial, request, true);
+        var commit = store.Commit(initial, request);
         Assert.Equal(WallCommitStatus.Committed, commit.Status);
         Assert.Equal(1, commit.CommittedDocument!.Generation);
         var entry = ((TileMember)commit.CommittedDocument.Lanes[0].Groups[0].Members[0]).Entry!;
@@ -139,7 +141,7 @@ public sealed partial class WallStoreTests
         Assert.True(files.Exists(EntryPath(root, entry)));
         Assert.Equal(WallOpenStatus.Loaded, store.Open().Status);
         var snapshot = files.SnapshotFiles();
-        Assert.Equal(WallCommitStatus.Rejected, store.Commit(initial, request, true).Status);
+        Assert.Equal(WallCommitStatus.Rejected, store.Commit(initial, request).Status);
         Assert.Equal(snapshot.Keys.Order(), files.SnapshotFiles().Keys.Order());
     }
 
@@ -168,7 +170,7 @@ public sealed partial class WallStoreTests
         var candidate = Wall(Tile("a", "Same"), Tile("b", "Same")) with { Generation = 1 };
         var request = Plan(store, initial, candidate,
             new EntryChange.CopyShortcut("a", source), new EntryChange.CopyShortcut("b", source));
-        var result = store.Commit(initial, request, true);
+        var result = store.Commit(initial, request);
         Assert.Equal(WallCommitStatus.Committed, result.Status);
         foreach (var member in result.CommittedDocument!.Lanes[0].Groups.SelectMany(g => g.Members))
             Assert.Equal(bytes, files.ReadAllBytes(EntryPath(root, member.Entry!)));
@@ -178,25 +180,24 @@ public sealed partial class WallStoreTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void RenameAndTargetEditUndoRestoresExactBytes(bool renameFirst)
+    public void RenameAndTargetEditPreserveOtherShortcutFields(bool renameFirst)
     {
         var (store, files, links, root) = Harness();
         var initial = Wall();
         store.InitializeFresh(initial);
         var first = Plan(store, initial, Wall(Tile("a", "One")) with { Generation = 1 },
             new EntryChange.CreateLink("a", @"C:\first.exe"));
-        var added = store.Commit(initial, first, true);
+        var added = store.Commit(initial, first);
         Assert.Equal(WallCommitStatus.Committed, added.Status);
         var current = added.CommittedDocument!;
         var oldEntry = current.Lanes[0].Groups[0].Members[0].Entry!;
         var oldPath = EntryPath(root, oldEntry);
         links.Register(oldPath, @"C:\first.exe", "--arg", @"C:\work");
-        var oldBytes = files.ReadAllBytes(oldPath).ToArray();
         EntryChange targetEdit = new EntryChange.ChangeTarget("a", @"C:\second.exe");
         EntryChange rename = new EntryChange.Rename("a");
         var update = Plan(store, current, Wall(Tile("a", "Two")) with { Generation = 2 },
             renameFirst ? [rename, targetEdit] : [targetEdit, rename]);
-        var changed = store.Commit(current, update, true);
+        var changed = store.Commit(current, update);
         Assert.Equal(WallCommitStatus.Committed, changed.Status);
         var newEntry = changed.CommittedDocument!.Lanes[0].Groups[0].Members[0].Entry!;
         Assert.Equal("Objects/a/Two.lnk", newEntry.RelativePath);
@@ -204,11 +205,7 @@ public sealed partial class WallStoreTests
         Assert.Equal("--arg", links.StateOf(EntryPath(root, newEntry)).Arguments);
         Assert.Equal(@"C:\work", links.StateOf(EntryPath(root, newEntry)).WorkingDirectory);
         Assert.False(files.Exists(oldPath));
-        var undone = store.Undo(changed.CommittedDocument, current, changed.Undo!, 2);
-        Assert.Equal(WallCommitStatus.Committed, undone.Status);
-        Assert.Equal(oldBytes, files.ReadAllBytes(oldPath));
-        Assert.False(files.Exists(EntryPath(root, newEntry)));
-        Assert.Equal(3, store.Open().Document!.Generation);
+        Assert.Equal(2, store.Open().Document!.Generation);
     }
 
     [Fact]
@@ -219,7 +216,7 @@ public sealed partial class WallStoreTests
         store.InitializeFresh(initial);
         var create = Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
             new EntryChange.CreateUrl("a", "https://old.example"));
-        var added = store.Commit(initial, create, true);
+        var added = store.Commit(initial, create);
         Assert.Equal(WallCommitStatus.Committed, added.Status);
         var before = added.CommittedDocument!;
         var entry = before.Lanes[0].Groups[0].Members[0].Entry!;
@@ -227,7 +224,7 @@ public sealed partial class WallStoreTests
         var edit = Plan(store, before, before with { Generation = 2 },
             new EntryChange.ChangeTarget("a", "https://new.example"));
         files.EntryFault = EntryFaultPoint.BeforeEntrySwap;
-        var failed = store.Commit(before, edit, true);
+        var failed = store.Commit(before, edit);
         Assert.Equal(WallCommitStatus.Rejected, failed.Status);
         Assert.Equal(bytes, files.ReadAllBytes(EntryPath(root, entry)));
         Assert.Equal(1, store.Open().Document!.Generation);
@@ -237,11 +234,13 @@ public sealed partial class WallStoreTests
     public void UnsupportedAndCorruptSchemaRemainUntouched()
     {
         var (store, files, _, root) = Harness();
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion + 1}}}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion + 1}}}"));
         var unchanged = files.SnapshotFiles();
-        Assert.Equal(WallOpenStatus.UnsupportedFormatBlocked, store.Open().Status);
+        var unsupported = store.Open();
+        Assert.Equal(WallOpenStatus.UnsupportedFormatBlocked, unsupported.Status);
+        Assert.Equal(WallOpenBlockReason.UnsupportedFormat, unsupported.BlockReason);
         AssertSameFileBytes(unchanged, files.SnapshotFiles());
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes("{\"generation\":0}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes("{\"generation\":0}"));
         Assert.Equal(WallOpenStatus.CorruptBlocked, store.Open().Status);
     }
 
@@ -251,9 +250,8 @@ public sealed partial class WallStoreTests
         var (store, files, _, root) = Harness();
         var initial = Wall();
         store.InitializeFresh(initial);
-        var formatted = Encoding.UTF8.GetBytes("{ \"columns\": 1, \"rows\": 4, \"schemaVersion\": CURRENT, \"generation\": 0, \"lanes\": [{\"groups\":[]}], \"settings\":{} }"
-            .Replace("CURRENT", WallDocument.CurrentSchemaVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)));
-        files.WriteAllBytes(Path.Combine(root, "config.json"), formatted);
+        var formatted = Encoding.UTF8.GetBytes(" \n" + Encoding.UTF8.GetString(files.ReadAllBytes(Path.Combine(root, "state.json"))) + "\n ");
+        files.WriteAllBytes(Path.Combine(root, "state.json"), formatted);
         var loaded = store.Open();
         Assert.Equal(WallOpenStatus.Loaded, loaded.Status);
         var candidate = loaded.Document! with
@@ -262,8 +260,8 @@ public sealed partial class WallStoreTests
             Settings = loaded.Document.Settings with { AlwaysOnTop = false }
         };
         var request = Plan(store, loaded.Document, candidate);
-        Assert.Equal(WallCommitStatus.Committed, store.Commit(loaded.Document, request, false).Status);
-        Assert.Equal(formatted, files.ReadAllBytes(Path.Combine(root, "Recovery", "config.prev.json")));
+        Assert.Equal(WallCommitStatus.Committed, store.Commit(loaded.Document, request).Status);
+        Assert.Equal(formatted, files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json")));
     }
 
     [Fact]
@@ -279,12 +277,12 @@ public sealed partial class WallStoreTests
         };
         var request = Plan(store, current, candidate);
 
-        var external = current with { Settings = current.Settings with { ThemeMode = WallThemeMode.Dark } };
-        var configPath = Path.Combine(root, "config.json");
-        files.WriteAllBytes(configPath, WallJson.Serialize(external));
+        var external = current with { Settings = current.Settings with { ThemeMode = WallThemeMode.Light } };
+        var configPath = Path.Combine(root, "state.json");
+        SnapshotTestData.Install(files, root, external);
         var baseline = files.SnapshotFiles();
 
-        Assert.Equal(WallCommitStatus.Rejected, store.Commit(current, request, true).Status);
+        Assert.Equal(WallCommitStatus.Rejected, store.Commit(current, request).Status);
         AssertSameFileBytes(baseline, files.SnapshotFiles());
     }
 
@@ -296,7 +294,7 @@ public sealed partial class WallStoreTests
         store.InitializeFresh(initial);
         var first = Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
             new EntryChange.CreateUrl("a", "https://old.example"));
-        var added = store.Commit(initial, first, true);
+        var added = store.Commit(initial, first);
         Assert.Equal(WallCommitStatus.Committed, added.Status);
         var before = added.CommittedDocument!;
         var entry = before.Lanes[0].Groups[0].Members[0].Entry!;
@@ -304,10 +302,10 @@ public sealed partial class WallStoreTests
         var oldBytes = files.ReadAllBytes(entryPath).ToArray();
         var edit = Plan(store, before, before with { Generation = 2 },
             new EntryChange.ChangeTarget("a", "https://new.example"));
-        var changed = store.Commit(before, edit, true);
+        var changed = store.Commit(before, edit);
         Assert.Equal(WallCommitStatus.Committed, changed.Status);
         Assert.NotEqual(oldBytes, files.ReadAllBytes(entryPath));
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var recovered = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
         Assert.Equal(oldBytes, files.ReadAllBytes(entryPath));
@@ -322,41 +320,19 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         store.InitializeFresh(initial);
         var add = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var before = add.CommittedDocument!;
         var edit = store.Commit(before, Plan(store, before, before with { Generation = 2 },
-            new EntryChange.ChangeTarget("a", "https://new.example")), true);
+            new EntryChange.ChangeTarget("a", "https://new.example")));
+        Assert.Equal(WallCommitStatus.Committed, edit.Status);
         var entry = before.Lanes[0].Groups[0].Members[0].Entry!;
         var entryPath = EntryPath(root, entry);
         var active = files.ReadAllBytes(entryPath).ToArray();
-        files.Delete(Path.Combine(root, "Recovery", "Entries", edit.Undo!.CommitId, "a", "old.entry"));
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        var material = Assert.Single(files.ListDirectories(Path.Combine(root, "Recovery", "Entries")));
+        files.Delete(Path.Combine(material, "a", "old.entry"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         Assert.Equal(WallOpenStatus.RecoveryBlocked, store.Open().Status);
         Assert.Equal(active, files.ReadAllBytes(entryPath));
-    }
-
-    [Fact]
-    public void SettingsSaveDoesNotDisplaceLayoutUndo()
-    {
-        var (store, _, _, _) = Harness();
-        var initial = Wall();
-        store.InitializeFresh(initial);
-        var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
-        Assert.Equal(WallCommitStatus.Committed, added.Status);
-        var settings = added.CommittedDocument! with
-        {
-            Generation = 2,
-            Settings = added.CommittedDocument.Settings with { AlwaysOnTop = false }
-        };
-        var saved = store.Commit(added.CommittedDocument, Plan(store, added.CommittedDocument, settings), false);
-        Assert.Equal(WallCommitStatus.Committed, saved.Status);
-        Assert.Null(saved.Undo);
-        var undone = store.Undo(saved.CommittedDocument!, initial, added.Undo!, 2);
-        Assert.Equal(WallCommitStatus.Committed, undone.Status);
-        Assert.False(undone.CommittedDocument!.Settings.AlwaysOnTop);
-        Assert.Empty(undone.CommittedDocument.Lanes[0].Groups);
-        Assert.Equal(3, store.Open().Document!.Generation);
     }
 
     [Fact]
@@ -368,20 +344,21 @@ public sealed partial class WallStoreTests
         var candidate = Wall(Tile("a")) with { Generation = 1 };
         var malformed = candidate with { Lanes = null! };
         Assert.Null(store.PlanEntries(initial, malformed, []).Request);
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         Assert.Equal(WallOpenStatus.CorruptBlocked, store.Open().Status);
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes("{\"rows\":4}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes("{\"rows\":4}"));
         Assert.Equal(WallOpenStatus.CorruptBlocked, store.Open().Status);
     }
 
     [Fact]
     public void UnsupportedOlderSchemaDoesNotDeleteAnyFiles()
     {
-        var schema = WallDocument.CurrentSchemaVersion - 1;
+        // state.json is a UserDataManifest, not a WallDocument. Manifest 3 is now supported.
+        const int schema = 0;
         var (store, files, _, root) = Harness();
         var external = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "external-" + Guid.NewGuid().ToString("N") + ".url"));
         files.WriteAllBytes(external, [1, 2, 3]);
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{schema}}}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{schema}}}"));
         files.CreateDirectory(Path.Combine(root, "Objects"));
         files.CreateDirectory(Path.Combine(root, "logs"));
         files.WriteAllBytes(Path.Combine(root, "logs", "tilewall.log"), [4]);
@@ -401,7 +378,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         store.InitializeFresh(initial);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var before = added.CommittedDocument!;
         var entry = before.Lanes[0].Groups[0].Members[0].Entry!;
         var path = EntryPath(root, entry);
@@ -409,7 +386,7 @@ public sealed partial class WallStoreTests
         files.EntryFault = EntryFaultPoint.BeforeEntryBackup;
         var request = Plan(store, before, before with { Generation = 2 },
             new EntryChange.ChangeTarget("a", "https://new.example"));
-        Assert.Equal(WallCommitStatus.Rejected, store.Commit(before, request, true).Status);
+        Assert.Equal(WallCommitStatus.Rejected, store.Commit(before, request).Status);
         Assert.Equal(oldBytes, files.ReadAllBytes(path));
         Assert.Equal(WallOpenStatus.Loaded, store.Open().Status);
     }
@@ -422,9 +399,8 @@ public sealed partial class WallStoreTests
         store.InitializeFresh(initial);
         files.EntryFault = EntryFaultPoint.BeforeStagingCleanup;
         var result = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
+            new EntryChange.CreateUrl("a", "https://example.com")));
         Assert.Equal(WallCommitStatus.CommittedNeedsCleanup, result.Status);
-        Assert.Null(result.Undo);
         Assert.Equal(1, store.Open().Document!.Generation);
         Assert.Empty(files.ListDirectories(Path.Combine(root, "Staging")));
     }
@@ -437,7 +413,7 @@ public sealed partial class WallStoreTests
         store.InitializeFresh(initial);
         files.EntryFault = EntryFaultPoint.BeforeStagingCleanup;
         var result = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
+            new EntryChange.CreateUrl("a", "https://example.com")));
         Assert.Equal(WallCommitStatus.CommittedNeedsCleanup, result.Status);
         var stage = Assert.Single(files.ListDirectories(Path.Combine(root, "Staging")));
         var journalPath = Path.Combine(stage, "commit.json");
@@ -446,7 +422,7 @@ public sealed partial class WallStoreTests
         files.WriteAllBytes(journalPath, Encoding.UTF8.GetBytes(journal.ToJsonString()));
         Assert.Equal(WallOpenStatus.RecoveryBlocked, store.Open().Status);
         Assert.True(files.Exists(journalPath));
-        Assert.Equal(1, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.Equal(1, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 
     [Theory]
@@ -476,7 +452,7 @@ public sealed partial class WallStoreTests
             observed!["relativePath"] = JsonValue.Create(invalidRelativePath);
         files.WriteAllBytes(journalPath, Encoding.UTF8.GetBytes(journal.ToJsonString()));
 
-        var configPath = Path.Combine(root, "config.json");
+        var configPath = Path.Combine(root, "state.json");
         var entryPath = EntryPath(root, current.Lanes[0].Groups[0].Members[0].Entry!);
         var baseline = files.SnapshotFiles();
         Assert.Contains(journalPath, baseline.Keys);
@@ -495,7 +471,7 @@ public sealed partial class WallStoreTests
             Settings = current.Settings with { AlwaysOnTop = !current.Settings.AlwaysOnTop }
         };
         var request = Plan(store, current, candidate);
-        var blockedCommit = store.Commit(current, request, true);
+        var blockedCommit = store.Commit(current, request);
         Assert.Equal(WallCommitStatus.RecoveryBlocked, blockedCommit.Status);
         Assert.True(files.Exists(journalPath));
         AssertSameFileBytes(baseline, files.SnapshotFiles());
@@ -507,7 +483,7 @@ public sealed partial class WallStoreTests
         var (store, files, _, root) = Harness();
         files.InjectedFault = FaultPoint.BeforeMove;
         Assert.Equal(WallOpenStatus.OpenFailed, store.InitializeFresh(Wall()).Status);
-        Assert.False(files.Exists(Path.Combine(root, "config.init.tmp")));
+        Assert.False(files.Exists(Path.Combine(root, "state.init.tmp")));
         Assert.Equal(WallOpenStatus.Fresh, store.Open().Status);
         files.InjectedFault = FaultPoint.None;
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(Wall()).Status);
@@ -515,13 +491,13 @@ public sealed partial class WallStoreTests
     }
 
     [Fact]
-    public void ConfigReplaceFailureRollsBackEntryAndUndoCanRetry()
+    public void ConfigReplaceFailureRollsBackEntryAndCommitCanRetry()
     {
         var (store, files, _, root) = Harness();
         var initial = Wall();
         store.InitializeFresh(initial);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var before = added.CommittedDocument!;
         var entry = before.Lanes[0].Groups[0].Members[0].Entry!;
         var entryPath = EntryPath(root, entry);
@@ -529,20 +505,14 @@ public sealed partial class WallStoreTests
         var request = Plan(store, before, before with { Generation = 2 },
             new EntryChange.ChangeTarget("a", "https://new.example"));
         files.InjectedFault = FaultPoint.BeforeMove;
-        Assert.Equal(WallCommitStatus.Rejected, store.Commit(before, request, true).Status);
+        Assert.Equal(WallCommitStatus.Rejected, store.Commit(before, request).Status);
         Assert.Equal(oldBytes, files.ReadAllBytes(entryPath));
         Assert.Equal(1, store.Open().Document!.Generation);
         files.InjectedFault = FaultPoint.None;
-        var changed = store.Commit(before, request, true);
+        var changed = store.Commit(before, request);
         Assert.Equal(WallCommitStatus.Committed, changed.Status);
-        files.InjectedFault = FaultPoint.BeforeMove;
-        Assert.Equal(WallCommitStatus.Rejected,
-            store.Undo(changed.CommittedDocument!, before, changed.Undo!, 2).Status);
         Assert.Equal(2, store.Open().Document!.Generation);
-        files.InjectedFault = FaultPoint.None;
-        Assert.Equal(WallCommitStatus.Committed,
-            store.Undo(changed.CommittedDocument!, before, changed.Undo!, 2).Status);
-        Assert.Equal(oldBytes, files.ReadAllBytes(entryPath));
+        Assert.Equal("https://new.example", UrlShortcut.ReadUrlLine(files.ReadAllBytes(entryPath)));
     }
 
     [Fact]
@@ -556,7 +526,7 @@ public sealed partial class WallStoreTests
         Assert.Null(store.PlanEntries(initial, Wall(Tile("a", "COM¹")) with { Generation = 1 },
             [new EntryChange.CreateUrl("a", "https://example.com")]).Request);
         var add = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateLink("a", @"C:\target.exe")), true);
+            new EntryChange.CreateLink("a", @"C:\target.exe")));
         var current = add.CommittedDocument!;
         var path = EntryPath(root, current.Lanes[0].Groups[0].Members[0].Entry!);
         links.Register(path, null, hasIdList: true);
@@ -578,13 +548,13 @@ public sealed partial class WallStoreTests
         var (store, files, _, _) = Harness();
         var initial = Wall();
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
-        var candidate = Wall(Tile("a")) with { Generation = 1, InactiveMembers = [Tile(inactiveId)] };
+        var candidate = Wall(Tile("a")) with { Generation = 1, RecycleBinEnabled = true, InactiveMembers = [Tile(inactiveId)] };
         var baseline = files.SnapshotFiles();
 
         var plan = store.PlanEntries(initial, candidate, []);
         Assert.Null(plan.Request);
         Assert.Contains("DUPLICATE_ID", plan.Diagnostics);
-        var committed = store.Commit(initial, new WallCommitRequest(0, candidate, []), true);
+        var committed = store.Commit(initial, new WallCommitRequest(0, candidate, []));
         Assert.Equal(WallCommitStatus.Rejected, committed.Status);
         Assert.Contains("DUPLICATE_ID", committed.Diagnostics);
         AssertSameFileBytes(baseline, files.SnapshotFiles());
@@ -606,7 +576,7 @@ public sealed partial class WallStoreTests
         files.ReparsePaths.Add(Path.Combine(root, "Objects"));
         var candidate = Wall(Tile("a", "A")) with { Generation = 1 };
         var planned = Plan(store, Wall(), candidate, new EntryChange.CreateUrl("a", "https://example.com"));
-        Assert.Equal(WallCommitStatus.RecoveryBlocked, store.Commit(Wall(), planned, true).Status);
+        Assert.Equal(WallCommitStatus.RecoveryBlocked, store.Commit(Wall(), planned).Status);
         Assert.Equal(0, store.Open().Document!.Generation);
     }
 
@@ -617,7 +587,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         store.InitializeFresh(initial);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
+            new EntryChange.CreateUrl("a", "https://example.com")));
         var before = added.CommittedDocument!;
         var member = (TileMember)before.Lanes[0].Groups[0].Members[0];
         var entryPath = EntryPath(root, member.Entry!);
@@ -628,7 +598,7 @@ public sealed partial class WallStoreTests
             Lanes = [new WallLane { Groups = [before.Lanes[0].Groups[0] with
             { Members = [member with { Visual = member.Visual with { BackgroundColor = "#FF0000" } }] }] }]
         };
-        Assert.Equal(WallCommitStatus.Committed, store.Commit(before, Plan(store, before, altered), true).Status);
+        Assert.Equal(WallCommitStatus.Committed, store.Commit(before, Plan(store, before, altered)).Status);
         Assert.Equal(oldBytes, files.ReadAllBytes(entryPath));
     }
 
@@ -639,15 +609,15 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         store.InitializeFresh(initial);
         var add = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var before = add.CommittedDocument!;
         var entry = before.Lanes[0].Groups[0].Members[0].Entry!;
         var path = EntryPath(root, entry);
         var oldBytes = files.ReadAllBytes(path).ToArray();
         var changed = store.Commit(before, Plan(store, before, before with { Generation = 2 },
-            new EntryChange.ChangeTarget("a", "https://new.example")), true);
+            new EntryChange.ChangeTarget("a", "https://new.example")));
         Assert.Equal(WallCommitStatus.Committed, changed.Status);
-        files.Delete(Path.Combine(root, "config.json"));
+        files.Delete(Path.Combine(root, "state.json"));
         var recovered = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
         Assert.Equal(oldBytes, files.ReadAllBytes(path));
@@ -655,23 +625,29 @@ public sealed partial class WallStoreTests
     }
 
     [Fact]
-    public void UndoRetainsRecoveryMaterialAfterItChangesEntries()
+    public void RemovalRetainsPreviousEntryForCorruptPrimaryRecovery()
     {
         var (store, files, _, root) = Harness();
         var initial = Wall();
         store.InitializeFresh(initial);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
-        var member = added.CommittedDocument!.Lanes[0].Groups[0].Members[0];
+            new EntryChange.CreateUrl("a", "https://example.com")));
+        var before = added.CommittedDocument!;
+        var member = before.Lanes[0].Groups[0].Members[0];
         var path = EntryPath(root, member.Entry!);
-        var undo = store.Undo(added.CommittedDocument, initial, added.Undo!, 1);
-        Assert.Equal(WallCommitStatus.Committed, undo.Status);
+        var bytes = files.ReadAllBytes(path).ToArray();
+        var empty = initial with { Generation = 2 };
+        var removed = store.Commit(before, Plan(store, before, empty, new EntryChange.Remove("a")));
+        Assert.Equal(WallCommitStatus.Committed, removed.Status);
         Assert.False(files.Exists(path));
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        Assert.Single(files.ListDirectories(Path.Combine(root, "Recovery", "Entries")));
+        files.WriteAllBytes(Path.Combine(root, "state.json"),
+            Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var recovered = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
-        Assert.True(files.Exists(path));
+        Assert.Equal(bytes, files.ReadAllBytes(path));
         Assert.Single(Assert.Single(recovered.Document!.Lanes[0].Groups).Members);
+        Assert.Equal(WallOpenStatus.Loaded, store.Open().Status);
     }
 
     [Fact]
@@ -681,7 +657,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         store.InitializeFresh(initial);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
+            new EntryChange.CreateUrl("a", "https://example.com")));
         var before = added.CommittedDocument!;
         Assert.Null(store.PlanEntries(before, Wall() with { Generation = 2 },
             [new EntryChange.Keep("a")]).Request);
@@ -707,7 +683,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         store.InitializeFresh(initial);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "Alpha")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
+            new EntryChange.CreateUrl("a", "https://example.com")));
         var before = added.CommittedDocument!;
         var member = (TileMember)before.Lanes[0].Groups[0].Members[0];
         var entryPath = EntryPath(root, member.Entry!);
@@ -718,7 +694,7 @@ public sealed partial class WallStoreTests
             Lanes = [new WallLane { Groups = [before.Lanes[0].Groups[0] with
             { Members = [member with { Visual = member.Visual with { Title = "" } }] }] }]
         };
-        var cleared = store.Commit(before, Plan(store, before, emptyTitle), true);
+        var cleared = store.Commit(before, Plan(store, before, emptyTitle));
         Assert.Equal(WallCommitStatus.Committed, cleared.Status);
         var clearedMember = (TileMember)cleared.CommittedDocument!.Lanes[0].Groups[0].Members[0];
         var restoredTitle = cleared.CommittedDocument with
@@ -728,7 +704,7 @@ public sealed partial class WallStoreTests
             { Members = [clearedMember with { Visual = clearedMember.Visual with { Title = "Alpha" } }] }] }]
         };
         var restored = store.Commit(cleared.CommittedDocument,
-            Plan(store, cleared.CommittedDocument, restoredTitle, new EntryChange.Rename("a")), true);
+            Plan(store, cleared.CommittedDocument, restoredTitle, new EntryChange.Rename("a")));
         Assert.Equal(WallCommitStatus.Committed, restored.Status);
         Assert.Equal(member.Entry, restored.CommittedDocument!.Lanes[0].Groups[0].Members[0].Entry);
         Assert.Equal(content, files.ReadAllBytes(entryPath));
@@ -740,20 +716,20 @@ public sealed partial class WallStoreTests
             { Entry = null, Visual = new MemberVisual { TitleMode = MemberTitleMode.Manual, Title = "a/b" } }] }] }]
         };
         var removed = store.Commit(restored.CommittedDocument,
-            Plan(store, restored.CommittedDocument, decoration, new EntryChange.Remove("a")), true);
+            Plan(store, restored.CommittedDocument, decoration, new EntryChange.Remove("a")));
         Assert.Equal(WallCommitStatus.Committed, removed.Status);
         Assert.Null(removed.CommittedDocument!.Lanes[0].Groups[0].Members[0].Entry);
         Assert.False(files.Exists(entryPath));
     }
 
     [Fact]
-    public void RecoveryMaterialKeepsLatestCommitAndLayoutUndoOnly()
+    public void RecoveryMaterialKeepsLatestCommitForCurrentAndPreviousOnly()
     {
         var (store, files, _, root) = Harness();
         var initial = Wall();
         store.InitializeFresh(initial);
         var layout = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
+            new EntryChange.CreateUrl("a", "https://example.com")));
         var current = layout.CommittedDocument!;
         for (var generation = 2; generation <= 5; generation++)
         {
@@ -762,13 +738,14 @@ public sealed partial class WallStoreTests
                 Generation = generation,
                 Settings = current.Settings with { AlwaysOnTop = generation % 2 != 0 }
             };
-            var saved = store.Commit(current, Plan(store, current, candidate), false);
+            var saved = store.Commit(current, Plan(store, current, candidate));
             Assert.Equal(WallCommitStatus.Committed, saved.Status);
             current = saved.CommittedDocument!;
         }
-        Assert.Equal(2, files.ListDirectories(Path.Combine(root, "Recovery", "Entries")).Count);
-        Assert.Equal(WallCommitStatus.Committed, store.Undo(current, initial, layout.Undo!, 5).Status);
-        Assert.Single(files.ListDirectories(Path.Combine(root, "Recovery", "Entries")));
+        var material = Assert.Single(files.ListDirectories(Path.Combine(root, "Recovery", "Entries")));
+        Assert.DoesNotContain("undo.marker", files.ListFiles(material).Select(Path.GetFileName));
+        Assert.Equal(5, store.Open().Document!.Generation);
+        Assert.Equal(4, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json"))).Generation);
     }
 
     [Fact]
@@ -785,7 +762,7 @@ public sealed partial class WallStoreTests
         var urlBytes = files.ReadAllBytes(urlSource).ToArray();
         var candidate = Wall(Tile("a", "Opaque"), Tile("b", "Opaque")) with { Generation = 1 };
         var result = store.Commit(initial, Plan(store, initial, candidate,
-            new EntryChange.CopyShortcut("a", lnkSource), new EntryChange.CopyShortcut("b", urlSource)), true);
+            new EntryChange.CopyShortcut("a", lnkSource), new EntryChange.CopyShortcut("b", urlSource)));
         Assert.Equal(WallCommitStatus.Committed, result.Status);
         var members = result.CommittedDocument!.Lanes[0].Groups.SelectMany(g => g.Members).ToArray();
         Assert.Equal(lnkBytes, files.ReadAllBytes(EntryPath(root, members[0].Entry!)));
@@ -806,7 +783,7 @@ public sealed partial class WallStoreTests
         files.WriteAllBytes(source, oldBytes);
 
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CopyShortcut("a", source)), true);
+            new EntryChange.CopyShortcut("a", source)));
         Assert.Equal(WallCommitStatus.Committed, added.Status);
         var current = added.CommittedDocument!;
         var entry = current.Lanes[0].Groups[0].Members[0].Entry!;
@@ -819,7 +796,7 @@ public sealed partial class WallStoreTests
             new EntryChange.ChangeTarget("a", target));
         var baseline = files.SnapshotFiles();
 
-        Assert.Equal(WallCommitStatus.Rejected, store.Commit(current, request, true).Status);
+        Assert.Equal(WallCommitStatus.Rejected, store.Commit(current, request).Status);
         Assert.Equal(oldBytes, files.ReadAllBytes(entryPath));
         AssertSameFileBytes(baseline, files.SnapshotFiles());
     }
@@ -831,16 +808,17 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         store.InitializeFresh(initial);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
+            new EntryChange.CreateUrl("a", "https://example.com")));
         Assert.Equal(WallCommitStatus.Committed, added.Status);
-        var journalPath = Path.Combine(root, "Recovery", "Entries", added.Undo!.CommitId, "journal.json");
+        var material = Assert.Single(files.ListDirectories(Path.Combine(root, "Recovery", "Entries")));
+        var journalPath = Path.Combine(material, "journal.json");
         var journal = JsonNode.Parse(files.ReadAllBytes(journalPath))!;
         journal["unexpected"] = "unsafe";
         files.WriteAllBytes(journalPath, Encoding.UTF8.GetBytes(journal.ToJsonString()));
         var baseline = files.SnapshotFiles();
         Assert.Equal(WallOpenStatus.RecoveryBlocked, store.Open().Status);
         var candidate = added.CommittedDocument! with { Generation = 2 };
-        var result = store.Commit(added.CommittedDocument, new WallCommitRequest(1, candidate, []), false);
+        var result = store.Commit(added.CommittedDocument, new WallCommitRequest(1, candidate, []));
         Assert.Equal(WallCommitStatus.RecoveryBlocked, result.Status);
         Assert.Equal(baseline.Keys.Order(), files.SnapshotFiles().Keys.Order());
         Assert.True(files.Exists(journalPath));
@@ -850,8 +828,8 @@ public sealed partial class WallStoreTests
     public void UnsupportedFormatLeavesUndecidableInstallIntentUntouched()
     {
         var (store, files, _, root) = Harness();
-        var config = Path.Combine(root, "config.json");
-        files.WriteAllBytes(config, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion - 1}}}"));
+        var config = Path.Combine(root, "state.json");
+        files.WriteAllBytes(config, Encoding.UTF8.GetBytes("{\"schemaVersion\":0}"));
         var stage = Path.Combine(root, "Staging", Guid.NewGuid().ToString("N"));
         files.CreateDirectory(Path.Combine(root, "Staging"));
         files.CreateDirectory(stage);
@@ -878,7 +856,7 @@ public sealed partial class WallStoreTests
             Assert.Equal(WallOpenStatus.Fresh, store.Open().Status);
             Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
             var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-                new EntryChange.CreateUrl("a", "https://example.com")), true);
+                new EntryChange.CreateUrl("a", "https://example.com")));
             Assert.Equal(WallCommitStatus.Committed, added.Status);
             var entry = added.CommittedDocument!.Lanes[0].Groups[0].Members[0].Entry!;
             Assert.True(File.Exists(EntryPath(root, entry)));
@@ -904,7 +882,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         baseStore.InitializeFresh(initial);
         var add = baseStore.Commit(initial, Plan(baseStore, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var before = add.CommittedDocument!;
         var entry = before.Lanes[0].Groups[0].Members[0].Entry!;
         var path = EntryPath(root, entry);
@@ -919,10 +897,10 @@ public sealed partial class WallStoreTests
             "intent" => kind == "move" && dst?.EndsWith("install.intent", StringComparison.Ordinal) == true,
             "install" => kind == "move" && src?.EndsWith("entry-a.tmp", StringComparison.Ordinal) == true &&
                 dst?.Contains(Path.DirectorySeparatorChar + "Objects" + Path.DirectorySeparatorChar, StringComparison.Ordinal) == true,
-            "backup-config" => kind == "move" && dst?.EndsWith("config.prev.json", StringComparison.Ordinal) == true,
+            "backup-config" => kind == "move" && dst?.EndsWith("state.prev.json", StringComparison.Ordinal) == true,
             _ => false
         });
-        var result = store.Commit(before, request, true);
+        var result = store.Commit(before, request);
         Assert.Equal(WallCommitStatus.Rejected, result.Status);
         Assert.Empty(fault.Rules);
         Assert.Equal(bytes, files.ReadAllBytes(path));
@@ -937,7 +915,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         baseStore.InitializeFresh(initial);
         var add = baseStore.Commit(initial, Plan(baseStore, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var before = add.CommittedDocument!;
         var entry = before.Lanes[0].Groups[0].Members[0].Entry!;
         var oldBytes = files.ReadAllBytes(EntryPath(root, entry)).ToArray();
@@ -949,7 +927,7 @@ public sealed partial class WallStoreTests
             dst?.Contains(Path.DirectorySeparatorChar + "Objects" + Path.DirectorySeparatorChar, StringComparison.Ordinal) == true);
         fault.Rules.Add((kind, src, dst) => kind == "copy" && src?.Contains(Path.DirectorySeparatorChar + "Recovery" + Path.DirectorySeparatorChar + "Entries", StringComparison.Ordinal) == true &&
             dst?.Contains(Path.DirectorySeparatorChar + "Objects" + Path.DirectorySeparatorChar, StringComparison.Ordinal) == true);
-        var failed = store.Commit(before, request, true);
+        var failed = store.Commit(before, request);
         Assert.Equal(WallCommitStatus.RecoveryBlocked, failed.Status);
         Assert.Empty(fault.Rules);
         Assert.Single(files.ListDirectories(Path.Combine(root, "Staging")));
@@ -965,7 +943,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         baseStore.InitializeFresh(initial);
         var add = baseStore.Commit(initial, Plan(baseStore, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var before = add.CommittedDocument!;
         var fault = new FaultingFiles(files);
         var store = new WallStore(fault, new FakeLinkFileService(fault), root);
@@ -975,7 +953,7 @@ public sealed partial class WallStoreTests
             dst?.Contains(Path.DirectorySeparatorChar + "Objects" + Path.DirectorySeparatorChar, StringComparison.Ordinal) == true);
         fault.Rules.Add((kind, src, dst) => kind == "copy" && src?.Contains(Path.DirectorySeparatorChar + "Recovery" + Path.DirectorySeparatorChar + "Entries", StringComparison.Ordinal) == true &&
             dst?.Contains(Path.DirectorySeparatorChar + "Objects" + Path.DirectorySeparatorChar, StringComparison.Ordinal) == true);
-        Assert.Equal(WallCommitStatus.RecoveryBlocked, store.Commit(before, request, true).Status);
+        Assert.Equal(WallCommitStatus.RecoveryBlocked, store.Commit(before, request).Status);
         var stage = Assert.Single(files.ListDirectories(Path.Combine(root, "Staging")));
         var id = Path.GetFileName(stage);
         var journal = Path.Combine(stage, "commit.json");
@@ -994,7 +972,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         store.InitializeFresh(initial);
         var add = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var current = add.CommittedDocument!;
         var entry = current.Lanes[0].Groups[0].Members[0].Entry!;
         var path = EntryPath(root, entry);
@@ -1002,13 +980,13 @@ public sealed partial class WallStoreTests
         files.InjectedFault = FaultPoint.BeforeMove;
         var request = Plan(store, current, current with { Generation = 2 },
             new EntryChange.ChangeTarget("a", "https://new.example"));
-        Assert.Equal(WallCommitStatus.Rejected, store.Commit(current, request, true).Status);
+        Assert.Equal(WallCommitStatus.Rejected, store.Commit(current, request).Status);
         files.InjectedFault = FaultPoint.None;
         Assert.Equal(current.Generation,
-            WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "Recovery", "config.prev.json"))).Generation);
-        var primary = Path.Combine(root, "config.json");
+            UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json"))).Generation);
+        var primary = Path.Combine(root, "state.json");
         if (deletePrimary) files.Delete(primary);
-        else files.WriteAllBytes(primary, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        else files.WriteAllBytes(primary, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var recovered = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
         Assert.Equal(bytes, files.ReadAllBytes(path));
@@ -1024,13 +1002,13 @@ public sealed partial class WallStoreTests
         var stage = Path.Combine(root, "Staging", Guid.NewGuid().ToString("N"));
         files.CreateDirectory(Path.Combine(root, "Staging"));
         files.CreateDirectory(stage);
-        files.WriteAllBytes(Path.Combine(stage, "config.tmp"), [1]);
+        files.WriteAllBytes(Path.Combine(stage, "state.tmp"), [1]);
         var malformed = Wall(Tile("a")) with { Generation = 1, Rows = 1 };
         Assert.Contains("WALL_GEOMETRY", WallLayoutEngine.ValidateGeometry(malformed));
-        var result = store.Commit(initial, new WallCommitRequest(0, malformed, []), true);
+        var result = store.Commit(initial, new WallCommitRequest(0, malformed, []));
         Assert.Equal(WallCommitStatus.Rejected, result.Status);
-        Assert.True(files.Exists(Path.Combine(stage, "config.tmp")));
-        Assert.Equal(0, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "config.json"))).Generation);
+        Assert.True(files.Exists(Path.Combine(stage, "state.tmp")));
+        Assert.Equal(0, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "state.json"))).Generation);
     }
 
     [Fact]
@@ -1040,7 +1018,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         store.InitializeFresh(initial);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var withEntry = added.CommittedDocument!;
 
         var settingsOnly = withEntry with
@@ -1048,23 +1026,23 @@ public sealed partial class WallStoreTests
             Generation = withEntry.Generation + 1,
             Settings = withEntry.Settings with { ShowGrid = true },
         };
-        var settings = store.Commit(withEntry, Plan(store, withEntry, settingsOnly), true);
+        var settings = store.Commit(withEntry, Plan(store, withEntry, settingsOnly));
         Assert.Equal(WallCommitStatus.Committed, settings.Status);
         var previous = withEntry;
-        var previousBytes = files.ReadAllBytes(Path.Combine(root, "Recovery", "config.prev.json"));
-        Assert.Equal(previous.Generation, WallJson.Deserialize(previousBytes).Generation);
+        var previousBytes = files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json"));
+        Assert.Equal(previous.Generation, UserDataSnapshotJson.ReadManifest(previousBytes).Generation);
 
-        var configPath = Path.Combine(root, "config.json");
-        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        var configPath = Path.Combine(root, "state.json");
+        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var recovered = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
         Assert.Equal(previous.Generation + 1, recovered.Document!.Generation);
         Assert.Equal(WallJson.Serialize(previous),
             WallJson.Serialize(recovered.Document with { Generation = previous.Generation }));
-        Assert.Equal(previousBytes, files.ReadAllBytes(Path.Combine(root, "Recovery", "config.prev.json")));
+        Assert.Equal(previousBytes, files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json")));
 
         // The recovery itself must not delete the journal that proves config.prev.
-        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var recoveredAgain = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recoveredAgain.Status);
         Assert.Equal(previous.Generation + 1, recoveredAgain.Document!.Generation);
@@ -1076,14 +1054,15 @@ public sealed partial class WallStoreTests
     public void HardInterruptedInitializationTempIsPreservedAndBlocksFresh()
     {
         var (store, files, _, root) = Harness();
-        var path = Path.Combine(root, "config.init.tmp");
+        var path = Path.Combine(root, "state.init.tmp");
         files.WriteAllBytes(path, WallJson.Serialize(Wall()));
         var opened = store.Open();
         Assert.Equal(WallOpenStatus.RecoveryBlocked, opened.Status);
-        Assert.Contains("config.init.tmp", Assert.Single(opened.Diagnostics), StringComparison.Ordinal);
+        Assert.Equal(WallOpenBlockReason.InitializationInterrupted, opened.BlockReason);
+        Assert.Contains("state.init.tmp", Assert.Single(opened.Diagnostics), StringComparison.Ordinal);
         Assert.True(files.Exists(path));
         Assert.Equal(WallOpenStatus.RecoveryBlocked, store.InitializeFresh(Wall()).Status);
-        Assert.False(files.Exists(Path.Combine(root, "config.json")));
+        Assert.False(files.Exists(Path.Combine(root, "state.json")));
     }
 
     [Fact]
@@ -1097,15 +1076,15 @@ public sealed partial class WallStoreTests
         var created = store.InitializeFresh(Wall());
         Assert.Equal(WallOpenStatus.OpenFailed, created.Status);
         Assert.Contains("IOException", string.Join(" ", created.Diagnostics), StringComparison.Ordinal);
-        Assert.False(files.Exists(Path.Combine(root, "config.json")));
+        Assert.False(files.Exists(Path.Combine(root, "state.json")));
 
         files.Rules.Clear();
         files.Rules.Add((kind, _, destination) => kind == "write" &&
-            destination?.EndsWith("config.init.tmp", StringComparison.Ordinal) == true);
+            destination?.EndsWith("state.init.tmp", StringComparison.Ordinal) == true);
         var written = store.InitializeFresh(Wall());
         Assert.Equal(WallOpenStatus.OpenFailed, written.Status);
-        Assert.False(files.Exists(Path.Combine(root, "config.init.tmp")));
-        Assert.False(files.Exists(Path.Combine(root, "config.json")));
+        Assert.False(files.Exists(Path.Combine(root, "state.init.tmp")));
+        Assert.False(files.Exists(Path.Combine(root, "state.json")));
     }
 
     [Fact]
@@ -1117,11 +1096,11 @@ public sealed partial class WallStoreTests
         var store = new WallStore(files, new FakeLinkFileService(inner), root);
         inner.InjectedFault = FaultPoint.BeforeMove;
         files.Rules.Add((kind, source, _) => kind == "delete" &&
-            source?.EndsWith("config.init.tmp", StringComparison.Ordinal) == true);
+            source?.EndsWith("state.init.tmp", StringComparison.Ordinal) == true);
         var failed = store.InitializeFresh(Wall());
         Assert.Equal(WallOpenStatus.RecoveryBlocked, failed.Status);
-        Assert.True(files.Exists(Path.Combine(root, "config.init.tmp")));
-        Assert.False(files.Exists(Path.Combine(root, "config.json")));
+        Assert.True(files.Exists(Path.Combine(root, "state.init.tmp")));
+        Assert.False(files.Exists(Path.Combine(root, "state.json")));
     }
 
     [Theory]
@@ -1133,7 +1112,7 @@ public sealed partial class WallStoreTests
         var (store, files, _, root) = Harness();
         var initial = Wall();
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
-        var configPath = Path.Combine(root, "config.json");
+        var configPath = Path.Combine(root, "state.json");
         var config = files.ReadAllBytes(configPath).ToArray();
         var puzzle = new PuzzleMember
         {
@@ -1145,7 +1124,7 @@ public sealed partial class WallStoreTests
             Generation = 1,
             Lanes = [new WallLane { Groups = [new StartGroup { Id = "group0", Members = [puzzle] }] }]
         };
-        var rejected = store.Commit(initial, new WallCommitRequest(initial.Generation, candidate, []), true);
+        var rejected = store.Commit(initial, new WallCommitRequest(initial.Generation, candidate, []));
         Assert.Equal(WallCommitStatus.Rejected, rejected.Status);
         Assert.Contains("PUZZLE_SIZE", string.Join(" ", rejected.Diagnostics), StringComparison.Ordinal);
         Assert.Equal(config, files.ReadAllBytes(configPath));
@@ -1161,7 +1140,7 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var withEntry = added.CommittedDocument!;
         var entryPath = EntryPath(root, withEntry.Lanes[0].Groups[0].Members[0].Entry!);
         var entryBytes = files.ReadAllBytes(entryPath).ToArray();
@@ -1170,12 +1149,12 @@ public sealed partial class WallStoreTests
             Generation = withEntry.Generation + 1,
             Settings = withEntry.Settings with { ShowGrid = true },
         };
-        Assert.Equal(WallCommitStatus.Committed, store.Commit(withEntry, Plan(store, withEntry, settingsOnly), true).Status);
+        Assert.Equal(WallCommitStatus.Committed, store.Commit(withEntry, Plan(store, withEntry, settingsOnly)).Status);
 
         files.Rules.Add((kind, source, _) => kind == "rmdir" &&
             source?.Contains(Path.DirectorySeparatorChar + "Staging" + Path.DirectorySeparatorChar, StringComparison.Ordinal) == true);
-        var configPath = Path.Combine(root, "config.json");
-        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        var configPath = Path.Combine(root, "state.json");
+        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var recovered = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
         Assert.Contains("cleanup", string.Join(" ", recovered.Diagnostics), StringComparison.OrdinalIgnoreCase);
@@ -1186,7 +1165,7 @@ public sealed partial class WallStoreTests
         Assert.Equal(WallOpenStatus.Loaded, store.Open().Status);
         Assert.Empty(files.ListDirectories(Path.Combine(root, "Staging")));
         files.WriteAllBytes(Path.Combine(root, "Recovery", "corrupt-not-a-commit.json"), [1]);
-        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var again = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, again.Status);
         Assert.Equal(entryBytes, files.ReadAllBytes(entryPath));
@@ -1209,7 +1188,7 @@ public sealed partial class WallStoreTests
         var initial = Wall(Tile("a", "A"));
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
         var seeded = store.Commit(initial, Plan(store, initial, initial with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://example.com")), true);
+            new EntryChange.CreateUrl("a", "https://example.com")));
         var current = seeded.CommittedDocument!;
         var entryPath = EntryPath(root, current.Lanes[0].Groups[0].Members[0].Entry!);
         files.ConfigReads = 0;
@@ -1218,10 +1197,12 @@ public sealed partial class WallStoreTests
         {
             Generation = current.Generation + 1,
             Settings = current.Settings with { ShowGrid = true },
-        }), false);
+        }));
         Assert.Equal(WallCommitStatus.Committed, saved.Status);
-        // Match, preflight hash, transaction bytes, and the post-install fingerprint. No second document parse.
-        Assert.Equal(4, files.ConfigReads);
+        // Four transaction-time fingerprints plus the independent protected current-manifest handle
+        // used to capture the GC closure. Audit reuses the already observed current hash; GC does
+        // not add a separate preliminary hash read before acquiring that handle.
+        Assert.Equal(5, files.ConfigReads);
         Assert.Equal(1, files.EntryReads);
         Assert.True(files.Exists(entryPath));
     }
@@ -1232,14 +1213,14 @@ public sealed partial class WallStoreTests
         var (store, files, _, root) = Harness();
         var initial = Wall();
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
-        var config = files.ReadAllBytes(Path.Combine(root, "config.json")).ToArray();
+        var config = files.ReadAllBytes(Path.Combine(root, "state.json")).ToArray();
         files.CreateDirectory(Path.Combine(root, "Recovery"));
-        files.WriteAllBytes(Path.Combine(root, "Recovery", "config.prev.json"),
+        files.WriteAllBytes(Path.Combine(root, "Recovery", "state.prev.json"),
             Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion + 1}}}"));
         var candidate = initial with { Generation = 1, Settings = initial.Settings with { ShowGrid = true } };
-        var blocked = store.Commit(initial, new WallCommitRequest(0, candidate, []), false);
+        var blocked = store.Commit(initial, new WallCommitRequest(0, candidate, []));
         Assert.Equal(WallCommitStatus.RecoveryBlocked, blocked.Status);
-        Assert.Equal(config, files.ReadAllBytes(Path.Combine(root, "config.json")));
+        Assert.Equal(config, files.ReadAllBytes(Path.Combine(root, "state.json")));
         Assert.Empty(files.ListDirectories(Path.Combine(root, "Staging")));
     }
 
@@ -1247,14 +1228,15 @@ public sealed partial class WallStoreTests
     public void PersistentCleanupFailureBlocksOpenAndCommitUntilRetry()
     {
         var (store, files, root, recovered) = RecoverWithStickyStagingCleanup();
-        var configPath = Path.Combine(root, "config.json");
+        var configPath = Path.Combine(root, "state.json");
         var config = files.ReadAllBytes(configPath).ToArray();
         var stages = files.ListDirectories(Path.Combine(root, "Staging")).Order(StringComparer.Ordinal).ToArray();
         Assert.NotEmpty(stages);
-        Assert.Equal(recovered.Generation, WallJson.Deserialize(config).Generation);
+        Assert.Equal(recovered.Generation, UserDataSnapshotJson.ReadManifest(config).Generation);
 
         var blockedOpen = store.Open();
         Assert.Equal(WallOpenStatus.RecoveryBlocked, blockedOpen.Status);
+        Assert.Equal(WallOpenBlockReason.RecoveryMaterials, blockedOpen.BlockReason);
         Assert.Contains("Committed cleanup remains", string.Join(" ", blockedOpen.Diagnostics), StringComparison.Ordinal);
         Assert.Equal(config, files.ReadAllBytes(configPath));
         Assert.Equal(stages, files.ListDirectories(Path.Combine(root, "Staging")).Order(StringComparer.Ordinal).ToArray());
@@ -1264,7 +1246,7 @@ public sealed partial class WallStoreTests
             Generation = recovered.Generation + 1,
             Settings = recovered.Settings with { ShowGrid = !recovered.Settings.ShowGrid },
         };
-        var blockedCommit = store.Commit(recovered, Plan(store, recovered, candidate), true);
+        var blockedCommit = store.Commit(recovered, Plan(store, recovered, candidate));
         Assert.Equal(WallCommitStatus.RecoveryBlocked, blockedCommit.Status);
         Assert.Contains("Committed cleanup remains", string.Join(" ", blockedCommit.Diagnostics), StringComparison.Ordinal);
         Assert.Equal(config, files.ReadAllBytes(configPath));
@@ -1273,29 +1255,30 @@ public sealed partial class WallStoreTests
         files.Sticky.Clear();
         var loaded = store.Open();
         Assert.Equal(WallOpenStatus.Loaded, loaded.Status);
+        Assert.Equal(WallOpenBlockReason.None, loaded.BlockReason);
         Assert.Equal(recovered.Generation, loaded.Document!.Generation);
         Assert.Empty(files.ListDirectories(Path.Combine(root, "Staging")));
         Assert.Equal(config, files.ReadAllBytes(configPath));
 
-        var saved = store.Commit(loaded.Document, Plan(store, loaded.Document, candidate), true);
+        var saved = store.Commit(loaded.Document, Plan(store, loaded.Document, candidate));
         Assert.Equal(WallCommitStatus.Committed, saved.Status);
         Assert.Equal(recovered.Generation + 1, saved.CommittedDocument!.Generation);
         Assert.Empty(files.ListDirectories(Path.Combine(root, "Staging")));
     }
 
     [Fact]
-    public void OrdinaryUndoKeepsTheLatestCorruptDiagnostic()
+    public void OrdinaryCommitKeepsTheLatestCorruptDiagnostic()
     {
         var (store, files, _, root) = Harness();
         var initial = Wall();
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var withEntry = added.CommittedDocument!;
         var edited = store.Commit(withEntry, Plan(store, withEntry, withEntry with { Generation = 2 },
-            new EntryChange.ChangeTarget("a", "https://new.example")), true);
+            new EntryChange.ChangeTarget("a", "https://new.example")));
         Assert.Equal(WallCommitStatus.Committed, edited.Status);
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
 
         var recovered = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
@@ -1310,17 +1293,10 @@ public sealed partial class WallStoreTests
         {
             Generation = current.Generation + 1,
             Settings = current.Settings with { ShowGrid = !current.Settings.ShowGrid },
-        }), true);
+        }));
         Assert.Equal(WallCommitStatus.Committed, saved.Status);
-        Assert.NotNull(saved.Undo);
         Assert.Contains(latest, StrictCorruptNames(files, root));
         Assert.True(files.Exists(Path.Combine(root, "Recovery", decoy)));
-
-        var undone = store.Undo(saved.CommittedDocument!, current, saved.Undo!, saved.CommittedDocument!.Generation);
-        Assert.Equal(WallCommitStatus.Committed, undone.Status);
-        Assert.Contains(latest, StrictCorruptNames(files, root));
-        Assert.True(files.Exists(Path.Combine(root, "Recovery", decoy)));
-        Assert.DoesNotContain(StrictCorruptNames(files, root), name => name.Contains(saved.Undo!.CommitId, StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -1329,15 +1305,15 @@ public sealed partial class WallStoreTests
     public void CleanupRetryWithoutReadablePreviousDoesNotPruneSources(bool missing)
     {
         var (store, files, root, recovered) = OpenRecoveryStoppedBeforePrune();
-        var configPath = Path.Combine(root, "config.json");
+        var configPath = Path.Combine(root, "state.json");
         var config = files.ReadAllBytes(configPath).ToArray();
-        var previous = Path.Combine(root, "Recovery", "config.prev.json");
+        var previous = Path.Combine(root, "Recovery", "state.prev.json");
         var materials = MaterialIds(files, root);
         var sourceId = OldMatchSourceId(files, root);
         Assert.Contains(sourceId, materials);
         Assert.True(materials.Length >= 2);
         if (missing) files.Delete(previous);
-        else files.WriteAllBytes(previous, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion}}}"));
+        else files.WriteAllBytes(previous, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion}}}"));
         var retained = RecoveryEntryFiles(files, root);
         var stages = files.ListDirectories(Path.Combine(root, "Staging")).Order(StringComparer.Ordinal).ToArray();
 
@@ -1345,7 +1321,7 @@ public sealed partial class WallStoreTests
         Assert.Equal(WallOpenStatus.RecoveryBlocked, blocked.Status);
         Assert.Equal(config, files.ReadAllBytes(configPath));
         Assert.Equal(missing, !files.Exists(previous));
-        if (!missing) Assert.Equal(Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion}}}"), files.ReadAllBytes(previous));
+        if (!missing) Assert.Equal(Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion}}}"), files.ReadAllBytes(previous));
         Assert.Equal(materials, MaterialIds(files, root));
         Assert.True(files.Exists(Path.Combine(root, "Recovery", "Entries", sourceId, "journal.json")));
         Assert.Equal(stages, files.ListDirectories(Path.Combine(root, "Staging")).Order(StringComparer.Ordinal).ToArray());
@@ -1356,7 +1332,7 @@ public sealed partial class WallStoreTests
             Generation = recovered.Generation + 1,
             Settings = recovered.Settings with { ShowGrid = !recovered.Settings.ShowGrid },
         };
-        var commit = store.Commit(recovered, Plan(store, recovered, candidate), false);
+        var commit = store.Commit(recovered, Plan(store, recovered, candidate));
         Assert.Equal(WallCommitStatus.RecoveryBlocked, commit.Status);
         Assert.Equal(config, files.ReadAllBytes(configPath));
         Assert.Equal(materials, MaterialIds(files, root));
@@ -1370,19 +1346,19 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var alternateId = Assert.Single(MaterialIds(files, root));
         var alternateJournal = files.ReadAllBytes(Path.Combine(root, "Recovery", "Entries", alternateId, "journal.json")).ToArray();
         var withEntry = added.CommittedDocument!;
         var edited = store.Commit(withEntry, Plan(store, withEntry, withEntry with { Generation = 2 },
-            new EntryChange.ChangeTarget("a", "https://new.example")), true);
+            new EntryChange.ChangeTarget("a", "https://new.example")));
         Assert.Equal(WallCommitStatus.Committed, edited.Status);
         Assert.DoesNotContain(alternateId, MaterialIds(files, root));
 
         files.Rules.Add((kind, _, destination) => kind == "copy" &&
             destination?.EndsWith(Path.DirectorySeparatorChar + "new.snapshot.json", StringComparison.Ordinal) == true);
-        var configPath = Path.Combine(root, "config.json");
-        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        var configPath = Path.Combine(root, "state.json");
+        files.WriteAllBytes(configPath, Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var recovered = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
         Assert.NotEmpty(files.ListDirectories(Path.Combine(root, "Staging")));
@@ -1420,7 +1396,7 @@ public sealed partial class WallStoreTests
         SeedEntryThenChangeTarget(store);
         files.Sticky.Add((kind, source, _) => kind == "rmdir" &&
             source?.Contains(Path.DirectorySeparatorChar + "Staging" + Path.DirectorySeparatorChar, StringComparison.Ordinal) == true);
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var recovered = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
         Assert.Contains("cleanup", string.Join(" ", recovered.Diagnostics), StringComparison.OrdinalIgnoreCase);
@@ -1434,13 +1410,13 @@ public sealed partial class WallStoreTests
         var edited = SeedEntryThenChangeTarget(store);
         files.Rules.Add((kind, _, destination) => kind == "copy" &&
             destination?.EndsWith(Path.DirectorySeparatorChar + "new.snapshot.json", StringComparison.Ordinal) == true);
-        files.WriteAllBytes(Path.Combine(root, "config.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{WallDocument.CurrentSchemaVersion},\"lanes\":null}}"));
+        files.WriteAllBytes(Path.Combine(root, "state.json"), Encoding.UTF8.GetBytes($"{{\"schemaVersion\":{UserDataManifest.CurrentFormatVersion},\"lanes\":null}}"));
         var recovered = store.Open();
         Assert.Equal(WallOpenStatus.RecoveredPrevious, recovered.Status);
         Assert.Contains("cleanup", string.Join(" ", recovered.Diagnostics), StringComparison.OrdinalIgnoreCase);
         Assert.NotEmpty(files.ListDirectories(Path.Combine(root, "Staging")));
         Assert.NotNull(recovered.Document);
-        Assert.Equal(edited.Generation, WallJson.Deserialize(files.ReadAllBytes(Path.Combine(root, "Recovery", "config.prev.json"))).Generation + 1);
+        Assert.Equal(edited.Generation, UserDataSnapshotJson.ReadManifest(files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json"))).Generation + 1);
         return (store, files, root, recovered.Document);
     }
 
@@ -1457,10 +1433,10 @@ public sealed partial class WallStoreTests
         var initial = Wall();
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
         var added = store.Commit(initial, Plan(store, initial, Wall(Tile("a", "A")) with { Generation = 1 },
-            new EntryChange.CreateUrl("a", "https://old.example")), true);
+            new EntryChange.CreateUrl("a", "https://old.example")));
         var withEntry = added.CommittedDocument!;
         var edited = store.Commit(withEntry, Plan(store, withEntry, withEntry with { Generation = 2 },
-            new EntryChange.ChangeTarget("a", "https://new.example")), true);
+            new EntryChange.ChangeTarget("a", "https://new.example")));
         Assert.Equal(WallCommitStatus.Committed, edited.Status);
         return edited.CommittedDocument!;
     }
@@ -1490,7 +1466,7 @@ public sealed partial class WallStoreTests
     private static string OldMatchSourceId(IFileStore files, string root)
     {
         var previousHash = Convert.ToHexString(SHA256.HashData(
-            files.ReadAllBytes(Path.Combine(root, "Recovery", "config.prev.json"))));
+            files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json"))));
         string? match = null;
         foreach (var id in MaterialIds(files, root))
         {
@@ -1512,7 +1488,7 @@ public sealed partial class WallStoreTests
         public bool Exists(string path) => inner.Exists(path);
         public byte[] ReadAllBytes(string path)
         {
-            if (path.EndsWith(Path.DirectorySeparatorChar + "config.json", StringComparison.OrdinalIgnoreCase))
+            if (path.EndsWith(Path.DirectorySeparatorChar + "state.json", StringComparison.OrdinalIgnoreCase))
                 ConfigReads++;
             else if (path.Contains(Path.DirectorySeparatorChar + "Objects" + Path.DirectorySeparatorChar, StringComparison.Ordinal))
                 EntryReads++;
@@ -1522,6 +1498,7 @@ public sealed partial class WallStoreTests
         public void Move(string src, string dst, bool overwrite) => inner.Move(src, dst, overwrite);
         public void Copy(string src, string dst, bool overwrite) => inner.Copy(src, dst, overwrite);
         public void Delete(string path) => inner.Delete(path);
+        public void MoveDirectory(string source, string destination) => inner.MoveDirectory(source, destination);
         public void CreateDirectory(string path) => inner.CreateDirectory(path);
         public IReadOnlyList<string> ListDirectories(string path) => inner.ListDirectories(path);
         public IReadOnlyList<string> ListFiles(string path) => inner.ListFiles(path);
