@@ -30,6 +30,7 @@ internal static class WallPackageJson
     }
     private static readonly JsonSerializerOptions V2Options = CreateLegacyOptions(2);
     private static readonly JsonSerializerOptions LegacyOptions = CreateLegacyOptions(4);
+    private static readonly JsonSerializerOptions V5Options = CreateLegacyOptions(5);
     private static JsonSerializerOptions CreateLegacyOptions(int version)
     {
         var resolver = new DefaultJsonTypeInfoResolver();
@@ -37,7 +38,9 @@ internal static class WallPackageJson
         {
             foreach (var property in typeInfo.Properties.Where(property => property.IsExtensionData).ToArray())
                 typeInfo.Properties.Remove(property);
-            if (typeInfo.Type == typeof(WallPackageImageSource))
+            if (typeInfo.Type == typeof(WallPackageGroup))
+                typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "reservedRows"));
+            if (version < 5 && typeInfo.Type == typeof(WallPackageImageSource))
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "iconSeries"));
             if (version == 2 && typeInfo.Type == typeof(WallPackageMember))
                 foreach (var name in new[] { "sourceShortcutPath", "targetDisplayName" })
@@ -48,7 +51,7 @@ internal static class WallPackageJson
     internal static byte[] Serialize<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value, Options);
     internal static byte[] Serialize<T>(T value, int formatVersion) =>
         JsonSerializer.SerializeToUtf8Bytes(value, FormatOptions(formatVersion));
-    private static JsonSerializerOptions FormatOptions(int version) => version == 2 ? V2Options : version < 5 ? LegacyOptions : Options;
+    private static JsonSerializerOptions FormatOptions(int version) => version == 2 ? V2Options : version < 5 ? LegacyOptions : version == 5 ? V5Options : Options;
     internal static T Deserialize<T>(byte[] bytes, int formatVersion = WallPackageManifest.CurrentFormatVersion)
     {
         using var json = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 64 });
@@ -171,8 +174,9 @@ internal static class WallPackageJson
             laneGroups.Length != groupIds.Length || laneGroups.Distinct(StringComparer.Ordinal).Count() != groupIds.Length ||
             !laneGroups.ToHashSet(StringComparer.Ordinal).SetEquals(groupIds) ||
             groupedMembers.Length != memberIds.Length || groupedMembers.Distinct(StringComparer.Ordinal).Count() != memberIds.Length ||
-            !groupedMembers.ToHashSet(StringComparer.Ordinal).SetEquals(memberIds) || content.Groups.Any(g => g.MemberIds.Count == 0))
-            throw new InvalidDataException("Each member must belong to exactly one nonempty source group.");
+            !groupedMembers.ToHashSet(StringComparer.Ordinal).SetEquals(memberIds) ||
+            content.Groups.Any(g => g.MemberIds.Count == 0 && g.ReservedRows is not > 0))
+            throw new InvalidDataException("Each member must belong to exactly one source group; empty groups require a reserved extent.");
         foreach (var member in content.Members)
         {
             token.ThrowIfCancellationRequested();

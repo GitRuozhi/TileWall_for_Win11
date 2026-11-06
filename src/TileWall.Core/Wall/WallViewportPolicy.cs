@@ -48,6 +48,7 @@ public static class WallViewportPolicy
         metrics ??= new();
         var maximum = Math.Max(0, maximumWidthDip);
         var requested = Math.Clamp(requestedWidthDip, 0, maximum);
+        if (settings.LayoutLocked && !settings.FullScreen) return requested;
         var occupiedColumns = geometry.Groups.Count == 0 ? 0 : geometry.Groups.Max(group => group.LaneIndex) + 1;
         var occupiedWidth = occupiedColumns == 0 ? 0 : metrics.WallWidth(occupiedColumns);
         if (settings.ExpandColumns && occupiedWidth > requested + 1e-8)
@@ -131,9 +132,9 @@ public static class WallViewportPolicy
         if (MemberHeightRejection(document) is { } memberRejection) return memberRejection;
         foreach (var group in document.Lanes.SelectMany(l => l.Groups))
         {
-            if (group.Members.Count == 0) continue;
+            if (WallLayoutEngine.EffectiveGroupRows(group) == 0) continue;
             var height = metrics.TopMargin + metrics.Margin + metrics.TitleHeight +
-                metrics.TitleToMembersGap + metrics.HeightOf(group.Members.Max(m => m.LocalBounds.Bottom));
+                metrics.TitleToMembersGap + metrics.HeightOf(WallLayoutEngine.EffectiveGroupRows(group));
             if (height > budget.MaxHeightDip + 1e-8)
                 return new(null, WallRejection.NoSpace, "GROUP_TOO_TALL:" + (string.IsNullOrWhiteSpace(group.Title) ? group.Id : group.Title));
         }

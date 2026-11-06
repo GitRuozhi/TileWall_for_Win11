@@ -29,10 +29,14 @@ public sealed record WallPackageContent
             .ToDictionary(member => member.Id, StringComparer.Ordinal);
         if (selected.Any(id => !active.ContainsKey(id)))
             throw new InvalidDataException("Selected member no longer belongs to the active wall.");
+        var completeWall = selected.Count == active.Count;
+        bool IncludeGroup(StartGroup group) => group.Members.Any(member => selected.Contains(member.Id)) ||
+            completeWall && group.Members.Count == 0 && group.ReservedRows is > 0;
         var lanes = document.Lanes.Select(lane => new WallPackageLane(lane.Groups
-            .Where(group => group.Members.Any(member => selected.Contains(member.Id))).Select(group => group.Id).ToArray())).ToArray();
-        var groups = document.Lanes.SelectMany(lane => lane.Groups).Where(group => group.Members.Any(member => selected.Contains(member.Id)))
-            .Select(group => new WallPackageGroup(group.Id, group.Title, group.Members.Where(member => selected.Contains(member.Id)).Select(member => member.Id).ToArray())).ToArray();
+            .Where(IncludeGroup).Select(group => group.Id).ToArray())).ToArray();
+        var groups = document.Lanes.SelectMany(lane => lane.Groups).Where(IncludeGroup)
+            .Select(group => new WallPackageGroup(group.Id, group.Title, group.Members.Where(member => selected.Contains(member.Id)).Select(member => member.Id).ToArray())
+            { ReservedRows = group.Members.All(member => selected.Contains(member.Id)) ? group.ReservedRows : null }).ToArray();
         return WallPackageJson.Freeze(new()
         {
             Columns = document.Columns, Rows = document.Rows, Lanes = lanes, Groups = groups,
@@ -50,7 +54,7 @@ public sealed record WallPackageContent
         var members = Members.ToDictionary(m => m.Id, m => m.ToMember(), StringComparer.Ordinal);
         var groups = Groups.ToDictionary(g => g.Id, g => new StartGroup
         {
-            Id = g.Id, Title = g.Title, Members = g.MemberIds.Select(id => members[id]).ToArray(),
+            Id = g.Id, Title = g.Title, Members = g.MemberIds.Select(id => members[id]).ToArray(), ReservedRows = g.ReservedRows,
         }, StringComparer.Ordinal);
         return WallJson.Freeze(new WallDocument
         {
@@ -61,7 +65,11 @@ public sealed record WallPackageContent
 }
 
 public sealed record WallPackageLane(IReadOnlyList<string> GroupIds);
-public sealed record WallPackageGroup(string Id, string? Title, IReadOnlyList<string> MemberIds);
+public sealed record WallPackageGroup(string Id, string? Title, IReadOnlyList<string> MemberIds)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? ReservedRows { get; init; }
+}
 public sealed record WallPackageGalleryReference(string Id, string ManifestSha256);
 
 /// <summary>Exchange projection: a managed folder is a logical package ID, never a sender path.</summary>

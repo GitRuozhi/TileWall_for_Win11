@@ -14,6 +14,41 @@ namespace TileWall.Core.Tests.Application;
 public sealed class WallSessionAsyncTests
 {
     [Fact]
+    public async Task InitialOpenAnnouncesConversionBeforeWritingAndPublishesOnlyAfterUiAcceptance()
+    {
+        var files = new InMemoryFileStore();
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "wall-startup-conversion-" + Guid.NewGuid().ToString("N")));
+        SnapshotTestData.Install(files, root, WallDocument.Empty(1, 6) with { RecycleBinEnabled = false });
+        var original = files.ReadAllBytes(Path.Combine(root, "state.json"));
+        var session = new WallSession(root, files, new FakeLinkFileService(files));
+        var executor = new Executor();
+        var acceptance = new AcceptanceQueue();
+        session.ConfigureAsyncExecution(executor, acceptance.AcceptAsync);
+        var announced = false;
+        var operation = session.OpenInitialAsync(1, 6, trusted =>
+        {
+            announced = true;
+            Assert.False(trusted.RecycleBinEnabled);
+            Assert.Throws<InvalidOperationException>(() => session.Current);
+            Assert.Equal(original, files.ReadAllBytes(Path.Combine(root, "state.json")));
+            return Task.CompletedTask;
+        });
+        await executor.RunNextAsync();
+        (await acceptance.TakeAsync())();
+        Assert.True(announced);
+        // The second job is the single conversion transaction, enqueued after the UI notification.
+        await executor.RunNextAsync();
+        var publish = await acceptance.TakeAsync();
+        Assert.Throws<InvalidOperationException>(() => session.Current);
+        publish();
+        var opened = await operation;
+        Assert.True(opened.WasUpgraded);
+        Assert.True(session.Current.RecycleBinEnabled);
+        Assert.Equal(1, session.Current.Generation);
+        Assert.False(session.WritePending);
+    }
+
+    [Fact]
     public async Task StartupRetryIsSingleFlightAndRepeatedInterruptionPreservesData()
     {
         var files = new InMemoryFileStore();
@@ -287,6 +322,7 @@ public sealed class WallSessionAsyncTests
     private sealed class Executor : IWallStorageExecutor
     {
         private readonly Queue<Action> _work = [];
+        private readonly SemaphoreSlim _available = new(0);
         public int Count => _work.Count;
         public Task<T> ExecuteAsync<T>(Func<T> work)
         {
@@ -296,9 +332,14 @@ public sealed class WallSessionAsyncTests
                 try { completion.SetResult(work()); }
                 catch (Exception ex) { completion.SetException(ex); }
             });
+            _available.Release();
             return completion.Task;
         }
-        public Task RunNextAsync() => Task.Run(_work.Dequeue());
+        public async Task RunNextAsync()
+        {
+            await _available.WaitAsync();
+            await Task.Run(_work.Dequeue());
+        }
         public Task ShutdownAsync() => Task.CompletedTask;
     }
 

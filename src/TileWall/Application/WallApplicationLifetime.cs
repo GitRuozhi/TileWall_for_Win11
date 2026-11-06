@@ -114,7 +114,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         {
             _notifications.Register(intent.NotificationActivation);
             // No Activate/Show is needed to open the committed session or register process resources.
-            await _window.InitializeSessionAsync();
+            await _window.InitializeSessionAsync(_showWhenStarted || !intent.Background && intent.Add is null);
             if (_exitPending || _tearingDown) return;
             _window.ScheduleStartMenuStartupRefresh();
             ProductStrings.ApplyLanguage(_window.Settings.LanguageMode);
@@ -282,6 +282,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             // Its continuation must finish before any owned resource is stopped.
             if (_startup is { } startup) await startup;
             if (_addDrain is { } adding) await adding;
+            await _window.WaitForUserMutationsAsync();
             var titleError = _window.FinishActiveTitleEditForExit();
             if (titleError is not null)
             {
@@ -293,6 +294,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             // apply. Settle that while writes are still admitted, then freeze.
             var session = _window.ActiveDialog;
             if (session is not null) await session.WaitForPendingAsync();
+            await _window.WaitForUserMutationsAsync();
             _window.TraceExit("admission-close");
             _window.SuspendPersistenceAdmission();
             await _window.DrainPersistenceAsync();

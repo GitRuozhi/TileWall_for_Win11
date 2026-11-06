@@ -269,6 +269,9 @@ public sealed partial class MainWindow
         return await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
         {
             var rows = new List<ImportSourceCandidate>();
+            var sourceGroups = document.Lanes.SelectMany((lane, laneIndex) => lane.Groups.Select((group, order) =>
+                StartMenuImportProjection.DescribeSourceGroup(lane.Groups, order, laneIndex)))
+                .ToDictionary(group => group.Key, StringComparer.Ordinal);
             foreach (var (lane, laneIndex) in document.Lanes.Select((lane, index) => (lane, index)))
             foreach (var (group, groupIndex) in lane.Groups.Select((group, index) => (group, index)))
             foreach (var (member, memberIndex) in group.Members.Select((member, index) => (member, index)))
@@ -287,7 +290,7 @@ public sealed partial class MainWindow
                 rows.Add(new(member.Id, string.IsNullOrWhiteSpace(title) ? member.Id : title, member)
                 {
                     SourceKind = ImportPageSourceKind.CurrentWall, Policy = ImportSourcePolicy.Attributed,
-                    SourceGroup = new(group.Id, group.Title, groupIndex) { LaneIndex = laneIndex }, SourceOrder = memberIndex,
+                    SourceGroup = sourceGroups[group.Id], SourceOrder = memberIndex,
                     HasRecordedPosition = true, HasRecordedSize = true, Identity = identity,
                     HasLaunchTarget = member.Entry is not null, TargetKind = StartMenuImportProjection.ContentKind(identity, member.Entry is not null, target.IsDirectory),
                     TargetAvailability = target.Availability,
@@ -531,6 +534,15 @@ public sealed partial class MainWindow
     }
 
     internal async Task<ExternalImportResult> ImportExternalBatchAsync(ExplorerAddMessage message, CancellationToken token)
+    {
+        // Reserve the user's append intent before waiting for an accepted background
+        // save. Read the wall and source facts only after that save is adopted.
+        ExternalImportResult result = new(ProductStrings.Get("Import.SourceChanged"), false, 0);
+        await QueueUserMutationAsync(async () => result = await ImportExternalBatchCoreAsync(message, token));
+        return result;
+    }
+
+    private async Task<ExternalImportResult> ImportExternalBatchCoreAsync(ExplorerAddMessage message, CancellationToken token)
     {
         if (message.Paths.Count == 0) return new(ProductStrings.Get("Import.NoAddableObjects"), false, 0);
         try

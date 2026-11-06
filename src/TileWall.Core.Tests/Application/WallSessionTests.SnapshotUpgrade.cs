@@ -16,6 +16,7 @@ public sealed partial class WallSessionTests
     [InlineData(1)]
     [InlineData(2)]
     [InlineData(3)]
+    [InlineData(4)]
     public void HistoricalInitialOpenUpgradesBeforePublishingAndAllowsRepeatedSaves(int version)
     {
         var (session, files, root) = Harness();
@@ -26,6 +27,7 @@ public sealed partial class WallSessionTests
 
         Assert.Equal(WallOpenStatus.Loaded, opened.Status);
         Assert.False(opened.InitializedFresh);
+        Assert.True(opened.WasUpgraded);
         Assert.Equal(1, session.Current.Generation);
         Assert.Equal(UserDataManifest.CurrentFormatVersion, session.Current.StorageMetadata!.ManifestVersion);
         Assert.Equal(UserDataManifest.CurrentFormatVersion, session.Current.StorageMetadata.SettingsVersion);
@@ -45,6 +47,20 @@ public sealed partial class WallSessionTests
         Assert.Equal(3, reopened.Current.Generation);
         Assert.Equal(beforeReopen, files.ReadAllBytes(Path.Combine(root, "state.json")));
         Assert.Equal(expected.InactiveMembers, store.Open().Document!.InactiveMembers);
+    }
+
+    [Fact]
+    public void StartupCombinesFormatUpgradeAndLegacyRecycleEnableInOneGeneration()
+    {
+        var (session, files, root) = Harness();
+        InstallHistoricalSnapshot(files, root, 4, recycleEnabled: false);
+        var opened = session.Open(1, 4);
+        Assert.True(opened.WasUpgraded);
+        Assert.True(session.Current.RecycleBinEnabled);
+        Assert.Equal(1, session.Current.Generation);
+        var restarted = new WallSession(root, files, new FakeLinkFileService(files));
+        Assert.False(restarted.Open(1, 4).WasUpgraded);
+        Assert.Equal(1, restarted.Current.Generation);
     }
 
     [Fact]
@@ -79,7 +95,8 @@ public sealed partial class WallSessionTests
         Assert.Equal(2, session.Current.Generation);
     }
 
-    private static byte[] InstallHistoricalSnapshot(InMemoryFileStore files, string root, int version)
+    private static byte[] InstallHistoricalSnapshot(InMemoryFileStore files, string root, int version,
+        bool recycleEnabled = true)
     {
         TileMember Member(string id) => new()
         {
@@ -89,7 +106,8 @@ public sealed partial class WallSessionTests
         var document = WallDocument.Empty(1, 4) with
         {
             Lanes = [new() { Groups = [new() { Id = "kept-group", Members = [Member("active")] }] }],
-            InactiveMembers = [Member("retained")],
+            RecycleBinEnabled = recycleEnabled,
+            InactiveMembers = recycleEnabled ? [Member("retained")] : [],
         };
         var prepared = UserDataSnapshotJson.Prepare(document);
         var bytes = prepared.Files.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);

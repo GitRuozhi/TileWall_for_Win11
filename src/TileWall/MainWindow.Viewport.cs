@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -32,6 +32,7 @@ public sealed partial class MainWindow
 
     private static string ViewportFailure(WallLayoutResult result)
     {
+        if (result.Detail == "LAYOUT_LOCKED") return ProductStrings.Get("Wall.LayoutLocked");
         if (result.Detail?.StartsWith("MEMBER_TOO_TALL:", StringComparison.Ordinal) == true)
         {
             var parts = result.Detail.Split(':');
@@ -47,6 +48,12 @@ public sealed partial class MainWindow
     private WallLayoutResult ProposeMode(WallDocument source, WallSettings requested,
         int? columns = null, int? rows = null, AnchorCorner? anchor = null)
     {
+        if (source.Settings.LayoutLocked && requested.LayoutLocked &&
+            (requested.FullScreen != source.Settings.FullScreen || requested.AnchorCorner != source.Settings.AnchorCorner ||
+             requested.MenuStart != source.Settings.MenuStart || requested.ExpandColumns != source.Settings.ExpandColumns))
+            return new(null, WallRejection.InvalidAction, "LAYOUT_LOCKED");
+        if (requested.LayoutLocked && !source.Settings.LayoutLocked)
+            requested = requested with { WindowedViewportWidthDip = Math.Max(1, (AppWindow.Size.Width - _frameWidth) / Scale) };
         requested = WallViewportPolicy.ForModeTransition(source.Settings, requested);
         var maximumTileWidth = MaximumTileWidthDip(requested);
         if (maximumTileWidth > 0 && WallViewportPolicy.CompleteColumns(maximumTileWidth, _metrics) == 0)

@@ -40,8 +40,8 @@ public sealed class WallPackageReader(
             var manifest = WallPackageJson.Deserialize<WallPackageManifest>(
                 await WallPackageZip.ReadAsync(manifestEntry, limits.MaximumManifestBytes, token).ConfigureAwait(false));
             if (manifest.FormatId != WallPackageManifest.CurrentFormatId ||
-                manifest.FormatVersion is not (2 or 3 or 4 or WallPackageManifest.CurrentFormatVersion) ||
-                manifest.WallSchemaVersion != (manifest.FormatVersion < 4 ? 4 : WallDocument.CurrentSchemaVersion))
+                manifest.FormatVersion is not (2 or 3 or 4 or 5 or WallPackageManifest.CurrentFormatVersion) ||
+                manifest.WallSchemaVersion != (manifest.FormatVersion < 4 ? 4 : manifest.FormatVersion < 6 ? 5 : WallDocument.CurrentSchemaVersion))
                 return new(WallPackageReadStatus.UnsupportedFormat, null, "This wall file requires a supported application version.");
             if (manifest.Files is null || !WallPackageJson.ValidHash(manifest.ContentFingerprint) ||
                 string.IsNullOrWhiteSpace(manifest.AppVersion) || manifest.CreatedUtc.Offset != TimeSpan.Zero)

@@ -42,7 +42,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly ToggleSwitch _fullScreen = new();
     private readonly ToggleSwitch _expandColumns = new(), _menuStart = new();
     private readonly ComboBox _language = new(), _visualStyle = new(), _theme = new(), _background = new();
-    private readonly ToggleSwitch _topmost = new(), _stayVisible = new(), _runAtLogin = new(), _showGrid = new();
+    private readonly ToggleSwitch _topmost = new(), _stayVisible = new(), _layoutLocked = new(), _runAtLogin = new(), _showGrid = new();
     private readonly HotKeyRecorder _hotKey = new(), _secondaryHotKey = new();
     private readonly Button _resetHotKey = new(), _resetSecondaryHotKey = new();
     private readonly TextBlock _hotKeyDiagnostic = new() { TextWrapping = TextWrapping.Wrap, MaxWidth = 180, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
@@ -135,6 +135,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         AddRow("Settings.RunAtLogin", _runAtLogin);
         AddRow("Settings.Topmost", _topmost);
         AddRow("Settings.StayVisible", _stayVisible);
+        AddRow("Settings.LayoutLocked", _layoutLocked);
         AddRow("Settings.Anchor", _anchor);
         AddRow("Settings.MenuStart", _menuStart);
         AddRow("Settings.FullScreen", _fullScreen);
@@ -207,7 +208,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         _dialog = new ContentDialog { XamlRoot = root, Content = body, DefaultButton = ContentDialogButton.None };
         _settingsBody = body;
         _dialog.Resources["ContentDialogMaxWidth"] = 700d;
-        Id(_dialog, "dialog"); Id(_anchor, "anchor"); Id(_topmost, "topmost"); Id(_stayVisible, "stay-visible");
+        Id(_dialog, "dialog"); Id(_anchor, "anchor"); Id(_topmost, "topmost"); Id(_stayVisible, "stay-visible"); Id(_layoutLocked, "layout-locked");
         Id(_language, "language"); Id(_visualStyle, "visual-style"); Id(_theme, "theme"); Id(_background, "background");
         Id(_hotKey, "hotkey"); Id(_secondaryHotKey, "secondary-hotkey");
         Id(_hotKeyDiagnostic, "hotkey-diagnostic"); Id(_secondaryHotKeyDiagnostic, "secondary-hotkey-diagnostic");
@@ -221,7 +222,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         Id(_confirmContextTransfer, "context-menu-confirm-transfer"); Id(_cancelContextTransfer, "context-menu-cancel-transfer");
         // A switch has no separate double-tap action. Treat two quick clicks as
         // two taps rather than letting the second click disappear into DoubleTapped.
-        var toggles = new[] { _showGrid, _runAtLogin, _topmost, _stayVisible, _menuStart,
+        var toggles = new[] { _showGrid, _runAtLogin, _topmost, _stayVisible, _layoutLocked, _menuStart,
             _fullScreen, _expandColumns, _replaceStartMenu, _contextMenu };
         foreach (var toggle in toggles)
         {
@@ -286,6 +287,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         _menuStart.Toggled += (_, _) => BeginApply(s => s with { MenuStart = _menuStart.IsOn });
         _topmost.Toggled += (_, _) => BeginApply(s => s with { AlwaysOnTop = _topmost.IsOn });
         _stayVisible.Toggled += (_, _) => BeginApply(s => s with { StayVisibleOnFocusLoss = _stayVisible.IsOn });
+        _layoutLocked.Toggled += (_, _) => BeginApply(s => s with { LayoutLocked = _layoutLocked.IsOn });
         _showGrid.Toggled += (_, _) => BeginApply(s => s with { ShowGrid = _showGrid.IsOn });
         _runAtLogin.Toggled += (_, _) => BeginApply(s => s with { RunAtLogin = _runAtLogin.IsOn });
         _replaceStartMenu.Toggled += (_, _) => BeginApply(s => s with { ReplaceStartMenu = _replaceStartMenu.IsOn });
@@ -405,7 +407,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         SetChoices(_background, "Settings.Background", ["Settings.Acrylic", "Settings.Mica", "Settings.Custom"]);
         foreach (var (key, label) in _labels) label.Text = ProductStrings.Get(key);
         foreach (var (button, key) in _linkButtons) ActionIcon.Set(button, ProductStrings.Get(key), ActionIcon.Link);
-        foreach (var (toggle, key) in new[] { (_topmost, "Settings.Topmost"), (_stayVisible, "Settings.StayVisible"),
+        foreach (var (toggle, key) in new[] { (_topmost, "Settings.Topmost"), (_stayVisible, "Settings.StayVisible"), (_layoutLocked, "Settings.LayoutLocked"),
             (_showGrid, "Settings.ShowGrid"), (_runAtLogin, "Settings.RunAtLogin"), (_fullScreen, "Settings.FullScreen"),
             (_expandColumns, "Settings.ExpandColumns"), (_menuStart, "Settings.MenuStart"),
             (_replaceStartMenu, "Settings.ReplaceStartMenu"),
@@ -426,6 +428,7 @@ internal sealed class SettingsDialog : IWallDialogSession
             ("Settings.RunAtLogin", _runAtLogin, "Settings.RunAtLoginHelp"),
             ("Settings.Topmost", _topmost, "Settings.TopmostHelp"),
             ("Settings.StayVisible", _stayVisible, "Settings.StayVisibleHelp"),
+            ("Settings.LayoutLocked", _layoutLocked, "Settings.LayoutLockedHelp"),
             ("Settings.ShowGrid", _showGrid, "Settings.ShowGridHint"),
             ("Settings.Language", _language, "Settings.LanguageFallback"),
             ("Settings.MenuStart", _menuStart, "Settings.MenuStartHelp"),
@@ -456,12 +459,13 @@ internal sealed class SettingsDialog : IWallDialogSession
         for (var index = 0; index < _anchorButtons.Length; index++)
         {
             _anchorButtons[index].IsChecked = index == (int)_state.Settings.AnchorCorner;
-            _anchorButtons[index].IsEnabled = true;
+            _anchorButtons[index].IsEnabled = !_state.Settings.LayoutLocked;
             ActionIcon.SetTip(_anchorButtons[index], ProductStrings.Get(anchorKeys[index]));
         }
         _fullScreen.IsOn = _state.Settings.FullScreen;
         _expandColumns.IsOn = _state.Settings.ExpandColumns;
-        _expandColumns.IsEnabled = true;
+        _expandColumns.IsEnabled = !_state.Settings.LayoutLocked;
+        _fullScreen.IsEnabled = _menuStart.IsEnabled = !_state.Settings.LayoutLocked;
         _menuStart.IsOn = _state.Settings.MenuStart;
         Id(_expandColumns, "expand-columns"); Id(_menuStart, "menu-start");
         ToolTipService.SetToolTip(_labels["Settings.Anchor"], ProductStrings.Get("Settings.Anchor"));
@@ -472,6 +476,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         ToolTipService.SetToolTip(_backgroundPath, _backgroundPath.Text);
         _transparency.Value = _state.Settings.BackgroundTransparency; _transparencyInput.Value = _state.Settings.BackgroundTransparency;
         _topmost.IsOn = _state.Settings.AlwaysOnTop; _stayVisible.IsOn = _state.Settings.StayVisibleOnFocusLoss;
+        _layoutLocked.IsOn = _state.Settings.LayoutLocked;
         _showGrid.IsOn = _state.Settings.ShowGrid; _runAtLogin.IsOn = _state.Settings.RunAtLogin;
         _hotKey.SetConfigured(_state.Settings.HotKey);
         _secondaryHotKey.SetConfigured(_state.Settings.SecondaryHotKey);

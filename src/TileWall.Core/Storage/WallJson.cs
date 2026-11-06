@@ -25,7 +25,7 @@ public static class WallJson
 
     internal static WallDocument ValidateAndFreeze(WallDocument document)
     {
-        if (document.SchemaVersion is not (4 or WallDocument.CurrentSchemaVersion))
+        if (document.SchemaVersion is not (4 or 5 or WallDocument.CurrentSchemaVersion))
             throw new JsonException("Unsupported wall document schema.");
         if (document.Settings is null || document.Lanes is null || document.InactiveMembers is null || document.Lanes.Any(l => l?.Groups is null ||
             l.Groups.Any(g => g?.Members is null || g.Members.Any(m => m is null ||
@@ -38,6 +38,9 @@ public static class WallJson
             throw new JsonException("Malformed wall document collection.");
         if (document.SchemaVersion == 4 && document.EnumerateAllMembers().Any(member => member.Images.IconSeries is not null))
             throw new JsonException("Automatic icon series require the current wall schema.");
+        if (document.SchemaVersion < 6 && (document.Settings.LayoutLocked ||
+            document.Lanes.SelectMany(lane => lane.Groups).Any(group => group.ReservedRows is not null)))
+            throw new JsonException("Reserved layout geometry requires the current wall schema.");
         document = document with { SchemaVersion = WallDocument.CurrentSchemaVersion };
         return Freeze(document);
     }

@@ -159,26 +159,28 @@ public sealed class WallPackageForegroundTests : IDisposable
     [InlineData(3, true)]
     [InlineData(4, false)]
     [InlineData(4, true)]
+    [InlineData(5, false)]
+    [InlineData(5, true)]
     public async Task HistoricalFormatIsValidatedInItsOriginalShapeBeforeItsAutomaticImageIsMadeEmpty(int formatVersion, bool corruptFingerprint)
     {
         var content = WallPackageContent.FromSelection(Source(), ["image", "empty"]);
         var legacySingle = PreparedMediaAsset.FromVerifiedImage(Png, ".png");
-        if (formatVersion == 4)
+        if (formatVersion >= 4)
             content = content with { Members = content.Members.Select(member => member.Id == "image"
                 ? member with { Images = new() { Kind = MemberImageSourceKind.Single, Media = legacySingle.Reference } } : member).ToArray() };
         var bytes = WallPackageJson.Serialize(content, formatVersion);
         if (formatVersion == 2) Assert.DoesNotContain("targetDisplayName", System.Text.Encoding.UTF8.GetString(bytes));
         Assert.DoesNotContain("iconSeries", System.Text.Encoding.UTF8.GetString(bytes));
         var files = new List<WallPackageFile> { new("wall.json", bytes.Length, WallPackageJson.Hash(bytes), "wall") };
-        if (formatVersion == 4) files.Add(new(WallPackageJson.MediaPath(legacySingle.Reference), Png.Length, legacySingle.Reference.Sha256, "media"));
-        var manifest = new WallPackageManifest { FormatVersion = formatVersion, WallSchemaVersion = formatVersion < 4 ? 4 : WallDocument.CurrentSchemaVersion, AppVersion = "1.4.1", CreatedUtc = DateTimeOffset.UtcNow,
+        if (formatVersion >= 4) files.Add(new(WallPackageJson.MediaPath(legacySingle.Reference), Png.Length, legacySingle.Reference.Sha256, "media"));
+        var manifest = new WallPackageManifest { FormatVersion = formatVersion, WallSchemaVersion = formatVersion < 4 ? 4 : 5, AppVersion = "1.4.1", CreatedUtc = DateTimeOffset.UtcNow,
             ContentFingerprint = corruptFingerprint ? new string('A', 64) : WallPackageJson.Fingerprint(content, files, formatVersion), Files = files };
         var path = Path.Combine(_directory, "legacy.zip");
         using (var zip = ZipFile.Open(path, ZipArchiveMode.Create))
         {
             using (var wall = zip.CreateEntry("wall.json").Open()) wall.Write(bytes);
             using (var description = zip.CreateEntry("manifest.json").Open()) description.Write(WallPackageJson.Serialize(manifest));
-            if (formatVersion == 4)
+            if (formatVersion >= 4)
             { using var image = zip.CreateEntry(WallPackageJson.MediaPath(legacySingle.Reference)).Open(); image.Write(Png); }
         }
         var read = await Reader().ReadPreviewAsync(path);
@@ -188,7 +190,7 @@ public sealed class WallPackageForegroundTests : IDisposable
             member => Assert.Equal(MemberImageSourceKind.Automatic, member.Images.Kind));
         Assert.All(read.Preview.Content.ToDocument().EnumerateAllMembers().Where(member => formatVersion < 4 || member.Id == "empty"), member =>
         { Assert.Equal(MemberResourceOrigin.Package, member.ResourceOrigin); Assert.Equal(MemberImageSourceKind.None, member.Images.Kind); });
-        if (formatVersion == 4)
+        if (formatVersion >= 4)
         {
             var restored = read.Preview.Content.ToDocument().EnumerateAllMembers().Single(member => member.Id == "image");
             Assert.Equal(MemberImageSourceKind.Single, restored.Images.Kind); Assert.Null(restored.Images.IconSeries);

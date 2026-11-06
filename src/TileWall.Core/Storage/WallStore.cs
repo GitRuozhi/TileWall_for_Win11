@@ -356,6 +356,8 @@ public sealed partial class WallStore
                 if (plan.Request is null)
                     return CommitResult(WallCommitStatus.Rejected, null,
                         plan.Diagnostics.Count == 0 ? "Entry references differ from canonical plan." : string.Join("; ", plan.Diagnostics));
+                if (WallLayoutEngine.ValidateLockedChange(current, plan.Request.Proposed) is { } lockedDiagnostic)
+                    return CommitResult(WallCommitStatus.Rejected, null, lockedDiagnostic);
             }
             using (timings?.Measure("store.openPreflight"))
             {
@@ -1437,8 +1439,7 @@ public sealed partial class WallStore
         }
         errors.AddRange(ValidateMediaReferences(document));
         errors.AddRange(ValidateGalleryReferences(document));
-        if (document.Settings.ExpandColumns &&
-            (document.Lanes[^1].Groups.Count != 0 || document.Lanes.Take(document.Lanes.Count - 1).Any(lane => lane.Groups.Count == 0)))
+        if (document.Settings.ExpandColumns && document.Lanes[^1].Groups.Count != 0)
             errors.Add("EXPANDED_TAIL_LANE");
         return errors;
     }
@@ -1586,7 +1587,7 @@ public sealed partial class WallStore
         // Historical journals share long prefixes. Deduplicate metadata only within
         // this validation; guarded file/link operations still recheck at every IO.
         var guardPath = _paths.CreateValidationGuard();
-        if (journal.SchemaVersion is not (4 or WallDocument.CurrentSchemaVersion) || !ValidCommitId(journal.CommitId) ||
+        if (journal.SchemaVersion is not (4 or 5 or WallDocument.CurrentSchemaVersion) || !ValidCommitId(journal.CommitId) ||
             journal.OldGeneration < 0 || journal.NewGeneration != journal.OldGeneration + 1 ||
             journal.OldHash is not null && !ValidHash(journal.OldHash) ||
             !ValidHash(journal.NewHash) || journal.Ops is null || journal.Observed is null || journal.Media is null || journal.Galleries is null)

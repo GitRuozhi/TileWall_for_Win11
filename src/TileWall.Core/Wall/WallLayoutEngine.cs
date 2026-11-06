@@ -58,7 +58,7 @@ public sealed record WallLayoutResult(WallProposal? Proposal, WallRejection Reje
 }
 
 /// <summary>Pure, deterministic layout decisions. No UI state or disk operations are performed here.</summary>
-public static class WallLayoutEngine
+public static partial class WallLayoutEngine
 {
     public const int CellsPerLane = 8;
     private const int MaxColumns = 64;
@@ -74,7 +74,10 @@ public static class WallLayoutEngine
         if (errors.Count != 0) return Reject(WallRejection.InvalidDocument, string.Join("; ", errors));
         if (candidate.Settings.ExpandColumns)
         {
-            var occupied = candidate.Lanes.Where(lane => lane.Groups.Count > 0).ToArray();
+            var occupied = candidate.Settings.LayoutLocked || candidate.Lanes.SelectMany(lane => lane.Groups).Any(group => group.ReservedRows is not null)
+                ? candidate.Lanes.Take(candidate.Lanes.Select((lane, index) => (lane, index))
+                    .Where(pair => pair.lane.Groups.Count > 0).Select(pair => pair.index + 1).DefaultIfEmpty(0).Max()).ToArray()
+                : candidate.Lanes.Where(lane => lane.Groups.Count > 0).ToArray();
             if (occupied.Length >= MaxColumns) return Reject(WallRejection.NoSpace, "COLUMN_LIMIT");
             if (candidate.Lanes.Count != occupied.Length + 1 || candidate.Lanes[^1].Groups.Count != 0)
                 candidate = candidate with
@@ -110,6 +113,9 @@ public static class WallLayoutEngine
         {
             return Reject(WallRejection.StaleGeneration, "Proposal was based on an older generation.");
         }
+
+        if (current.Settings.LayoutLocked)
+            return TryApplyLocked(current, action, workWidthDip, workHeightDip, metrics);
 
         if (action is UnpinMemberAction single)
             return RecycleBinRules.Unpin(current, [single.MemberId], false, workWidthDip, workHeightDip, metrics);
@@ -214,6 +220,13 @@ public static class WallLayoutEngine
         var errors = Validate(candidate);
         if (errors.Count != 0) return Reject(WallRejection.InvalidAction, string.Join("; ", errors));
         var requiredHeight = RequiredHeight(candidate, metrics);
+        if (candidate.Settings.LayoutLocked)
+        {
+            var normalized = NormalizeExpanded(candidate, metrics);
+            return normalized.Proposal is { } protectedProposal
+                ? WallViewportPolicy.Validate(protectedProposal, new(width, height, MaxColumns, candidate.Rows, candidate.Settings.FullScreen), metrics)
+                : normalized;
+        }
         candidate = candidate with { Rows = Math.Max(candidate.Rows, Math.Min(MaxRows, RowsForHeight(requiredHeight, metrics))) };
         var fit = FitCapacity(ref candidate, requiredHeight, true, width, height, metrics, out var detail);
         if (fit != WallRejection.None) return Reject(fit, detail);
@@ -235,7 +248,7 @@ public static class WallLayoutEngine
     {
         detail = null;
         var expanded = proposed.Settings.ExpandColumns;
-        var occupiedColumns = proposed.Lanes.Count(lane => lane.Groups.Count > 0);
+        var occupiedColumns = ContentColumnCount(proposed);
         if (expanded && occupiedColumns >= MaxColumns)
         {
             detail = "COLUMN_LIMIT";
@@ -274,7 +287,7 @@ public static class WallLayoutEngine
         if (requiredHeight > metrics.WallHeight(proposed.Rows) + 1e-8)
             return WallRejection.NoSpace;
 
-        projectedColumns = expanded ? proposed.Lanes.Count(lane => lane.Groups.Count > 0) + 1 : proposed.Columns;
+        projectedColumns = expanded ? ContentColumnCount(proposed) + 1 : proposed.Columns;
         if (metrics.WallWidth(projectedColumns) <= workWidthDip + 1e-8 &&
             metrics.WallHeight(proposed.Rows) <= workHeightDip + 1e-8)
             return WallRejection.None;
@@ -334,7 +347,8 @@ public static class WallLayoutEngine
                 if (!string.IsNullOrWhiteSpace(group.Title) && !names.Add(group.Title.Trim())) errors.Add("DUPLICATE_GROUP_NAME");
                 if (MemberPresentationRules.ValidateImportSource(group.ImportSource) is { } groupImportError)
                     errors.Add(groupImportError);
-                if (group.Members is null || group.Members.Count == 0)
+                if (group.ReservedRows is < 1 or > MaxRows) errors.Add("GROUP_RESERVED_ROWS");
+                if (group.Members is null || group.Members.Count == 0 && group.ReservedRows is null)
                 {
                     errors.Add("EMPTY_GROUP");
                     continue;
@@ -432,7 +446,7 @@ public static class WallLayoutEngine
             {
                 var title = new DipRect(x, y, metrics.LaneWidth, metrics.TitleHeight);
                 var membersY = y + metrics.TitleHeight + metrics.TitleToMembersGap;
-                var occupiedRows = group.Members.Max(m => m.LocalBounds.Bottom);
+                var occupiedRows = EffectiveGroupRows(group);
                 var groupHeight = metrics.TitleHeight + metrics.TitleToMembersGap + metrics.HeightOf(occupiedRows);
                 var members = MemberLayoutOrder.Order(group.Members).Select(m => new MemberPlacement(m.Id,
                     metrics.MemberRect(m.LocalBounds, x, membersY))).ToArray();
@@ -457,8 +471,8 @@ public static class WallLayoutEngine
         var usedHeight = metrics.TopMargin + metrics.Margin;
         foreach (var group in groups)
         {
-            if (group.Members.Count == 0) continue;
-            var groupHeight = metrics.TitleHeight + metrics.TitleToMembersGap + metrics.HeightOf(group.Members.Max(member => member.LocalBounds.Bottom));
+            if (EffectiveGroupRows(group) == 0) continue;
+            var groupHeight = metrics.TitleHeight + metrics.TitleToMembersGap + metrics.HeightOf(EffectiveGroupRows(group));
             var gap = output[^1].Count == 0 ? 0 : metrics.GroupGap;
             if (usedHeight + gap + groupHeight > availableHeightDip + 1e-9 && output[^1].Count != 0)
             {
@@ -512,7 +526,7 @@ public static class WallLayoutEngine
         var height = metrics.TopMargin + metrics.Margin;
         foreach (var group in groups)
             height += metrics.TitleHeight + metrics.TitleToMembersGap +
-                metrics.HeightOf(group.Members.Max(m => m.LocalBounds.Bottom)) + metrics.GroupGap;
+                metrics.HeightOf(EffectiveGroupRows(group)) + metrics.GroupGap;
         return groups.Count > 0 ? height - metrics.GroupGap : height;
     }
 
@@ -635,7 +649,7 @@ public static class WallLayoutEngine
         {
             if (i == targetIndex) continue;
             available -= metrics.TitleHeight + metrics.TitleToMembersGap +
-                metrics.HeightOf(groups[i].Members.Max(m => m.LocalBounds.Bottom));
+                metrics.HeightOf(EffectiveGroupRows(groups[i]));
         }
         return (int)Math.Clamp(Math.Floor((available + metrics.Gap) / metrics.Pitch), 0, MaxRows);
     }
@@ -796,21 +810,21 @@ public static class WallLayoutEngine
 
     internal static StartGroup CompactGroupFully(StartGroup group)
     {
-        var occupied = new bool[group.Members.Max(member => member.LocalBounds.Bottom)];
+        var occupied = new bool[EffectiveGroupRows(group)];
         foreach (var member in group.Members)
             for (var row = member.LocalBounds.Row; row < member.LocalBounds.Bottom; row++) occupied[row] = true;
         var before = new int[occupied.Length + 1];
         for (var row = 0; row < occupied.Length; row++) before[row + 1] = before[row] + (occupied[row] ? 0 : 1);
-        return group with { Members = group.Members.Select(member => member with
+        return group with { ReservedRows = group.Members.Count == 0 ? 1 : null, Members = group.Members.Select(member => member with
             { LocalBounds = member.LocalBounds with { Row = member.LocalBounds.Row - before[member.LocalBounds.Row] } }).ToArray() };
     }
 
     internal static int MinimumGroupRows(StartGroup group)
     {
-        var occupied = new bool[group.Members.Max(member => member.LocalBounds.Bottom)];
+        var occupied = new bool[EffectiveGroupRows(group)];
         foreach (var member in group.Members)
             for (var row = member.LocalBounds.Row; row < member.LocalBounds.Bottom; row++) occupied[row] = true;
-        return occupied.Count(row => row);
+        return Math.Max(group.Members.Count == 0 ? 1 : 0, occupied.Count(row => row));
     }
 
     private static WallRejection ResizeOriginalLanes(List<List<StartGroup>> lanes, int columns, int rows,
@@ -832,7 +846,7 @@ public static class WallLayoutEngine
             for (var g = lane.Count - 1; g >= 0 && requiredHeight > availableHeight; g--)
             {
                 var group = lane[g];
-                var occupied = new bool[group.Members.Max(m => m.LocalBounds.Bottom)];
+                var occupied = new bool[EffectiveGroupRows(group)];
                 foreach (var member in group.Members)
                     for (var row = member.LocalBounds.Row; row < member.LocalBounds.Bottom; row++)
                         occupied[row] = true;
@@ -853,6 +867,7 @@ public static class WallLayoutEngine
                     removedBefore[row + 1] = removedBefore[row] + (removed[row] ? 1 : 0);
                 lane[g] = group with
                 {
+                    ReservedRows = group.ReservedRows is not null ? Math.Max(1, EffectiveGroupRows(group) - removedCount) : null,
                     Members = group.Members.Select(member =>
                     {
                         var bounds = member.LocalBounds;

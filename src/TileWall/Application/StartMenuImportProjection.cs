@@ -78,16 +78,17 @@ internal sealed class StartMenuImportProjection
 
     internal ImportPageSource FromPackage(WallPackagePreview preview, CancellationToken token)
     {
-        var members = preview.Content.Members.ToDictionary(member => member.Id, StringComparer.Ordinal);
-        var groups = preview.Content.Groups.ToDictionary(group => group.Id, StringComparer.Ordinal);
+        var document = preview.Content.ToDocument();
         var candidates = new List<ImportSourceCandidate>();
         var facts = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (lane, laneIndex) in preview.Content.Lanes.Select((lane, index) => (lane, index)))
-        foreach (var (group, order) in lane.GroupIds.Select(id => groups[id]).Select((group, order) => (group, order)))
-        foreach (var (id, index) in group.MemberIds.Select((id, index) => (id, index)))
+        var sourceGroups = document.Lanes.SelectMany((lane, laneIndex) => lane.Groups.Select((group, order) =>
+            DescribeSourceGroup(lane.Groups, order, laneIndex))).ToDictionary(group => group.Key, StringComparer.Ordinal);
+        foreach (var lane in document.Lanes)
+        foreach (var group in lane.Groups)
+        foreach (var (member, index) in group.Members.Select((member, index) => (member, index)))
         {
             token.ThrowIfCancellationRequested();
-            var member = members[id].ToMember();
+            var id = member.Id;
             var identity = preview.Identities.GetValueOrDefault(id);
             var error = identity?.IsUrl == true && !identity.Key.StartsWith("opaque-url:", StringComparison.Ordinal) &&
                 !RegisteredUrlProtocols.IsSupported(identity.Target) ? "UnsupportedProtocol" : null;
@@ -98,13 +99,27 @@ internal sealed class StartMenuImportProjection
             {
                 SourceKind = ImportPageSourceKind.WallPackage, Policy = ImportSourcePolicy.Attributed,
                 HasLaunchTarget = member.Entry is not null, TargetKind = ContentKind(identity, member.Entry is not null),
-                SourceGroup = new(group.Id, group.Title, order) { LaneIndex = laneIndex }, SourceOrder = index, Identity = identity,
+                SourceGroup = sourceGroups[group.Id], SourceOrder = index, Identity = identity,
                 RequiresIdentity = member.Entry is not null, HasRecordedPosition = true, HasRecordedSize = true,
                 ErrorCode = error, TargetAvailability = ImportTargetAvailability.Unknown,
             });
         }
         return new(ReuseCandidates(candidates, preview.PackageSha256), new Dictionary<string, StartMenuImportCandidate>(), preview, candidates.Count)
             { AvailabilityFacts = facts, AvailabilityPrepared = true };
+    }
+
+    internal static ImportSourceGroup DescribeSourceGroup(IReadOnlyList<StartGroup> groups, int order, int laneIndex)
+    {
+        var group = groups[order];
+        var following = groups.Skip(order + 1).ToArray();
+        return new(group.Id, group.Title, order)
+        {
+            LaneIndex = laneIndex, ReservedRows = group.ReservedRows, MemberCount = group.Members.Count,
+            LeadingEmptyGroups = groups.Take(order).Reverse().TakeWhile(item => item.Members.Count == 0)
+                .Reverse().Where(item => item.ReservedRows is > 0).ToArray(),
+            TrailingEmptyGroups = following.All(item => item.Members.Count == 0)
+                ? following.Where(item => item.ReservedRows is > 0).ToArray() : [],
+        };
     }
 
     internal static ImportTargetKind ContentKind(LaunchIdentity? identity, bool hasTarget, bool? targetIsDirectory = null)

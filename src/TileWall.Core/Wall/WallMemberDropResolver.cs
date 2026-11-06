@@ -35,7 +35,7 @@ internal sealed class WallMemberDropSession
         var source = document.Lanes.SelectMany(lane => lane.Groups)
             .Single(group => group.Members.Any(member => member.Id == memberId));
         _sourceId = source.Id;
-        _sourceDisappears = source.Members.Count == 1;
+        _sourceDisappears = source.Members.Count == 1 && !document.Settings.LayoutLocked && source.ReservedRows is null;
         _originalBounds = source.Members.Single(member => member.Id == memberId).LocalBounds;
         _size = _originalBounds.Size;
         var geometry = WallLayoutEngine.Measure(document, metrics);
@@ -46,7 +46,8 @@ internal sealed class WallMemberDropSession
             var members = GridRow(placement.TitleBounds.Y + metrics.TitleHeight + metrics.TitleToMembersGap);
             var occupied = group.Members.Where(member => member.Id != memberId)
                 .Select(member => member.LocalBounds.Bottom).DefaultIfEmpty(0).Max();
-            return new GroupRows(group.Id, index, title, members, members + occupied);
+            return new GroupRows(group.Id, index, title, members, members + (document.Settings.LayoutLocked
+                ? WallLayoutEngine.EffectiveGroupRows(group) : Math.Max(occupied, group.ReservedRows ?? 0)));
         })).ToArray();
         var sourceRows = _groups.Single(group => group.Id == _sourceId);
         _originalSlot = new(sourceRows.Lane, _originalBounds with { Row = sourceRows.Members + _originalBounds.Row });

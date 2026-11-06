@@ -14,12 +14,31 @@ public static class StartMenuImportPlanner
     {
         ArgumentNullException.ThrowIfNull(current);
         ArgumentNullException.ThrowIfNull(importedGroups);
-        metrics ??= new WallMetrics();
+        metrics ??= new();
+        var result = TryPlanCore(current, expectedGeneration, importedGroups, metrics, budget, insertionPosition);
+        if (result.Proposal is not null || current.Settings.ExpandColumns || budget is null ||
+            result.Rejection is not (WallRejection.NoSpace or WallRejection.WorkAreaTooSmall) ||
+            result.Detail?.StartsWith("GROUP_TOO_TALL:", StringComparison.Ordinal) == true ||
+            importedGroups.Any(group => group is null || metrics.TopMargin + metrics.Margin + metrics.TitleHeight +
+                metrics.TitleToMembersGap + metrics.HeightOf(WallLayoutEngine.EffectiveGroupRows(group)) > budget.MaxHeightDip + 1e-8))
+            return result;
+        // Only import capacity gets this fallback. The source/selection and height budget stay unchanged.
+        var expanded = current with { Settings = current.Settings with { ExpandColumns = true } };
+        return TryPlanCore(expanded, expectedGeneration, importedGroups, metrics,
+            budget with { MaxColumns = MaxColumns, MaxWidthDip = metrics.WallWidth(MaxColumns) }, insertionPosition);
+    }
+
+    private static WallLayoutResult TryPlanCore(WallDocument current, long expectedGeneration,
+        IReadOnlyList<StartGroup> importedGroups, WallMetrics metrics, WallViewportBudget? budget,
+        ImportInsertionPosition insertionPosition)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(importedGroups);
         if (!metrics.IsValid || !Enum.IsDefined(insertionPosition)) return Reject(WallRejection.InvalidAction);
         if (expectedGeneration != current.Generation) return Reject(WallRejection.StaleGeneration);
         var errors = WallLayoutEngine.ValidateGeometry(current, metrics);
         if (errors.Count != 0) return Reject(WallRejection.InvalidDocument, string.Join("; ", errors));
-        var groups = importedGroups.Where(group => group is not null && group.Members is { Count: > 0 }).ToArray();
+        var groups = importedGroups.Where(group => group is not null && group.Members is not null && (group.Members.Count > 0 || group.ReservedRows is > 0)).ToArray();
         if (groups.Length != importedGroups.Count || groups.Length == 0) return Reject(WallRejection.InvalidAction);
         if (groups.Select(group => group.Id).Distinct(StringComparer.Ordinal).Count() != groups.Length)
             return Reject(WallRejection.DuplicateId);
@@ -35,6 +54,8 @@ public static class StartMenuImportPlanner
                     .Select(other => member.LocalBounds.Intersects(other.LocalBounds))).Any(overlap => overlap))
                 return Reject(WallRejection.InvalidAction, "INVALID_SOURCE_GEOMETRY");
         }
+        if (current.Settings.LayoutLocked)
+            return TryProtected(current, groups, metrics, budget, insertionPosition);
         var involved = groups.Select(group => group.Id).ToHashSet(StringComparer.Ordinal);
         var untouched = current.Lanes.SelectMany(lane => lane.Groups).Where(group => !involved.Contains(group.Id));
         var ordered = (insertionPosition == ImportInsertionPosition.Head ? groups.Concat(untouched) : untouched.Concat(groups)).ToArray();
@@ -55,7 +76,7 @@ public static class StartMenuImportPlanner
         foreach (var group in ordered)
         {
             var height = metrics.TopMargin + metrics.Margin + metrics.TitleHeight + metrics.TitleToMembersGap +
-                metrics.HeightOf(group.Members.Max(member => member.LocalBounds.Bottom));
+                metrics.HeightOf(WallLayoutEngine.EffectiveGroupRows(group));
             if (height > metrics.WallHeight(maxRows) + 1e-8)
                 return Reject(WallRejection.NoSpace, "GROUP_TOO_TALL:" + (string.IsNullOrWhiteSpace(group.Title) ? group.Id : group.Title));
         }
@@ -77,6 +98,93 @@ public static class StartMenuImportPlanner
             if (validated.Proposal is not null) return validated;
         }
         return Reject(WallRejection.NoSpace, "CONTENT_TOO_LARGE");
+    }
+
+
+    private static WallLayoutResult TryProtected(WallDocument current, StartGroup[] incoming, WallMetrics metrics,
+        WallViewportBudget? budget, ImportInsertionPosition position)
+    {
+        var width = budget?.MaxWidthDip ?? metrics.WallWidth(MaxColumns);
+        var height = Math.Min(budget?.MaxHeightDip ?? metrics.WallHeight(current.Rows), metrics.WallHeight(current.Rows));
+        var lanes = current.Lanes.Select(lane => lane with { Groups = lane.Groups.ToArray() }).ToList();
+        var pending = new List<StartGroup>();
+        var used = current.EnumerateAllMembers().Select(member => member.Id)
+            .Concat(current.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id))
+            .Concat(incoming.Select(group => group.Id)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var group in incoming)
+        {
+            var laneIndex = lanes.FindIndex(lane => lane.Groups.Any(old => old.Id == group.Id));
+            if (laneIndex < 0) { pending.Add(group); continue; }
+            var groupIndex = lanes[laneIndex].Groups.ToList().FindIndex(old => old.Id == group.Id);
+            var old = lanes[laneIndex].Groups[groupIndex];
+            var oldMembers = old.Members.ToDictionary(member => member.Id, StringComparer.Ordinal);
+            if (old.Members.Any(member => !group.Members.Any(next => next.Id == member.Id)) ||
+                group.Members.Any(member => oldMembers.TryGetValue(member.Id, out var prior) &&
+                    member.LocalBounds.Size != prior.LocalBounds.Size))
+                return Reject(WallRejection.InvalidAction, "LAYOUT_LOCKED");
+            var replacement = group with
+            {
+                ReservedRows = Math.Max(old.ReservedRows ?? 0, group.ReservedRows ?? 0) is var rows && rows > 0 ? rows : null,
+                Members = group.Members.Select(member => oldMembers.TryGetValue(member.Id, out var prior)
+                    ? member with { LocalBounds = prior.LocalBounds } : member).ToArray(),
+            };
+            var groups = lanes[laneIndex].Groups.ToArray();
+            groups[groupIndex] = replacement;
+            var trial = lanes.ToArray(); trial[laneIndex] = lanes[laneIndex] with { Groups = groups };
+            if (Finish(trial).Proposal is not null) { lanes = trial.ToList(); continue; }
+            var added = replacement.Members.Where(member => !oldMembers.ContainsKey(member.Id)).ToArray();
+            if (added.Length == 0) return Reject(WallRejection.NoSpace, "LAYOUT_LOCKED_NO_SPACE");
+            groups[groupIndex] = replacement with { Members = replacement.Members.Where(member => oldMembers.ContainsKey(member.Id)).ToArray(),
+                ReservedRows = old.ReservedRows };
+            lanes[laneIndex] = lanes[laneIndex] with { Groups = groups };
+            var placed = new List<WallMember>();
+            foreach (var member in added)
+            {
+                var bounds = MemberLayoutOrder.FindAppendBounds(placed.Select(item => item.LocalBounds).ToArray(),
+                    member.LocalBounds.Width, member.LocalBounds.Height, current.Rows);
+                if (bounds is null) return Reject(WallRejection.NoSpace, "CONTENT_TOO_LARGE");
+                placed.Add(member with { LocalBounds = bounds.Value });
+            }
+            var suffix = 1;
+            var id = "append-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(group.Id))).ToLowerInvariant()[..24];
+            var stem = id;
+            while (!used.Add(id)) id = stem + "-" + suffix++;
+            pending.Add(group with { Id = id, Title = null, Members = placed.ToArray(), ReservedRows = null });
+        }
+        foreach (var group in pending)
+        {
+            if (metrics.TopMargin + metrics.Margin + metrics.TitleHeight + metrics.TitleToMembersGap +
+                metrics.HeightOf(WallLayoutEngine.EffectiveGroupRows(group)) > height + 1e-8)
+                return Reject(WallRejection.NoSpace, "GROUP_TOO_TALL:" + (group.Title ?? group.Id));
+            var lastContent = lanes.FindLastIndex(lane => lane.Groups.Count != 0);
+            var order = position == ImportInsertionPosition.Head
+                ? Enumerable.Range(0, lanes.Count).Where(index => lanes[index].Groups.Count == 0)
+                    .Concat(Enumerable.Range(Math.Max(0, lastContent), Math.Max(0, lanes.Count - Math.Max(0, lastContent))))
+                : Enumerable.Range(Math.Max(0, lastContent), Math.Max(0, lanes.Count - Math.Max(0, lastContent)));
+            var accepted = false;
+            foreach (var lane in order.Concat([lanes.Count]).Distinct())
+            {
+                if (lane >= (current.Settings.ExpandColumns ? MaxColumns - 1 : current.Columns)) continue;
+                var trial = lanes.ToList();
+                while (trial.Count <= lane) trial.Add(new WallLane { Groups = [] });
+                trial[lane] = trial[lane] with { Groups = [.. trial[lane].Groups, group] };
+                if (Finish(trial).Proposal is null) continue;
+                lanes = trial; accepted = true; break;
+            }
+            if (!accepted) return Reject(WallRejection.NoSpace, "CONTENT_TOO_LARGE");
+        }
+        return Finish(lanes);
+
+        WallLayoutResult Finish(IReadOnlyList<WallLane> value)
+        {
+            var next = current with { Generation = current.Generation + 1, Columns = value.Count, Lanes = value.ToArray() };
+            var normalized = WallLayoutEngine.NormalizeExpanded(next, metrics);
+            if (normalized.Proposal is not { } proposal) return normalized;
+            if (WallLayoutEngine.ValidateLockedChange(current, proposal.Document, metrics) is { } error)
+                return Reject(WallRejection.InvalidAction, error);
+            return WallViewportPolicy.Validate(proposal, new(width, height, MaxColumns, current.Rows, current.Settings.FullScreen), metrics);
+        }
     }
 
     private static bool TryPack(IReadOnlyList<StartGroup> groups, int laneCount, int rows,

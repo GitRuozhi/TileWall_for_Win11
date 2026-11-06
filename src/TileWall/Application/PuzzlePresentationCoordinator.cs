@@ -12,6 +12,9 @@ using Windows.UI.ViewManagement;
 
 namespace TileWall.ApplicationModel;
 
+internal sealed record AutomaticIconSeriesBinding(WallMember Member, PreparedAutomaticIconSeries Prepared,
+    Func<bool> StillCurrent);
+
 /// <summary>Owns shared tile/puzzle frames and animation clocks; persisted state belongs to WallSession.</summary>
 internal sealed class PuzzlePresentationCoordinator : IDisposable
 {
@@ -79,6 +82,12 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     private bool _queued;
     private bool _queuedExplicit;
     private bool _persistenceBusy;
+    private sealed record AutomaticPreparationCandidate(State State, WallMember Member, int Width, int Height);
+    private readonly Dictionary<string, AutomaticPreparationCandidate> _automaticWave = new(StringComparer.Ordinal);
+    private long _automaticWaveProgress;
+    private int _automaticWavePending;
+    private bool _automaticBatchPersisting;
+    private long _automaticBatchDeferred;
     private bool _animationClockRunning;
     private readonly WallMetrics _metrics = new();
     private MemberImageSource? _editorGallery;
@@ -93,7 +102,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     public event Action<string, PuzzleFrame?, double>? FrameChanged;
     public event Action<MemberImageSource, PuzzleCandidateResult>? GalleryCandidatesChanged;
     public Func<WallMember, string?>? ResolveEntryPath { get; set; }
-    public Func<WallMember, PreparedAutomaticIconSeries, Func<bool>, Task<string?>>? PersistAutomaticSeries { get; set; }
+    public Func<IReadOnlyList<AutomaticIconSeriesBinding>, Task<(bool Accepted, string? Error)>>? PersistAutomaticSeries { get; set; }
 
     internal (int Members, int Frames, int Bitmaps, long PixelBytes) ResidentMemory
     {
@@ -263,7 +272,8 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
                      state.Member.SourceShortcutPath != member.SourceShortcutPath);
                 var changed = state.Member.ResourceOrigin != member.ResourceOrigin ||
                     !SameSource(state.Member.Images, member.Images) || automaticEntryChanged;
-                var qualityChanged = state.Member.ImageDisplay != member.ImageDisplay;
+                var qualityChanged = state.Member.ImageDisplay.Mode != member.ImageDisplay.Mode ||
+                    state.Member.ImageDisplay.CustomScale != member.ImageDisplay.CustomScale;
                 var sizeChanged = state.TargetWidth != width || state.TargetHeight != height;
                 var partitionsChanged = state.Member is PuzzleMember previousPuzzle && member is PuzzleMember puzzle &&
                     !previousPuzzle.Partitions.SequenceEqual(puzzle.Partitions);
@@ -409,6 +419,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         if (_disposed || _stopping) return;
         _timer.Stop();
         if (!_preparationAllowed) return;
+        EnsureAutomaticPreparationWave();
         // These reads never select a different gallery image or save carousel state.
         // Queue the first viewport first, then actively prepare the rest of the wall.
         foreach (var state in _states.Values.OrderByDescending(state => _visibleMembers.Contains(state.Member.Id)).ToArray())
@@ -425,16 +436,12 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         _queuedExplicit = false;
         // Also covers OS versions without the preference-change event.
         ApplyAnimationPreference();
+        CheckAutomaticSeriesBatch(explicitCheck, ref wake);
+        if (_persistenceBusy || _automaticBatchPersisting) { ScheduleWake(wake); return; }
         foreach (var state in _states.Values.ToArray())
         {
-            // Native captures belong to every held wall frame. Adopt them while
-            // the wall is ready, including members outside the current viewport.
-            if (state.PreparedAutomaticSeries is not null)
-            {
-                if (state.Cancellation is null && state.NeedsInitial && (!state.Runtime.Passive || explicitCheck))
-                    TrackWork(LoadInitialAsync(state));
-                continue;
-            }
+            // Native captures are adopted together when their fixed wave settles.
+            if (state.PreparedAutomaticSeries is not null) continue;
             if (!IsPresented(state.Member.Id)) continue;
             if (state.PendingGallery is { } snapshot && state.Cancellation is null && !state.Flipping)
             { state.PendingGallery = null; ApplyGallerySnapshot(state, snapshot); }
@@ -468,6 +475,120 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             else if (decision.Remaining is { } remaining) wake = Earlier(wake, remaining);
         }
         ScheduleWake(wake);
+    }
+
+    internal static bool CanBindPreparedAutomaticSeries(WallMember requested, WallMember current) =>
+        requested is TileMember or PuzzleMember && requested.GetType() == current.GetType() &&
+        requested.Id == current.Id && requested.ResourceOrigin == MemberResourceOrigin.Local &&
+        current.ResourceOrigin == MemberResourceOrigin.Local &&
+        requested.Images is { Kind: MemberImageSourceKind.Automatic, IconSeries: null } &&
+        current.Images is { Kind: MemberImageSourceKind.Automatic, IconSeries: null } &&
+        SameSource(requested.Images, current.Images) && requested.Entry == current.Entry &&
+        requested.TargetInput == current.TargetInput && requested.SourceShortcutPath == current.SourceShortcutPath &&
+        requested.LocalBounds.Size == current.LocalBounds.Size &&
+        requested.ImageDisplay.Mode == current.ImageDisplay.Mode &&
+        requested.ImageDisplay.CustomScale == current.ImageDisplay.CustomScale &&
+        (requested.Visual.BackgroundMode == MemberBackgroundMode.Blur) ==
+        (current.Visual.BackgroundMode == MemberBackgroundMode.Blur);
+
+    private bool AutomaticCandidateCurrent(AutomaticPreparationCandidate candidate) =>
+        _states.TryGetValue(candidate.Member.Id, out var current) && ReferenceEquals(current, candidate.State) &&
+        candidate.Width == current.TargetWidth && candidate.Height == current.TargetHeight &&
+        CanBindPreparedAutomaticSeries(candidate.Member, current.Member);
+
+    private void EnsureAutomaticPreparationWave()
+    {
+        if (_automaticBatchPersisting) return;
+        foreach (var (id, candidate) in _automaticWave.ToArray())
+            if (!AutomaticCandidateCurrent(candidate)) _automaticWave.Remove(id);
+        if (_automaticWave.Count != 0) return;
+        foreach (var state in _states.Values)
+            if (CanBindPreparedAutomaticSeries(state.Member, state.Member) &&
+                (!state.CurrentPrepared || state.PreparedAutomaticSeries is not null &&
+                    (!state.Runtime.Passive || _queuedExplicit)))
+                _automaticWave.Add(state.Member.Id, new(state, state.Member, state.TargetWidth, state.TargetHeight));
+        _automaticWavePending = _automaticWave.Values.Count(candidate => !candidate.State.CurrentPrepared);
+        _automaticWaveProgress = Stopwatch.GetTimestamp();
+    }
+
+    private void CheckAutomaticSeriesBatch(bool explicitCheck, ref TimeSpan? wake)
+    {
+        if (_automaticBatchPersisting || PersistAutomaticSeries is null || _automaticWave.Count == 0) return;
+        foreach (var (id, candidate) in _automaticWave.ToArray())
+            if (!AutomaticCandidateCurrent(candidate)) _automaticWave.Remove(id);
+        var pending = _automaticWave.Values.Count(candidate => !candidate.State.CurrentPrepared);
+        if (pending != _automaticWavePending)
+        {
+            _automaticWavePending = pending;
+            _automaticWaveProgress = Stopwatch.GetTimestamp();
+        }
+        var ready = _automaticWave.Values.Where(candidate => candidate.State is
+            { CurrentPrepared: true, Cancellation: null, PreparedAutomaticSeries: not null,
+              Frame: not null, FrameLoadUnavailable: false } &&
+            (!candidate.State.Runtime.Passive || explicitCheck)).ToArray();
+        if (ready.Length == 0)
+        {
+            if (pending == 0) _automaticWave.Clear();
+            return;
+        }
+        // A normal wave is one transaction. If native work stops making progress,
+        // settle the ready subset without cancelling or pretending the rest finished.
+        var remaining = TimeSpan.FromSeconds(2) - Stopwatch.GetElapsedTime(_automaticWaveProgress);
+        if (pending > 0 && remaining > TimeSpan.Zero) { wake = Earlier(wake, remaining); return; }
+        if (_automaticBatchDeferred != 0)
+        {
+            var retry = TimeSpan.FromMilliseconds(250) - Stopwatch.GetElapsedTime(_automaticBatchDeferred);
+            if (retry > TimeSpan.Zero) { wake = Earlier(wake, retry); return; }
+        }
+        _automaticBatchPersisting = true;
+        TrackWork(PersistAutomaticSeriesBatchAsync(ready));
+    }
+
+    private async Task PersistAutomaticSeriesBatchAsync(IReadOnlyList<AutomaticPreparationCandidate> candidates)
+    {
+        var bindings = candidates.Select(candidate =>
+        {
+            var state = candidate.State;
+            var generation = state.Generation;
+            var prepared = state.PreparedAutomaticSeries!;
+            var frame = state.Frame;
+            return new AutomaticIconSeriesBinding(candidate.Member, prepared,
+                () => !_disposed && !_stopping && _preparationAllowed && AutomaticCandidateCurrent(candidate) &&
+                    state.Generation == generation && ReferenceEquals(state.PreparedAutomaticSeries, prepared) &&
+                    ReferenceEquals(state.Frame, frame) && state.CurrentPrepared && !state.FrameLoadUnavailable);
+        }).ToArray();
+        var accepted = false;
+        try
+        {
+            var result = await PersistAutomaticSeries!(bindings);
+            accepted = result.Accepted;
+            if (!accepted) return;
+            foreach (var binding in bindings)
+            {
+                _automaticWave.Remove(binding.Member.Id);
+                if (result.Error is not null && binding.StillCurrent() && _states.TryGetValue(binding.Member.Id, out var state))
+                    state.Runtime = state.Runtime with { Passive = true };
+            }
+            if (result.Error is not null) _error(result.Error);
+            Trace($"AutomaticSeriesBatch members={bindings.Length} error={result.Error}");
+        }
+        catch (Exception ex)
+        {
+            accepted = true;
+            foreach (var binding in bindings)
+            {
+                _automaticWave.Remove(binding.Member.Id);
+                if (binding.StillCurrent() && _states.TryGetValue(binding.Member.Id, out var state))
+                    state.Runtime = state.Runtime with { Passive = true };
+            }
+            _error(string.Format(ProductStrings.Get("Wall.PuzzlePersistFailed"), ex.Message));
+        }
+        finally
+        {
+            _automaticBatchPersisting = false;
+            _automaticBatchDeferred = accepted ? 0 : Stopwatch.GetTimestamp();
+            QueueCheck(false);
+        }
     }
 
     private void ScheduleWake(TimeSpan? wake)
@@ -659,15 +780,6 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         try
         {
             if (!ReadableSource(state.Member)) { state.NeedsInitial = false; return; }
-            if (state.PreparedAutomaticSeries is { } prepared && PersistAutomaticSeries is { } persist)
-            {
-                var error = await persist(state.Member, prepared, () => Current(state, generation) &&
-                    _gate == MemberCarouselGate.Ready);
-                if (!Current(state, generation)) return;
-                if (error is not null)
-                { state.Runtime = state.Runtime with { Passive = true }; _error(error); }
-                return;
-            }
             if (state.Member.Images.Kind != MemberImageSourceKind.Folder)
             {
                 var staticFrame = await RequestFrameAsync(state, null, token);
@@ -1060,6 +1172,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         _animationClockRunning = false;
         _lifetime.Cancel();
         foreach (var state in _states.Values) ReleaseFrames(state);
+        _automaticWave.Clear();
         _currentLoads.Clear();
     }
 

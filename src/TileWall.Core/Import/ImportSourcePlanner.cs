@@ -169,11 +169,24 @@ public static class ImportSourcePlanner
             var built = BuildGroup(projectedGroup, selectedRows, defaultSize, old, groupId, usedIds,
                 preview: false, generation: current.Generation);
             if (built.Group is null) return Reject(built.Rejection, built.Detail);
+            var sourceGroup = selectedRows[0].Source.SourceGroup;
+            var completeSourceGroup = old is null && projectedGroup.PreserveSourceGroup &&
+                selectedRows.Length == (sourceGroup?.MemberCount ?? projectedGroup.Candidates.Count);
+            if (completeSourceGroup && sourceGroup is not null)
+                incoming.AddRange(sourceGroup.LeadingEmptyGroups.Select(group => RemapEmpty(group)));
             incoming.Add(built.Group); accepted.AddRange(built.Accepted);
+            if (completeSourceGroup && sourceGroup is not null)
+                incoming.AddRange(sourceGroup.TrailingEmptyGroups.Select(group => RemapEmpty(group)));
         }
         var layout = StartMenuImportPlanner.TryPlan(current, expectedGeneration, incoming, metrics, budget, insertionPosition);
-        return layout.Proposal is { } proposal ? new(ImportPlanStatus.Ready, proposal, accepted.ToArray()) :
+        return layout.Proposal is { } proposal ? new(ImportPlanStatus.Ready, proposal, accepted.Select(item => item with
+            { GroupId = proposal.Document.Lanes.SelectMany(lane => lane.Groups).Single(group => group.Members.Any(member => member.Id == item.MemberId)).Id }).ToArray()) :
             Reject(layout.Rejection, layout.Detail);
+
+        StartGroup RemapEmpty(StartGroup source) => source with
+        {
+            Id = AllocateId("import-group-", GenerationKey(current.Generation, source.Id), usedIds), Members = [],
+        };
     }
 
     /// <summary>Complete source layout at an empty destination baseline. It is never a formal proposal or capacity admission.</summary>
@@ -205,7 +218,20 @@ public static class ImportSourcePlanner
             var built = BuildGroup(projectedGroup, rows, defaultSize, null, id, used, preview: true);
             if (built.Group is null)
                 return new([], WallLayoutEngine.MeasureSource([], metrics), map, built.Detail);
+            var sourceDescriptor = rows.FirstOrDefault()?.Source.SourceGroup;
+            if (projectedGroup.PreserveSourceGroup && sourceDescriptor is not null)
+                foreach (var empty in sourceDescriptor.LeadingEmptyGroups)
+                    AddEmptyPreview(empty);
             groups.Add((projectedGroup, built.Group));
+            if (projectedGroup.PreserveSourceGroup && sourceDescriptor is not null)
+                foreach (var empty in sourceDescriptor.TrailingEmptyGroups)
+                    AddEmptyPreview(empty);
+
+            void AddEmptyPreview(StartGroup empty)
+            {
+                var emptyId = used.Add(empty.Id) ? empty.Id : AllocateId("preview-group-", empty.Id, used);
+                groups.Add((projectedGroup with { SourceGroupId = emptyId }, empty with { Id = emptyId, Members = [] }));
+            }
             var originals = projectedGroup.Candidates.ToDictionary(candidate => candidate.Source.SourceKey, StringComparer.Ordinal);
             foreach (var accepted in built.Accepted) map.Add(accepted.MemberId, originals[accepted.SourceKey]);
         }
@@ -284,7 +310,10 @@ public static class ImportSourcePlanner
         var metadata = rows.Select(candidate => candidate.Source.Member.ImportSource).FirstOrDefault(source => source is not null);
         return new((old ?? new StartGroup { Id = groupId, Title = group.Title, Members = [] }) with
         {
-            Members = members.ToArray(), ImportSource = metadata is null ? old?.ImportSource : metadata with
+            Members = members.ToArray(),
+            ReservedRows = old?.ReservedRows ?? (rows.Count == (rows.FirstOrDefault()?.Source.SourceGroup?.MemberCount ?? group.Candidates.Count)
+                ? rows.Select(candidate => candidate.Source.SourceGroup?.ReservedRows).FirstOrDefault(value => value is not null) : null),
+            ImportSource = metadata is null ? old?.ImportSource : metadata with
                 { OriginGroupId = groupId, GroupBucketKey = group.Key, SourceRoot = null, RelativePath = null },
         }, accepted.ToArray());
 
@@ -353,7 +382,10 @@ public static class ImportSourcePlanner
         if (candidate.ErrorCode is not null) return candidate.ErrorCode;
         if (!Enum.IsDefined(candidate.SourceKind) || !Enum.IsDefined(candidate.Policy) ||
             !Enum.IsDefined(candidate.TargetKind) || !Enum.IsDefined(candidate.TargetAvailability) ||
-            candidate.SourceGroup is { LaneIndex: < 0 or > 63 }) return "INVALID_SOURCE_FACTS";
+            candidate.SourceGroup is { LaneIndex: < 0 or > 63 } or { ReservedRows: < 1 or > 256 } or { MemberCount: < 1 } ||
+            candidate.SourceGroup is { } geometry && geometry.LeadingEmptyGroups.Concat(geometry.TrailingEmptyGroups)
+                .Any(group => group is null || group.Members is not { Count: 0 } || group.ReservedRows is not (> 0 and <= 256)))
+            return "INVALID_SOURCE_FACTS";
         if (candidate.Member is not (TileMember or PuzzleMember or ClockMember)) return "INVALID_SOURCE_MEMBER";
         if (candidate.RequiresIdentity && candidate.Identity is null) return "InvalidTarget";
         var bounds = candidate.Member.LocalBounds;

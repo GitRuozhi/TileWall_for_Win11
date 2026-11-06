@@ -58,7 +58,7 @@
     <x:String x:Key="Settings.StayVisibleHelp">TileWall将和常规窗口一样保持显示，不再自动消失</x:String>
     <x:String x:Key="Settings.MenuStartHelp">在墙面侧边显示可展开分组的启动列表。</x:String>
     <x:String x:Key="Settings.FullScreenHelp">建议您保持此项默认。拖拽墙边缘放大至窗口上限时可进入全屏，向内拖动可退出。</x:String>
-    <x:String x:Key="Settings.ExpandColumnsHelp">建议您保持此项默认。可用空间过窄时会自动开启；开启后支持横向滚动，拖窄墙面至内容可完整容纳且不再留有整栏空位时会自动关闭。</x:String>
+    <x:String x:Key="Settings.ExpandColumnsHelp">建议您保持此项默认。可用空间过窄或导入时横向容量不足会自动开启；开启后支持横向滚动，拖窄墙面至内容可完整容纳且不再留有整栏空位时会自动关闭。</x:String>
     <x:String x:Key="Settings.ResetHelp">恢复软件所有设置到初始默认值</x:String>
     <x:String x:Key="Settings.StartupEnabled">系统登录启动：已启用</x:String>
     <x:String x:Key="Settings.StartupDisabled">系统登录启动：未启用</x:String>
@@ -602,4 +602,10 @@
     <x:String x:Key="Import.SystemGroup.ToolsAdministrationMonitoringDiagnostics">工具：管理、监控与诊断</x:String>
     <x:String x:Key="Import.SystemGroup.ToolsSecurityPolicyCredentials">工具：安全、策略与凭据</x:String>
     <x:String x:Key="Import.SystemGroup.ToolsMaintenanceComponentsUtilities">工具：维护、组件与专用工具</x:String>
+    <x:String x:Key="Settings.LayoutLocked">布局锁</x:String>
+    <x:String x:Key="Settings.LayoutLockedHelp">固定墙的大小，单个磁贴只能移到空位，不挤动其他内容。</x:String>
+    <x:String x:Key="Wall.LayoutLocked">布局已锁定。请在设置中解锁后调整墙面或移动分组。</x:String>
+    <x:String x:Key="Wall.LayoutMovedGroupEnd">原位置空间不足，已移至组尾。</x:String>
+    <x:String x:Key="Wall.LayoutMovedWallEnd">原组空间不足，已移至墙尾新组。</x:String>
+    <x:String x:Key="Wall.UpgradingUserData">正在升级用户数据版本…</x:String>
 </ResourceDictionary>

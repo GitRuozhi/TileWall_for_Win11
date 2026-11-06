@@ -17,9 +17,18 @@ public sealed partial class MainWindow
     private bool _shutdownStarted;
     private bool ShutdownStarted => _shutdownStarted;
     private bool _persistencePending, _persistenceAdmissionClosed, _pendingCarouselCommit;
+    private bool _backgroundPersistencePending;
+    private int _userMutationReservations;
+    private Task _pendingUserMutations = Task.CompletedTask;
     private bool _environmentAfterPersistence;
     private readonly ExitDraftSavePermission _exitDraftSave = new();
-    private bool PersistenceInteractionBlocked => _persistencePending || _persistenceAdmissionClosed || _openingWall;
+    private bool PersistenceInteractionBlocked => _persistenceAdmissionClosed || _openingWall ||
+        _persistencePending && !_backgroundPersistencePending;
+    private bool PersistenceWriteBlocked => _persistencePending || _persistenceAdmissionClosed || _openingWall;
+    private bool LayoutMutationBlocked => PersistenceWriteBlocked || _userMutationReservations != 0;
+    private bool CanAcceptBackgroundWrite => !PersistenceWriteBlocked && _userMutationReservations == 0 &&
+        !_modal && !_resizing && _gesture.Phase == GesturePhase.Idle && !Surface.HasActiveTitleEdit &&
+        !_viewBlocked && _hasDocument && !_windowClosing && !ShutdownStarted && AppWindow.IsVisible;
     internal bool PersistenceBusy => PersistenceInteractionBlocked;
     internal void TraceExit(string stage) => TraceInput("Exit " + stage);
     internal bool PersistenceMutationBlocked =>
@@ -68,18 +77,21 @@ public sealed partial class MainWindow
         IReadOnlyList<EntryChange>? changes = null, bool carousel = false,
         Action<string?>? settle = null, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
         IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
-        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null, bool background = false)
     {
         Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
-        if (PersistenceInteractionBlocked) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
+        if (PersistenceWriteBlocked || background && !CanAcceptBackgroundWrite) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
         if (_viewBlocked) return Reject(ProductStrings.Get("Wall.ViewBlocked"));
         var fit = WallViewportPolicy.Validate(proposal, RecoverableViewportBudget(proposal.Document.Settings), _metrics);
         if (fit.Proposal is null) return Reject(ViewportFailure(fit));
+        if (WallLayoutEngine.ValidateLockedChange(Document, fit.Proposal.Document, _metrics) is not null)
+            return Reject(ProductStrings.Get("Wall.LayoutLocked"));
         _persistencePending = true;
+        _backgroundPersistencePending = background;
         _pendingCarouselCommit = carousel;
         _puzzles.SetPersistenceBusy(true);
         UpdateWallHitTesting();
-        Surface.IsHitTestVisible = false;
+        Surface.IsHitTestVisible = !_viewBlocked && !PersistenceInteractionBlocked;
         UpdateResizeZones();
         var operation = CommitProposalAsyncCore(proposal, changes, settle, preparedMedia, expectedEntrySha256, managedGalleries);
         _pendingPersistence = operation.IsCompleted ? null : operation;
@@ -123,13 +135,14 @@ public sealed partial class MainWindow
             finally
             {
                 _persistencePending = false;
+                _backgroundPersistencePending = false;
                 _pendingCarouselCommit = false;
                 _pendingPersistence = null;
                 if (!_windowClosing)
                 {
                     Surface.IsHitTestVisible = !_viewBlocked && !_persistenceAdmissionClosed;
                     UpdateWallHitTesting();
-                    _puzzles.SetPersistenceBusy(_persistenceAdmissionClosed);
+                    _puzzles.SetPersistenceBusy(_persistenceAdmissionClosed || _userMutationReservations != 0);
                     UpdateResizeZones();
                     if (_environmentAfterPersistence)
                     { _environmentAfterPersistence = false; QueueEnvironmentRefresh(); QueueEnvironmentAdaptation(); }
@@ -172,11 +185,43 @@ public sealed partial class MainWindow
     {
         _persistenceAdmissionClosed = false;
         if (_windowClosing) return;
-        _puzzles.SetPersistenceBusy(_persistencePending);
+        _puzzles.SetPersistenceBusy(_persistencePending || _userMutationReservations != 0);
         UpdateWallHitTesting();
-        Surface.IsHitTestVisible = !_persistencePending && !_viewBlocked;
+        Surface.IsHitTestVisible = !PersistenceInteractionBlocked && !_viewBlocked;
         UpdateResizeZones();
         ImportReadinessChanged?.Invoke();
+    }
+
+    private Task QueueUserMutationAsync(Func<Task> action)
+    {
+        var previous = _pendingUserMutations;
+        _userMutationReservations++;
+        _puzzles.SetPersistenceBusy(true);
+        async Task RunAsync()
+        {
+            try
+            {
+                await previous;
+                await DrainPersistenceAsync();
+                if (_windowClosing || ShutdownStarted || _persistenceAdmissionClosed || _viewBlocked) return;
+                await action();
+            }
+            catch (Exception ex)
+            {
+                if (!_windowClosing && !ShutdownStarted) Status(string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message));
+            }
+            finally
+            {
+                _userMutationReservations--;
+                _puzzles.SetPersistenceBusy(PersistenceWriteBlocked || _userMutationReservations != 0);
+            }
+        }
+        return _pendingUserMutations = RunAsync();
+    }
+
+    internal async Task WaitForUserMutationsAsync()
+    {
+        while (_userMutationReservations != 0) await _pendingUserMutations;
     }
 
     internal async Task DrainPersistenceAsync()
@@ -201,6 +246,7 @@ public sealed partial class MainWindow
         StopFrameSubscriptionIfIdle();
         await ShutdownInteractionSchedulingAsync();
         TraceInput("Shutdown drain-persistence");
+        await WaitForUserMutationsAsync();
         await DrainPersistenceAsync();
         TraceInput("Shutdown drain-presentations");
         await _puzzles.ShutdownAsync();

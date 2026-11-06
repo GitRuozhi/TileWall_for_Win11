@@ -252,7 +252,7 @@ public sealed class WallPackageTests : IDisposable
             var manifest = WallPackageJson.Deserialize<WallPackageManifest>(payloads["manifest.json"]);
             var files = manifest.Files.Select(file => file.Path == "wall.json"
                 ? file with { Length = payloads["wall.json"].Length, Sha256 = WallPackageJson.Hash(payloads["wall.json"]) } : file).ToArray();
-            manifest = manifest with { FormatVersion = formatVersion, WallSchemaVersion = formatVersion < 4 ? 4 : WallDocument.CurrentSchemaVersion, Files = files,
+            manifest = manifest with { FormatVersion = formatVersion, WallSchemaVersion = formatVersion < 4 ? 4 : formatVersion < 6 ? 5 : WallDocument.CurrentSchemaVersion, Files = files,
                 ContentFingerprint = WallPackageJson.Fingerprint(content, files, formatVersion) };
             payloads["manifest.json"] = WallPackageJson.Serialize(manifest);
         });

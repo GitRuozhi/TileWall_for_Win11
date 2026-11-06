@@ -16,6 +16,10 @@ public enum ImportPlanStatus { NoChange, Ready, Rejected }
 public sealed record ImportSourceGroup(string Key, string? Title, int Order)
 {
     public int LaneIndex { get; init; }
+    public int? ReservedRows { get; init; }
+    public int? MemberCount { get; init; }
+    public IReadOnlyList<StartGroup> LeadingEmptyGroups { get; init; } = [];
+    public IReadOnlyList<StartGroup> TrailingEmptyGroups { get; init; } = [];
 }
 
 /// <summary>Read-only source facts. Geometry flags describe actual records, never placeholder values.</summary>

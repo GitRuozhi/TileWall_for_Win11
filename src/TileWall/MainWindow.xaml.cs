@@ -227,22 +227,78 @@ public sealed partial class MainWindow : Window
     private double WorkWidthDip => CurrentViewportBudget.MaxWidthDip;
     private double WorkHeightDip => CurrentViewportBudget.MaxHeightDip;
 
-    private void OpenWall()
+    private WallDocument? _openingDocument;
+    private bool _showUpgradeProgress;
+    private bool _userDataUpgradeInProgress, _upgradeOwnsStatus;
+
+    private Task OpenWallAsync(bool showUpgradeProgress)
     {
-        if (_opened) return;
+        if (_opened) return _pendingInitialOpen ?? Task.CompletedTask;
         _opened = true;
-        if (!SystemParametersInfoW(SpiGetWorkArea, 0, out _workArea, 0))
+        _showUpgradeProgress = showUpgradeProgress;
+        _openingWall = true;
+        var operation = OpenWallCoreAsync();
+        _pendingInitialOpen = operation.IsCompleted ? null : operation;
+        return operation;
+    }
+
+    private async Task OpenWallCoreAsync()
+    {
+        try
         {
-            BlockView(ProductStrings.Get("Wall.ReadWorkAreaFailed"));
-            return;
+            if (!SystemParametersInfoW(SpiGetWorkArea, 0, out _workArea, 0))
+            { BlockView(ProductStrings.Get("Wall.ReadWorkAreaFailed")); return; }
+            RefreshNativeFrame();
+            ReadPrimaryScreen();
+            var (columns, rows) = ChooseInitialGrid(WorkWidthDip, WorkHeightDip);
+            var result = await _session.OpenInitialAsync(columns, rows, ShowUpgradeStartingAsync);
+            if (_windowClosing || ShutdownStarted) return;
+            AcceptOpenedWall(result);
         }
-        RefreshNativeFrame();
-        ReadPrimaryScreen();
-        var width = WorkWidthDip;
-        var height = WorkHeightDip;
-        var (columns, rows) = ChooseInitialGrid(width, height);
-        var result = _session.Open(columns, rows);
-        AcceptOpenedWall(result);
+        catch (Exception ex)
+        {
+            if (!_windowClosing && !ShutdownStarted)
+                BlockView(string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message), initialOpen: true);
+        }
+        finally
+        {
+            _openingDocument = null;
+            _openingWall = false;
+            _pendingInitialOpen = null;
+            EndUserDataUpgradeStatus();
+            if (!_windowClosing && !ShutdownStarted)
+            { UpdateWallHitTesting(); UpdateResizeZones(); }
+        }
+    }
+
+    private Task ShowUpgradeStartingAsync(WallDocument trusted)
+    {
+        if (_windowClosing || ShutdownStarted) return Task.CompletedTask;
+        _openingDocument = trusted;
+        ProductStrings.ApplyLanguage(trusted.Settings.LanguageMode);
+        _userDataUpgradeInProgress = true;
+        _upgradeOwnsStatus = true;
+        RefreshAppearance();
+        DisplayStatus(ProductStrings.Get("Wall.UpgradingUserData"), transient: false);
+        _upgradeOwnsStatus = true;
+        if (_showUpgradeProgress && !AppWindow.IsVisible)
+        {
+            ApplyViewport(trusted, WallLayoutEngine.Measure(trusted, _metrics), animateMode: false);
+            Surface.Visibility = Visibility.Collapsed;
+            CaptureBackdropBeforeShow();
+            AppWindow.Show(false);
+            UpdateWindowZOrder(foregroundInSession: false);
+        }
+        return Task.CompletedTask;
+    }
+
+    private void EndUserDataUpgradeStatus()
+    {
+        _userDataUpgradeInProgress = false;
+        if (!_upgradeOwnsStatus) return;
+        _upgradeOwnsStatus = false;
+        ClearStatus();
+        if (_environmentOverflow && !_viewBlocked) Status(ProductStrings.Get("Wall.EnvironmentScroll"));
     }
 
     private void AcceptOpenedWall(WallOpenResult result)
@@ -255,28 +311,6 @@ public sealed partial class MainWindow : Window
             return;
         }
         _hasDocument = true;
-        if (!result.Document.RecycleBinEnabled)
-        {
-            try
-            {
-                // Preserve the verified legacy snapshot until the normal joint transaction enables retention.
-                var enabled = WallLayoutEngine.NormalizeExpanded(result.Document with
-                {
-                    Generation = result.Document.Generation + 1, RecycleBinEnabled = true,
-                }, _metrics);
-                if (enabled.Proposal is null || !_session.Commit(enabled.Proposal).Committed)
-                {
-                    BlockView(ProductStrings.Get("Wall.SettingsBlocked"));
-                    return;
-                }
-                result = result with { Document = _session.Current };
-            }
-            catch (Exception ex)
-            {
-                BlockView(string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message));
-                return;
-            }
-        }
         BeginFreshWelcomeInitialization(result);
         if (!_session.RefreshViewFromCurrent())
             BlockView(ProductStrings.Get("Wall.ViewFailed"), retry: true);
@@ -346,6 +380,7 @@ public sealed partial class MainWindow : Window
             message = WithDiagnostic(ProductStrings.Get("Wall.RecoveryBlocked"), message);
             retry = false;
         }
+        _userDataUpgradeInProgress = _upgradeOwnsStatus = false;
         _viewBlocked = true;
         UpdateNativeSizingRegion();
         UpdatePuzzleGate();
@@ -365,6 +400,7 @@ public sealed partial class MainWindow : Window
     {
         if (!_initialOpenBlocked || _hasDocument || PersistenceInteractionBlocked || ShutdownStarted || _windowClosing ||
             _session.ResultUnknown || _session.RequiresReopen) return;
+        _showUpgradeProgress = true;
         _openingWall = true;
         RetryOpenButton.IsEnabled = OpenDataFolderButton.IsEnabled = false;
         var operation = RetryOpenWallCoreAsync();
@@ -377,7 +413,7 @@ public sealed partial class MainWindow : Window
         try
         {
             var (columns, rows) = ChooseInitialGrid(WorkWidthDip, WorkHeightDip);
-            var result = await _session.RetryInitialOpenAsync(columns, rows);
+            var result = await _session.RetryInitialOpenAsync(columns, rows, ShowUpgradeStartingAsync);
             if (_windowClosing || ShutdownStarted) return;
             AcceptOpenedWall(result);
             // Fresh initialization uses the same welcome path as the first Open.
@@ -397,6 +433,8 @@ public sealed partial class MainWindow : Window
         {
             _openingWall = false;
             _pendingInitialOpen = null;
+            _openingDocument = null;
+            EndUserDataUpgradeStatus();
             if (!_windowClosing && !ShutdownStarted)
             {
                 RetryOpenButton.IsEnabled = OpenDataFolderButton.IsEnabled = true;
@@ -461,6 +499,7 @@ public sealed partial class MainWindow : Window
     private void DisplayStatus(string message, bool transient)
     {
         if (_windowClosing || ShutdownStarted) return;
+        _upgradeOwnsStatus = false;
         _statusTimer.Stop();
         _statusExpiresAt = transient ? Environment.TickCount64 + 4000 : 0;
         StatusText.Text = message;
@@ -488,6 +527,8 @@ public sealed partial class MainWindow : Window
 
     private void ClearStatus()
     {
+        if (_userDataUpgradeInProgress && _upgradeOwnsStatus) return;
+        _upgradeOwnsStatus = false;
         _statusTimer.Stop();
         _statusExpiresAt = 0;
         StatusText.Text = string.Empty;
@@ -514,6 +555,8 @@ public sealed partial class MainWindow : Window
         if (_viewBlocked) return ProductStrings.Get("Wall.ViewBlocked");
         var fit = WallViewportPolicy.Validate(proposal, RecoverableViewportBudget(proposal.Document.Settings), _metrics);
         if (fit.Proposal is null) return ViewportFailure(fit);
+        if (WallLayoutEngine.ValidateLockedChange(Document, fit.Proposal.Document, _metrics) is not null)
+            return ProductStrings.Get("Wall.LayoutLocked");
         try
         {
             var commitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -557,11 +600,15 @@ public sealed partial class MainWindow : Window
         if (result.Proposal is null)
         {
             AppLog.Warn("WallApply", $"action={action.GetType().Name} rejection={result.Rejection} detail={result.Detail}");
+            if (result.Detail == "LAYOUT_LOCKED") return ProductStrings.Get("Wall.LayoutLocked");
             if (result.Detail is "CONTENT_TOO_LARGE" || result.Detail?.StartsWith("GROUP_TOO_TALL:", StringComparison.Ordinal) == true) return ViewportFailure(result);
             return string.Format(ProductStrings.Get("Wall.LocationUnavailable"),
                 ProductStrings.WallRejectionReason(result.Rejection), string.Empty).TrimEnd();
         }
-        return CommitProposal(result.Proposal, changes, preparedMedia);
+        var error = CommitProposal(result.Proposal, changes, preparedMedia);
+        if (error is null && result.Detail is "LAYOUT_MOVED_GROUP_END" or "LAYOUT_MOVED_WALL_END")
+            TransientStatus(ProductStrings.Get(result.Detail == "LAYOUT_MOVED_GROUP_END" ? "Wall.LayoutMovedGroupEnd" : "Wall.LayoutMovedWallEnd"));
+        return error;
     }
 
     private async Task<string?> PersistPuzzleCarousel(string id, ImageCarouselState carousel, Func<bool> stillCurrent)
@@ -583,7 +630,7 @@ public sealed partial class MainWindow : Window
             return string.Format(ProductStrings.Get("Wall.LocationUnavailable"),
                 ProductStrings.WallRejectionReason(result.Rejection), string.Empty).TrimEnd();
         }
-        return await CommitProposalAsync(result.Proposal, carousel: true);
+        return await CommitProposalAsync(result.Proposal, carousel: true, background: true);
     }
 
     private void UpdatePuzzleGate()
@@ -620,8 +667,9 @@ public sealed partial class MainWindow : Window
     {
         if (PersistenceInteractionBlocked || _modal || _viewBlocked || !_hasDocument) return;
         var tile = new TileMember { Id = $"tile-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 2, 2) };
-        var error = AddDefaultMember(tile, groupId, lane);
-        if (error is not null) { Status(error); return; }
+        string? error = null;
+        await QueueUserMutationAsync(() => { error = AddDefaultMember(tile, groupId, lane); return Task.CompletedTask; });
+        if (FindMember(tile.Id) is null) { if (error is not null) Status(error); return; }
         await EditMemberAsync(tile.Id, isNewPlaceholder: true);
     }
 
@@ -631,8 +679,9 @@ public sealed partial class MainWindow : Window
         var puzzle = new PuzzleMember { Id = $"puzzle-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 4, 4),
             Partitions = [new GridRect(0, 0, 2, 2), new GridRect(2, 0, 2, 2),
                 new GridRect(0, 2, 2, 2), new GridRect(2, 2, 2, 2)] };
-        var error = AddDefaultMember(puzzle, groupId, lane);
-        if (error is not null) { Status(error); return; }
+        string? error = null;
+        await QueueUserMutationAsync(() => { error = AddDefaultMember(puzzle, groupId, lane); return Task.CompletedTask; });
+        if (FindMember(puzzle.Id) is null) { if (error is not null) Status(error); return; }
         await EditMemberAsync(puzzle.Id, isNewPlaceholder: true);
     }
 
@@ -653,6 +702,8 @@ public sealed partial class MainWindow : Window
         try
         {
             if (!await BeginModalAsync()) return;
+            if (FindMember(id) is not { } latest) return;
+            member = latest;
             if (member is ClockMember clock)
             {
                 var clockDialog = new ClockEditorDialog(DialogOwner, clock, MaxMemberRows(), _clock,
@@ -759,6 +810,16 @@ public sealed partial class MainWindow : Window
     {
         if (PersistenceInteractionBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (_modal || _viewBlocked) return ProductStrings.Get("Wall.ViewBlocked");
+        if (_persistencePending || _userMutationReservations != 0)
+        {
+            _ = QueueUserMutationAsync(() =>
+            {
+                var failure = Apply(new RenameGroupAction(Document.Generation, id, title));
+                if (failure is not null) Status(failure);
+                return Task.CompletedTask;
+            });
+            return null;
+        }
         var error = Apply(new RenameGroupAction(Document.Generation, id, title));
         if (error is not null) Status(error);
         return error;
@@ -843,7 +904,7 @@ public sealed partial class MainWindow : Window
         _tracedMovePointerId = 0;
         _tracedMovePhase = GesturePhase.Idle;
         TraceInput($"Press source={e.OriginalSource?.GetType().Name} pointer={e.Pointer.PointerId} phase={_gesture.Phase} left={e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed}");
-        if (PersistenceInteractionBlocked || _modal || _viewBlocked || !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return;
+        if (LayoutMutationBlocked || _modal || _viewBlocked || !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return;
         try
         {
             if (_viewportTransition is { AutomaticHeight: true }) StopViewportTransition();
@@ -856,7 +917,7 @@ public sealed partial class MainWindow : Window
             var marginStart = new Point(WallScroll.Margin.Left, WallScroll.Margin.Top);
             var hit = Surface.Hit(point);
             TraceInput($"PressHit member={hit.MemberId} group={hit.GroupId} handle={hit.GroupHandle} x={point.X:F1} y={point.Y:F1}");
-            if (hit.MemberId is null && !hit.GroupHandle) return;
+            if (hit.MemberId is null && !hit.GroupHandle || Settings.LayoutLocked && hit.GroupHandle) return;
             // Capture a complete settled frame in the ghost, including a flip interrupted by this press.
             _puzzles.SetGate(MemberCarouselGate.Gesture);
             StopViewportTransition();
@@ -951,7 +1012,8 @@ public sealed partial class MainWindow : Window
             if (proposal?.Proposal is null)
             {
                 AppLog.Warn("WallDrop", $"rejection={proposal?.Rejection} detail={proposal?.Detail}");
-                Status(proposal?.Detail is "CONTENT_TOO_LARGE" || proposal?.Detail?.StartsWith("GROUP_TOO_TALL:", StringComparison.Ordinal) == true
+                Status(proposal?.Detail == "LAYOUT_LOCKED" ? ProductStrings.Get("Wall.LayoutLocked") :
+                    proposal?.Detail is "CONTENT_TOO_LARGE" || proposal?.Detail?.StartsWith("GROUP_TOO_TALL:", StringComparison.Ordinal) == true
                     ? ViewportFailure(proposal!) : string.Format(ProductStrings.Get("Wall.DropFailed"),
                         ProductStrings.WallRejectionReason(proposal?.Rejection ?? WallRejection.None)));
                 return;

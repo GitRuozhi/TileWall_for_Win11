@@ -25,12 +25,72 @@ public static class WallBatchPlanner
         var errors = WallLayoutEngine.ValidateGeometry(current, metrics);
         if (errors.Count > 0) return Reject(WallRejection.InvalidDocument, string.Join("; ", errors));
 
-        var ordinary = TryPlanCore(current, members, targetGroupId, preferredLaneIndex, newGroupIdPrefix,
-            workWidthDip, workHeightDip, metrics, allowCompression: false, appendOnly, launchIdentityKeys);
-        return ordinary.Rejection == WallRejection.NoSpace
-            ? TryPlanCore(current, members, targetGroupId, preferredLaneIndex, newGroupIdPrefix,
-                workWidthDip, workHeightDip, metrics, allowCompression: true, appendOnly, launchIdentityKeys)
-            : ordinary;
+        var result = Plan(current, workWidthDip);
+        if (result.Proposal is not null || current.Settings.ExpandColumns ||
+            result.Rejection is not (WallRejection.NoSpace or WallRejection.WorkAreaTooSmall) ||
+            members.Any(member => metrics.TopMargin + metrics.Margin + metrics.TitleHeight + metrics.TitleToMembersGap +
+                metrics.HeightOf(member.LocalBounds.Height) > workHeightDip + 1e-8)) return result;
+        return Plan(current with { Settings = current.Settings with { ExpandColumns = true } }, metrics.WallWidth(MaxLanes));
+
+        WallLayoutResult Plan(WallDocument source, double width)
+        {
+            if (source.Settings.LayoutLocked)
+                return TryPlanLocked(source, members, targetGroupId, preferredLaneIndex, newGroupIdPrefix,
+                    width, workHeightDip, metrics, appendOnly, launchIdentityKeys);
+            var ordinary = TryPlanCore(source, members, targetGroupId, preferredLaneIndex, newGroupIdPrefix,
+                width, workHeightDip, metrics, allowCompression: false, appendOnly, launchIdentityKeys);
+            return ordinary.Rejection == WallRejection.NoSpace
+                ? TryPlanCore(source, members, targetGroupId, preferredLaneIndex, newGroupIdPrefix,
+                    width, workHeightDip, metrics, allowCompression: true, appendOnly, launchIdentityKeys)
+                : ordinary;
+        }
+    }
+
+    private static WallLayoutResult TryPlanLocked(WallDocument current, IReadOnlyList<TileMember> members,
+        string? targetGroupId, int? preferredLaneIndex, string prefix, double width, double height, WallMetrics metrics,
+        bool appendOnly, IReadOnlyDictionary<string, string>? identities)
+    {
+        if (preferredLaneIndex is < 0 || preferredLaneIndex > current.Columns) return Reject(WallRejection.InvalidAction);
+        if (targetGroupId is not null && !current.Lanes.SelectMany(lane => lane.Groups).Any(group => group.Id == targetGroupId))
+            return Reject(WallRejection.ObjectNotFound);
+        var scratch = current;
+        var reserved = current.EnumerateAllMembers().Select(member => member.Id)
+            .Concat(current.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id))
+            .Concat(members.Select(member => member.Id)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var number = 1;
+        var active = targetGroupId;
+        var added = 0;
+        foreach (var incoming in members)
+        {
+            if (scratch.EnumerateAllMembers().Any(member => member.Id == incoming.Id)) return Reject(WallRejection.DuplicateId);
+            if (active is not null && identities is not null && identities.TryGetValue(incoming.Id, out var key) &&
+                scratch.Lanes.SelectMany(lane => lane.Groups).Single(group => group.Id == active).Members
+                    .Any(member => identities.TryGetValue(member.Id, out var seen) && seen == key)) continue;
+            WallLayoutResult? trial = null;
+            if (active is not null)
+                trial = WallLayoutEngine.TryApply(scratch, new AddMemberAction(scratch.Generation, incoming, active), width, height, metrics);
+            if (trial?.Proposal is null)
+            {
+                var id = NextGroupId(prefix, reserved, ref number);
+                var first = preferredLaneIndex ?? (appendOnly ? scratch.Lanes.Select((lane, index) => (lane, index))
+                    .Where(pair => pair.lane.Groups.Count != 0).Select(pair => pair.index).DefaultIfEmpty(0).Max() : 0);
+                var order = Enumerable.Range(first, Math.Max(0, (current.Settings.ExpandColumns ? MaxLanes - 1 : current.Columns) - first));
+                if (!appendOnly) order = order.Concat(Enumerable.Range(0, first));
+                foreach (var lane in order)
+                {
+                    trial = WallLayoutEngine.TryApply(scratch, new AddMemberAction(scratch.Generation,
+                        incoming with { LocalBounds = new(0, 0, incoming.LocalBounds.Width, incoming.LocalBounds.Height) },
+                        null, lane, lane < scratch.Lanes.Count ? scratch.Lanes[lane].Groups.Count : 0, id), width, height, metrics);
+                    if (trial.Proposal is null) continue;
+                    reserved.Add(id); active = id; break;
+                }
+            }
+            if (trial?.Proposal is not { } proposal) return Reject(WallRejection.NoSpace, "CONTENT_TOO_LARGE");
+            scratch = proposal.Document; added++;
+        }
+        if (added == 0) return new(new(current, WallLayoutEngine.Measure(current, metrics)), WallRejection.None);
+        var next = scratch with { Generation = current.Generation + 1 };
+        return new(new(next, WallLayoutEngine.Measure(next, metrics)), WallRejection.None);
     }
 
     private static WallLayoutResult TryPlanCore(WallDocument current, IReadOnlyList<TileMember> members,
@@ -77,6 +137,7 @@ public static class WallBatchPlanner
             {
                 Id = group.Id,
                 Title = group.Title,
+                ReservedRows = group.ReservedRows,
                 Members = group.Members.Select(member => member.LocalBounds).ToList(),
             }).ToList(),
         }).ToList();
@@ -199,7 +260,8 @@ public static class WallBatchPlanner
             : (int)Math.Ceiling((contentHeight + metrics.Gap) / metrics.Pitch - 1e-10);
         var rows = Math.Max(currentRows, requiredRows);
         var expanded = settings.ExpandColumns;
-        var occupiedColumns = lanes.Count(lane => lane.Groups.Count > 0);
+        var occupiedColumns = lanes.SelectMany(lane => lane.Groups).Any(group => group.ReservedRows is not null)
+            ? lanes.FindLastIndex(lane => lane.Groups.Count > 0) + 1 : lanes.Count(lane => lane.Groups.Count > 0);
         if (expanded && occupiedColumns >= MaxLanes) return WallRejection.NoSpace;
         var projectedColumns = expanded ? occupiedColumns + 1 : columns;
         if (requiredRows <= MaxRows && requiredHeight <= metrics.WallHeight(rows) &&
@@ -223,6 +285,7 @@ public static class WallBatchPlanner
                 {
                     Id = group.Id,
                     Title = group.Title,
+                    ReservedRows = group.ReservedRows,
                     Members = group.Members.Select(bounds => (WallMember)new TileMember
                     { Id = $"capacity-{memberNumber++}", LocalBounds = bounds }).ToArray(),
                 }).ToArray(),
@@ -254,6 +317,7 @@ public static class WallBatchPlanner
         {
             Id = group.Id,
             Title = group.Title,
+            ReservedRows = group.ReservedRows,
             Members = [.. group.Members],
         }).ToList(),
     }).ToList();
@@ -280,7 +344,8 @@ public static class WallBatchPlanner
         public string Id { get; set; } = "";
         public string? Title { get; set; }
         public List<GridRect> Members { get; set; } = [];
-        public int Bottom => Members.Count == 0 ? 0 : Members.Max(member => member.Bottom);
+        public int? ReservedRows { get; set; }
+        public int Bottom => Math.Max(ReservedRows ?? 0, Members.Select(member => member.Bottom).DefaultIfEmpty(0).Max());
     }
 
     private static string NextGroupId(string prefix, HashSet<string> reserved, ref int number)

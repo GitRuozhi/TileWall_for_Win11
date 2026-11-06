@@ -213,7 +213,7 @@ public sealed partial class MainWindow
         try
         {
             RectInt32? desired = null;
-            if (!PersistenceInteractionBlocked && !_windowClosing && !_modal && !_viewBlocked && _hasDocument && !Settings.FullScreen &&
+            if (!LayoutMutationBlocked && !Settings.LayoutLocked && !_windowClosing && !_modal && !_viewBlocked && _hasDocument && !Settings.FullScreen &&
                 Settings.AnchorCorner == AnchorCorner.BottomRight && Win32Api.GetClientRect(_nativeSizingHwnd, out var client))
             {
                 var corner = (int)Math.Ceiling(14 * Scale);
@@ -406,7 +406,7 @@ public sealed partial class MainWindow
     {
         // The supported-API experiment is deliberately only BR/windowed LEFT edge.
         // All corners, other anchors, the other edge and fullscreen keep the XAML path.
-        if (PersistenceInteractionBlocked || _windowClosing || _modal || _viewBlocked || !_hasDocument || Settings.FullScreen ||
+        if (LayoutMutationBlocked || Settings.LayoutLocked || _windowClosing || _modal || _viewBlocked || !_hasDocument || Settings.FullScreen ||
             Settings.AnchorCorner != AnchorCorner.BottomRight ||
             !GetWindowRect(_nativeSizingHwnd, out var rectangle)) return null;
         var scale = Scale;

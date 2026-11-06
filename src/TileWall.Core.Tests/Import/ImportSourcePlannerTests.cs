@@ -28,6 +28,32 @@ public sealed class ImportSourcePlannerTests
     private static StartGroup Destination(ImportSourcePlan plan, string? title = null) => plan.Proposal!.Document.Lanes
         .SelectMany(lane => lane.Groups).Single(group => title is null || group.Title == title);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReservedSourceFootprintRequiresAllOriginalMembersEvenWhenOneCannotBeSelected(bool filtered)
+    {
+        var wall = WallDocument.Empty(1, 12);
+        var source = new ImportSourceGroup("source", "Reserved source", 0)
+        {
+            ReservedRows = 5, MemberCount = 2,
+            LeadingEmptyGroups = [new StartGroup { Id = "blank", Members = [], ReservedRows = 2 }],
+        };
+        var first = Item("first", "First", source, position: true, size: true) with
+        { SourceKind = ImportPageSourceKind.WallPackage, Policy = ImportSourcePolicy.Attributed };
+        var second = Item("second", "Second", source, bounds: new(2, 0, 1, 1), position: true, size: true) with
+        {
+            SourceKind = ImportPageSourceKind.WallPackage, Policy = ImportSourcePolicy.Attributed,
+            ErrorCode = filtered ? "Unavailable" : null,
+        };
+        var projection = ImportSourcePlanner.Project(wall, [first, second]);
+        var plan = Plan(wall, projection, filtered ? ["first"] : ["first", "second"]);
+        Assert.Equal(ImportPlanStatus.Ready, plan.Status);
+        var groups = plan.Proposal!.Document.Lanes.SelectMany(lane => lane.Groups).ToArray();
+        Assert.Equal(filtered ? 1 : 2, groups.Length);
+        Assert.Equal(filtered ? (int?)null : 5, groups.Single(group => group.Members.Count != 0).ReservedRows);
+    }
+
     [Fact]
     public void RecycledSourceKeepsMembersSeparateAndDoesNotMatchAnActiveGroup()
     {

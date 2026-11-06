@@ -57,7 +57,7 @@
   <x:String x:Key="Settings.StayVisibleHelp">TileWall will stay visible like a regular window instead of hiding automatically.</x:String>
   <x:String x:Key="Settings.MenuStartHelp">Show a launch list with expandable groups at the side of the wall.</x:String>
   <x:String x:Key="Settings.FullScreenHelp">We recommend keeping the default. Drag the wall edges out to the window size limit to enter full screen, or drag inward to exit.</x:String>
-  <x:String x:Key="Settings.ExpandColumnsHelp">We recommend keeping the default. Expansion turns on when the available space is too narrow. It allows horizontal scrolling, and turns off when narrowing the wall lets all content fit without a whole empty column remaining.</x:String>
+  <x:String x:Key="Settings.ExpandColumnsHelp">We recommend keeping the default. Expansion turns on when the available space is too narrow or an import needs more horizontal capacity. It allows horizontal scrolling, and turns off when narrowing the wall lets all content fit without a whole empty column remaining.</x:String>
   <x:String x:Key="Settings.ResetHelp">Restore all software settings to their initial defaults.</x:String>
   <x:String x:Key="Settings.StartupEnabled">Login startup: enabled</x:String>
   <x:String x:Key="Settings.StartupDisabled">Login startup: disabled</x:String>
@@ -601,4 +601,10 @@
     <x:String x:Key="Import.SystemGroup.ToolsAdministrationMonitoringDiagnostics">Tools: Administration, monitoring, and diagnostics</x:String>
     <x:String x:Key="Import.SystemGroup.ToolsSecurityPolicyCredentials">Tools: Security, policy, and credentials</x:String>
     <x:String x:Key="Import.SystemGroup.ToolsMaintenanceComponentsUtilities">Tools: Maintenance, components, and utilities</x:String>
+    <x:String x:Key="Settings.LayoutLocked">Lock layout</x:String>
+    <x:String x:Key="Settings.LayoutLockedHelp">Keep the wall size and other items fixed. Individual tiles can move into empty space.</x:String>
+    <x:String x:Key="Wall.LayoutLocked">The layout is locked. Unlock it in Settings to change the wall or move a group.</x:String>
+    <x:String x:Key="Wall.LayoutMovedGroupEnd">Not enough space at the original position. Moved to the end of this group.</x:String>
+    <x:String x:Key="Wall.LayoutMovedWallEnd">Not enough space in this group. Moved to a new group at the end of the wall.</x:String>
+    <x:String x:Key="Wall.UpgradingUserData">Upgrading user data…</x:String>
 </ResourceDictionary>

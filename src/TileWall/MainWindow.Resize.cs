@@ -1,4 +1,4 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -68,7 +68,7 @@ public sealed partial class MainWindow
         ResizeHorizontalEdge.SetCursor(InputSystemCursorShape.SizeNorthSouth);
         ResizeVerticalEdge.SetCursor(InputSystemCursorShape.SizeWestEast);
         ResizeGrip.SetCursor(right == bottom ? InputSystemCursorShape.SizeNorthwestSoutheast : InputSystemCursorShape.SizeNortheastSouthwest);
-        var visibility = PersistenceInteractionBlocked || _modal || _viewBlocked ? Visibility.Collapsed : Visibility.Visible;
+        var visibility = LayoutMutationBlocked || Settings.LayoutLocked || _modal || _viewBlocked ? Visibility.Collapsed : Visibility.Visible;
         var fullScreen = Settings.FullScreen;
         ResizeGrip.Visibility = fullScreen ? Visibility.Collapsed : visibility;
         ResizeVerticalEdge.Visibility = ResizeHorizontalEdge.Visibility = visibility;
@@ -108,7 +108,7 @@ public sealed partial class MainWindow
 
     private void OnResizePointerEntered(object sender, PointerRoutedEventArgs e)
     {
-        if (!PersistenceInteractionBlocked && !_resizing && !_modal && !_viewBlocked) ShowResizeHighlight(sender as ResizeThumb);
+        if (!LayoutMutationBlocked && !Settings.LayoutLocked && !_resizing && !_modal && !_viewBlocked) ShowResizeHighlight(sender as ResizeThumb);
     }
 
     private void OnResizePointerExited(object sender, PointerRoutedEventArgs e) { if (!_resizing) ShowResizeHighlight(null); }
@@ -116,7 +116,7 @@ public sealed partial class MainWindow
 
     private void OnResizeStarted(object sender, ResizeDragStartedEventArgs e)
     {
-        if (PersistenceInteractionBlocked || _nativeSizingActive || _modal || _viewBlocked || !_hasDocument || sender is not ResizeThumb thumb || thumb.Visibility != Visibility.Visible) return;
+        if (LayoutMutationBlocked || Settings.LayoutLocked || _nativeSizingActive || _modal || _viewBlocked || !_hasDocument || sender is not ResizeThumb thumb || thumb.Visibility != Visibility.Visible) return;
         if (!TryGetResizeScreenPoint(e.RootPoint, e.RasterizationScale, out var pressedAt))
         { thumb.CancelDrag(); return; }
         BeginResizeSession(thumb, pressedAt);

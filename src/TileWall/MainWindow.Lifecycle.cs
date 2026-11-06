@@ -34,7 +34,7 @@ public sealed partial class MainWindow
     internal FrameworkElement WallContent => WallRoot;
     internal bool ModalActive => _modal;
     internal IWallDialogSession? ActiveDialog { get; private set; }
-    internal WallSettings Settings => _hasDocument ? Document.Settings : new();
+    internal WallSettings Settings => _hasDocument ? Document.Settings : _openingDocument?.Settings ?? new();
     internal long SettingsGeneration => _hasDocument ? Document.Generation : -1;
     internal bool SettingsPersistenceBlocked => !_hasDocument || _session.ResultUnknown ||
         _session.RequiresReopen || _session.RecoveryBlocked;
@@ -44,9 +44,9 @@ public sealed partial class MainWindow
     internal event Action? DialogClosed;
     internal event Action? DialogOpened;
 
-    internal async Task InitializeSessionAsync()
+    internal async Task InitializeSessionAsync(bool showUpgradeProgress = false)
     {
-        OpenWall();
+        await OpenWallAsync(showUpgradeProgress);
         if (!_welcomeInitializationPending) return;
         var error = await InitializeWelcomeWallAsync(fresh: true);
         if (error is not null && !_viewBlocked) Status(error);
@@ -176,7 +176,7 @@ public sealed partial class MainWindow
         // The active wall must cover the taskbar even without persistent topmost.
         // On an outside focus change, restore the user's background preference.
         var topmost = Settings.AlwaysOnTop || AppWindow.IsVisible && foregroundInSession;
-        var hwnd = BackdropTrace.Enabled ? WinRT.Interop.WindowNative.GetWindowHandle(this) : IntPtr.Zero;
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         if (BackdropTrace.Enabled)
             BackdropTrace.Write($"ZOrder before hwnd={hwnd} foreground={GetForegroundWindow()} inSession={foregroundInSession} preference={Settings.AlwaysOnTop} presenter={presenter.IsAlwaysOnTop} actualTopmost={(Shell.Interop.Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64() & 8) != 0} desired={topmost} raise={raise}");
         if (presenter.IsAlwaysOnTop != topmost) presenter.IsAlwaysOnTop = topmost;
@@ -186,6 +186,25 @@ public sealed partial class MainWindow
             if (!Shell.Interop.Win32Api.SetWindowPos(WinRT.Interop.WindowNative.GetWindowHandle(this),
                     new IntPtr(-1), 0, 0, 0, 0, flags))
                 AppLog.Warn("WindowFocus", "Could not raise the foreground wall above the taskbar.");
+        }
+        else if (!topmost && AppWindow.IsVisible && !foregroundInSession)
+        {
+            // Clearing TOPMOST alone can leave the wall first among ordinary
+            // windows. Settle behind the actual outside foreground, without activation.
+            var foreground = GetForegroundWindow();
+            if (foreground != IntPtr.Zero && GetWindowThreadProcessId(foreground, out var processId) != 0 &&
+                processId != (uint)Environment.ProcessId && GetAncestor(foreground, 3) != hwnd)
+            {
+                var target = GetAncestor(foreground, 2); // GA_ROOT; keep an outside popup's own owner chain.
+                if (target != IntPtr.Zero && target != hwnd && IsWindowVisible(target) &&
+                    (Win32Api.GetWindowLongPtrW(target, -20).ToInt64() & 8) == 0 &&
+                    GetForegroundWindow() == foreground)
+                {
+                    const uint flags = 0x0013; // SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                    if (!Win32Api.SetWindowPos(hwnd, target, 0, 0, 0, 0, flags))
+                        AppLog.Warn("WindowFocus", "Could not settle the background wall below the foreground window.");
+                }
+            }
         }
         if (BackdropTrace.Enabled)
             BackdropTrace.Write($"ZOrder after hwnd={hwnd} foreground={GetForegroundWindow()} presenter={presenter.IsAlwaysOnTop} actualTopmost={(Shell.Interop.Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64() & 8) != 0}");
@@ -223,6 +242,10 @@ public sealed partial class MainWindow
     {
         if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (!_hasDocument || _viewBlocked) return ProductStrings.Get("Wall.SettingsBlocked");
+        if (Settings.LayoutLocked && settings.LayoutLocked && settings.AnchorCorner != Settings.AnchorCorner)
+            return ProductStrings.Get("Wall.LayoutLocked");
+        if (settings.LayoutLocked && !Settings.LayoutLocked)
+            settings = settings with { WindowedViewportWidthDip = Math.Max(1, (AppWindow.Size.Width - _frameWidth) / Scale) };
         if (settings.FullScreen != Settings.FullScreen || settings.ExpandColumns != Settings.ExpandColumns || settings.MenuStart != Settings.MenuStart)
         {
             var mode = ProposeMode(Document, settings);
@@ -253,13 +276,16 @@ public sealed partial class MainWindow
         finally { EndModal(); }
     }
 
-    private Task CreateClockAsync(string? groupId, int lane)
+    private async Task CreateClockAsync(string? groupId, int lane)
     {
-        if (PersistenceInteractionBlocked || _modal || _viewBlocked || !_hasDocument) return Task.CompletedTask;
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked || !_hasDocument) return;
         var clock = new ClockMember { Id = $"clock-{Guid.NewGuid():N}", LocalBounds = new(0, 0, 2, 2) };
-        var error = AddDefaultMember(clock, groupId, lane);
-        if (error is not null) Status(error);
-        return Task.CompletedTask;
+        await QueueUserMutationAsync(() =>
+        {
+            var error = AddDefaultMember(clock, groupId, lane);
+            if (error is not null) Status(error);
+            return Task.CompletedTask;
+        });
     }
 
     private async Task<bool> BeginModalAsync()
@@ -274,6 +300,9 @@ public sealed partial class MainWindow
         UpdatePuzzleGate();
         CancelTransientState();
         DialogOpened?.Invoke();
+        await WaitForUserMutationsAsync();
+        await DrainPersistenceAsync();
+        if (_windowClosing || ShutdownStarted || _persistenceAdmissionClosed) return false;
         _dialogHost = new OwnedDialogWindow(this, () => ActiveDialog?.RequestDismiss());
         _dialogHost.Activated += (_, _) => QueueAutomaticHideCheck("DialogActivated");
         await _dialogHost.InitializeAsync();
@@ -367,7 +396,7 @@ public sealed partial class MainWindow
     private void ApplyViewport(WallDocument? previewDocument = null, WallGeometry? previewGeometry = null,
         bool animateMode = true, bool animateHeight = false)
     {
-        if (!_hasDocument) return;
+        if (!_hasDocument && previewDocument is null) return;
         RefreshNativeFrame();
         var document = previewDocument ?? Document;
         var fullScreen = document.Settings.FullScreen;

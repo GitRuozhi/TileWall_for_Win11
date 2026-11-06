@@ -20,7 +20,7 @@ public sealed record UserDataManifest(int SchemaVersion, long Generation, string
         ForwardDataCompatibility.FieldsEqual(Wall.ExtensionData, other.Wall.ExtensionData) &&
         ForwardDataCompatibility.FieldsEqual(RecycleBin.ExtensionData, other.RecycleBin.ExtensionData);
     public override int GetHashCode() => HashCode.Combine(SchemaVersion, Generation, SnapshotId, Settings, Wall, RecycleBin);
-    public const int CurrentFormatVersion = 4;
+    public const int CurrentFormatVersion = 5;
     internal static bool IsSupportedFormatVersion(int? version) => version is >= 1 and <= CurrentFormatVersion;
 }
 public sealed record UserDataFileDigest(long Length, string Sha256)
@@ -60,19 +60,25 @@ internal static class UserDataSnapshotJson
         UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow,
         WriteIndented = true,
     };
-    // Older schemas retain their original field contract. Known format 4 retains optional fields.
+    // Older schemas retain their original field contract, including their optional forward fields.
     private static readonly JsonSerializerOptions V1Options = CreateHistoricalOptions(1);
     private static readonly JsonSerializerOptions V2Options = CreateHistoricalOptions(2);
     private static readonly JsonSerializerOptions V3Options = CreateHistoricalOptions(3);
+    private static readonly JsonSerializerOptions V4Options = CreateHistoricalOptions(4);
 
     private static JsonSerializerOptions CreateHistoricalOptions(int version)
     {
         var resolver = new DefaultJsonTypeInfoResolver();
         resolver.Modifiers.Add(typeInfo =>
         {
-            foreach (var extension in typeInfo.Properties.Where(property => property.IsExtensionData).ToArray())
-                typeInfo.Properties.Remove(extension);
-            if (typeInfo.Type == typeof(MemberImageSource))
+            if (version < 4)
+                foreach (var extension in typeInfo.Properties.Where(property => property.IsExtensionData).ToArray())
+                    typeInfo.Properties.Remove(extension);
+            if (typeInfo.Type == typeof(WallSettings))
+                typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "layoutLocked"));
+            if (typeInfo.Type == typeof(StartGroup))
+                typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "reservedRows"));
+            if (version < 4 && typeInfo.Type == typeof(MemberImageSource))
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "iconSeries"));
             if (version == 1 && typeInfo.Type == typeof(WallSettings))
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "secondaryHotKey"));
@@ -86,7 +92,7 @@ internal static class UserDataSnapshotJson
         return new(Options) { TypeInfoResolver = resolver };
     }
     private static JsonSerializerOptions OptionsFor(int version) => version switch
-        { 1 => V1Options, 2 => V2Options, 3 => V3Options, _ => Options };
+        { 1 => V1Options, 2 => V2Options, 3 => V3Options, 4 => V4Options, _ => Options };
 
     internal static bool RequiresUpgrade(WallDocument document) => document.StorageMetadata is { } metadata &&
         (metadata.ManifestVersion < UserDataManifest.CurrentFormatVersion ||
@@ -192,6 +198,14 @@ internal static class UserDataSnapshotJson
                     ? settings.SchemaVersion != manifest.SchemaVersion : settings.SchemaVersion < UserDataManifest.CurrentFormatVersion) ||
                 wall.SchemaVersion < 1 || recycle.SchemaVersion < 1 || settings.Value is null || wall.Lanes is null || recycle.Members is null)
                 throw new InvalidDataException("Incomplete or unsupported snapshot set.");
+            // Format 4 can retain unknown optional fields, but these names now carry
+            // layout semantics. Do not silently reinterpret or emit duplicate fields
+            // when upgrading an older envelope that used them as opaque metadata.
+            if (manifest.SchemaVersion == 4 &&
+                (settings.Value.ExtensionData?.ContainsKey("layoutLocked") == true ||
+                 wall.Lanes.Any(lane => lane?.Groups?.Any(group =>
+                     group?.ExtensionData?.ContainsKey("reservedRows") == true) == true)))
+                throw new UnsupportedSnapshotStructureException("The snapshot contains layout fields outside their supported format; its data remains untouched.");
             if (manifest.SchemaVersion >= 2)
             {
                 using var json = JsonDocument.Parse(settingsBytes);
@@ -212,7 +226,7 @@ internal static class UserDataSnapshotJson
             };
             return MapGalleryPaths(WallJson.ValidateAndFreeze(document), galleryPath);
         }
-        catch (Exception ex) when (manifest.SchemaVersion >= UserDataManifest.CurrentFormatVersion && ex is JsonException)
+        catch (Exception ex) when (manifest.SchemaVersion >= 4 && ex is JsonException)
         {
             throw new UnsupportedSnapshotStructureException("The snapshot structure cannot be interpreted; its data remains untouched.", ex);
         }

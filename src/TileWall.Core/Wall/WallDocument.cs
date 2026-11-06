@@ -16,7 +16,7 @@ public sealed record WallDocument
     [JsonIgnore]
     internal UserDataFormatMetadata? StorageMetadata { get; init; }
 
-    public const int CurrentSchemaVersion = 5;
+    public const int CurrentSchemaVersion = 6;
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public long Generation { get; init; }
     public required int Columns { get; init; }
@@ -58,6 +58,9 @@ public sealed record StartGroup
     public required string Id { get; init; }
     public string? Title { get; init; }
     public required IReadOnlyList<WallMember> Members { get; init; }
+    /// <summary>Retains the group footprint after locked moves, including an empty source group.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ReservedRows { get; init; }
     public ImportSourceMetadata? ImportSource { get; init; }
     public bool UserClaimed { get; init; }
 }
@@ -76,6 +79,8 @@ public sealed record WallSettings
     public AnchorCorner AnchorCorner { get; init; } = AnchorCorner.BottomLeft;
     public bool FullScreen { get; init; }
     public bool ExpandColumns { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool LayoutLocked { get; init; }
     public bool MenuStart { get; init; } = true;
     public int? WindowedColumns { get; init; }
     public int? WindowedRows { get; init; }

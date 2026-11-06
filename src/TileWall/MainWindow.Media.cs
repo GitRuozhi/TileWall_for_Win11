@@ -1,6 +1,7 @@
 using TileWall.Core.Storage;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
+using TileWall.ApplicationModel;
 using TileWall.Graphics;
 using TileWall.Resources;
 using TileWall.Views;
@@ -92,19 +93,40 @@ public sealed partial class MainWindow
                 { Members = group.Members.Select(Map).ToArray() }).ToArray() }).ToArray() } }, assets.Values.ToArray());
     }
 
-    private async Task<string?> PersistAutomaticIconSeries(WallMember requested, PreparedAutomaticIconSeries prepared,
-        Func<bool> stillCurrent)
+    private async Task<(bool Accepted, string? Error)> PersistAutomaticIconSeries(
+        IReadOnlyList<AutomaticIconSeriesBinding> bindings)
     {
-        await DrainPersistenceAsync();
-        if (!stillCurrent() || FindMember(requested.Id) is not { } current || current.Images != requested.Images ||
-            current.TargetInput != requested.TargetInput || current.Entry != requested.Entry ||
-            current.SourceShortcutPath != requested.SourceShortcutPath || current.ResourceOrigin != MemberResourceOrigin.Local)
-            return null;
-        var replacement = current with { Images = current.Images with { IconSeries = prepared.Series } };
-        var result = _session.Propose(new ReplaceMemberAction(Document.Generation, current.Id, replacement),
-            WorkWidthDip, WorkHeightDip, _metrics);
-        if (result.Proposal is null) return ProductStrings.Get("Wall.PuzzleMissing");
-        return await CommitProposalAsync(result.Proposal, preparedMedia: prepared.Assets);
+        if (!CanAcceptBackgroundWrite) return (false, null);
+        var document = Document;
+        var members = document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
+            .ToDictionary(member => member.Id, StringComparer.Ordinal);
+        var accepted = new Dictionary<string, PreparedAutomaticIconSeries>(StringComparer.Ordinal);
+        var assets = new Dictionary<string, PreparedMediaAsset>(StringComparer.Ordinal);
+        foreach (var binding in bindings)
+        {
+            if (!binding.StillCurrent() || !members.TryGetValue(binding.Member.Id, out var current) ||
+                !PuzzlePresentationCoordinator.CanBindPreparedAutomaticSeries(binding.Member, current)) continue;
+            accepted.Add(current.Id, binding.Prepared);
+            foreach (var asset in binding.Prepared.Assets)
+            {
+                if (assets.TryGetValue(asset.Reference.Sha256, out var previous) && previous.Reference != asset.Reference)
+                    throw new InvalidDataException("Conflicting prepared automatic image references.");
+                assets.TryAdd(asset.Reference.Sha256, asset);
+            }
+        }
+        if (accepted.Count == 0) return (true, null);
+        WallMember Map(WallMember member) => accepted.TryGetValue(member.Id, out var prepared)
+            ? member with { Images = member.Images with { IconSeries = prepared.Series } } : member;
+        var next = document with
+        {
+            Generation = checked(document.Generation + 1),
+            Lanes = document.Lanes.Select(lane => lane with
+            {
+                Groups = lane.Groups.Select(group => group with { Members = group.Members.Select(Map).ToArray() }).ToArray(),
+            }).ToArray(),
+        };
+        var proposal = new WallProposal(next, Surface.Geometry ?? WallLayoutEngine.Measure(document, _metrics));
+        return (true, await CommitProposalAsync(proposal, preparedMedia: assets.Values.ToArray(), background: true));
     }
 
     private void AttachGalleryEditor(SharedMemberEditorDialog dialog)

@@ -208,7 +208,16 @@ internal sealed class WallSession
 
     // Only the startup error page may retry in-process. A loaded session must obey
     // the existing exit/reopen contract, including after an uncertain commit.
-    public Task<WallOpenResult> RetryInitialOpenAsync(int initialColumns, int initialRows)
+    public Task<WallOpenResult> OpenInitialAsync(int initialColumns, int initialRows,
+        Func<WallDocument, Task>? upgradeStarting = null) =>
+        StartInitialOpenAsync(initialColumns, initialRows, upgradeStarting);
+
+    public Task<WallOpenResult> RetryInitialOpenAsync(int initialColumns, int initialRows,
+        Func<WallDocument, Task>? upgradeStarting = null) =>
+        StartInitialOpenAsync(initialColumns, initialRows, upgradeStarting);
+
+    private Task<WallOpenResult> StartInitialOpenAsync(int initialColumns, int initialRows,
+        Func<WallDocument, Task>? upgradeStarting)
     {
         lock (_gate)
         {
@@ -217,18 +226,36 @@ internal sealed class WallSession
             if (_executor is null || _acceptOnUi is null)
                 throw new InvalidOperationException("Asynchronous storage has not been configured.");
             _writePending = true;
-            return RetryInitialOpenReservedAsync(initialColumns, initialRows, _executor, _acceptOnUi);
+            return RetryInitialOpenReservedAsync(initialColumns, initialRows, _executor, _acceptOnUi, upgradeStarting);
         }
     }
 
     private async Task<WallOpenResult> RetryInitialOpenReservedAsync(int columns, int rows,
-        IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
+        IWallStorageExecutor executor, Func<Action, Task> acceptOnUi, Func<WallDocument, Task>? upgradeStarting)
     {
         WallOpenResult? stored = null, accepted = null;
         var live = true;
         try
         {
-            stored = await executor.ExecuteAsync(() => ReadOpenResult(columns, rows)).ConfigureAwait(false);
+            stored = await executor.ExecuteAsync(() => ReadInitialOpenResult(columns, rows)).ConfigureAwait(false);
+            if (NeedsStartupConversion(stored))
+            {
+                if (upgradeStarting is not null)
+                {
+                    Task? notification = null;
+                    await acceptOnUi(() =>
+                    {
+                        lock (_gate)
+                        {
+                            if (!live || notification is not null) return;
+                            notification = upgradeStarting(stored.Document!.ActiveView());
+                        }
+                    }).ConfigureAwait(false);
+                    await (notification ?? throw new InvalidOperationException("The UI dispatcher did not announce the data upgrade.")).ConfigureAwait(false);
+                }
+                var trusted = stored;
+                stored = await executor.ExecuteAsync(() => UpgradeOpenResult(trusted)).ConfigureAwait(false);
+            }
             await acceptOnUi(() =>
             {
                 lock (_gate)
@@ -264,6 +291,9 @@ internal sealed class WallSession
     public string ValidatedDataRoot() => _store.ValidatedDataRoot();
 
     private WallOpenResult ReadOpenResult(int initialColumns, int initialRows)
+        => UpgradeOpenResult(ReadInitialOpenResult(initialColumns, initialRows));
+
+    private WallOpenResult ReadInitialOpenResult(int initialColumns, int initialRows)
     {
         var result = _store.Open();
         if (result.Status == WallOpenStatus.Fresh)
@@ -272,20 +302,29 @@ internal sealed class WallSession
             if (result.Status == WallOpenStatus.Loaded && result.Document is not null)
                 result = result with { InitializedFresh = true };
         }
-        else if (result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious &&
-            result.Document is { } document && UserDataSnapshotJson.RequiresUpgrade(document))
+        return result;
+    }
+
+    private static bool NeedsStartupConversion(WallOpenResult result) =>
+        result.Status is WallOpenStatus.Loaded or WallOpenStatus.RecoveredPrevious &&
+        result.Document is { } document && (UserDataSnapshotJson.RequiresUpgrade(document) || !document.RecycleBinEnabled);
+
+    private WallOpenResult UpgradeOpenResult(WallOpenResult result)
+    {
+        if (NeedsStartupConversion(result))
         {
+            var document = result.Document!;
             // Upgrade the complete trusted snapshot before it becomes editable UI state.
             // This uses the ordinary joint transaction, independently of icon preparation.
             if (document.Generation == long.MaxValue)
                 return new(WallOpenStatus.OpenFailed, null, ["Data upgrade generation overflow."])
                     { BlockReason = WallOpenBlockReason.StorageAccess };
             var upgraded = _store.Commit(document, new(document.Generation,
-                document with { Generation = document.Generation + 1 }, [])
+                document with { Generation = document.Generation + 1, RecycleBinEnabled = true }, [])
                 { ExpectedManifestSha256 = result.ManifestSha256 });
             if (upgraded.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup &&
                 upgraded.CommittedDocument is { } committed)
-                result = result with { Document = committed, ManifestSha256 = upgraded.ManifestSha256,
+                result = result with { Document = committed, ManifestSha256 = upgraded.ManifestSha256, WasUpgraded = true,
                     Diagnostics = result.Diagnostics.Concat(upgraded.Diagnostics).ToArray() };
             else
                 return new(upgraded.Status == WallCommitStatus.RecoveryBlocked ? WallOpenStatus.RecoveryBlocked : WallOpenStatus.OpenFailed,
