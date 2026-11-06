@@ -16,15 +16,20 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.40-0078D4?style=flat-square" alt="Version V1.40">
-  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Für Windows 10 und 11">
+  <img src="https://img.shields.io/badge/Version-V1.46-0078D4?style=flat-square" alt="Version V1.46">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Für Windows 10 und 11">
+  <img src="https://img.shields.io/badge/Architecture-x64-0078D4?style=flat-square" alt="x64">
+  <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="Kostenlos">
+  <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-Portable-009688?style=flat-square" alt="Portables Paket"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11"><strong>Projektseite</strong></a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/discussions">Feedback und Probleme</a> ·
-  <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">Locker austauschen</a>
+  <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><strong>Offizielle Installation</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest">Offline-Installationspaket</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/discussions">Feedback</a> ·
+  <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">Chat</a>
 </p>
 
 <p align="center">
@@ -33,27 +38,30 @@
     <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="Einblenden, Größe ändern und Vollbild">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, rufe <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a> einzeln auf.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a> einzeln.</sub></p>
 
 ## **Erhebt euch wieder, meine Kacheln!**
 
-**TileWall** ist ein eigenständiger Kachel-Launcher, der das vertraute Kachel- und Startmenü-Erlebnis von Windows 10 auf Windows 11 zurückbringt – mit persönlichen Bildern, Alben und Puzzles.
+**TileWall** ist ein eigenständiger Kachel-Launcher mit personalisierbaren Bildern, Alben und Puzzles. Er bringt das vertraute Kachel- und Startmenü-Erlebnis von Windows 10 unter Windows 11 zurück.
 
-**TileWall** basiert auf WinUI 3, dem nativen Windows-UI-Framework. Es gestaltet Startmenü und Kachelwand neu. Standardmäßig rufst du die Kachelwand mit **Win + der Grave-Akzent-Taste** auf (Taste links neben der 1 auf einer US-Tastatur, ohne Umschalttaste). Sie bleibt vom Windows-Startmenü unabhängig. Du musst weder die Windows-Shell ersetzen noch deine gewohnten Abläufe ändern.
+TileWall unterstützt Windows 10 und Windows 11 auf x64-PCs. Die App-Oberfläche ist nur auf vereinfachtem Chinesisch und Englisch verfügbar.
 
-TileWall unterstützt Windows 10 22H2 (build 19045) und Windows 11 auf x64-PCs. Die App-Oberfläche gibt es nur auf vereinfachtem Chinesisch und Englisch.
+**TileWall** basiert auf WinUI 3, dem nativen Windows-UI-Framework. Es bildet das Startmenü und die Kachelwand nach. Standardmäßig rufst du sie mit **Win + der Backtick-Taste** auf; sie funktioniert unabhängig vom Windows-Startmenü. Du musst weder die Windows-Shell ersetzen noch deine gewohnten Abläufe ändern.
+
+Du kannst TileWall über den [**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS) installieren oder das [portable Archiv](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) beziehungsweise das [EXE-Offline-Installationspaket](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) herunterladen. Die portable Version lässt sich direkt nach dem Entpacken starten. Alle drei Vertriebswege verwenden dieselben Daten der Kachelwand für den aktuellen Benutzer. Sie liegen unter `%LOCALAPPDATA%\TileWall`.
+
 
 ## Puzzles, Bilder und Bilderalben
 
-Du musst Bilder nicht mehr selbst zerschneiden und ausrichten – alles geht auf einer Seite!
-
-Klicke auf Split tiles. Klicke dann in der Vorschau mit der linken oder rechten Maustaste auf die gestrichelten Linien, um Bereiche zu teilen oder zusammenzuführen. Mit dem Mausrad änderst du schnell die Bildvergrößerung.
+Du musst Bilder nicht mehr selbst zuschneiden und ausrichten – alles auf einer Seite!
 
 Lege ein Bild als Ziel fest, und **TileWall** aktiviert automatisch Bildkacheln.
 
-Lege einen Ordner mit unterstützten Bildern als Ziel fest, und **TileWall** aktiviert automatisch das Bilderalbum. Wenn du Bilder im Ordner hinzufügst oder entfernst, aktualisiert **TileWall** das Album automatisch.
+Lege einen Ordner mit unterstützten Bildern als Ziel fest, und **TileWall** schaltet automatisch den Albumwechsel ein. Wenn du Bilder im Ordner hinzufügst oder entfernst, aktualisiert **TileWall** das Album automatisch, ohne dass du die Bearbeitungsseite ändern musst.
 
 Auch das Aussehen normaler Verknüpfungskacheln kannst du mit einem Bild oder Album anpassen.
+
+Im Puzzlemodus kannst du auf den inneren Gitterlinien der Vorschau links oder rechts klicken, um Bereiche zu teilen oder zusammenzufügen. Mit dem Mausrad änderst du schnell die Bildvergrößerung.
 
 <p align="center">
   <picture>
@@ -61,21 +69,23 @@ Auch das Aussehen normaler Verknüpfungskacheln kannst du mit einem Bild oder Al
     <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="Ein Puzzle-Bild teilen, zusammenfügen und vergrößern">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, rufe <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a> einzeln auf.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a> einzeln.</sub></p>
 
 ## Das Startmenü-Erlebnis von Windows 10 nachbilden
 
-Drücke <kbd>Win</kbd> + die Grave-Akzent-Taste (links neben der 1 auf einer US-Tastatur, ohne Umschalttaste), und die Kachelwand erscheint. Starte ein Programm erfolgreich oder verschiebe den Fokus an eine andere Stelle, und sie klappt automatisch ein – wie das native Startmenü.
+Drücke <kbd>Win</kbd> + <kbd>&#96;</kbd> (die Taste links neben der 1, ohne Umschalttaste), und die Kachelwand erscheint. Standardmäßig klappt sie automatisch ein, sobald ein Ziel erfolgreich gestartet wird oder der Fokus an eine andere Stelle wechselt.
 
-Wenn sie wie eine normale App auf dem Desktop bleiben soll, deaktiviere Always on top und aktiviere Stay visible.
+Wenn sie wie eine normale App auf dem Desktop sichtbar bleiben soll, deaktiviere „Immer im Vordergrund“ und aktiviere „Dauerhaft anzeigen“.
 
-Ziehe Kacheln an eine andere Stelle oder ziehe einen Gruppentitel, um die ganze Gruppe zu verschieben. Das läuft flüssig und fühlt sich an wie das native Startmenü.
+Ziehe Kacheln an eine andere Stelle und ziehe einen Gruppentitel, um die ganze Gruppe zu verschieben. Richte die Wand ganz nach deinen Gewohnheiten ein.
 
-Ziehe am Rand der Kachelwand, um ihre Größe zu ändern. Ziehe sie an den Bildschirmrand, um nahtlos zwischen Vollbild- und Fenstermodus zu wechseln.
+Ziehe am Rand der Kachelwand, um die Fenstergröße anzupassen. In den Einstellungen kannst du zwischen Vollbild- und Fenstermodus wechseln. Ziehe im Vollbildmodus an einer verstellbaren Kante oder Ecke nach innen, um zum Fenstermodus zurückzukehren.
 
 Alle vier Ecken des Desktops können als Anker dienen – so hast du mehr Freiheit als mit dem nativen Startmenü.
 
-In Settings kannst du außerdem Replace system Start aktivieren. Die Option ist standardmäßig ausgeschaltet. Wenn du sie einschaltest, kannst du TileWall mit der Windows-Taste oder der Start-Schaltfläche aufrufen und jederzeit zum nativen Startmenü zurückwechseln.
+Wenn dir dein Layout gefällt, kannst du in den Einstellungen **Layout sperren** aktivieren. Dadurch bleiben die sichtbare Größe der Wand, der Anker und die Gruppenpositionen fest. Einzelne Kacheln lassen sich weiterhin auf ausreichend große freie Plätze in vorhandenen Gruppen verschieben, ohne andere Inhalte zu verdrängen. Auch nach einem Neustart bleibt die Sperre aktiv.
+
+Mit **Systemstartmenü ersetzen (Experiment)** in den Einstellungen kannst du TileWall über die Windows-Taste oder einen Klick auf die Start-Schaltfläche öffnen. Deaktiviere die Option jederzeit, um wieder das native Startmenü zu verwenden.
 
 <p align="center">
   <picture>
@@ -83,23 +93,25 @@ In Settings kannst du außerdem Replace system Start aktivieren. Die Option ist 
     <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="Kacheln und Gruppen verschieben">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, rufe <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a> einzeln auf.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a> einzeln.</sub></p>
 
 ## Noch mehr Funktionen
 
-Kacheln können Dateien, Ordner, Verknüpfungen und Websites öffnen sowie App-Protokoll-Links, die in Windows registriert sind, zum Beispiel Steam-Links.
+Kacheln können Dateien, Ordner, Verknüpfungen, Websites und vieles mehr öffnen. Außerdem unterstützen sie App-Protokoll-Links, die in Windows registriert sind, etwa von Steam.
 
 Lege Programme, Ordner, Dateien und Websites auf dieselbe Kachelwand und baue dir deinen persönlichen Startpunkt für alles.
 
-Neue Kacheln kannst du über das Rechtsklickmenü der Kachelwand und das klassische Kontextmenü des Datei-Explorers hinzufügen.
+Neue Kacheln kannst du über das Rechtsklickmenü der Kachelwand oder das klassische Kontextmenü des Datei-Explorers erstellen.
 
-Du möchtest alles schnell einrichten? Über die Importseite kannst du Kacheln aus dem Startmenü, vom Desktop, aus installierten Apps, aus Systemfunktionen und aus Wanddateien hinzufügen. Filter, automatische Filterung und Gruppierung ersparen dir das einzelne Hinzufügen per Rechtsklick.
+Automatische Symbole lesen native hochauflösende Ressourcen aus Programmen, Verknüpfungen und App-Paketen und wählen eine passende Größe für die Anzeige. Für häufig genutzte Websites sind außerdem Offline-Symbole enthalten. Wenn du lieber eigene Symbole verwendest, kannst du sie jederzeit ändern.
 
-Ausgewählte Kacheln, Puzzles und Bilderalben kannst du als ZIP-Datei zum Teilen exportieren.
+Du möchtest alles schnell einrichten? Über die Importseite kannst du Kacheln aus dem Startmenü, vom Desktop, aus installierten Apps, aus Systemfunktionen und aus Kachelwand-Dateien hinzufügen. Filter, automatische Filterung und Gruppierung ersparen dir das einzelne Hinzufügen per Rechtsklick.
 
-Entfernte Kacheln landen im Papierkorb und lassen sich bei Bedarf wiederherstellen.
+Ausgewählte Kacheln, Puzzles und Bilderalben kannst du als ZIP-Datei zum Teilen exportieren. Außerdem kannst du geteilte Kachelwände anderer importieren.
 
-Wenn du auch das Startmenü vermisst, aktiviere in Settings Start menu list. Liste und Kacheln erscheinen nebeneinander und bieten Zugriff auf dieselben Einträge.
+Nicht mehr angeheftete Kacheln landen im TileWall-Papierkorb. Bei Bedarf kannst du sie unter „Import und Export → Papierkorb“ wiederherstellen.
+
+Wenn du auch das Startmenü vermisst, aktiviere in den Einstellungen **Startmenü im Listenstil**. Liste und Kacheln erscheinen nebeneinander und bieten Zugriff auf dieselben Einträge.
 
 <p align="center">
   <picture>
@@ -107,24 +119,54 @@ Wenn du auch das Startmenü vermisst, aktiviere in Settings Start menu list. Lis
     <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="Mehrere Einträge auswählen und das Importergebnis ansehen">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, rufe <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a> einzeln auf.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a> einzeln.</sub></p>
+
 
 ## Demnächst
 
 Diese Wünsche stehen auf dem Entwicklungsplan. Bleib gespannt:
 
 - Mehrere Einträge auf einmal bearbeiten
+
 - Unterstützung für mehrere Monitore
-- Unscharfe Symbole in hoher Auflösung verbessern
+
+- Kacheln bei Bedarf selbst hochauflösend verbessern
+
 - Mehr native Widgets
+
 - Vollständige Tastaturbedienung und Barrierefreiheit
+
 - Weitere Sprachen
-- Erweiterte native Windows-Überlagerung (in Prüfung)
+
+- Erweiterte native Windows-Überlagerung (wird noch erkundet)
+
+- Arm-Unterstützung
+
+
+## Bereits umgesetzt
+
+Diese Wünsche sind bereits erfüllt:
+
+- Layoutsperre
+
+- Systemstartmenü ersetzen
+
+- Kachelwand teilen
+
+- Weitere Systemquellen für den Import
+
+- Kachel-Papierkorb
+
+- Native hochauflösende Symbole für EXE-Programme und Windows-Apps
+
+- Hochauflösende Symbole für häufig genutzte Websites
+
+- Im Microsoft Store veröffentlicht
 
 ## Austausch und Feedback
 
-Klicke auf [Locker austauschen](https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT), um der QQ-Gruppe beizutreten. Plaudern ist willkommen – und zeig uns gern deine eigene Kachelwand!
+Hinterlasse in [Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions) Feedback, Fragen oder neue Ideen – oder zeig dort deine Kachelwand.
 
-Wenn du auf ein Problem stößt oder eine neue Idee hast, hinterlasse einen Beitrag in [Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions). Ich lese jeden einzelnen aufmerksam. (●ˇ∀ˇ●)
+Tritt der QQ-Gruppe bei, indem du auf [Locker austauschen](https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT) klickst. Plaudern ist willkommen!
 
-Wenn TileWall dich wieder für Kacheln begeistern konnte, lass gern einen Star da. So weiß ich, dass jemand die ganze Tüftelei mag. Onegai!
+Lässt du mir einen kleinen Star da? Bitte, biiitte! (｡•́︿•̀｡)
