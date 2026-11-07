@@ -51,7 +51,7 @@ public sealed partial class MainWindow
         var error = await InitializeWelcomeWallAsync(fresh: true);
         if (error is not null && !_viewBlocked) Status(error);
     }
-    internal void ShowStatus(string message) => Status(message);
+    internal void ShowStatus(string message) => PersistentStatus(message);
     internal void ShowTransientStatus(string message) => TransientStatus(message);
 
     internal void ShowWall()
@@ -304,6 +304,7 @@ public sealed partial class MainWindow
         await DrainPersistenceAsync();
         if (_windowClosing || ShutdownStarted || _persistenceAdmissionClosed) return false;
         _dialogHost = new OwnedDialogWindow(this, () => ActiveDialog?.RequestDismiss());
+        RefreshDialogAppearance(Settings);
         _dialogHost.Activated += (_, _) => QueueAutomaticHideCheck("DialogActivated");
         await _dialogHost.InitializeAsync();
         // Exit can close admission while the host is still bootstrapping, before

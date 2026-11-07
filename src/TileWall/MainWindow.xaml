@@ -48,12 +48,8 @@
                 IsHitTestVisible="False" Visibility="Collapsed" />
         <Border x:Name="ResizeVerticalHighlight" Width="2" HorizontalAlignment="Right" VerticalAlignment="Stretch"
                 IsHitTestVisible="False" Visibility="Collapsed" />
-        <Border x:Name="StatusPanel" Background="#DC263445" Visibility="Collapsed"
-                HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="8" Padding="8,5">
-            <StackPanel Spacing="4">
-                <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <TextBlock x:Name="StatusText" Foreground="White" TextWrapping="Wrap" />
-                </ScrollViewer>
+        <Grid x:Name="StatusViewport">
+            <StackPanel x:Name="StatusActions" Spacing="4">
                 <Button x:Name="RetryViewButton"
                         Visibility="Collapsed" Click="OnRetryViewClicked" />
                 <StackPanel Orientation="Horizontal" Spacing="8">
@@ -63,7 +59,7 @@
                             Visibility="Collapsed" Click="OnOpenDataFolderClicked" />
                 </StackPanel>
             </StackPanel>
-        </Border>
+        </Grid>
     </Grid>
 </Window>
 

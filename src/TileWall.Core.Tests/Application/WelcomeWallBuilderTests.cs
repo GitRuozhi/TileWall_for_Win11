@@ -1,4 +1,5 @@
 using TileWall.Core.Application;
+using TileWall.Core.Imaging;
 using TileWall.Core.Storage;
 using TileWall.Core.Tests.Fixtures;
 using TileWall.Core.Wall;
@@ -15,6 +16,7 @@ public sealed class WelcomeWallBuilderTests
             ? new WelcomeWallTarget("shell:" + key, TileWall.Core.Entries.LaunchIdentityService.ForShell("shell:" + key).Key)
             : new WelcomeWallTarget(Path.GetFullPath(key)), StringComparer.Ordinal));
     private static readonly string Gallery = Path.GetFullPath("WelcomeWall/Seasons/content-set");
+    private static readonly string DataRoot = Path.GetFullPath("WelcomeWall/UserData");
     private static string EntryPath(string root, WallMember member) =>
         Path.Combine(root, member.Entry!.RelativePath.Replace('/', Path.DirectorySeparatorChar));
     private static WallViewportBudget Budget(int columns = 2, int rows = 12)
@@ -31,7 +33,7 @@ public sealed class WelcomeWallBuilderTests
         var settings = new WallSettings { LanguageMode = WallLanguageMode.English, RunAtLogin = true,
             StayVisibleOnFocusLoss = true, WindowedColumns = 1, WindowedRows = 8, HotKey = "Ctrl+F8" };
         var before = WallDocument.Empty(1, 8) with { Generation = 9, Settings = settings };
-        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, Gallery, Budget(columns, rows));
+        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, DataRoot, Gallery, Budget(columns, rows));
         var proposal = Assert.IsType<WallProposal>(prepared.Layout.Proposal);
         Assert.Equal(10, proposal.Document.Generation);
         Assert.Same(settings, proposal.Document.Settings);
@@ -45,9 +47,11 @@ public sealed class WelcomeWallBuilderTests
         Assert.Equal(MemberImageSourceKind.Folder, puzzle.Images.Kind);
         Assert.Equal(ImageRotationInterval.Seconds5, puzzle.RotationInterval);
         Assert.Equal(6, puzzle.Partitions.Count);
-        Assert.Null(puzzle.TargetInput);
-        Assert.Equal(25, prepared.EntryChanges.Count);
-        var again = WelcomeWallBuilder.Prepare(before, Targets, Text, Gallery, Budget(columns, rows));
+        Assert.Equal(DataRoot, puzzle.TargetInput);
+        Assert.Equal(ImageDisplayMode.Fill, puzzle.ImageDisplay.Mode);
+        Assert.Contains(new EntryChange.CreateLink(puzzle.Id, DataRoot), prepared.EntryChanges);
+        Assert.Equal(26, prepared.EntryChanges.Count);
+        var again = WelcomeWallBuilder.Prepare(before, Targets, Text, DataRoot, Gallery, Budget(columns, rows));
         Assert.Empty(proposal.Document.EnumerateAllMembers().Select(member => member.Id)
             .Intersect(again.Layout.Proposal!.Document.EnumerateAllMembers().Select(member => member.Id), StringComparer.Ordinal));
     }
@@ -63,7 +67,7 @@ public sealed class WelcomeWallBuilderTests
             InactiveMembers = [new TileMember { Id = "retained", LocalBounds = new(0, 0, 1, 1),
                 Entry = new("retained", "Objects/retained/entry.url", ManagedEntryKind.Url) }],
         };
-        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, Gallery, Budget(columns, rows));
+        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, DataRoot, Gallery, Budget(columns, rows));
         Assert.Null(prepared.Layout.Proposal);
         Assert.Empty(prepared.EntryChanges);
         Assert.Equal("retained", Assert.Single(before.InactiveMembers).Id);
@@ -74,7 +78,7 @@ public sealed class WelcomeWallBuilderTests
     public void ExpansionRetainsItsOrdinaryEmptyTailWithoutChangingTheRequestedSetting()
     {
         var before = WallDocument.Empty(1, 8) with { Settings = new() { ExpandColumns = true } };
-        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, Gallery, Budget(64, 10));
+        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, DataRoot, Gallery, Budget(64, 10));
         var proposal = Assert.IsType<WallProposal>(prepared.Layout.Proposal);
         Assert.True(proposal.Document.Settings.ExpandColumns);
         Assert.Same(before.Settings, proposal.Document.Settings);
@@ -89,7 +93,7 @@ public sealed class WelcomeWallBuilderTests
         var settings = new WallSettings { WindowedRows = 19, WindowedColumns = 2,
             WindowedViewportWidthDip = 1200, ManualWindowedViewportWidthDip = 1100 };
         var before = WallDocument.Empty(2, 19) with { Generation = 4, Settings = settings };
-        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, Gallery, Budget(2, 19));
+        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, DataRoot, Gallery, Budget(2, 19));
         var proposal = Assert.IsType<WallProposal>(prepared.Layout.Proposal);
         Assert.Equal(12, proposal.Document.Rows);
         Assert.Equal(26, proposal.Document.EnumerateAllMembers().Count());
@@ -101,7 +105,7 @@ public sealed class WelcomeWallBuilderTests
     [Fact]
     public void DefaultGeometryKeepsTheTwoEmptySlotsAndTheTileWallLinksBelowTheAlbum()
     {
-        var prepared = WelcomeWallBuilder.Prepare(WallDocument.Empty(2, 19), Targets, Text, Gallery, Budget());
+        var prepared = WelcomeWallBuilder.Prepare(WallDocument.Empty(2, 19), Targets, Text, DataRoot, Gallery, Budget());
         var document = Assert.IsType<WallProposal>(prepared.Layout.Proposal).Document;
         Assert.Equal(new[] { "Windows", "Tools", "Internet" }, document.Lanes[0].Groups.Select(group => group.Title));
         var windows = document.Lanes[0].Groups[0];
@@ -139,7 +143,7 @@ public sealed class WelcomeWallBuilderTests
             InactiveMembers = [new TileMember { Id = "old", LocalBounds = new(0, 0, 1, 1),
                 Entry = new("old", "Objects/old/entry.url", ManagedEntryKind.Url) }],
         };
-        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, "relative-gallery", Budget());
+        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, DataRoot, "relative-gallery", Budget());
         Assert.Null(prepared.Layout.Proposal);
         Assert.Empty(prepared.EntryChanges);
         Assert.Equal("old", Assert.Single(before.InactiveMembers).Id);
@@ -182,7 +186,7 @@ public sealed class WelcomeWallBuilderTests
         var oldEntries = before.EnumerateAllMembers().Select(member => EntryPath(root, member)).ToArray();
         var guideImage = PreparedMediaAsset.FromVerifiedImage(new byte[] { 4, 5, 6 }, ".png");
         var showcaseImage = PreparedMediaAsset.FromVerifiedImage(new byte[] { 7, 8, 9 }, ".png");
-        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, Gallery, Budget(),
+        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, root, Gallery, Budget(),
             guideImage: guideImage.Reference, showcaseImage: showcaseImage.Reference);
         Assert.Equal(new[] { "active", "retained" }, prepared.EntryChanges.OfType<EntryChange.Remove>().Select(change => change.MemberId));
         var proposal = Assert.IsType<WallProposal>(prepared.Layout.Proposal);
@@ -193,7 +197,9 @@ public sealed class WelcomeWallBuilderTests
         Assert.Equal(before.Settings, current.Settings);
         Assert.Empty(current.InactiveMembers);
         Assert.Equal(26, current.EnumerateAllMembers().Count());
-        Assert.Null(Assert.Single(current.EnumerateAllMembers().OfType<PuzzleMember>()).Entry);
+        var puzzle = Assert.Single(current.EnumerateAllMembers().OfType<PuzzleMember>());
+        Assert.Equal(root, puzzle.TargetInput);
+        Assert.Equal(ManagedEntryKind.Lnk, puzzle.Entry!.Kind);
         Assert.All(current.EnumerateAllMembers().OfType<TileMember>(), member => Assert.NotNull(member.Entry));
         Assert.All(oldEntries, path => Assert.False(files.Exists(path)));
         Assert.Equal(new byte[] { 1, 2, 3 }, files.ReadAllBytes(external));
@@ -223,7 +229,7 @@ public sealed class WelcomeWallBuilderTests
         var config = files.ReadAllBytes(Path.Combine(root, "state.json"));
         var oldEntries = before.EnumerateAllMembers().ToDictionary(member => EntryPath(root, member),
             member => files.ReadAllBytes(EntryPath(root, member)));
-        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, Gallery, Budget());
+        var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, root, Gallery, Budget());
         var proposal = Assert.IsType<WallProposal>(prepared.Layout.Proposal);
         files.EntryFault = fault;
         files.InjectedFault = configFailure ? FaultPoint.BeforeMove : FaultPoint.None;

@@ -17,9 +17,10 @@ namespace TileWall.Views;
 internal sealed partial class MemberEditorPreview : Grid
 {
     private readonly Canvas _viewport = new();
-    private readonly Canvas _scene = new() { IsHitTestVisible = false };
-    private readonly PuzzleCanvasView _formal = new() { RevealTitles = true };
-    private readonly Canvas _guides = new(), _hint = new();
+    private readonly Canvas _scene = new();
+    private readonly PuzzleCanvasView _formal = new() { PreviewHover = true };
+    private readonly Microsoft.UI.Xaml.Shapes.Path _underlay = new() { IsHitTestVisible = false, Opacity = 0.35 };
+    private readonly Canvas _guides = new() { IsHitTestVisible = false }, _hint = new() { IsHitTestVisible = false };
     private readonly TextBlock _pointerText = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, MaxWidth = 300 };
     private readonly Border _pointerTip;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _wheelTimer;
@@ -49,7 +50,7 @@ internal sealed partial class MemberEditorPreview : Grid
     internal EditTool? Tool
     {
         get => _tool;
-        set { if (_tool == value) return; _tool = value; RefreshHover("tool"); }
+        set { if (_tool == value) return; _tool = value; RefreshGuides(); RefreshHover("tool"); }
     }
     internal event Action<MemberImageDisplay>? DisplayChanged;
     internal event Action? GestureCompleted;
@@ -64,9 +65,11 @@ internal sealed partial class MemberEditorPreview : Grid
 
     internal MemberEditorPreview()
     {
-        Height = 640; MinHeight = 180; Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        _scene.Children.Add(_underlay); _scene.Children.Add(_formal);
+        _scene.Children.Add(_guides); _scene.Children.Add(_hint);
         _viewport.Children.Add(_scene); Children.Add(_viewport);
-        _pointerTip = VisualStyles.Card(_pointerText); _pointerTip.Padding = new Thickness(8, 5, 8, 5);
+        _pointerTip = VisualStyles.Card(_pointerText, useTileBackground: false); _pointerTip.Padding = new Thickness(8, 5, 8, 5);
         _pointerTip.IsHitTestVisible = false; _pointerTip.Visibility = Visibility.Collapsed;
         _viewport.Children.Add(_pointerTip);
         _wheelTimer = DispatcherQueue.CreateTimer(); _wheelTimer.IsRepeating = false;
@@ -75,6 +78,7 @@ internal sealed partial class MemberEditorPreview : Grid
         SizeChanged += (_, _) => Refresh(refitCamera: !IsGestureActive);
         ActualThemeChanged += (_, _) => Refresh(refitCamera: false);
         PointerWheelChanged += OnWheel;
+        PointerEntered += (_, e) => { RememberPointer(e.GetCurrentPoint(this).Position); RefreshHover("enter"); };
         PointerPressed += OnPressed; PointerMoved += OnMoved;
         PointerReleased += OnReleased;
         PointerCanceled += (_, _) => CancelGesture();
@@ -119,30 +123,31 @@ internal sealed partial class MemberEditorPreview : Grid
     {
         if (_member is not { } member) return;
         var width = _metrics.WidthOf(member.LocalBounds.Width); var height = _metrics.HeightOf(member.LocalBounds.Height);
-        _placement = _frame is null ? null : MemberImageGeometry.Calculate(width, height,
-            _frame.SourcePixels.Width, _frame.SourcePixels.Height, _rasterScale, member.ImageDisplay);
         if (refitCamera)
         {
             _unionX = _unionY = 0; _cameraScale = 1;
             _cameraX = (ActualWidth - width) / 2; _cameraY = (ActualHeight - height) / 2;
         }
-        _scene.Children.Clear(); _scene.RenderTransform = new ScaleTransform { ScaleX = _cameraScale, ScaleY = _cameraScale };
+        _scene.RenderTransform = new ScaleTransform { ScaleX = _cameraScale, ScaleY = _cameraScale };
         Canvas.SetLeft(_scene, _cameraX); Canvas.SetTop(_scene, _cameraY);
         _viewport.Clip = new RectangleGeometry { Rect = new Rect(0, 0, Math.Max(0, ActualWidth), Math.Max(0, ActualHeight)) };
-        if (_frame is not null && _placement is { } placement)
-        {
-            var image = placement.Bounds;
-            var middleLeft = Math.Max(0, image.X); var middleRight = Math.Min(width, image.X + image.Width);
-            AddOutsideRegion(new DipRect(image.X, image.Y, Math.Max(0, -image.X), image.Height), image);
-            AddOutsideRegion(new DipRect(width, image.Y, Math.Max(0, image.X + image.Width - width), image.Height), image);
-            AddOutsideRegion(new DipRect(middleLeft, image.Y, Math.Max(0, middleRight - middleLeft), Math.Max(0, -image.Y)), image);
-            AddOutsideRegion(new DipRect(middleLeft, height, Math.Max(0, middleRight - middleLeft), Math.Max(0, image.Y + image.Height - height)), image);
-        }
         var projected = WallMemberVisualFactory.Project(member);
         _formal.SetScene(projected, _frame, _metrics, _rasterScale, _visualStyle);
-        Canvas.SetLeft(_formal, -_unionX); Canvas.SetTop(_formal, -_unionY); _scene.Children.Add(_formal);
+        foreach (var layer in new UIElement[] { _formal, _guides, _hint })
+        {
+            Canvas.SetLeft(layer, -_unionX); Canvas.SetTop(layer, -_unionY);
+        }
+        RefreshUnderlay();
+        RefreshGuides();
+        // Rebuild feedback against the new scene, including when the pointer
+        // stayed still while an image, topology, theme, or viewport changed.
+        RefreshHover("refresh");
+    }
+
+    private void RefreshGuides()
+    {
         _guides.Children.Clear();
-        if (member is PuzzleMember puzzle)
+        if (Tool is not null && _member is PuzzleMember puzzle)
         {
             var layout = new PartitionLayout(puzzle.LocalBounds.Size, puzzle.Partitions);
             for (var y = 0; y < layout.Size.Rows; y++)
@@ -152,24 +157,47 @@ internal sealed partial class MemberEditorPreview : Grid
                 for (var x = 0; x < layout.Size.Columns; x++)
                     if (!layout.IsSolid(new WallEdge(false, x, y))) AddEdge(_guides, new WallEdge(false, x, y), Microsoft.UI.Colors.White, dashed: true);
         }
-        foreach (var layer in new[] { _guides, _hint })
-        {
-            Canvas.SetLeft(layer, -_unionX); Canvas.SetTop(layer, -_unionY); _scene.Children.Add(layer);
-        }
-        // Rebuild feedback against the new scene, including when the pointer
-        // stayed still while an image, topology, theme, or viewport changed.
-        RefreshHover("refresh");
     }
 
-    private void AddOutsideRegion(DipRect region, DipRect image)
+    private void RefreshUnderlay()
     {
-        if (region.Width <= 0 || region.Height <= 0 || _frame is null) return;
-        var layer = new Canvas { Width = region.Width, Height = region.Height,
-            Clip = new RectangleGeometry { Rect = new Rect(0, 0, region.Width, region.Height) } };
-        var sharp = new Image { Source = _frame.Sharp, Width = image.Width, Height = image.Height, Stretch = Stretch.Fill };
-        Canvas.SetLeft(sharp, image.X - region.X); Canvas.SetTop(sharp, image.Y - region.Y); layer.Children.Add(sharp);
-        layer.Children.Add(new Rectangle { Width = region.Width, Height = region.Height, Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(170, 0, 0, 0)) });
-        Canvas.SetLeft(layer, region.X - _unionX); Canvas.SetTop(layer, region.Y - _unionY); _scene.Children.Add(layer);
+        if (_frame is not { } frame || _formal.SharpTransform is not { } transform)
+        {
+            _placement = null;
+            _underlay.Fill = null;
+            _underlay.Data = null;
+            _underlay.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var image = new DipRect(transform.OffsetX, transform.OffsetY,
+            frame.SourcePixels.Width * transform.Scale, frame.SourcePixels.Height * transform.Scale);
+        _placement = new MemberImagePlacement(transform.Scale, image);
+        // The outer figure keeps the brush mapped to the entire frame. Each
+        // snapped viewport cuts a hole so the image cannot affect tile alpha.
+        var mask = new PathGeometry { FillRule = FillRule.EvenOdd };
+        AddRectangle(0, 0, image.Width, image.Height);
+        foreach (var part in _formal.SnappedViewports)
+        {
+            var left = Math.Max(0, part.X - image.X);
+            var top = Math.Max(0, part.Y - image.Y);
+            var right = Math.Min(image.Width, part.X + part.Width - image.X);
+            var bottom = Math.Min(image.Height, part.Y + part.Height - image.Y);
+            if (right > left && bottom > top) AddRectangle(left, top, right, bottom);
+        }
+        _underlay.Width = image.Width; _underlay.Height = image.Height;
+        _underlay.Data = mask;
+        _underlay.Fill = new ImageBrush { ImageSource = frame.Sharp, Stretch = Stretch.Fill };
+        _underlay.Visibility = Visibility.Visible;
+        Canvas.SetLeft(_underlay, image.X - _unionX); Canvas.SetTop(_underlay, image.Y - _unionY);
+
+        void AddRectangle(double left, double top, double right, double bottom)
+        {
+            var figure = new PathFigure { StartPoint = new Point(left, top), IsFilled = true, IsClosed = true };
+            figure.Segments.Add(new LineSegment { Point = new Point(right, top) });
+            figure.Segments.Add(new LineSegment { Point = new Point(right, bottom) });
+            figure.Segments.Add(new LineSegment { Point = new Point(left, bottom) });
+            mask.Figures.Add(figure);
+        }
     }
 
     private Point ObjectPoint(Point point) => new((point.X - _cameraX) / _cameraScale + _unionX,
@@ -200,6 +228,17 @@ internal sealed partial class MemberEditorPreview : Grid
             (Math.Abs(p.X - b.X) <= tolerance || Math.Abs(p.X - b.X - b.Width) <= tolerance || Math.Abs(p.Y - b.Y) <= tolerance || Math.Abs(p.Y - b.Y - b.Height) <= tolerance);
     }
 
+    internal bool OwnsPointer(Point point)
+    {
+        var objectPoint = ObjectPoint(point);
+        if (_stroke || _scaling || _formal.PartitionAt(objectPoint) is not null ||
+            Tool is not null && EdgeAt(point) is not null) return true;
+        if (_placement is not { } image) return false;
+        var bounds = image.Bounds;
+        return AtImageEdge(point) || (objectPoint.X >= bounds.X && objectPoint.X < bounds.X + bounds.Width &&
+            objectPoint.Y >= bounds.Y && objectPoint.Y < bounds.Y + bounds.Height);
+    }
+
     private double Radius(Point point)
     {
         var p = ObjectPoint(point);
@@ -223,6 +262,7 @@ internal sealed partial class MemberEditorPreview : Grid
                 _gesturePointerId = e.Pointer.PointerId;
                 _gestureTool = point.Properties.IsRightButtonPressed ? Opposite(tool) : tool;
                 _stroke = true; _strokeAffected.Clear(); _rejectedEdges.Clear(); _previousStroke = point.Position;
+                ClearHover();
                 StrokeStarted?.Invoke(); ApplyEdge(edge); e.Handled = true;
             }
             else if (point.Properties.IsLeftButtonPressed && atEdge && _placement is { } image)
@@ -287,12 +327,15 @@ internal sealed partial class MemberEditorPreview : Grid
 
     private void RefreshHover(string reason)
     {
-        ClearHover();
-        if (IsGestureActive || _hoverPoint is not { } point)
-        { TraceHover(reason, null); return; }
         // A resize can move the remembered local point outside the viewport.
-        RememberPointer(point);
-        if (_hoverPoint is null) { TraceHover(reason, null); return; }
+        if (_hoverPoint is { } remembered) RememberPointer(remembered);
+        if (IsGestureActive || _hoverPoint is not { } point)
+        {
+            ClearHover();
+            TraceHover(reason, null); return;
+        }
+        ClearPointerHint();
+        _formal.SetHoveredPartition(_formal.PartitionAt(ObjectPoint(point)));
         var edge = EdgeAt(point);
         if (Tool is { } activeTool && edge is { } previewEdge && PreviewStroke?.Invoke(previewEdge, activeTool) is { } proposal)
         {
@@ -300,12 +343,14 @@ internal sealed partial class MemberEditorPreview : Grid
             // even when the selected button's action is already satisfied.
             var opposite = PreviewStroke?.Invoke(previewEdge, Opposite(activeTool)) ?? proposal;
             var feedback = proposal.AffectedEdges.Count > 0 ? proposal : opposite;
-            ShowAffected(feedback); ShowPointerHint(point, activeTool, feedback);
+            _formal.SetPreviewTargetTooltips(null);
+            ShowAffected(feedback); ShowPointerHint(point, DescribeStroke?.Invoke(activeTool, feedback));
             if (proposal.Outcome == StrokeOutcome.SizeLimit)
                 SetCursor(InputSystemCursorShape.UniversalNo);
             TraceHover(reason, previewEdge);
             return;
         }
+        UpdateTargetTooltips();
         SetEdgeCursor(AtImageEdge(point));
         TraceHover(reason, edge);
     }
@@ -334,6 +379,16 @@ internal sealed partial class MemberEditorPreview : Grid
 
     private void ClearHover()
     {
+        _formal.SetHoveredPartition(null);
+        UpdateTargetTooltips();
+        ClearPointerHint();
+    }
+
+    private void UpdateTargetTooltips() => _formal.SetPreviewTargetTooltips(
+        !IsGestureActive && _member is { } member ? WallMemberVisualFactory.TargetTooltip(member) : null);
+
+    private void ClearPointerHint()
+    {
         _hint.Children.Clear(); _pointerTip.Visibility = Visibility.Collapsed; SetEdgeCursor(false);
     }
 
@@ -351,9 +406,9 @@ internal sealed partial class MemberEditorPreview : Grid
         AppLog.Warn("EditorHover", $"{reason} point={_hoverPoint} tool={Tool} edge={edge} gesture={IsGestureActive} lines={_hint.Children.Count} tip={_pointerTip.Visibility}");
     }
 
-    private void ShowPointerHint(Point point, EditTool tool, StrokePreview proposal)
+    private void ShowPointerHint(Point point, string? description)
     {
-        if (DescribeStroke?.Invoke(tool, proposal) is not { Length: > 0 } description) return;
+        if (string.IsNullOrWhiteSpace(description)) return;
         _pointerText.Text = description;
         _pointerTip.Visibility = Visibility.Visible;
         _pointerTip.Measure(new Size(Math.Max(0, Math.Min(320, ActualWidth)), double.PositiveInfinity));

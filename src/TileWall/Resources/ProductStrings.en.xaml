@@ -9,7 +9,9 @@
   <x:String x:Key="Common.CancelExit">Cancel exit</x:String>
   <x:String x:Key="Common.ExitTitle">Exit TileWall</x:String>
   <x:String x:Key="Common.ExitDraft">You have unsaved changes. Save the entire draft or discard changes to exit. Cancel to continue editing.</x:String>
-  <x:String x:Key="Common.UnsavedDraft">You have unsaved changes. Discard changes to close and discard the entire draft, or continue editing and save.</x:String>
+  <x:String x:Key="Common.UnsavedDraft">Unsaved changes.</x:String>
+  <x:String x:Key="Editor.Saving">Saving…</x:String>
+  <x:String x:Key="Editor.PendingOperation">Wait for the current operation to finish.</x:String>
   <x:String x:Key="Common.CheckInput">Please check your input.</x:String>
   <x:String x:Key="Common.SaveFailed">Save failed: {0}</x:String>
   <x:String x:Key="Common.Width">Width (cells)</x:String>
@@ -18,6 +20,9 @@
   <x:String x:Key="Common.ShowTitle">Show title on hover or focus</x:String>
   <x:String x:Key="Common.Preview">Preview</x:String>
   <x:String x:Key="Settings.Title">Settings</x:String>
+  <x:String x:Key="Settings.Appearance">Appearance</x:String>
+  <x:String x:Key="Settings.Wall">Wall</x:String>
+  <x:String x:Key="Settings.System">System</x:String>
   <x:String x:Key="Settings.VisualStyle">Style</x:String>
   <x:String x:Key="Settings.Win10Style">Windows10</x:String>
   <x:String x:Key="Settings.Win11Style">Windows11</x:String>

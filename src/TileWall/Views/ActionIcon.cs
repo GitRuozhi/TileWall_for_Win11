@@ -58,10 +58,11 @@ internal static class ActionIcon
     {
         internal readonly ToolTip Tip = new();
         internal DisabledTips? Root;
+        internal bool DisabledOnly;
     }
     private static readonly ConditionalWeakTable<ButtonBase, Registration> RegisteredTips = new();
     private static readonly ConditionalWeakTable<UIElement, DisabledTips> RootTips = new();
-    internal static void SetTip(ButtonBase button, string? text)
+    internal static void SetTip(ButtonBase button, string? text, bool disabledOnly = false)
     {
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -87,10 +88,12 @@ internal static class ActionIcon
         // Keep one owner-assigned instance for both the normal tooltip service
         // and manual disabled hover. Updating a label must not replace that owner.
         registration.Tip.Content = text;
-        if (!ReferenceEquals(ToolTipService.GetToolTip(button), registration.Tip))
+        registration.DisabledOnly = disabledOnly;
+        var serviceTip = disabledOnly ? null : registration.Tip;
+        if (!ReferenceEquals(ToolTipService.GetToolTip(button), serviceTip))
         {
             registration.Tip.IsOpen = false;
-            ToolTipService.SetToolTip(button, registration.Tip);
+            ToolTipService.SetToolTip(button, serviceTip);
         }
         if (button.IsLoaded) AttachTip(button, registration);
     }
@@ -146,8 +149,8 @@ internal static class ActionIcon
                 if (!button.IsLoaded || button.IsEnabled || button.Visibility != Visibility.Visible || button.XamlRoot != _root.XamlRoot || button.ActualWidth <= 0) continue;
                 var position = button.TransformToVisual(_root).TransformPoint(new Point());
                 if (!new Rect(position, new Size(button.ActualWidth, button.ActualHeight)).Contains(_point)) continue;
-                if (!RegisteredTips.TryGetValue(button, out var registration) ||
-                    !ReferenceEquals(ToolTipService.GetToolTip(button), registration.Tip)) continue;
+                if (!RegisteredTips.TryGetValue(button, out var registration) || registration.Tip.Content is null ||
+                    !registration.DisabledOnly && !ReferenceEquals(ToolTipService.GetToolTip(button), registration.Tip)) continue;
                 Stop();
                 var tip = registration.Tip;
                 if (tip.XamlRoot != xamlRoot) tip.XamlRoot = xamlRoot;

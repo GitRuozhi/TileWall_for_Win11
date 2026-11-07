@@ -3,13 +3,17 @@ using System.Runtime.CompilerServices;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using TileWall.Core.Shell;
+using TileWall.Core.Wall;
+using TileWall.Graphics;
 using TileWall.Shell.Interop;
 using Windows.Foundation;
 using Windows.Graphics;
+using Windows.UI;
 
 namespace TileWall.Views;
 
@@ -17,17 +21,57 @@ namespace TileWall.Views;
 internal sealed class OwnedDialogWindow : Window
 {
     private sealed class ResizeOption { }
+    private sealed class PrimaryPage(FrameworkElement content)
+    {
+        internal FrameworkElement Content { get; } = content;
+        internal string? Name { get; set; }
+    }
     private static readonly ConditionalWeakTable<ContentDialog, ResizeOption> ResizableDialogs = new();
+    private static readonly ConditionalWeakTable<ContentDialog, PrimaryPage> PrimaryPages = new();
     internal static void EnableUserResize(ContentDialog dialog) => ResizableDialogs.GetValue(dialog, static _ => new ResizeOption());
+
+    internal static void EnablePageChrome(ContentDialog dialog, FrameworkElement page)
+    {
+        PrimaryPages.Add(dialog, new PrimaryPage(page));
+        if (page is Panel panel) panel.Background ??= Transparent;
+    }
+
+    internal static void SetPageName(ContentDialog dialog, string name)
+    {
+        if (!PrimaryPages.TryGetValue(dialog, out var page)) return;
+        page.Name = name;
+        if (dialog.XamlRoot?.Content is DialogRoot root) root.Host.UpdatePageName(dialog);
+    }
+
+    private static readonly SolidColorBrush Transparent = new(Microsoft.UI.Colors.Transparent);
+    private static readonly MemberVisual DefaultTileVisual = new();
+    internal static SolidColorBrush? PreviewCardBackground(XamlRoot? root) =>
+        root?.Content is DialogRoot dialogRoot ? dialogRoot.Host._previewCardBackground : null;
     private bool _resizable, _userSized;
     private uint? _resizePointer;
     private int _resizeEdges;
     private RectInt32 _resizeOrigin;
     private readonly Window _owner;
     private readonly DialogRoot _root;
+    private NativeBackdropSurface? _nativeBackdropSurface;
+    private WallBackdrop? _backdrop;
+    private readonly Grid _backgroundLayer = new() { IsHitTestVisible = false, Visibility = Visibility.Collapsed };
+    private readonly Image _backgroundImage = new() { Stretch = Stretch.UniformToFill };
+    private readonly SolidColorBrush _solidBackground = new();
+    private readonly SolidColorBrush _previewCardBackground = new();
     private readonly TaskCompletionSource _loaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private ContentDialog? _dialog;
     private FrameworkElement? _title, _contentPresenter, _card;
+    private Grid? _pageFrame;
+    private Panel? _layoutRoot;
+    private Shadow? _stockCardShadow;
+    private Brush? _stockFrameBackground, _stockLayoutBackground;
+    private Thickness _stockFrameBorder;
+    private string? _stockName;
+    private bool _pageChrome, _materialActive, _materialFallback = true, _materialReduced;
+    private WallBackgroundMode _backgroundMode;
+    private int _backgroundTransparency;
+    private Color? _highContrastBackground;
     private double _resizeContentInset;
     private bool _releasing, _fitQueued, _fitting, _shown, _opened;
     private uint? _dragPointer;
@@ -42,7 +86,9 @@ internal sealed class OwnedDialogWindow : Window
     internal OwnedDialogWindow(Window owner, Action dismiss)
     {
         _owner = owner;
-        _root = new DialogRoot(this);
+        _root = new DialogRoot(this) { Background = Transparent };
+        _backgroundLayer.Children.Add(_backgroundImage);
+        _root.Children.Add(_backgroundLayer);
         _root.RequestedTheme = (owner.Content as FrameworkElement)?.RequestedTheme ?? ElementTheme.Default;
         Title = "TileWall";
         Content = _root;
@@ -59,11 +105,11 @@ internal sealed class OwnedDialogWindow : Window
             if (_resizable && _resizePointer is null)
                 _root.SetResizeCursor(ResizeEdgesAt(e.GetCurrentPoint(_root).Position));
         };
-        _root.PointerCaptureLost += (_, e) =>
+        _root.AddHandler(UIElement.PointerCaptureLostEvent, new PointerEventHandler((_, e) =>
         {
             // A child relinquishing capture while the root acquires it is expected.
             if (ReferenceEquals(e.OriginalSource, _root)) EndDrag(e, "capture-lost", releaseCapture: false);
-        };
+        }), true);
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         // Cloaking permits the bootstrap XamlRoot layout without displaying an empty HWND.
         var cloak = 1;
@@ -80,6 +126,13 @@ internal sealed class OwnedDialogWindow : Window
             presenter.IsAlwaysOnTop = owner.AppWindow.Presenter is OverlappedPresenter { IsAlwaysOnTop: true };
         }
         RemoveNativeFrame(hwnd);
+        Activated += (_, args) =>
+        {
+            var active = args.WindowActivationState != WindowActivationState.Deactivated;
+            if (_materialActive == active) return;
+            _materialActive = active;
+            UpdateMaterial();
+        };
         AppWindow.Changed += (_, e) => { if (e.DidPositionChange && !_fitting) QueueFit(); };
         AppWindow.Closing += (_, e) =>
         {
@@ -106,7 +159,67 @@ internal sealed class OwnedDialogWindow : Window
         _root.XamlRoot!.Changed += (_, _) => { _root.InvalidateMeasure(); QueueFit(); };
     }
 
-    internal void ApplyTheme(ElementTheme theme)
+    internal void ApplyAppearance(ElementTheme theme, WallSettings settings, ImageSource? image, Color? contrastBackground)
+    {
+        if (_releasing) return;
+        _backgroundMode = settings.BackgroundMode;
+        _backgroundTransparency = settings.BackgroundTransparency;
+        _highContrastBackground = contrastBackground;
+        if (!ReferenceEquals(_backgroundImage.Source, image)) _backgroundImage.Source = image;
+        ApplyTheme(theme);
+        UpdateMaterial();
+    }
+
+    private void UpdateMaterial()
+    {
+        if (_releasing) return;
+        var dark = _root.RequestedTheme == ElementTheme.Dark;
+        var tile = MemberBackgroundRules.GetColor(DefaultTileVisual, dark);
+        var cardColor = _highContrastBackground ?? Color.FromArgb(tile.A, tile.R, tile.G, tile.B);
+        var cardOpacity = _highContrastBackground is not null ? 1 : tile.Opacity;
+        if (_previewCardBackground.Color != cardColor) _previewCardBackground.Color = cardColor;
+        if (_previewCardBackground.Opacity != cardOpacity) _previewCardBackground.Opacity = cardOpacity;
+        if (_backdrop is null && !_pageChrome) return;
+        var mode = _pageChrome ? _backgroundMode : WallBackgroundMode.Custom;
+        var active = _materialActive || !_shown;
+        if (_backdrop is null)
+        {
+            _nativeBackdropSurface = new NativeBackdropSurface(WinRT.Interop.WindowNative.GetWindowHandle(this));
+            _backdrop = new WallBackdrop(DispatcherQueue, OnMaterialFallbackChanged);
+            _backdrop.Configure(mode, _backgroundTransparency, active, dark);
+            SystemBackdrop = _backdrop;
+        }
+        else _backdrop.Configure(mode, _backgroundTransparency, active, dark);
+        UpdateBackground();
+    }
+
+    private void OnMaterialFallbackChanged(bool fallback, bool reduced)
+    {
+        _materialFallback = fallback;
+        _materialReduced = reduced;
+        UpdateBackground();
+    }
+
+    private void UpdateBackground()
+    {
+        if (_releasing) return;
+        var reduced = _materialReduced || _highContrastBackground is not null;
+        var custom = _backgroundMode == WallBackgroundMode.Custom;
+        var showImage = _pageChrome && custom && !reduced && _backgroundImage.Source is not null;
+        var showSolid = _pageChrome && !showImage && (custom || reduced || _materialFallback);
+        if (showSolid)
+        {
+            var color = _highContrastBackground ?? WallBackdrop.SolidBackgroundColor(_root.RequestedTheme == ElementTheme.Dark);
+            if (_solidBackground.Color != color) _solidBackground.Color = color;
+        }
+        _backgroundLayer.Background = showSolid ? _solidBackground : null;
+        _backgroundLayer.Opacity = reduced || showSolid && _backdrop?.NativeMaterialAttached == true
+            ? 1 : WallBackdrop.LinearBackgroundOpacity(_backgroundTransparency);
+        _backgroundImage.Visibility = showImage ? Visibility.Visible : Visibility.Collapsed;
+        _backgroundLayer.Visibility = showImage || showSolid ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void ApplyTheme(ElementTheme theme)
     {
         _pendingTheme = theme;
         if (_releasing || _root.RequestedTheme == theme || _themeQueued) return;
@@ -129,7 +242,9 @@ internal sealed class OwnedDialogWindow : Window
             return;
         }
         DetachThemeWait();
-        if (_root.RequestedTheme != _pendingTheme) _root.RequestedTheme = _pendingTheme;
+        if (_root.RequestedTheme == _pendingTheme) return;
+        _root.RequestedTheme = _pendingTheme;
+        UpdateMaterial();
     }
 
     private void OnThemeDropDownClosed(object? sender, object args)
@@ -208,15 +323,16 @@ internal sealed class OwnedDialogWindow : Window
         dialog.VerticalAlignment = VerticalAlignment.Top;
         dialog.Opened += OnDialogOpened;
         dialog.Closing += OnDialogClosing;
+        var contentChanged = dialog.RegisterPropertyChangedCallback(ContentControl.ContentProperty, (_, _) => UpdatePageChrome());
         _root.Children.Add(dialog);
         try
         {
+            UpdatePageChrome();
             // InPlace keeps the stock card and ContentDialog behavior without a popup
             // canvas or dimming background surrounding the independently modal HWND.
             var pending = dialog.ShowAsync(ContentDialogPlacement.InPlace);
             dialog.ApplyTemplate();
-            _title = FindPart(dialog, "Title");
-            _card = FindPart(dialog, "BackgroundElement");
+            RefreshDialogParts(dialog);
             _root.UpdateLayout();
             FitToContent();
             return await pending;
@@ -226,7 +342,12 @@ internal sealed class OwnedDialogWindow : Window
             ReleaseTextFocus(dialog);
             dialog.Opened -= OnDialogOpened;
             dialog.Closing -= OnDialogClosing;
-            _dialog = null; _title = null; _contentPresenter = null; _card = null; _root.Children.Clear();
+            dialog.UnregisterPropertyChangedCallback(ContentControl.ContentProperty, contentChanged);
+            if (_pageChrome) SetPageChrome(dialog, false);
+            _dialog = null; _title = null; _contentPresenter = null; _card = null; _root.Children.Remove(dialog);
+            _pageFrame = null; _layoutRoot = null;
+            _stockCardShadow = null;
+            _stockFrameBackground = _stockLayoutBackground = null;
         }
     }
 
@@ -239,10 +360,123 @@ internal sealed class OwnedDialogWindow : Window
     {
         _opened = true;
         _root.UpdateLayout();
+        RefreshDialogParts(sender);
+        FitToContent();
+        if (BackdropTrace.Enabled && _pageFrame is { } frame)
+        {
+            for (DependencyObject? node = frame; node is FrameworkElement element; node = VisualTreeHelper.GetParent(node))
+            {
+                var brush = element switch { Panel panel => panel.Background, Border border => border.Background,
+                    Control control => control.Background, _ => null };
+                BackdropTrace.Write($"DialogLayer {element.GetType().Name}/{element.Name} size={element.ActualWidth}x{element.ActualHeight} " +
+                    $"fill={(brush is SolidColorBrush solid ? solid.Color.ToString() : brush?.GetType().Name)} shadow={element.Shadow is not null} z={element.Translation.Z:R}");
+            }
+            BackdropTrace.Write($"DialogBackground mode={_backgroundMode} image={_backgroundImage.Visibility} " +
+                $"plane={_backgroundLayer.Visibility} alpha={_backgroundLayer.Opacity:R} fallback={_materialFallback}");
+        }
+    }
+
+    private void RefreshDialogParts(ContentDialog sender)
+    {
         _title = FindPart(sender, "Title");
         _contentPresenter = FindPart(sender, "Content");
-        _card = FindPart(sender, "BackgroundElement");
-        FitToContent();
+        var card = FindPart(sender, "BackgroundElement");
+        if (!ReferenceEquals(card, _card))
+        {
+            _card = card;
+            _stockCardShadow = null;
+        }
+        var layoutRoot = FindPart(sender, "LayoutRoot") as Panel;
+        if (!ReferenceEquals(layoutRoot, _layoutRoot))
+        {
+            _layoutRoot = layoutRoot;
+            _stockLayoutBackground = layoutRoot?.Background;
+        }
+        var frame = _contentPresenter is not null ? VisualTreeHelper.GetParent(_contentPresenter) as Grid : null;
+        if (!ReferenceEquals(frame, _pageFrame))
+        {
+            _pageFrame = frame;
+            _stockFrameBackground = frame?.Background;
+            _stockFrameBorder = frame?.BorderThickness ?? default;
+        }
+        if (_pageChrome) ApplyPageTemplateParts();
+    }
+
+    private void UpdatePageChrome()
+    {
+        if (_dialog is not { } dialog) return;
+        var enabled = PrimaryPages.TryGetValue(dialog, out var page) && ReferenceEquals(dialog.Content, page.Content);
+        if (_pageChrome != enabled) SetPageChrome(dialog, enabled);
+    }
+
+    private void SetPageChrome(ContentDialog dialog, bool enabled)
+    {
+        _pageChrome = enabled;
+        if (enabled)
+        {
+            _stockName = AutomationProperties.GetName(dialog);
+            dialog.Title = null;
+            UpdatePageName(dialog);
+            dialog.Background = Transparent;
+        }
+        else
+        {
+            if (string.IsNullOrEmpty(_stockName)) dialog.ClearValue(AutomationProperties.NameProperty);
+            else AutomationProperties.SetName(dialog, _stockName);
+            dialog.ClearValue(Control.BackgroundProperty);
+        }
+        ApplyPageTemplateParts();
+        UpdateMaterial();
+        QueueFit();
+    }
+
+    private void UpdatePageName(ContentDialog dialog)
+    {
+        if (_pageChrome && ReferenceEquals(_dialog, dialog) && PrimaryPages.TryGetValue(dialog, out var page) &&
+            page.Name is { } name)
+            AutomationProperties.SetName(dialog, name);
+    }
+
+    private void ApplyPageTemplateParts()
+    {
+        // The template can tint LayoutRoot even in place. It also applies an
+        // elevation shadow which shows through the transparent BackgroundElement.
+        if (_layoutRoot is { } layout)
+        {
+            if (_pageChrome) layout.Background = Transparent;
+            else
+            {
+                layout.ClearValue(Panel.BackgroundProperty);
+                if (layout.Background is null) layout.Background = _stockLayoutBackground;
+            }
+        }
+        if (_card is { } card)
+        {
+            if (_pageChrome && card.Shadow is { } shadow)
+            {
+                _stockCardShadow = shadow;
+                card.Shadow = null;
+            }
+            else if (!_pageChrome && _stockCardShadow is { } stockShadow)
+            {
+                card.Shadow = stockShadow;
+                _stockCardShadow = null;
+            }
+        }
+        if (_pageFrame is not { } frame) return;
+        // The WinUI template adds an independent top fill over the card. Remove it
+        // on the page so it cannot cover the material, especially in light mode.
+        if (_pageChrome)
+        {
+            frame.Background = Transparent;
+            frame.BorderThickness = new Thickness(0);
+        }
+        else
+        {
+            frame.ClearValue(Panel.BackgroundProperty);
+            if (frame.Background is null) frame.Background = _stockFrameBackground;
+            frame.BorderThickness = _stockFrameBorder;
+        }
     }
 
     private static void RemoveNativeFrame(IntPtr hwnd)
@@ -325,7 +559,12 @@ internal sealed class OwnedDialogWindow : Window
 
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        if (_dragPointer is not null || _resizePointer is not null) return;
+        if (_dragPointer is not null || _resizePointer is not null)
+        {
+            if (_root.PointerCaptures is { Count: > 0 }) return;
+            _dragPointer = _resizePointer = null;
+            _root.SetResizeCursor(0);
+        }
         var point = e.GetCurrentPoint(_root);
         if (_resizable && point.Properties.IsLeftButtonPressed)
         {
@@ -350,29 +589,80 @@ internal sealed class OwnedDialogWindow : Window
                 e.Handled = true; return;
             }
         }
-        if (_title is null) return;
+        if (!point.Properties.IsLeftButtonPressed ||
+            !(_pageChrome ? IsBlankPageHit(e) : IsTitleBand(point.Position)) ||
+            !TryGetScreenPoint(point.Position, out var pressedAtForMove)) return;
+        var dragOrigin = AppWindow.Position;
+        if (!_root.CapturePointer(e.Pointer))
+        {
+            TraceDrag("begin-capture-rejected", e.Pointer.PointerId, "move", 0, pressedAtForMove);
+            return;
+        }
+        _dragStart = pressedAtForMove;
+        _dragPointer = e.Pointer.PointerId;
+        _dragOrigin = dragOrigin;
+        TraceDrag("begin", e.Pointer.PointerId, "move", 0, pressedAtForMove);
+        e.Handled = true;
+    }
+
+    private bool IsTitleBand(Point point)
+    {
+        if (_title is null) return false;
         var titleTop = _title.TransformToVisual(_root).TransformPoint(new Point());
         var titleBottom = titleTop.Y + _title.ActualHeight + _title.Margin.Bottom;
         if (_contentPresenter is not null)
             titleBottom = Math.Min(titleBottom, _contentPresenter.TransformToVisual(_root).TransformPoint(new Point()).Y);
-        // This band contains only the title and its top/side padding. Fields, scrolling,
-        // preview gestures and commands below it retain their normal input route.
-        if (!point.Properties.IsLeftButtonPressed || point.Position.Y < 0 || point.Position.Y >= titleBottom ||
-            !TryGetScreenPoint(point.Position, out var titlePressedAt)) return;
-        var dragOrigin = AppWindow.Position;
-        if (!_root.CapturePointer(e.Pointer)) return;
-        _dragStart = titlePressedAt;
-        _dragPointer = e.Pointer.PointerId;
-        _dragOrigin = dragOrigin;
-        TraceDrag("begin", e.Pointer.PointerId, "move", 0, titlePressedAt);
-        e.Handled = true;
+        return point.Y >= 0 && point.Y < titleBottom;
     }
+
+    private bool IsBlankPageHit(PointerRoutedEventArgs e)
+    {
+        if (_dialog is not { } dialog || e.OriginalSource is not DependencyObject source) return false;
+        var mouse = e.Pointer.PointerDeviceType == PointerDeviceType.Mouse;
+        for (DependencyObject? element = source; element is not null; element = VisualTreeHelper.GetParent(element))
+        {
+            if (ReferenceEquals(element, dialog) || ReferenceEquals(element, _root))
+            {
+                // WinUI can route a press on a disabled control to its container.
+                // Check the arranged controls too, bounded by their parent viewports.
+                return !HasControlAt(dialog, e.GetCurrentPoint(_root).Position, mouse);
+            }
+            if (element is Control control && IsDragControl(control, mouse) ||
+                element is TextBlock { IsTextSelectionEnabled: true } or ClockMemberView) return false;
+            if (element is MemberEditorPreview editor && editor.OwnsPointer(e.GetCurrentPoint(editor).Position)) return false;
+        }
+        return false;
+    }
+
+    private bool HasControlAt(DependencyObject parent, Point point, bool mouse)
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            if (VisualTreeHelper.GetChild(parent, index) is not FrameworkElement element ||
+                element.Visibility != Visibility.Visible || !element.IsHitTestVisible) continue;
+            var local = _root.TransformToVisual(element).TransformPoint(point);
+            if (local.X < 0 || local.Y < 0 || local.X >= element.ActualWidth || local.Y >= element.ActualHeight) continue;
+            if (element is Control control && IsDragControl(control, mouse) || HasControlAt(element, point, mouse)) return true;
+        }
+        return false;
+    }
+
+    // Scrollbars and their buttons are controls in their own right. A mouse
+    // press in the scroller's empty area can move the window; touch can still pan.
+    private static bool IsDragControl(Control control, bool mouse) => control.GetType() != typeof(ContentControl) &&
+        !(mouse && control is ScrollViewer);
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
         if (_resizePointer == e.Pointer.PointerId || _dragPointer == e.Pointer.PointerId)
         {
-            if (TryGetScreenPoint(e.GetCurrentPoint(_root).Position, out var cursor)) ApplyDragPoint(cursor);
+            var point = e.GetCurrentPoint(_root);
+            if (e.Pointer.PointerDeviceType == PointerDeviceType.Mouse && !point.Properties.IsLeftButtonPressed)
+            {
+                EndDrag(e, "button-up");
+                return;
+            }
+            if (TryGetScreenPoint(point.Position, out var cursor)) ApplyDragPoint(cursor);
             e.Handled = true;
             return;
         }
@@ -517,9 +807,17 @@ internal sealed class OwnedDialogWindow : Window
         _releasing = true;
         _root.SetResizeCursor(0);
         DetachThemeWait();
-        Win32Api.EnableWindow(WinRT.Interop.WindowNative.GetWindowHandle(_owner), true);
-        Close();
-        if (_owner.AppWindow.IsVisible) _owner.Activate();
+        try
+        {
+            if (_backdrop is not null) SystemBackdrop = null;
+        }
+        finally
+        {
+            _nativeBackdropSurface?.Dispose();
+            Win32Api.EnableWindow(WinRT.Interop.WindowNative.GetWindowHandle(_owner), true);
+            Close();
+            if (_owner.AppWindow.IsVisible) _owner.Activate();
+        }
     }
 
     /// <summary>Measure at the screen budget so a small host cannot lock out larger pages.</summary>
@@ -553,15 +851,18 @@ internal sealed class OwnedDialogWindow : Window
             var desired = new Size();
             foreach (var child in Children)
             {
+                if (ReferenceEquals(child, host._backgroundLayer)) continue;
                 child.Measure(host._userSized ? availableSize : budget);
                 desired = child.DesiredSize;
             }
+            host._backgroundLayer.Measure(availableSize);
             return new Size(Math.Min(availableSize.Width, desired.Width), Math.Min(availableSize.Height, desired.Height));
         }
 
         protected override Size ArrangeOverride(Size finalSize)
         {
-            foreach (var child in Children) child.Arrange(new Rect(new Point(), host._userSized ? finalSize : child.DesiredSize));
+            foreach (var child in Children)
+                child.Arrange(new Rect(new Point(), host._userSized || ReferenceEquals(child, host._backgroundLayer) ? finalSize : child.DesiredSize));
             return finalSize;
         }
     }

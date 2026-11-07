@@ -114,20 +114,9 @@ public sealed partial class MainWindow
             (foreground.R * 299 + foreground.G * 587 + foreground.B * 114) > 128_000;
         var theme = _themeDark ? ElementTheme.Dark : ElementTheme.Light;
         if (WallRoot.RequestedTheme != theme) WallRoot.RequestedTheme = theme;
-        _dialogHost?.ApplyTheme(theme);
         var contrast = _accessibilitySettings.HighContrast;
         if (settings.BackgroundMode != WallBackgroundMode.Acrylic || contrast || !_appearanceSettings.AdvancedEffectsEnabled)
             _backdropTransitionCover = false;
-        var statusForeground = contrast
-            ? _appearanceSettings.GetColorValue(UIColorType.Foreground)
-            : _themeDark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
-        if (StatusText.Foreground is not SolidColorBrush foregroundBrush || !foregroundBrush.Color.Equals(statusForeground))
-            StatusText.Foreground = new SolidColorBrush(statusForeground);
-        var statusBackground = contrast
-            ? _appearanceSettings.GetColorValue(UIColorType.Background)
-            : _themeDark ? Color.FromArgb(240, 32, 32, 32) : Color.FromArgb(240, 243, 243, 243);
-        if (StatusPanel.Background is not SolidColorBrush statusBrush || !statusBrush.Color.Equals(statusBackground))
-            StatusPanel.Background = new SolidColorBrush(statusBackground);
         if (_snapshotCapture is not null && (settings.BackgroundMode != WallBackgroundMode.Acrylic || contrast ||
             !_appearanceSettings.AdvancedEffectsEnabled))
             ReleaseBackdropSnapshot();
@@ -150,7 +139,12 @@ public sealed partial class MainWindow
             }
         }
         UpdateBackgroundLayer();
+        RefreshDialogAppearance(settings);
     }
+
+    private void RefreshDialogAppearance(WallSettings settings) => _dialogHost?.ApplyAppearance(
+        WallRoot.RequestedTheme, settings, _backgroundImage.Source,
+        _accessibilitySettings.HighContrast ? _appearanceSettings.GetColorValue(UIColorType.Background) : null);
 
     private void OnMaterialFallbackChanged(bool fallback, bool reduced)
     {
@@ -263,14 +257,14 @@ public sealed partial class MainWindow
         // graph during either handoff, with no live desktop contribution underneath.
         // A real solid fallback also shields an outgoing native graph until detach.
         var opacity = transitionCover || reduced || snapshotReady || _materialFallback && _wallBackdrop.NativeMaterialAttached
-            ? 1 : (100 - Math.Clamp(settings.BackgroundTransparency, 0, 100)) / 100d;
+            ? 1 : WallBackdrop.LinearBackgroundOpacity(settings.BackgroundTransparency);
         var customImageReady = !reduced && settings.BackgroundMode == WallBackgroundMode.Custom &&
             _backgroundImage.Source is not null;
         var imageVisibility = customImageReady ? Visibility.Visible : Visibility.Collapsed;
         var snapshotVisibility = snapshotReady ? Visibility.Visible : Visibility.Collapsed;
         var imagePlane = customImageReady || snapshotReady;
         var color = highContrast ? _appearanceSettings.GetColorValue(UIColorType.Background)
-            : _themeDark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243);
+            : WallBackdrop.SolidBackgroundColor(_themeDark);
         var backgroundChanged = imagePlane ? _backgroundLayer.Background is not null
             : _backgroundLayer.Background is not SolidColorBrush existingBrush || !existingBrush.Color.Equals(color);
         var planeChanged = previousLayerVisibility != visibility || previousSnapshotVisibility != snapshotVisibility ||

@@ -237,7 +237,7 @@ public sealed partial class MainWindow
         _shutdownStarted = true;
         CancelWelcomeInitialization();
         await WaitForWelcomeInitializationAsync();
-        _statusTimer.Stop();
+        _statusOverlay.Clear();
         _clockTimer.Stop();
         _focusCheckRetry?.Stop();
         _viewportTransition = null;

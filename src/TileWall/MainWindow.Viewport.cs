@@ -156,6 +156,7 @@ public sealed partial class MainWindow
             WallScroll.VerticalAlignment = Microsoft.UI.Xaml.VerticalAlignment.Top;
             WallScroll.Width = region.Width; WallScroll.Height = region.Height;
             WallScroll.Margin = new Microsoft.UI.Xaml.Thickness(region.X, region.Y, 0, 0);
+            PositionStatusViewport();
         }
         // The document owns its complete row budget. A larger clip must not create phantom rows.
         if (updateSurface) Surface.SetViewportMinimum(fullScreen || scrolling ? region.Width : 0, 0);

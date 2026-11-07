@@ -242,8 +242,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         var resultMessage = string.Format(ProductStrings.Get("Import.QueueResult"), _addSucceeded, _addFailed, _addCount)
             + (_lastAddFailure is null ? string.Empty : " " + _lastAddFailure)
             + (_addTruncated ? " " + ProductStrings.Get("Import.Truncated") : string.Empty);
-        if (_addFailed == 0 && !_addTruncated) _window.ShowTransientStatus(resultMessage);
-        else _window.ShowStatus(resultMessage);
+        _window.ShowTransientStatus(resultMessage);
         _inAddSequence = _pendingAdds.Count != 0;
         // ImportExternalBatchAsync returns a positive count only after the formal
         // commit succeeds. Notification delivery is outside that transaction.

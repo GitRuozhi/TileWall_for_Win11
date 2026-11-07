@@ -117,24 +117,32 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
     }
 
     internal void Configure(WallSettings settings, bool active, bool dark, bool snapshotAvailable = false)
+        => Configure(settings.BackgroundMode, settings.BackgroundTransparency, active, dark, snapshotAvailable);
+
+    internal void Configure(WallBackgroundMode mode, int transparency, bool active, bool dark, bool snapshotAvailable = false)
     {
-        if (_mode != settings.BackgroundMode || _active != active || _dark != dark ||
-            _snapshotAvailable != snapshotAvailable ||
-            _transparency != Math.Clamp(settings.BackgroundTransparency, 0, 100))
+        transparency = Math.Clamp(transparency, 0, 100);
+        if (_mode != mode || _active != active || _dark != dark ||
+            _snapshotAvailable != snapshotAvailable || _transparency != transparency)
         {
             _intentGeneration++;
             _pendingCommit = null;
         }
-        if (_mode != settings.BackgroundMode)
+        if (_mode != mode)
             _focusCommitRequired = false;
-        if (_mode != settings.BackgroundMode || _active != active || _dark != dark) _acrylicFailed = false;
-        _mode = settings.BackgroundMode;
-        _transparency = Math.Clamp(settings.BackgroundTransparency, 0, 100);
+        if (_mode != mode || _active != active || _dark != dark) _acrylicFailed = false;
+        _mode = mode;
+        _transparency = transparency;
         _active = active;
         _dark = dark;
         _snapshotAvailable = snapshotAvailable;
         UpdateMaterial();
     }
+
+    internal static double LinearBackgroundOpacity(int transparency) => (100 - Math.Clamp(transparency, 0, 100)) / 100d;
+
+    internal static Color SolidBackgroundColor(bool dark) => dark
+        ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243);
 
     protected override void OnTargetConnected(ICompositionSupportsSystemBackdrop connectedTarget, XamlRoot xamlRoot)
     {
@@ -332,7 +340,7 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
                 // inactive. A new setting takes effect on the next activation.
                 if (effectiveActive || !_snapshotAvailable || slot.Mode != WallBackgroundMode.Acrylic || reduced)
                     slot.Proxy.Opacity = reduced ? 1f : slot.Mode == WallBackgroundMode.Acrylic
-                        ? (float)AcrylicSnapshotRecipe.BackgroundOpacity(_transparency) : (100 - _transparency) / 100f;
+                        ? (float)AcrylicSnapshotRecipe.BackgroundOpacity(_transparency) : (float)LinearBackgroundOpacity(_transparency);
                 // The disabled Acrylic controller keeps its active recipe cached.
                 // Toggling its input state while F is visible would let a stale
                 // native fallback brush be the first committed activation source.

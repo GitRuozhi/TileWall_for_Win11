@@ -24,10 +24,10 @@ internal sealed class ClockEditorDialog : IWallDialogSession
     private readonly TextBox _title = new() { IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
     private readonly CheckBox _showTitle = new();
     private readonly Viewbox _preview = new() { Height = 150, Stretch = Stretch.Uniform,
-        HorizontalAlignment = HorizontalAlignment.Stretch };
+        HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center };
     private readonly ComboBox _width = new(), _height = new(), _timeFormat = new(), _dateFormat = new();
-    private readonly TextBlock _error = new() { TextWrapping = TextWrapping.Wrap,
-        Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed) };
+    private readonly StatusOverlay _status = new(VerticalAlignment.Top), _operationStatus = new();
+    private readonly Button _saveButton = new(), _cancelButton = new();
     private readonly Dictionary<string, TextBlock> _labels = [];
     private bool _saved, _dirty, _allowDiscard, _discarded, _titleEdited;
 
@@ -52,21 +52,21 @@ internal sealed class ClockEditorDialog : IWallDialogSession
         AddRow(form, "Common.Title", _title); AddRow(form, "Common.ShowTitle", _showTitle);
         AddRow(form, "Common.Width", _width); AddRow(form, "Common.Height", _height);
         AddRow(form, "Clock.TimeFormat", _timeFormat); AddRow(form, "Clock.DateFormat", _dateFormat);
-        _preview.Margin = new Thickness(0, 12, 0, 0);
-        var previewRow = form.RowDefinitions.Count; form.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(_preview, previewRow); Grid.SetColumnSpan(_preview, 2); form.Children.Add(_preview);
         var root = (owner.Content as FrameworkElement)?.XamlRoot;
-        var body = new Grid { Width = Math.Min(400, Math.Max(260, (root?.Size.Width ?? 480) - 80)),
-            MaxHeight = Math.Min(520, Math.Max(120, (root?.Size.Height ?? 730) - 210)) };
-        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        body.Children.Add(new ScrollViewer { Content = form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-        var errorHost = new ScrollViewer { Content = _error, MaxHeight = 90, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        Grid.SetRow(errorHost, 1); body.Children.Add(errorHost);
-        _dialog = new ContentDialog { XamlRoot = root, Content = body, DefaultButton = ContentDialogButton.None };
+        var cards = new StackPanel { Spacing = 12 };
+        cards.Children.Add(VisualStyles.Card(form));
+        cards.Children.Add(VisualStyles.ActionCard(_saveButton, _cancelButton));
+        var preview = new Grid { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        preview.Children.Add(_preview); preview.Children.Add(_status); preview.Children.Add(_operationStatus);
+        var budget = OwnedDialogWindow.ContentBudget(owner);
+        var page = VisualStyles.PreviewPage(preview, cards, budget, 660, 340);
+        _dialog = new ContentDialog { XamlRoot = root, Content = page, DefaultButton = ContentDialogButton.None };
+        OwnedDialogWindow.EnablePageChrome(_dialog, page);
+        _dialog.Resources["ContentDialogMaxWidth"] = budget.Width + 48;
         _exit = new(_dialog);
         Id(_dialog, "editor"); Id(_title, "title"); Id(_showTitle, "show-title"); Id(_width, "width"); Id(_height, "height");
-        Id(_timeFormat, "time-format"); Id(_dateFormat, "date-format"); Id(_preview, "clock-preview"); Id(_error, "error");
+        Id(_timeFormat, "time-format"); Id(_dateFormat, "date-format"); Id(_preview, "clock-preview"); Id(_status, "error");
+        Id(_saveButton, "save"); Id(_cancelButton, "cancel");
         RefreshStrings(); RefreshPreview();
         _title.TextChanged += (_, _) =>
         {
@@ -75,22 +75,17 @@ internal sealed class ClockEditorDialog : IWallDialogSession
         };
         _showTitle.Checked += (_, _) => Changed(); _showTitle.Unchecked += (_, _) => Changed();
         foreach (var box in new[] { _width, _height, _timeFormat, _dateFormat }) box.SelectionChanged += (_, _) => Changed();
+        _saveButton.Click += (_, _) => { if (TrySaveNow() is null) _dialog.Hide(); };
+        _cancelButton.Click += (_, _) => RequestDismiss();
         _dialog.Opened += (_, _) => { _title.Focus(FocusState.Programmatic); RefreshPreview(); };
-        _dialog.PrimaryButtonClick += (_, e) =>
-        {
-            if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.SaveAndExit); return; }
-            e.Cancel = TrySaveNow() is not null;
-        };
+        _dialog.PrimaryButtonClick += (_, e) => { if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.SaveAndExit); } };
         _dialog.SecondaryButtonClick += (_, e) => { if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.DiscardAndExit); } };
-        _dialog.CloseButtonClick += (_, e) =>
-        {
-            if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); return; }
-            if (_dirty && !_allowDiscard) { e.Cancel = true; OfferDiscard(); } else _discarded = true;
-        };
+        _dialog.CloseButtonClick += (_, e) => { if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); } };
         _dialog.Closing += (_, e) =>
         {
             if (_exit.IsActive) { e.Cancel = true; _exit.Resolve(ExitDecision.CancelExit); }
-            else if (!_saved && !_discarded && _dirty) { e.Cancel = true; OfferDiscard(); }
+            else if (!_saved && !_discarded && _dirty && !_allowDiscard) { e.Cancel = true; OfferDiscard(); }
+            else { _status.Clear(); _operationStatus.Clear(); }
         };
     }
 
@@ -127,17 +122,22 @@ internal sealed class ClockEditorDialog : IWallDialogSession
     public void RefreshStrings()
     {
         if (_exit.IsActive) return;
-        _dialog.Title = ProductStrings.Get("Clock.Edit");
-        _dialog.PrimaryButtonText = ProductStrings.Get("Common.Save");
-        _dialog.CloseButtonText = ProductStrings.Get(_allowDiscard ? "Common.Discard" : "Common.Cancel");
+        OwnedDialogWindow.SetPageName(_dialog, ProductStrings.Get("Clock.Edit"));
+        ActionIcon.Set(_saveButton, ProductStrings.Get("Common.Save"), ActionIcon.Save);
+        ActionIcon.Set(_cancelButton, ProductStrings.Get(_allowDiscard ? "Common.Discard" : "Common.Cancel"),
+            _allowDiscard ? ActionIcon.Delete : ActionIcon.Cancel);
         foreach (var (key, label) in _labels) label.Text = ProductStrings.Get(key);
         AutomationProperties.SetName(_showTitle, ProductStrings.Get("Common.ShowTitle"));
         ActionIcon.SetTip(_showTitle, ProductStrings.Get("Common.ShowTitle"));
-        ActionIcon.DecorateDialog(_dialog);
     }
-    private void Changed() { _dirty = true; _allowDiscard = false; _discarded = false; RefreshStrings(); RefreshPreview(); }
-    private void OfferDiscard() { _allowDiscard = true; _error.Text = ProductStrings.Get("Common.UnsavedDraft"); RefreshStrings(); }
-    private string Error(string error) { _error.Text = error; return error; }
+    private void Changed() { _dirty = true; _allowDiscard = false; _discarded = false; _status.Clear(); _operationStatus.Clear(); RefreshStrings(); RefreshPreview(); }
+    private void OfferDiscard()
+    {
+        _allowDiscard = true;
+        _operationStatus.Show(ProductStrings.Get("Common.UnsavedDraft"), transient: true, renew: true);
+        RefreshStrings();
+    }
+    private string Error(string error) { _status.Show(error); return error; }
     private void RefreshPreview()
     {
         var visual = _draft.Visual with { ShowTitle = _showTitle.IsChecked == true };

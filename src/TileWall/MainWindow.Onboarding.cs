@@ -91,7 +91,7 @@ public sealed partial class MainWindow
             string Text(string key) => ProductStrings.Get("Welcome." + key, before.Settings.LanguageMode);
             var text = new WelcomeWallText(WelcomeWallBuilder.NativeTargetKeys.Append("Settings")
                 .ToDictionary(key => key, Text, StringComparer.Ordinal));
-            var prepared = WelcomeWallBuilder.Prepare(before, targets, text, _session.ManagedGalleryPath(gallery.Reference),
+            var prepared = WelcomeWallBuilder.Prepare(before, targets, text, _session.DataRoot, _session.ManagedGalleryPath(gallery.Reference),
                 ViewportBudget(before.Settings), _metrics, gallery.Reference, guideImage.Reference, showcaseImage.Reference);
             if (prepared.Layout.Proposal is not { } proposal) return ViewportFailure(prepared.Layout);
             RequireCurrentWelcomeSource(before, token);

@@ -16,6 +16,8 @@ public sealed class PuzzleCanvasView : Canvas
 {
     private readonly List<Action> _resetInteractions = [];
     private readonly List<(Border Band, TextBlock Title, double ViewportWidth)> _externalTitles = [];
+    private readonly List<Action<bool, bool>> _partitionHover = [];
+    private readonly List<Grid> _previewPartitions = [];
     private static readonly Windows.UI.ViewManagement.UISettings MotionSettings = new();
     private sealed class FramePlane(Canvas host, double x, double y)
     {
@@ -29,6 +31,9 @@ public sealed class PuzzleCanvasView : Canvas
     private PuzzleMember? _member;
     private MemberTransition? _transition;
     private DipRect[] _viewports = [];
+    private DipRect[] _snappedViewports = [];
+    private int? _hoveredPartition;
+    private string? _previewTargetTip;
     private double _rasterScale = 1;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _scrollTimer;
     private TextBlock? _scrollTitle;
@@ -39,10 +44,17 @@ public sealed class PuzzleCanvasView : Canvas
     public bool Interactive { get; set; }
     internal bool ExternalInteraction { get; set; }
     internal bool RevealTitles { get; set; }
+    internal bool PreviewHover { get; set; }
+    internal IReadOnlyList<DipRect> SnappedViewports => _snappedViewports;
+    internal IReadOnlyList<Grid> PreviewPartitions => _previewPartitions;
+    internal Grid? FirstPreviewPartition { get; private set; }
+    internal ImageTransform? SharpTransform { get; private set; }
     public event Action<Button, int>? PartitionCreated;
 
     internal void StopTransientFeedback()
     {
+        if (_hoveredPartition is { } partition) _partitionHover[partition](false, true);
+        _hoveredPartition = null;
         StopScrolling();
         foreach (var title in _externalTitles)
             title.Band.Visibility = RevealTitles ? Visibility.Visible : Visibility.Collapsed;
@@ -62,6 +74,9 @@ public sealed class PuzzleCanvasView : Canvas
         Children.Clear();
         _resetInteractions.Clear();
         _externalTitles.Clear();
+        _partitionHover.Clear();
+        _previewPartitions.Clear();
+        FirstPreviewPartition = null;
         _planes.Clear();
         _transition = null;
         _member = member;
@@ -71,14 +86,15 @@ public sealed class PuzzleCanvasView : Canvas
         _viewports = member.Partitions.Select(p => new DipRect(p.Column * metrics.Pitch,
             p.Row * metrics.Pitch, p.Width * metrics.Pitch - metrics.Gap,
             p.Height * metrics.Pitch - metrics.Gap)).ToArray();
+        _snappedViewports = new DipRect[_viewports.Length];
         var title = WallMemberVisualFactory.ResolveTitle(member, targetIsFolder);
         for (var index = 0; index < _viewports.Length; index++)
         {
             var pixels = PuzzleSceneGeometry.ToPixelRect(_viewports[index], rasterScale);
-            var width = pixels.Width / rasterScale;
-            var height = pixels.Height / rasterScale;
-            var x = pixels.X / rasterScale;
-            var y = pixels.Y / rasterScale;
+            var viewport = new DipRect(pixels.X / rasterScale, pixels.Y / rasterScale,
+                pixels.Width / rasterScale, pixels.Height / rasterScale);
+            _snappedViewports[index] = viewport;
+            var (x, y, width, height) = viewport;
             var content = new Grid
             {
                 Width = width, Height = height, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
@@ -90,7 +106,8 @@ public sealed class PuzzleCanvasView : Canvas
             _planes.Add(new FramePlane(plane, x, y));
             Border? band = null;
             TextBlock? label = null;
-            if (member.Visual.ShowTitle && !string.IsNullOrWhiteSpace(title) && (Interactive || RevealTitles || ExternalInteraction))
+            if (member.Visual.ShowTitle && !string.IsNullOrWhiteSpace(title) &&
+                (Interactive || RevealTitles || ExternalInteraction || PreviewHover))
             {
                 label = new TextBlock { Text = title, FontSize = 11,
                     Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
@@ -110,6 +127,13 @@ public sealed class PuzzleCanvasView : Canvas
                 content.Children.Add(band);
                 if (ExternalInteraction) _externalTitles.Add((band, label, width - 10));
             }
+            void SetTitleHover(bool hover)
+            {
+                if (band is not null) band.Visibility = hover ? Visibility.Visible : Visibility.Collapsed;
+                if (label is null) return;
+                if (hover) StartScrolling(label, width - 10);
+                else StopScrolling(label);
+            }
             FrameworkElement part = content;
             if (Interactive)
             {
@@ -124,23 +148,47 @@ public sealed class PuzzleCanvasView : Canvas
                 AutomationProperties.SetAutomationId(button, $"member-{member.Id}-partition-{index}");
                 AutomationProperties.SetName(button, title);
                 WallMemberVisualFactory.SetTargetTooltip(button, member);
-                _resetInteractions.Add(WallMemberVisualFactory.ConfigureInteraction(button, content, content.CornerRadius, hover =>
-                {
-                    if (band is not null) band.Visibility = hover ? Visibility.Visible : Visibility.Collapsed;
-                    if (label is not null)
-                    {
-                        if (hover) StartScrolling(label, width - 10);
-                        else StopScrolling(label);
-                    }
-                }));
+                _resetInteractions.Add(WallMemberVisualFactory.ConfigureInteraction(button, content, content.CornerRadius, SetTitleHover));
                 part = button;
                 PartitionCreated?.Invoke(button, index);
+            }
+            if (PreviewHover)
+            {
+                var showCue = WallMemberVisualFactory.ConfigurePreviewHover(content, content.CornerRadius);
+                _partitionHover.Add((hover, immediate) => { showCue(hover, immediate); SetTitleHover(hover); });
+                _previewPartitions.Add(content);
+                ToolTipService.SetToolTip(content, _previewTargetTip);
             }
             SetLeft(part, x);
             SetTop(part, y);
             Children.Add(part);
         }
+        if (_previewPartitions.Count != 0)
+        {
+            var first = Enumerable.Range(0, _previewPartitions.Count)
+                .MinBy(index => (_snappedViewports[index].Y, _snappedViewports[index].X));
+            FirstPreviewPartition = _previewPartitions[first];
+        }
         UpdateFrame(frame);
+    }
+
+    internal int? PartitionAt(Point point)
+    {
+        for (var index = 0; index < _snappedViewports.Length; index++)
+        {
+            var part = _snappedViewports[index];
+            if (point.X >= part.X && point.X < part.X + part.Width &&
+                point.Y >= part.Y && point.Y < part.Y + part.Height) return index;
+        }
+        return null;
+    }
+
+    internal void SetPreviewTargetTooltips(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) text = null;
+        if (_previewTargetTip == text) return;
+        _previewTargetTip = text;
+        foreach (var partition in _previewPartitions) ToolTipService.SetToolTip(partition, text);
     }
 
     public void UpdateFrame(PuzzleFrame? frame)
@@ -164,6 +212,7 @@ public sealed class PuzzleCanvasView : Canvas
         var appearance = MemberBackgroundRules.GetColor(member.Visual, ActualTheme == ElementTheme.Dark);
         var previousScene = SceneFor(_transition?.PreviousFrame);
         var nextScene = SceneFor(_transition?.NextFrame);
+        SharpTransform = nextScene?.SharpTransform;
         foreach (var plane in _planes)
         {
             plane.Host.Children.Clear();
@@ -331,5 +380,13 @@ public sealed class PuzzleCanvasView : Canvas
             if (hover) StartScrolling(title.Title, title.ViewportWidth);
             else StopScrolling(title.Title);
         }
+    }
+
+    internal void SetHoveredPartition(int? partition)
+    {
+        if (partition == _hoveredPartition) return;
+        if (_hoveredPartition is { } previous) _partitionHover[previous](false, false);
+        _hoveredPartition = partition;
+        if (partition is { } current) _partitionHover[current](true, false);
     }
 }

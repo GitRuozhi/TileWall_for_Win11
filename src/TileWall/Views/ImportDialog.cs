@@ -2,6 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using System.Diagnostics;
@@ -82,6 +83,7 @@ internal sealed class ImportDialog : IWallDialogSession
         _recognizeGroups = new() { IsOn = true, OnContent = "", OffContent = "" };
     private readonly ToggleButton _small = new(), _medium = new();
     private readonly Button _chooseFile = new() { MinWidth = 32, Width = 32, Padding = new Thickness(0) };
+    private readonly Button _primary = new(), _cancel = new();
     private readonly TextBox _path = new() { IsReadOnly = true, MinWidth = 0, FontSize = 12 };
     private readonly TextBlock[] _optionLabels = Enumerable.Range(0, 9).Select(_ => Label()).ToArray();
     private readonly TextBlock[] _numbers = Enumerable.Range(0, 14).Select(_ => new TextBlock { Text = "0", FontSize = 14,
@@ -94,10 +96,8 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly Grid[] _statisticRows = Enumerable.Range(0, 3).Select(_ => new Grid
         { ColumnSpacing = 4, RowSpacing = 4, HorizontalAlignment = HorizontalAlignment.Left }).ToArray();
     private readonly StackPanel _statistics = new() { Spacing = 16, HorizontalAlignment = HorizontalAlignment.Left };
-    private readonly Border _statisticsCard;
-    private readonly Grid _page;
-    private readonly ColumnDefinition _statisticsColumn;
-    private readonly TextBlock _status = Label();
+    private readonly StatusOverlay _status = new(VerticalAlignment.Top);
+    private readonly StatusOverlay _feedback = new();
     private readonly Grid _options = new() { RowSpacing = 6, ColumnSpacing = 8 };
     private readonly ContentControl _optionsHost;
     private readonly ItemsRepeater _repeater = new() { HorizontalCacheLength = .5, VerticalCacheLength = .5 };
@@ -105,7 +105,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly Dictionary<UIElement, (int Epoch, int Index, PreviewItem Item)> _preparedElements = [];
     private readonly ObservableCollection<string> _previewKeys = [];
     private readonly Dictionary<string, PreviewItem> _previewMemberItems = new(StringComparer.Ordinal);
-    private readonly ScrollViewer _preview, _statusScroll;
+    private readonly ScrollViewer _preview;
     private IReadOnlyList<PreviewItem> _previewItems = [];
     private readonly Action _catalogChanged;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _clockTimer;
@@ -121,9 +121,9 @@ internal sealed class ImportDialog : IWallDialogSession
     private double _previewHeight, _previewScale;
     private XamlRoot? _previewRoot;
     private ImportSourcePlan? _plan;
-    private string? _packagePath, _exportPath, _notice, _error;
+    private string? _packagePath, _exportPath, _error;
     private string? _statisticLayoutKey;
-    private readonly double _statisticsMaximumColumnWidth, _statisticsPreviewWidth;
+    private readonly double _rightWidth;
     private readonly Stopwatch _previewPreparationStopwatch = new();
     private bool _shown, _closed, _dismissRequested, _reading, _adding, _picking, _refreshingStrings, _readsSuspended,
         _preparing, _prepared, _synchronizingSelection, _exportPathPicked, _updatingPreviewItems;
@@ -161,12 +161,7 @@ internal sealed class ImportDialog : IWallDialogSession
             TracePreviewPreparationProgress();
         };
         var budget = OwnedDialogWindow.ContentBudget(owner);
-        const double rightWidth = 748, columnGap = 16;
         var previewWidth = _metrics.WallWidth(1);
-        _statisticsPreviewWidth = previewWidth;
-        _statisticsMaximumColumnWidth = Math.Max(0, budget.Width - previewWidth - columnGap);
-        _options.ColumnDefinitions.Add(new() { Width = new GridLength(92) });
-        _options.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         var pathRow = new Grid { ColumnSpacing = 6 };
         pathRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         pathRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -174,7 +169,6 @@ internal sealed class ImportDialog : IWallDialogSession
         var sizes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         sizes.Children.Add(_small); sizes.Children.Add(_medium);
         FrameworkElement[] values = [_mode, _source, pathRow, _autoFilter, _recognizeGroups, sizes, _position, _selectAll, _filter];
-        for (var index = 0; index < values.Length; index++) AddOption(index, values[index]);
         _optionsHost = new ContentControl { Content = VisualStyles.Card(_options), HorizontalContentAlignment = HorizontalAlignment.Stretch, IsTabStop = false };
         foreach (var row in _statisticRows)
         {
@@ -187,7 +181,7 @@ internal sealed class ImportDialog : IWallDialogSession
             box.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
             box.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
             box.Children.Add(_numbers[statisticIndex]); Grid.SetColumn(_numberLabels[statisticIndex], 1); box.Children.Add(_numberLabels[statisticIndex]);
-            var cell = VisualStyles.InputFrame(); cell.Child = box;
+            var cell = VisualStyles.InputFrame(transparent: true); cell.Child = box;
             _statisticCells[statisticIndex] = cell;
             var rowIndex = statisticIndex < 4 ? 0 : statisticIndex < 11 ? 1 : 2;
             var indexInRow = statisticIndex < 4 ? statisticIndex : statisticIndex < 11 ? statisticIndex - 4 : statisticIndex - 11;
@@ -196,13 +190,7 @@ internal sealed class ImportDialog : IWallDialogSession
         }
         var rightBody = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Top };
         rightBody.Children.Add(_optionsHost);
-        _statisticsCard = VisualStyles.Card(_statistics);
-        rightBody.Children.Add(_statisticsCard);
-        _status.MaxHeight = 70;
-        _statusScroll = new ScrollViewer { Content = _status, MaxHeight = 70, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        rightBody.Children.Add(_statusScroll);
-        var right = new ScrollViewer { Content = rightBody, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        rightBody.Children.Add(VisualStyles.Card(_statistics));
         _repeater.Layout = _previewLayout;
         _previewLayout.ElementRealized = EnsureElementPrepared;
         _repeater.ItemTemplate = (DataTemplate)XamlReader.Load("<DataTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><Grid /></DataTemplate>");
@@ -218,20 +206,37 @@ internal sealed class ImportDialog : IWallDialogSession
         _preview = new ScrollViewer { Content = _repeater, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Disabled, VerticalScrollMode = ScrollMode.Enabled };
         _preview.SizeChanged += (_, _) => RefreshPreview();
-        var page = new Grid { Width = previewWidth + columnGap + rightWidth, Height = Math.Min(520, budget.Height), ColumnSpacing = columnGap };
-        _page = page;
-        _statisticsColumn = new() { Width = new GridLength(rightWidth) };
-        page.ColumnDefinitions.Add(new() { Width = new GridLength(previewWidth) }); page.ColumnDefinitions.Add(_statisticsColumn);
-        page.Children.Add(_preview); Grid.SetColumn(right, 1); page.Children.Add(right);
+        var previewPane = new Grid();
+        previewPane.Children.Add(_preview);
+        previewPane.Children.Add(_status);
+        previewPane.Children.Add(_feedback);
+        var page = VisualStyles.PreviewPage(previewPane, rightBody, budget, preferredWidth: 860,
+            preferredRightWidth: 400, preferredLeftWidth: previewWidth);
+        page.Height = Math.Min(560, budget.Height);
         rightBody.SizeChanged += (_, e) =>
         {
-            if (e.NewSize.Height > 0) page.Height = Math.Min(budget.Height, Math.Ceiling(e.NewSize.Height));
+            if (e.NewSize.Height > 0) page.Height = Math.Min(budget.Height, Math.Max(480, Math.Ceiling(e.NewSize.Height)));
         };
+        _rightWidth = page.ColumnDefinitions[1].Width.Value;
+        if (page.Width - page.ColumnSpacing - _rightWidth < previewWidth)
+        {
+            _preview.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+            _preview.HorizontalScrollMode = ScrollMode.Auto;
+        }
+        if (_rightWidth >= 310)
+        {
+            _options.ColumnDefinitions.Add(new() { Width = new GridLength(92) });
+            _options.ColumnDefinitions.Add(new());
+        }
+        for (var index = 0; index < values.Length; index++) AddOption(index, values[index]);
+        rightBody.Children.Add(VisualStyles.ActionCard(_primary, _cancel, stacked: _rightWidth < 370));
         _dialog = new ContentDialog { XamlRoot = (owner.Content as FrameworkElement)?.XamlRoot, Content = page, DefaultButton = ContentDialogButton.None };
         _dialog.Resources["ContentDialogMaxWidth"] = budget.Width + 48; _dialog.Resources["ContentDialogMaxHeight"] = budget.Height + 180;
+        OwnedDialogWindow.EnablePageChrome(_dialog, page);
         Id(_dialog, "dialog"); Id(_mode, "mode"); Id(_source, "source"); Id(_path, "path"); Id(_chooseFile, "choose-wall-file");
         Id(_autoFilter, "auto-trim"); Id(_recognizeGroups, "recognize-groups"); Id(_small, "small"); Id(_medium, "medium");
         Id(_position, "position"); Id(_selectAll, "select-all"); Id(_filter, "filter"); Id(_repeater, "candidates"); Id(_status, "status");
+        Id(_feedback, "feedback"); Id(_primary, "primary"); Id(_cancel, "cancel");
         _mode.SelectionChanged += (_, _) =>
         {
             if (_refreshingStrings || !_shown || _adding) return;
@@ -262,15 +267,15 @@ internal sealed class ImportDialog : IWallDialogSession
             if (_projection is null || _adding) return;
             var addable = FilteredAddableCandidates(); var clear = addable.All(IsSelected);
             foreach (var candidate in addable) Select(candidate, !clear);
-            _error = _notice = null; SelectionChanged();
+            _error = null; _feedback.Clear(); SelectionChanged();
         };
         _chooseFile.Click += (_, _) =>
         {
             if (_picking || _adding) return;
             _picking = true; UpdateAvailability(); Track(PickPathAsync());
         };
-        _dialog.PrimaryButtonClick += (_, e) => { e.Cancel = true; StartOperation(); };
-        _dialog.CloseButtonClick += (_, e) => { e.Cancel = true; RequestDismiss(); };
+        _primary.Click += (_, _) => StartOperation();
+        _cancel.Click += (_, _) => RequestDismiss();
         _dialog.Closing += (_, e) => { if (_adding || _picking) { e.Cancel = true; RequestDismiss(); } else StopRequests(); };
         RefreshStrings();
     }
@@ -320,7 +325,7 @@ internal sealed class ImportDialog : IWallDialogSession
         finally { _refreshingStrings = wasRefreshingStrings; }
         _recognizedTargets.Clear();
         _previewTargetInferences.Clear(); _previewImageCompletions.Clear();
-        _selected.Clear(); _notice = _error = null; _context = null; _sourceData = null; _projection = null; _plan = null;
+        _selected.Clear(); _error = null; _feedback.Clear(); _context = null; _sourceData = null; _projection = null; _plan = null;
         _projectedCandidates = null; _projectedIdentities = null; _previewProjection = null;
         _recognitionProjection = null; _recognitionContext = null; _recognitionFacts = null;
         _candidateByKey.Clear(); ClearFrameCache();
@@ -374,7 +379,7 @@ internal sealed class ImportDialog : IWallDialogSession
             { CancelPreview(); ClosePreviewSource(); }
             if (_context is { } previousContext && (context.Document.Generation != previousContext.Document.Generation || context.Budget != previousContext.Budget) ||
                 _sourceData?.Package is { } previousPackage && previousPackage.PackageSha256 != source.Package?.PackageSha256)
-            { _selected.Clear(); _notice = ProductStrings.Get("Import.SourceChanged"); }
+            { _selected.Clear(); ShowSourceChanged(); }
             if (_sourceData is { } previous)
                 foreach (var key in _selected.Keys.ToArray())
                     if (previous.StartMenuSources.TryGetValue(key, out var old) &&
@@ -490,7 +495,9 @@ internal sealed class ImportDialog : IWallDialogSession
             var migration = ImportSourcePlanner.MigrateSelection(_selected, _projection);
             _selected.Clear(); foreach (var pair in migration.Selected) _selected.Add(pair.Key, pair.Value);
             RemoveFilteredSelections();
-            if (migration.RemovedCount > 0) _notice = string.Format(ProductStrings.Get("Import.SelectionRemoved"), migration.RemovedCount);
+            if (migration.RemovedCount > 0)
+                _feedback.Show(string.Format(ProductStrings.Get("Import.SelectionRemoved"), migration.RemovedCount),
+                    transient: true, renew: true);
         }
         RefreshPreview(); SelectionChanged();
         if (Mode == ImportPageMode.Export) { _prepared = _contextCurrent(_context); UpdateAvailability(); }
@@ -516,7 +523,7 @@ internal sealed class ImportDialog : IWallDialogSession
             await Task.Yield(); request.Token.ThrowIfCancellationRequested();
             var result = await _prepare(context, source, projection, request.Token);
             if (!IsCurrent(sourceEpoch, request.Token) || epoch != _preparationEpoch || !ReferenceEquals(source, _sourceData)) return;
-            if (!_contextCurrent(result.Context)) { _notice = ProductStrings.Get("Import.SourceChanged"); return; }
+            if (!_contextCurrent(result.Context)) { ShowSourceChanged(); return; }
             _context = result.Context; _sourceData = result.Source; Reproject(prepare: false);
             _prepared = result.Source.AvailabilityPrepared && result.Context.Covers(_projection!);
         }
@@ -772,25 +779,42 @@ internal sealed class ImportDialog : IWallDialogSession
         if (item.Member is not { } member || item.Candidate is not { } oldCandidate) return;
         var candidate = _candidateByKey.GetValueOrDefault(oldCandidate.SelectionKey) ?? oldCandidate;
         var card = new Grid { Width = item.Bounds.Width, Height = item.Bounds.Height };
+        var isPuzzle = member is PuzzleMember;
         PuzzleCanvasView? view = null; ClockMemberView? clock = null;
         if (member is ClockMember clockMember) { clock = new ClockMemberView(clockMember, _metrics, _dialog.XamlRoot?.RasterizationScale ?? 1, _style); card.Children.Add(clock); }
         else { view = WallMemberVisualFactory.Create(member, null, _metrics, _dialog.XamlRoot?.RasterizationScale ?? 1, _style,
-            interactive: false, externalInteraction: true, targetIsFolder: candidate.Source.TargetKind == ImportTargetKind.Folder);
-            view.IsHitTestVisible = false; card.Children.Add(view); }
-        var selection = WallMemberVisualFactory.AddSelection(card, _style);
+            interactive: false, externalInteraction: !isPuzzle, targetIsFolder: candidate.Source.TargetKind == ImportTargetKind.Folder,
+            previewHover: isPuzzle);
+            view.IsHitTestVisible = isPuzzle; card.Children.Add(view); }
+        var partition = view?.FirstPreviewPartition;
+        var selection = view?.PreviewPartitions is { Count: > 0 } partitions
+            ? partitions.Select(part => WallMemberVisualFactory.AddSelection(part, _style)).ToArray()
+            : [WallMemberVisualFactory.AddSelection(card, _style)];
         var toggle = new ToggleButton { Content = card, Width = item.Bounds.Width, Height = item.Bounds.Height,
             Padding = new Thickness(0), BorderThickness = new Thickness(0), MinWidth = 0, MinHeight = 0,
             CornerRadius = WallCornerStyle.Corners(_style), HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Stretch };
         var reset = WallMemberVisualFactory.ConfigureInteraction(toggle, card, toggle.CornerRadius,
-            hover => { view?.SetExternalHover(hover); clock?.SetExternalHover(hover); }, deferHoverExit: true);
+            hover =>
+            {
+                if (!isPuzzle) view?.SetExternalHover(hover);
+                else if (!hover) view?.SetHoveredPartition(null);
+                clock?.SetExternalHover(hover);
+            }, deferHoverExit: true, partitionFocus: partition);
+        if (isPuzzle && view is { } puzzleView)
+        {
+            toggle.PointerEntered += UpdatePartitionHover;
+            toggle.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(UpdatePartitionHover), true);
+            void UpdatePartitionHover(object sender, PointerRoutedEventArgs e) =>
+                puzzleView.SetHoveredPartition(toggle.IsEnabled ? puzzleView.PartitionAt(e.GetCurrentPoint(puzzleView).Position) : null);
+        }
         CandidateRow? row = null;
         RoutedEventHandler changed = (_, _) =>
         {
             if (_synchronizingSelection || _adding || _reading || row is null || !row.Candidate.CanAdd) return;
-            Select(row.Candidate, toggle.IsChecked == true); _error = _notice = null; SelectionChanged();
+            Select(row.Candidate, toggle.IsChecked == true); _error = null; _feedback.Clear(); SelectionChanged();
         };
-        row = new(candidate, member, view, clock, toggle, changed, reset, selection.Outline, selection.Check) { IconStamp = IconStamp(candidate) };
+        row = new(candidate, member, view, clock, toggle, changed, reset, selection) { IconStamp = IconStamp(candidate) };
         toggle.Checked += changed; toggle.Unchecked += changed;
         Id(toggle, "candidate-" + candidate.SelectionKey); _rows.Add(row); host.Tag = row; host.Children.Add(toggle);
         UpdateRowTooltip(row); UpdateSelectionFeedback(); UpdateAvailability(); StartRowImage(row);
@@ -833,7 +857,10 @@ internal sealed class ImportDialog : IWallDialogSession
             diagnostics.Add(ProductStrings.Get("Import.Stale"));
         if (candidate.ErrorCode is { } error) diagnostics.Add(ErrorText(error));
         if (candidate.FilterReason != ImportFilterReason.None) diagnostics.Add(FilterText(candidate.FilterReason));
-        WallMemberVisualFactory.SetTargetTooltip(row.Toggle, row.Member, string.Join("\n", diagnostics));
+        var diagnostic = string.Join("\n", diagnostics);
+        var isPuzzle = row.Member is PuzzleMember;
+        WallMemberVisualFactory.SetTargetTooltip(row.Toggle, row.Member, diagnostic, disabledOnly: isPuzzle);
+        if (isPuzzle) row.View?.SetPreviewTargetTooltips(WallMemberVisualFactory.TargetTooltip(row.Member, diagnostic));
         AutomationProperties.SetName(row.Toggle, displayName);
     }
     private void UpdateSelectionFeedback()
@@ -844,7 +871,8 @@ internal sealed class ImportDialog : IWallDialogSession
             foreach (var row in _rows)
             {
                 row.Toggle.IsChecked = IsSelected(row.Candidate);
-                row.Outline.Visibility = row.Check.Visibility = row.Toggle.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+                var visibility = row.Toggle.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+                foreach (var (outline, check) in row.Selection) outline.Visibility = check.Visibility = visibility;
             }
         }
         finally { _synchronizingSelection = false; }
@@ -1452,7 +1480,7 @@ internal sealed class ImportDialog : IWallDialogSession
     {
         if (_closed || _dismissRequested || _adding || _reading || _picking || _context is null || _projection is null ||
             _sourceData is null || _sourceData.Refreshing || !_prepared || _preparing || !_projection.Candidates.Any(IsSelected)) return;
-        if (!_contextCurrent(_context)) { _notice = ProductStrings.Get("Import.SourceChanged"); BeginRead(resetSelection: true); return; }
+        if (!_contextCurrent(_context)) { ShowSourceChanged(); BeginRead(resetSelection: true); return; }
         var epoch = _sourceEpoch; var source = _sourceData; var projection = _projection;
         Func<Task<ImportPageResult>> operation;
         if (IsRecycle)
@@ -1508,7 +1536,7 @@ internal sealed class ImportDialog : IWallDialogSession
             else
             {
                 _error = result.Error;
-                if (result.RefreshRequired && !_dismissRequested) { _selected.Clear(); _context = null; _notice = ProductStrings.Get("Import.SourceChanged"); }
+                if (result.RefreshRequired && !_dismissRequested) { _selected.Clear(); _context = null; ShowSourceChanged(); }
             }
             _adding = false;
             if (!_dismissRequested && !_readsSuspended && result.RefreshRequired) BeginRead(resetSelection: true);
@@ -1550,16 +1578,21 @@ internal sealed class ImportDialog : IWallDialogSession
         var count = addable.Count(IsSelected);
         _selectAll.IsEnabled = idle && !_reading && addable.Length > 0;
         _selectAll.IsChecked = count == 0 ? false : count == addable.Length ? true : null;
-        _dialog.IsPrimaryButtonEnabled = idle && !_reading && !_preparing && _sourceData?.Refreshing == false && _prepared && count > 0 &&
+        _primary.IsEnabled = idle && !_reading && !_preparing && _sourceData?.Refreshing == false && _prepared && count > 0 &&
             (!export || !string.IsNullOrWhiteSpace(_exportPath)) && (!IsRecycle || _restoreRecycled is not null) && _context is not null && _contextCurrent(_context);
+        _cancel.IsEnabled = !_closed && !_dismissRequested;
         foreach (var row in _rows) row.Toggle.IsEnabled = idle && !_reading && row.Candidate.CanAdd && MatchesFilter(row.Candidate);
         var primaryText = ProductStrings.Get(export ? "Import.ExportConfirm" : IsRecycle ? "Recycle.Restore" : "Import.Confirm");
-        if (_dialog.PrimaryButtonText != primaryText)
-        {
-            _dialog.PrimaryButtonText = primaryText;
-            ActionIcon.DecorateDialog(_dialog, export ? ActionIcon.Save : IsRecycle ? ActionIcon.Undo : ActionIcon.Import, ActionIcon.Delete, ActionIcon.Cancel);
-        }
+        if (AutomationProperties.GetName(_primary) != primaryText)
+            ActionIcon.Set(_primary, primaryText, export ? ActionIcon.Save : IsRecycle ? ActionIcon.Undo : ActionIcon.Import);
         if (!_adding) RefreshRecognitionSelection();
+    }
+
+    private void ShowSourceChanged()
+    {
+        var message = ProductStrings.Get("Import.SourceChanged");
+        if (_error == message) _error = null;
+        _feedback.Show(message, transient: true, renew: true);
     }
 
     private void UpdateStatus()
@@ -1584,13 +1617,13 @@ internal sealed class ImportDialog : IWallDialogSession
         if (_adding) messages.Add(ProductStrings.Get(IsRecycle ? "Settings.Saving" : Mode == ImportPageMode.Export ? "Import.Exporting" : "Import.Adding"));
         else if (_reading || _preparing || _sourceData?.Refreshing == true) messages.Add(ProductStrings.Get("Import.Updating"));
         else if (_sourceData?.IconPreparing == true) messages.Add(ProductStrings.Get("Import.PreparingImages"));
-        if (_notice is not null) messages.Add(_notice); if (_error is not null) messages.Add(_error);
+        if (_error is not null) messages.Add(_error);
         if (_sourceData is { } source && (source.ReadErrors != 0 || source.Skipped != 0)) messages.Add(string.Format(ProductStrings.Get("Import.ReadErrors"), source.ReadErrors, source.Skipped));
         if (_sourceData?.ErrorCode is { } error) messages.Add(ErrorText(error));
         if (IsRecycle && !_reading && !_preparing && _sourceData?.Candidates.Count == 0) messages.Add(ProductStrings.Get("Recycle.Empty"));
         if (_plan?.Status == ImportPlanStatus.Rejected) messages.Add(ProductStrings.Get("Import.LayoutRejected"));
-        _status.Text = string.Join("\n", messages);
-        _statusScroll.Visibility = messages.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        var message = string.Join("\n", messages);
+        if (_status.Text != message) _status.Show(message);
     }
 
     public bool HasUnsavedDraft => false;
@@ -1623,6 +1656,7 @@ internal sealed class ImportDialog : IWallDialogSession
     {
         if (_closed) return;
         _closed = true; _clockTimer.Stop(); CancelPicker(); _lifetime.Cancel(); _pageRequest?.Cancel(); _preparationRequest?.Cancel(); CancelPreview();
+        _status.Clear(); _feedback.Clear();
         if (_previewRoot is not null) _previewRoot.Changed -= OnPreviewRootChanged;
         _catalog.Changed -= _catalogChanged; ClearPreview(); ClearFrameCache();
         _sourceData = null; _projection = _previewProjection = null; _projectedCandidates = null;
@@ -1656,12 +1690,12 @@ internal sealed class ImportDialog : IWallDialogSession
         for (var index = 0; index < StatisticLabels.Length; index++) _numberLabels[index].Text = ProductStrings.Get(StatisticLabels[index]);
         _filter.PlaceholderText = ProductStrings.Get("Import.Filter.Placeholder");
         _selectAll.Content = "";
-        _dialog.Title = ProductStrings.Get("Import.Title"); _dialog.CloseButtonText = ProductStrings.Get("Common.Cancel");
+        OwnedDialogWindow.SetPageName(_dialog, ProductStrings.Get("Import.Title"));
+        ActionIcon.Set(_cancel, ProductStrings.Get("Common.Cancel"), ActionIcon.Cancel);
         ActionIcon.SetIcon(_chooseFile, ProductStrings.Get("Import.ChoosePath"), ActionIcon.OpenFolderHorizontal);
         ActionIcon.SetIcon(_small, ProductStrings.Get("Import.Small"), ActionIcon.PresetSmall);
         ActionIcon.SetIcon(_medium, ProductStrings.Get("Import.Medium"), ActionIcon.PresetMedium);
         _small.IsChecked = _tileSize == 1; _medium.IsChecked = _tileSize == 2;
-        ActionIcon.DecorateDialog(_dialog, ActionIcon.Import, ActionIcon.Delete, ActionIcon.Cancel);
         if (_shown && !_adding) RefreshPreview(force: true);
         UpdateAvailability(); UpdateStatus();
     }
@@ -1680,9 +1714,18 @@ internal sealed class ImportDialog : IWallDialogSession
     });
     private void AddOption(int index, FrameworkElement value)
     {
+        var row = _options.RowDefinitions.Count;
         _options.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        var label = _optionLabels[index]; Grid.SetRow(label, index); Grid.SetRow(value, index); Grid.SetColumn(value, 1);
-        AutomationProperties.SetLabeledBy(value, label); _options.Children.Add(label); _options.Children.Add(value);
+        var label = _optionLabels[index];
+        Grid.SetRow(label, row); _options.Children.Add(label);
+        if (_options.ColumnDefinitions.Count == 0)
+        {
+            _options.RowDefinitions.Add(new() { Height = GridLength.Auto });
+            row++;
+        }
+        else Grid.SetColumn(value, 1);
+        Grid.SetRow(value, row); _options.Children.Add(value);
+        AutomationProperties.SetLabeledBy(value, label);
     }
     private static TextBlock Label() => new() { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
     private void UpdateStatisticLayout()
@@ -1739,16 +1782,13 @@ internal sealed class ImportDialog : IWallDialogSession
         // The requested default viewport shows exactly four whole cards.
         // On a narrower work area, use only whole columns and wrap within each of the three groups.
         var desiredContentWidth = cardWidth * 4 + cardGap * 3;
-        var availableColumnWidth = Math.Max(cardWidth + 24, _statisticsMaximumColumnWidth);
-        var columnWidth = Math.Min(desiredContentWidth + 24, availableColumnWidth);
-        var contentWidth = Math.Max(cardWidth, columnWidth - 24);
+        var contentWidth = Math.Clamp(_rightWidth - 24, cardWidth, desiredContentWidth);
         var key = string.Join("\n", _numberLabels.Select(label => label.Text)) +
             $"\n{numberWidth}:{numberHeight}:{labelWidth}:{labelHeight}:{contentWidth}:{cardHeight}";
         if (_statisticLayoutKey == key) return;
         _statisticLayoutKey = key;
         foreach (var cell in _statisticCells) { cell.Width = cardWidth; cell.Height = cardHeight; }
         _statistics.Width = contentWidth;
-        _statisticsCard.Width = columnWidth;
         var columns = Math.Clamp((int)Math.Floor((contentWidth + cardGap) / (cardWidth + cardGap)), 1, 4);
         int[] groupCounts = [4, 7, 3];
         int[] starts = [0, 4, 11];
@@ -1764,8 +1804,6 @@ internal sealed class ImportDialog : IWallDialogSession
                 Grid.SetColumn(_statisticCells[starts[groupIndex] + index], index % columns);
             }
         }
-        _statisticsColumn.Width = new GridLength(columnWidth);
-        _page.Width = _statisticsPreviewWidth + 16 + columnWidth;
     }
 
     private sealed class PackagePreviewSource(WallPackageReader reader, WallPackagePreview preview, CancellationToken parent)
@@ -1822,7 +1860,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private sealed record PreviewTargetInference(string SourceFact, TargetImageSourceResult? Result);
     private enum PreviewImageOutcome { Frame, NoImageOrFallback, Failed }
     private sealed class CandidateRow(ImportProjectedCandidate candidate, WallMember member, PuzzleCanvasView? view, ClockMemberView? clock,
-        ToggleButton toggle, RoutedEventHandler changed, Action reset, Border outline, Border check)
+        ToggleButton toggle, RoutedEventHandler changed, Action reset, (Border Outline, Border Check)[] selection)
     {
         public ImportProjectedCandidate Candidate { get; set; } = candidate;
         public WallMember Member { get; set; } = member;
@@ -1831,8 +1869,7 @@ internal sealed class ImportDialog : IWallDialogSession
         public ToggleButton Toggle { get; } = toggle;
         public RoutedEventHandler Changed { get; } = changed;
         public Action Reset { get; } = reset;
-        public Border Outline { get; } = outline;
-        public Border Check { get; } = check;
+        public (Border Outline, Border Check)[] Selection { get; } = selection;
         public string? ImageKey { get; set; }
         public string? RequestKey { get; set; }
         public string IconStamp { get; set; } = "";

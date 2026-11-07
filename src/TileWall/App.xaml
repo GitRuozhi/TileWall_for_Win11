@@ -14,6 +14,8 @@
                  override their tile geometry locally through the shared wall renderer. -->
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Default">
+                    <SolidColorBrush x:Key="TileWallNoticeBackgroundBrush" Color="#80000000" />
+                    <SolidColorBrush x:Key="TileWallNoticeTextBrush" Color="White" />
                     <SolidColorBrush x:Key="TileWallPageBrush" Color="#202020" />
                     <SolidColorBrush x:Key="TileWallSurfaceBrush" Color="#292929" />
                     <SolidColorBrush x:Key="TileWallStrokeBrush" Color="#707070" />
@@ -26,6 +28,8 @@
                     <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#B0B0B0" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="TileWallNoticeBackgroundBrush" Color="#80000000" />
+                    <SolidColorBrush x:Key="TileWallNoticeTextBrush" Color="White" />
                     <SolidColorBrush x:Key="TileWallPageBrush" Color="#F2F2F2" />
                     <SolidColorBrush x:Key="TileWallSurfaceBrush" Color="#FFFFFF" />
                     <SolidColorBrush x:Key="TileWallStrokeBrush" Color="#8A8A8A" />
@@ -38,6 +42,8 @@
                     <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#404040" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="HighContrast">
+                    <SolidColorBrush x:Key="TileWallNoticeBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="TileWallNoticeTextBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
                     <SolidColorBrush x:Key="TileWallPageBrush" Color="{ThemeResource SystemColorWindowColor}" />
                     <SolidColorBrush x:Key="TileWallSurfaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
                     <SolidColorBrush x:Key="TileWallStrokeBrush" Color="{ThemeResource SystemColorWindowTextColor}" />

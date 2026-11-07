@@ -25,7 +25,7 @@ internal static class WelcomeWallBuilder
 
     internal static (WallLayoutResult Layout, IReadOnlyList<EntryChange> EntryChanges) Prepare(
         WallDocument before, WelcomeWallTargets targets, WelcomeWallText text,
-        string galleryFolder, WallViewportBudget budget, WallMetrics? metrics = null,
+        string dataRoot, string galleryFolder, WallViewportBudget budget, WallMetrics? metrics = null,
         ManagedGalleryReference? managedGallery = null, ManagedMediaReference? guideImage = null,
         ManagedMediaReference? showcaseImage = null)
     {
@@ -34,7 +34,7 @@ internal static class WelcomeWallBuilder
             return (new(null, WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE"), []);
         if (before.Generation >= long.MaxValue - 1)
             return (new(null, WallRejection.InvalidDocument, "GENERATION_OVERFLOW"), []);
-        if (!Path.IsPathFullyQualified(galleryFolder) || NativeTargetKeys.Any(key =>
+        if (!Path.IsPathFullyQualified(dataRoot) || !Path.IsPathFullyQualified(galleryFolder) || NativeTargetKeys.Any(key =>
                 !targets.Items.TryGetValue(key, out var target) || string.IsNullOrWhiteSpace(target.Input) ||
                 (target.ShellIdentityKey is null ? !Path.IsPathFullyQualified(target.Input) : string.IsNullOrWhiteSpace(target.ShellIdentityKey))))
             return (new(null, WallRejection.InvalidAction, "Invalid welcome content source."), []);
@@ -87,12 +87,13 @@ internal static class WelcomeWallBuilder
         };
         var puzzle = new PuzzleMember
         {
-            Id = NewId(), LocalBounds = new(2, 0, 6, 4),
+            Id = NewId(), LocalBounds = new(2, 0, 6, 4), TargetInput = dataRoot,
             Visual = Title("Puzzle Album"), Images = new() { Kind = MemberImageSourceKind.Folder, Path = galleryFolder, ManagedGallery = managedGallery },
-            ImageDisplay = new() { Mode = ImageDisplayMode.Fit }, RotationInterval = ImageRotationInterval.Seconds5,
+            ImageDisplay = new() { Mode = ImageDisplayMode.Fill }, RotationInterval = ImageRotationInterval.Seconds5,
             Partitions = [new(0, 0, 2, 2), new(2, 0, 2, 2), new(4, 0, 2, 2),
                 new(0, 2, 2, 2), new(2, 2, 2, 2), new(4, 2, 2, 2)],
         };
+        changes.Add(new EntryChange.CreateLink(puzzle.Id, dataRoot));
         var tileWall = new StartGroup
         {
             Id = NewId(), Title = "TileWall",

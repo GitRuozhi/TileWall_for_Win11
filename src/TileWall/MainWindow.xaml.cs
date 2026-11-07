@@ -43,8 +43,7 @@ public sealed partial class MainWindow : Window
     private bool _resizing;
     private readonly IClock _clock = SystemClock.Instance;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _clockTimer;
-    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _statusTimer;
-    private long _statusExpiresAt;
+    private readonly StatusOverlay _statusOverlay;
     private string? _suppressClickMember;
     private Point _gestureScrollOffset;
     private uint _tracedMovePointerId;
@@ -61,13 +60,14 @@ public sealed partial class MainWindow : Window
         _session = new WallSession(scope.DataRoot);
         _images = new WallImageService(_session.LinkFiles);
         InitializeComponent();
+        StatusViewport.Children.Remove(StatusActions);
+        _statusOverlay = new StatusOverlay(actions: StatusActions);
+        _statusOverlay.TransientExpired += RestoreStatusAfterTransient;
+        StatusViewport.Children.Add(_statusOverlay);
         ActionIcon.Set(RetryViewButton, ProductStrings.Get("Wall.Retry"), ActionIcon.Refresh);
         ActionIcon.Set(RetryOpenButton, ProductStrings.Get("Wall.RetryOpen"), ActionIcon.Refresh);
         ActionIcon.Set(OpenDataFolderButton, ProductStrings.Get("Wall.OpenDataFolder"), ActionIcon.OpenFolderHorizontal);
         CreateWindowsSidebar();
-        _statusTimer = DispatcherQueue.CreateTimer();
-        _statusTimer.IsRepeating = false;
-        _statusTimer.Tick += OnStatusTimerTick;
         _clockTimer = DispatcherQueue.CreateTimer();
         _clockTimer.Interval = TimeSpan.FromSeconds(1);
         _clockTimer.IsRepeating = true;
@@ -176,8 +176,8 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _windowClosing = true;
-            _statusTimer.Stop();
-            _statusTimer.Tick -= OnStatusTimerTick;
+            _statusOverlay.TransientExpired -= RestoreStatusAfterTransient;
+            _statusOverlay.Clear();
             StopPersistenceAfterClose();
             DisposeNativeSizingPrototype();
             DisposeInteractionScheduling();
@@ -298,7 +298,7 @@ public sealed partial class MainWindow : Window
         if (!_upgradeOwnsStatus) return;
         _upgradeOwnsStatus = false;
         ClearStatus();
-        if (_environmentOverflow && !_viewBlocked) Status(ProductStrings.Get("Wall.EnvironmentScroll"));
+        if (_environmentOverflow && !_viewBlocked) PersistentStatus(ProductStrings.Get("Wall.EnvironmentScroll"));
     }
 
     private void AcceptOpenedWall(WallOpenResult result)
@@ -349,8 +349,12 @@ public sealed partial class MainWindow : Window
         Surface.Visibility = Visibility.Visible;
         Surface.IsHitTestVisible = !PersistenceInteractionBlocked;
         _viewBlocked = false;
-        ClearStatus();
-        if (_environmentOverflow) Status(ProductStrings.Get("Wall.EnvironmentScroll"));
+        // A carousel or automatic-icon commit can arrive while an operation notice is still visible.
+        if (!_statusOverlay.HasTransient)
+        {
+            ClearStatus();
+            if (_environmentOverflow) PersistentStatus(ProductStrings.Get("Wall.EnvironmentScroll"));
+        }
         RetryViewButton.Visibility = Visibility.Collapsed;
         RetryOpenButton.Visibility = OpenDataFolderButton.Visibility = Visibility.Collapsed;
         _initialOpenBlocked = false;
@@ -484,7 +488,9 @@ public sealed partial class MainWindow : Window
         else DisplayStatus(ProductStrings.Get("Wall.RebuildFailed"), transient: false);
     }
 
-    private void Status(string message)
+    private void Status(string message) => TransientStatus(message);
+
+    private void PersistentStatus(string message)
     {
         if (_viewBlocked) return;
         DisplayStatus(message, transient: false);
@@ -498,48 +504,41 @@ public sealed partial class MainWindow : Window
 
     private void DisplayStatus(string message, bool transient)
     {
-        if (_windowClosing || ShutdownStarted) return;
+        if (_windowClosing || ShutdownStarted || transient && _upgradeOwnsStatus) return;
         _upgradeOwnsStatus = false;
-        _statusTimer.Stop();
-        _statusExpiresAt = transient ? Environment.TickCount64 + 4000 : 0;
-        StatusText.Text = message;
-        StatusPanel.Visibility = Visibility.Visible;
-        if (transient)
-        {
-            _statusTimer.Interval = TimeSpan.FromSeconds(4);
-            _statusTimer.Start();
-        }
+        PositionStatusViewport();
+        _statusOverlay.SetActionsVisible(_viewBlocked && (RetryViewButton.Visibility == Visibility.Visible ||
+            RetryOpenButton.Visibility == Visibility.Visible || OpenDataFolderButton.Visibility == Visibility.Visible));
+        _statusOverlay.Show(message, transient, renew: true);
     }
 
-    private void OnStatusTimerTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
+    private void PositionStatusViewport()
     {
-        if (_windowClosing || ShutdownStarted || _statusExpiresAt == 0) return;
-        var remaining = _statusExpiresAt - Environment.TickCount64;
-        // A tick queued before a replacement must not dismiss the newer message.
-        if (remaining > 0)
-        {
-            _statusTimer.Interval = TimeSpan.FromMilliseconds(remaining);
-            _statusTimer.Start();
-            return;
-        }
-        ClearTransientStatus();
+        var useTileViewport = !_viewBlocked && _scrollRegion.Width > 0 && _scrollRegion.Height > 0;
+        StatusViewport.HorizontalAlignment = useTileViewport ? HorizontalAlignment.Left : HorizontalAlignment.Stretch;
+        StatusViewport.VerticalAlignment = useTileViewport ? VerticalAlignment.Top : VerticalAlignment.Stretch;
+        StatusViewport.Width = useTileViewport ? _scrollRegion.Width : double.NaN;
+        StatusViewport.Height = useTileViewport ? _scrollRegion.Height : double.NaN;
+        StatusViewport.Margin = useTileViewport ? new Thickness(_scrollRegion.X, _scrollRegion.Y, 0, 0) : new Thickness(0);
     }
 
     private void ClearStatus()
     {
         if (_userDataUpgradeInProgress && _upgradeOwnsStatus) return;
         _upgradeOwnsStatus = false;
-        _statusTimer.Stop();
-        _statusExpiresAt = 0;
-        StatusText.Text = string.Empty;
-        StatusPanel.Visibility = Visibility.Collapsed;
+        _statusOverlay.Clear();
     }
 
     private void ClearTransientStatus()
     {
-        if (_statusExpiresAt == 0) return;
+        if (!_statusOverlay.HasTransient) return;
         ClearStatus();
-        if (_environmentOverflow) Status(ProductStrings.Get("Wall.EnvironmentScroll"));
+        RestoreStatusAfterTransient();
+    }
+
+    private void RestoreStatusAfterTransient()
+    {
+        if (_environmentOverflow) PersistentStatus(ProductStrings.Get("Wall.EnvironmentScroll"));
     }
 
     private void PlaceWall()

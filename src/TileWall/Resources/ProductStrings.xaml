@@ -10,7 +10,9 @@
     <x:String x:Key="Common.CancelExit">取消退出</x:String>
     <x:String x:Key="Common.ExitTitle">退出 TileWall</x:String>
     <x:String x:Key="Common.ExitDraft">有未保存的修改。保存整个草稿后退出，或放弃更改。取消退出会继续当前编辑。</x:String>
-    <x:String x:Key="Common.UnsavedDraft">有未保存的修改。点击“放弃更改”关闭并丢弃整个草稿；也可继续编辑或保存。</x:String>
+    <x:String x:Key="Common.UnsavedDraft">有未保存的修改。</x:String>
+    <x:String x:Key="Editor.Saving">正在保存…</x:String>
+    <x:String x:Key="Editor.PendingOperation">请等待当前操作完成。</x:String>
     <x:String x:Key="Common.CheckInput">请检查输入。</x:String>
     <x:String x:Key="Common.SaveFailed">保存失败：{0}</x:String>
     <x:String x:Key="Common.Width">宽度（格）</x:String>
@@ -19,6 +21,9 @@
     <x:String x:Key="Common.ShowTitle">悬停或聚焦时显示标题</x:String>
     <x:String x:Key="Common.Preview">预览</x:String>
     <x:String x:Key="Settings.Title">设置</x:String>
+    <x:String x:Key="Settings.Appearance">外观</x:String>
+    <x:String x:Key="Settings.Wall">墙面</x:String>
+    <x:String x:Key="Settings.System">系统</x:String>
     <x:String x:Key="Settings.VisualStyle">风格</x:String>
     <x:String x:Key="Settings.Win10Style">Windows10</x:String>
     <x:String x:Key="Settings.Win11Style">Windows11</x:String>

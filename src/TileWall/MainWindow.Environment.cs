@@ -63,8 +63,8 @@ public sealed partial class MainWindow
         if (_environmentOverflow == value) return;
         _environmentOverflow = value;
         ApplyViewport(animateMode: false);
-        if (value) Status(ProductStrings.Get("Wall.EnvironmentScroll"));
-        else if (StatusText.Text == ProductStrings.Get("Wall.EnvironmentScroll"))
+        if (value) PersistentStatus(ProductStrings.Get("Wall.EnvironmentScroll"));
+        else if (_statusOverlay.Text == ProductStrings.Get("Wall.EnvironmentScroll"))
             ClearStatus();
     }
 

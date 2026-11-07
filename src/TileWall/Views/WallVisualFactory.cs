@@ -28,17 +28,23 @@ internal static class WallMemberVisualFactory
                 Directory.Exists(member.SourceShortcutPath ?? member.TargetInput)));
 
     /// <summary>Every member surface shows its model target, without resolving it or falling back to its title.</summary>
-    internal static void SetTargetTooltip(ButtonBase button, WallMember member, string? diagnostic = null)
+    internal static void SetTargetTooltip(ButtonBase button, WallMember member, string? diagnostic = null, bool disabledOnly = false)
     {
-        var text = string.Join("\n", new[] { member.TargetInput, diagnostic }
-            .Where(value => !string.IsNullOrWhiteSpace(value)));
-        ActionIcon.SetTip(button, text);
+        var text = TargetTooltip(member, diagnostic);
+        ActionIcon.SetTip(button, text, disabledOnly);
         AutomationProperties.SetHelpText(button, text);
+    }
+
+    internal static string TargetTooltip(WallMember member, string? diagnostic = null)
+    {
+        var target = string.IsNullOrWhiteSpace(member.TargetInput) ? "" : member.TargetInput;
+        if (string.IsNullOrWhiteSpace(diagnostic)) return target;
+        return target.Length == 0 ? diagnostic : $"{target}\n{diagnostic}";
     }
 
     /// <summary>Shared pointer/focus states for wall, import and gallery buttons; hit targets never move.</summary>
     internal static Action ConfigureInteraction(ButtonBase button, Grid content, CornerRadius corners,
-        Action<bool>? hoverChanged = null, bool drawHoverEdge = true, bool deferHoverExit = false)
+        Action<bool>? hoverChanged = null, bool drawHoverEdge = true, bool deferHoverExit = false, Grid? partitionFocus = null)
     {
         // Stock button templates add theme-dependent fills over image content.
         // Keep its activation/accessibility behavior while drawing our shared states once.
@@ -54,68 +60,19 @@ internal static class WallMemberVisualFactory
                     Padding="{TemplateBinding Padding}" CornerRadius="{TemplateBinding CornerRadius}" Background="Transparent" />
             </ControlTemplate>
             """);
-        var stateCue = new Border
-        {
-            BorderThickness = new Thickness(2), CornerRadius = corners,
-            BorderBrush = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)),
-            Opacity = 0, IsHitTestVisible = false,
-        };
-        var pressedCue = new Border
-        {
-            CornerRadius = corners, Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255)),
-            Opacity = 0, IsHitTestVisible = false,
-        };
-        content.Children.Add(pressedCue);
-        content.Children.Add(stateCue);
-        var hoverBrush = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255));
-        var focusBrush = new SolidColorBrush(WallSurface.SystemAccentColor());
+        var showCues = AddInteractionCues(partitionFocus ?? content, corners, drawHoverEdge && partitionFocus is null);
         var hovering = false;
         var keyboardFocus = false;
         var pointerPressed = false;
         var keyPressed = false;
         var displayedHover = false;
         var hoverRevision = 0;
-        var cueAnimations = new Dictionary<Border, Storyboard>();
-        var cueTargets = new Dictionary<Border, double>();
 
-        void SetCue(Border cue, bool visible, bool immediate)
-        {
-            var target = visible ? 1d : 0d;
-            if (!immediate && cueTargets.TryGetValue(cue, out var previousTarget) && previousTarget == target) return;
-            cueTargets[cue] = target;
-            // XAML owns both the base value and the animation. Never acquire a
-            // CompositionVisual during initialization, reset, or window teardown.
-            var current = cue.Opacity;
-            if (cueAnimations.Remove(cue, out var previous)) previous.Stop();
-            cue.Opacity = target;
-            if (immediate || !button.IsLoaded || !MotionSettings.AnimationsEnabled || Math.Abs(current - target) < 0.001)
-            {
-                return;
-            }
-            var animation = new DoubleAnimation
-            {
-                From = current, To = target, Duration = new Duration(TimeSpan.FromMilliseconds(100)),
-            };
-            Storyboard.SetTarget(animation, cue);
-            Storyboard.SetTargetProperty(animation, "Opacity");
-            var storyboard = new Storyboard();
-            storyboard.Children.Add(animation);
-            storyboard.Completed += (_, _) =>
-            {
-                if (!cueAnimations.TryGetValue(cue, out var active) || !ReferenceEquals(active, storyboard)) return;
-                cueAnimations.Remove(cue);
-                storyboard.Stop();
-            };
-            cueAnimations[cue] = storyboard;
-            storyboard.Begin();
-        }
         void Update(bool immediate = false)
         {
             var enabled = button.IsEnabled;
             var hover = enabled && hovering;
-            stateCue.BorderBrush = keyboardFocus ? focusBrush : hoverBrush;
-            SetCue(stateCue, enabled && (keyboardFocus || drawHoverEdge && hover), immediate);
-            SetCue(pressedCue, enabled && (pointerPressed || keyPressed), immediate);
+            showCues(enabled, hover, keyboardFocus, keyPressed || partitionFocus is null && pointerPressed, immediate);
             content.Opacity = enabled ? 1 : 0.45;
             if (displayedHover == hover) return;
             displayedHover = hover;
@@ -189,6 +146,73 @@ internal static class WallMemberVisualFactory
         return Reset;
     }
 
+    internal static Action<bool, bool> ConfigurePreviewHover(Grid content, CornerRadius corners)
+    {
+        var showCues = AddInteractionCues(content, corners, drawHoverEdge: true);
+        return (hover, immediate) => showCues(true, hover, false, false, immediate);
+    }
+
+    private delegate void UpdateCues(bool enabled, bool hover, bool keyboardFocus, bool pressed, bool immediate);
+
+    private static UpdateCues AddInteractionCues(Grid content, CornerRadius corners, bool drawHoverEdge)
+    {
+        var stateCue = new Border
+        {
+            BorderThickness = new Thickness(2), CornerRadius = corners,
+            BorderBrush = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)),
+            Opacity = 0, IsHitTestVisible = false,
+        };
+        var pressedCue = new Border
+        {
+            CornerRadius = corners, Background = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255)),
+            Opacity = 0, IsHitTestVisible = false,
+        };
+        content.Children.Add(pressedCue);
+        content.Children.Add(stateCue);
+        var hoverBrush = new SolidColorBrush(Color.FromArgb(150, 255, 255, 255));
+        var focusBrush = new SolidColorBrush(WallSurface.SystemAccentColor());
+        var cueAnimations = new Dictionary<Border, Storyboard>();
+        var cueTargets = new Dictionary<Border, double>();
+
+        void SetCue(Border cue, bool visible, bool immediate)
+        {
+            var target = visible ? 1d : 0d;
+            if (!immediate && cueTargets.TryGetValue(cue, out var previousTarget) && previousTarget == target) return;
+            cueTargets[cue] = target;
+            // XAML owns both the base value and the animation. Never acquire a
+            // CompositionVisual during initialization, reset, or window teardown.
+            var current = cue.Opacity;
+            if (cueAnimations.Remove(cue, out var previous)) previous.Stop();
+            cue.Opacity = target;
+            if (immediate || !content.IsLoaded || !MotionSettings.AnimationsEnabled || Math.Abs(current - target) < 0.001)
+            {
+                return;
+            }
+            var animation = new DoubleAnimation
+            {
+                From = current, To = target, Duration = new Duration(TimeSpan.FromMilliseconds(100)),
+            };
+            Storyboard.SetTarget(animation, cue);
+            Storyboard.SetTargetProperty(animation, "Opacity");
+            var storyboard = new Storyboard();
+            storyboard.Children.Add(animation);
+            storyboard.Completed += (_, _) =>
+            {
+                if (!cueAnimations.TryGetValue(cue, out var active) || !ReferenceEquals(active, storyboard)) return;
+                cueAnimations.Remove(cue);
+                storyboard.Stop();
+            };
+            cueAnimations[cue] = storyboard;
+            storyboard.Begin();
+        }
+        return (enabled, hover, keyboardFocus, pressed, immediate) =>
+        {
+            stateCue.BorderBrush = keyboardFocus ? focusBrush : hoverBrush;
+            SetCue(stateCue, enabled && (keyboardFocus || drawHoverEdge && hover), immediate);
+            SetCue(pressedCue, enabled && pressed, immediate);
+        };
+    }
+
     internal static PuzzleMember Project(WallMember member) => member as PuzzleMember ?? new PuzzleMember
     {
         Id = member.Id, LocalBounds = member.LocalBounds, Visual = member.Visual, Entry = member.Entry,
@@ -202,9 +226,9 @@ internal static class WallMemberVisualFactory
 
     internal static PuzzleCanvasView Create(WallMember member, PuzzleFrame? frame, WallMetrics metrics,
         double scale, WallVisualStyle style, Action<Button, int>? partitionCreated = null, bool interactive = true,
-        bool externalInteraction = false, bool? targetIsFolder = null)
+        bool externalInteraction = false, bool? targetIsFolder = null, bool previewHover = false)
     {
-        var view = new PuzzleCanvasView { Interactive = interactive, ExternalInteraction = externalInteraction };
+        var view = new PuzzleCanvasView { Interactive = interactive, ExternalInteraction = externalInteraction, PreviewHover = previewHover };
         if (partitionCreated is not null) view.PartitionCreated += partitionCreated;
         view.SetScene(Project(member), frame, metrics, scale, style, targetIsFolder);
         return view;
