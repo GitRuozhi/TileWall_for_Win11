@@ -253,6 +253,7 @@
     <x:String x:Key="Wall.LocationFailed">无法打开文件所在位置，请稍后重试。</x:String>
     <x:String x:Key="Wall.CaptureFailed">指针捕获失败，手势已取消。请重试。</x:String>
     <x:String x:Key="Wall.DropFailed">无法放置：{0}</x:String>
+    <x:String x:Key="Wall.DropDuplicate">目标组已有相同启动入口。</x:String>
     <x:String x:Key="Wall.OutsideWorkArea">工作区之外</x:String>
     <x:String x:Key="Wall.OutsideLane">栏位之外</x:String>
     <x:String x:Key="Wall.OutsideWall">墙面之外</x:String>
@@ -510,7 +511,6 @@
     <x:String x:Key="Import.WallFile">墙文件</x:String>
     <x:String x:Key="Import.ChooseWallFile">选择墙文件</x:String>
     <x:String x:Key="Import.FutureFormat">此墙文件需要更新版本的 TileWall</x:String>
-    <x:String x:Key="Import.PlannedChanges">将新增 {0} 项、覆盖 {1} 项</x:String>
     <x:String x:Key="Import.OverwriteNotice">覆盖会替换图片、标题、尺寸、位置及其他导入属性</x:String>
     <x:String x:Key="Import.FilterReason.AlreadyInGroup">本组已有</x:String>
     <x:String x:Key="Import.FilterReason.MissingTarget">目标缺失</x:String>
@@ -553,7 +553,7 @@
     <x:String x:Key="Import.Stats.DuplicateTarget">目标重复</x:String>
     <x:String x:Key="Import.Stats.MissingTarget">目标丢失</x:String>
     <x:String x:Key="Import.Stats.NonPrimaryEntry">次要入口</x:String>
-    <x:String x:Key="Import.FilterReason.DuplicateTarget">目标重复</x:String>
+    <x:String x:Key="Import.FilterReason.DuplicateTarget">目标组已有相同项，导入时跳过。</x:String>
     <x:String x:Key="Import.FilterReason.NonPrimaryEntry">次要入口</x:String>
     <x:String x:Key="Import.ExportFailed">导出失败：{0}</x:String>
     <x:String x:Key="Import.Exported">已导出 {0} 个成员。</x:String>

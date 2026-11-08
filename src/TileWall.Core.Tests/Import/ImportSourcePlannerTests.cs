@@ -187,12 +187,14 @@ public sealed class ImportSourcePlannerTests
         Assert.Equal("unknown", Assert.Single(filtered.Candidates, candidate => candidate.CanAdd).SelectionKey);
         var shown = ImportSourcePlanner.Project(current, [duplicate, missing, unknown], autoFilter: false, existingIdentityKeys: identities);
         Assert.Equal("Tools", Assert.Single(shown.Groups).Title);
-        Assert.Equal(0, shown.FilteredCount); Assert.All(shown.FilterCounts.Values, count => Assert.Equal(0, count));
-        Assert.All(shown.Candidates, candidate => Assert.True(candidate.CanAdd));
+        Assert.Equal(1, shown.FilteredCount);
+        var repeated = Assert.Single(shown.Candidates, candidate => !candidate.CanAdd);
+        Assert.True(repeated.Visible);
+        Assert.Equal(ImportFilterReason.DuplicateTarget, repeated.FilterReason);
     }
 
     [Fact]
-    public void DestinationObservationMarksOverwriteWithoutFilteringOrChangingSelection()
+    public void DestinationObservationDisablesOnlyTheMatchingGroupAndDropsItsSelection()
     {
         var existing = Tile("existing");
         var wall = WallDocument.Empty(1, 8) with
@@ -215,16 +217,19 @@ public sealed class ImportSourcePlannerTests
             existingIdentityKeys: new Dictionary<string, string> { [existing.Id] = duplicate.Identity!.Key });
         Assert.Equal(initial.Groups.Select(group => group.Key), observed.Groups.Select(group => group.Key));
         Assert.Equal(["tools", "other"], observed.Groups.Select(group => group.DestinationGroupId));
-        Assert.Equal(ImportFilterReason.None,
-            observed.Candidates.Single(candidate => candidate.SelectionKey == duplicate.SourceKey).FilterReason);
-        Assert.Equal(existing.Id, observed.Candidates.Single(candidate => candidate.SelectionKey == duplicate.SourceKey).ReplacedMemberId);
+        var repeated = Assert.Single(observed.Candidates, candidate => candidate.SelectionKey == duplicate.SourceKey);
+        Assert.Equal(ImportFilterReason.DuplicateTarget, repeated.FilterReason);
+        Assert.True(repeated.Visible);
+        Assert.False(repeated.CanAdd);
         Assert.True(observed.Candidates.Single(candidate => candidate.SelectionKey == elsewhere.SourceKey).CanAdd);
         var migrated = ImportSourcePlanner.MigrateSelection(selected, observed);
-        Assert.Equal(2, migrated.Selected.Count);
-        Assert.Equal(0, migrated.RemovedCount);
+        Assert.Equal("fresh", Assert.Single(migrated.Selected).Key);
+        Assert.Equal(1, migrated.RemovedCount);
         var plan = Plan(wall, observed, migrated.Selected.Keys);
-        Assert.Equal(2, plan.Accepted.Count);
-        Assert.All(plan.Accepted, candidate => Assert.Equal("tools", candidate.GroupId));
+        Assert.Equal("tools", Assert.Single(plan.Accepted).GroupId);
+        var stale = Plan(wall with { Generation = wall.Generation + 1 }, initial, selected.Keys);
+        Assert.Equal(WallRejection.StaleGeneration, stale.Rejection);
+        Assert.Null(stale.Proposal);
     }
 
     [Fact]
@@ -236,7 +241,7 @@ public sealed class ImportSourcePlannerTests
             recognizeGroups: false, autoFilter: false);
         Assert.Equal(4, projected.Candidates.Count);
         var plan = Plan(WallDocument.Empty(1, 8), projected, projected.Candidates.Select(candidate => candidate.SelectionKey));
-        Assert.Equal(4, plan.AddedCount); Assert.Equal(0, plan.OverwrittenCount);
+        Assert.Equal(4, plan.AddedCount);
     }
 
     [Fact]
@@ -353,34 +358,34 @@ public sealed class ImportSourcePlannerTests
     }
 
     [Fact]
-    public void ExistingGroupUsesPreImportMaximumBottomIncludingOverwrittenSlot()
+    public void PartialDuplicateBatchPreservesOldTileAndAppendsBelowItsFootprint()
     {
-        var overwritten = Tile("old", new(3, 6, 2, 2)) with { Visual = new() { TitleMode = MemberTitleMode.Manual, Title = "Old" } };
+        var old = Tile("old", new(3, 6, 2, 2)) with { Visual = new() { TitleMode = MemberTitleMode.Manual, Title = "Old" } };
         var retained = Tile("retained", new(0, 0, 1, 1));
         var other = Group("other", "Other", Tile("other-member"));
-        var existing = Group("tools", "Tools", overwritten, retained);
+        var existing = Group("tools", "Tools", old, retained);
         var wall = WallDocument.Empty(1, 16) with { Generation = 4, Lanes = [new() { Groups = [other, existing] }] };
         var source = new ImportSourceGroup("source", "Tools", 0);
-        var replacement = Item("replacement", "Replacement", source, "same", new(2, 2, 3, 1), true, true) with
+        var duplicate = Item("duplicate", "Duplicate", source, "same", new(2, 2, 3, 1), true, true) with
             { Member = Tile("untrusted", new(2, 2, 3, 1)) with { Visual = new() { TitleMode = MemberTitleMode.Manual, Title = "Imported" } } };
         var added = Item("added", "Added", source, "new", new(6, 0, 1, 2), true, true, 1);
-        var projection = ImportSourcePlanner.Project(wall, [replacement, added], autoFilter: false,
-            existingIdentityKeys: new Dictionary<string, string> { [overwritten.Id] = replacement.Identity!.Key });
+        var projection = ImportSourcePlanner.Project(wall, [duplicate, added], autoFilter: false,
+            existingIdentityKeys: new Dictionary<string, string> { [old.Id] = duplicate.Identity!.Key });
         var before = WallJson.Serialize(wall);
-        var plan = Plan(wall, projection, ["replacement", "added"]);
-        Assert.Equal(ImportPlanStatus.Ready, plan.Status); Assert.Equal(1, plan.AddedCount); Assert.Equal(1, plan.OverwrittenCount);
+        var plan = Plan(wall, projection, ["duplicate", "added"]);
+        Assert.Equal(ImportPlanStatus.Ready, plan.Status);
+        Assert.Equal("added", Assert.Single(plan.Accepted).SourceKey);
         var destination = Destination(plan, "Tools");
         Assert.Equal("tools", destination.Id);
         Assert.Same(retained, destination.Members.Single(member => member.Id == "retained"));
-        var replaced = destination.Members.Single(member => member.Id == "old");
-        Assert.Equal(new GridRect(2, 10, 3, 1), replaced.LocalBounds); Assert.Equal("Imported", replaced.Visual.Title);
+        Assert.Same(old, destination.Members.Single(member => member.Id == "old"));
         Assert.Equal(new GridRect(6, 8, 1, 2), destination.Members.Single(member => member.Id != "old" && member.Id != "retained").LocalBounds);
         Assert.Equal(["tools", "other"], plan.Proposal!.Document.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id));
         Assert.Equal(before, WallJson.Serialize(wall));
     }
 
     [Fact]
-    public void SelectedOverwriteAdoptsImportedTypePartitionsAppearanceAndSourceWhileRetainingLocalGroupIdentity()
+    public void DuplicateOnlyBatchHasNoProposalEvenWhenIncomingAppearanceAndTypeDiffer()
     {
         var old = Tile("old") with { Entry = new("old", "Objects/old/entry.lnk", ManagedEntryKind.Lnk) };
         var current = WallDocument.Empty(1, 8) with { Lanes = [new() { Groups = [Group("local-group", "Tools", old)] }] };
@@ -399,22 +404,13 @@ public sealed class ImportSourcePlannerTests
             with { Member = puzzle };
         var projection = ImportSourcePlanner.Project(current, [candidate], recognizeGroups: false, autoFilter: false,
             existingIdentityKeys: new Dictionary<string, string> { [old.Id] = candidate.Identity!.Key });
+        var preview = ImportSourcePlanner.BuildSourcePreview(projection, new(1, 1));
+        Assert.Equal(puzzle, Assert.Single(preview.CandidatesByMemberId.Values).Source.Member);
+        Assert.Equal(puzzle.LocalBounds, Assert.Single(Assert.Single(Assert.Single(preview.Lanes).Groups).Members).LocalBounds);
         var plan = Plan(current, projection, ["source"]);
-        Assert.Equal(ImportPlanStatus.Ready, plan.Status);
-        var group = Destination(plan);
-        var adopted = Assert.IsType<PuzzleMember>(Assert.Single(group.Members));
-        Assert.Equal("local-group", group.Id);
-        Assert.Equal("Tools", group.Title);
-        Assert.Equal("old", adopted.Id);
-        Assert.Equal(new GridRect(2, 2, 4, 4), adopted.LocalBounds);
-        Assert.Equal(puzzle.Partitions, adopted.Partitions);
-        Assert.Equal(puzzle.Visual, adopted.Visual);
-        Assert.Equal(puzzle.Images, adopted.Images);
-        Assert.Equal(puzzle.RotationInterval, adopted.RotationInterval);
-        Assert.Equal("old", adopted.Entry!.ObjectId);
-        Assert.Equal("incoming", adopted.ImportSource!.BatchId);
-        Assert.Equal("local-group", adopted.ImportSource.OriginGroupId);
-        Assert.Equal(@"Tools\app.lnk", adopted.ImportSource.RelativePath);
+        Assert.Equal(ImportPlanStatus.NoChange, plan.Status);
+        Assert.Null(plan.Proposal);
+        Assert.Empty(plan.Accepted);
     }
 
     [Fact]
@@ -431,7 +427,6 @@ public sealed class ImportSourcePlannerTests
         Assert.Null(Assert.Single(projected.Groups).DestinationGroupId);
         var plan = Plan(wall, projected, ["new"]);
         Assert.Equal(1, plan.AddedCount);
-        Assert.Equal(0, plan.OverwrittenCount);
         var groups = plan.Proposal!.Document.Lanes.SelectMany(lane => lane.Groups).ToArray();
         Assert.Equal(["B", "Bb"], groups.Select(group => group.Title));
         Assert.Same(renamed, groups[1]);
@@ -450,7 +445,7 @@ public sealed class ImportSourcePlannerTests
         var empty = Plan(wall, projection, []);
         Assert.Equal(ImportPlanStatus.NoChange, empty.Status); Assert.Null(empty.Proposal);
         var plan = Plan(wall, projection, ["new"]);
-        Assert.Equal(0, plan.OverwrittenCount); Assert.Same(old, Destination(plan, "Tools").Members.Single(member => member.Id == "old"));
+        Assert.Same(old, Destination(plan, "Tools").Members.Single(member => member.Id == "old"));
         var newMemberId = Assert.Single(plan.Accepted).MemberId;
         Assert.Equal(4, Destination(plan, "Tools").Members.Single(member => member.Id == newMemberId).LocalBounds.Row);
     }
@@ -635,7 +630,7 @@ public sealed class ImportSourcePlannerTests
     }
 
     [Fact]
-    public void SourceDuplicateFilteringIsGlobalButExistingWallOnlyMarksAnOverwrite()
+    public void SourceAliasAndItsExistingWallDuplicateAreCountedOnceEach()
     {
         var user = Item("user", "Alpha", new("one", "One", 0), "same") with { SourcePriority = 0 };
         var common = Item("common", "Beta", new("two", "Two", 1), "same") with { SourcePriority = 1 };
@@ -643,13 +638,15 @@ public sealed class ImportSourcePlannerTests
         var wall = WallDocument.Empty(1, 8) with { Lanes = [new() { Groups = [Group("one", "One", old)] }] };
         var result = ImportSourcePlanner.Project(wall, [common, user], recognizeGroups: false,
             existingIdentityKeys: new Dictionary<string, string> { [old.Id] = user.Identity!.Key });
-        var row = Assert.Single(result.Candidates, candidate => candidate.CanAdd);
-        Assert.Equal("user", row.SelectionKey); Assert.Equal("old", row.ReplacedMemberId);
+        var row = Assert.Single(result.Candidates, candidate => candidate.Visible);
+        Assert.Equal("user", row.SelectionKey);
+        Assert.False(row.CanAdd);
         Assert.Equal(["user", "common"], row.SourceKeys);
-        Assert.Equal(1, result.FilterCounts[ImportFilterReason.DuplicateTarget]);
+        Assert.Equal(2, result.FilterCounts[ImportFilterReason.DuplicateTarget]);
+        Assert.Equal(0, result.Statistics.CandidateCount);
         var migrated = ImportSourcePlanner.MigrateSelection(new Dictionary<string, string> { ["common"] = common.SelectionIdentity }, result);
-        Assert.Equal("common", Assert.Single(migrated.Selected).Key);
-        Assert.Equal(1, Plan(wall, result, migrated.Selected.Keys).OverwrittenCount);
+        Assert.Empty(migrated.Selected);
+        Assert.Equal(ImportPlanStatus.NoChange, Plan(wall, result, ["user", "common"]).Status);
     }
 
     [Fact]
@@ -674,8 +671,13 @@ public sealed class ImportSourcePlannerTests
         var keys = new Dictionary<string, string> { [known.Id] = package[0].Identity!.Key };
         var projection = ImportSourcePlanner.Project(wall, package, autoFilter: false, existingIdentityKeys: keys);
         Assert.Equal(2, projection.FilterCounts[ImportFilterReason.DuplicateTarget]);
-        Assert.Empty(projection.Groups);
-        Assert.All(projection.Candidates, candidate => Assert.False(candidate.CanAdd));
+        Assert.Equal("unnamed", Assert.Single(projection.Groups).DestinationGroupId);
+        Assert.All(projection.Candidates, candidate => { Assert.True(candidate.Visible); Assert.False(candidate.CanAdd); });
+        Assert.Equal(0, projection.Statistics.CandidateCount);
+        var preview = ImportSourcePlanner.BuildSourcePreview(projection, new(1, 1));
+        var members = Assert.Single(Assert.Single(preview.Lanes).Groups).Members;
+        Assert.Equal(known.LocalBounds, Assert.Single(members, member => member.Id == known.Id).LocalBounds);
+        Assert.Equal(clock.LocalBounds, Assert.Single(members, member => member.Id == clock.Id).LocalBounds);
         Assert.Equal(ImportPlanStatus.NoChange, Plan(wall, projection, ["known", "clock"]).Status);
 
         var unverified = ImportSourcePlanner.Project(wall, [package[0]], autoFilter: false);
@@ -684,6 +686,21 @@ public sealed class ImportSourcePlannerTests
         var empty = ImportSourcePlanner.Project(WallDocument.Empty(2, 8), package, autoFilter: false);
         Assert.Equal(0, empty.FilteredCount);
         Assert.Equal(2, empty.Statistics.CandidateCount);
+    }
+
+    [Fact]
+    public void ExportProjectionKeepsTheCurrentWallSelectableWithObservedIdentities()
+    {
+        var member = Tile("known");
+        var wall = WallDocument.Empty(1, 8) with { Lanes = [new() { Groups = [Group("tools", "Tools", member)] }] };
+        var source = Item("known", "Known", new("tools", "Tools", 0), "known") with
+        {
+            SourceKind = ImportPageSourceKind.CurrentWall, Policy = ImportSourcePolicy.Attributed, Member = member,
+        };
+        var keys = new Dictionary<string, string> { [member.Id] = source.Identity!.Key };
+        var projection = ImportSourcePlanner.Project(wall, [source], existingIdentityKeys: keys);
+        Assert.True(Assert.Single(projection.Candidates).CanAdd);
+        Assert.Equal(0, projection.FilteredCount);
     }
 
     [Theory]
@@ -705,7 +722,7 @@ public sealed class ImportSourcePlannerTests
         };
         var package = new[]
         {
-            Item("duplicate", "Known", group, "known"),
+            Item("duplicate", "Known", group, "known", bounds: new(2, 0, 1, 1)),
             Item("new", "New", group, bounds: new(0, 0, 1, 1), order: 1),
         }.Select(candidate => candidate with
         {
@@ -718,7 +735,6 @@ public sealed class ImportSourcePlannerTests
         var result = Plan(wall, projection, ["duplicate", "new"], position: position);
         Assert.Equal(ImportPlanStatus.Ready, result.Status);
         Assert.Equal(1, result.AddedCount);
-        Assert.Equal(0, result.OverwrittenCount);
         var next = result.Proposal!.Document;
         Assert.Equal(wall.Columns, next.Columns);
         Assert.True(next.Rows > wall.Rows);

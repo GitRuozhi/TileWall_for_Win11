@@ -271,6 +271,168 @@ public sealed class StartMenuImportPlannerTests
     }
 
     [Fact]
+    public void PureSourceTailUsesRemainingHeightBeforeGrowing()
+    {
+        var first = Group("first");
+        var last = Group("last");
+        var current = WallDocument.Empty(2, 4) with
+            { Lanes = [new() { Groups = [first] }, new() { Groups = [last] }] };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")],
+            budget: Budget(2, 12), insertionPosition: ImportInsertionPosition.Tail, preferCurrentHeight: true);
+
+        var next = Assert.IsType<WallProposal>(result.Proposal).Document;
+        Assert.Equal(4, next.Rows);
+        Assert.Same(first, Assert.Single(next.Lanes[0].Groups));
+        Assert.Same(last, next.Lanes[1].Groups[0]);
+        Assert.Equal("incoming", next.Lanes[1].Groups[1].Id);
+    }
+
+    [Fact]
+    public void PureSourceTailReflowsOnlyTheNecessarySuffixAtCurrentHeight()
+    {
+        var first = Group("first", Tile("first-member", row: 2));
+        var second = Group("second");
+        var third = Group("third");
+        var last = Group("last", Tile("last-member", column: 3, row: 2));
+        var incoming = Group("incoming", Tile("new-member", row: 2));
+        var current = WallDocument.Empty(4, 6) with
+        {
+            Lanes = [new() { Groups = [first] }, new() { Groups = [second] },
+                new() { Groups = [third] }, new() { Groups = [last] }],
+        };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [incoming],
+            budget: Budget(4, 12), insertionPosition: ImportInsertionPosition.Tail, preferCurrentHeight: true);
+
+        var next = Assert.IsType<WallProposal>(result.Proposal).Document;
+        Assert.Equal(6, next.Rows);
+        Assert.Same(current.Lanes[0], next.Lanes[0]);
+        Assert.Same(current.Lanes[1], next.Lanes[1]);
+        Assert.Equal([third, last], next.Lanes[2].Groups);
+        Assert.Same(incoming, Assert.Single(next.Lanes[3].Groups));
+    }
+
+    [Theory]
+    [InlineData(2, 2)]
+    [InlineData(3, 3)]
+    public void PureSourceTailKeepsManualWidthAndDropsOnlyUnneededTailColumns(int manualColumns, int expectedColumns)
+    {
+        var current = WallDocument.Empty(4, 6) with
+        {
+            Settings = new() { ManualWindowedViewportWidthDip = new WallMetrics().WallWidth(manualColumns) +
+                WallViewportPolicy.FixedWidth(menuStart: true) },
+            Lanes = [new() { Groups = [Group("first")] }, new() { Groups = [] }, new() { Groups = [] }, new() { Groups = [] }],
+        };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")],
+            budget: Budget(4, 10), insertionPosition: ImportInsertionPosition.Tail, preferCurrentHeight: true);
+
+        var next = Assert.IsType<WallProposal>(result.Proposal).Document;
+        Assert.Equal(expectedColumns, next.Columns);
+        Assert.Equal("incoming", Assert.Single(next.Lanes[1].Groups).Id);
+    }
+
+    [Theory]
+    [InlineData(ImportInsertionPosition.Head, "incoming,old")]
+    [InlineData(ImportInsertionPosition.Tail, "old,incoming")]
+    public void PureSourceImportGrowsOnlyAsFarAsTheUnchangedGroupGeometryNeeds(
+        ImportInsertionPosition position, string order)
+    {
+        var current = WallDocument.Empty(1, 4) with { Lanes = [new() { Groups = [Group("old")] }] };
+        var incoming = Group("incoming", Tile("member", row: 3));
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [incoming],
+            budget: Budget(1, 12), insertionPosition: position, preferCurrentHeight: true);
+
+        var next = Assert.IsType<WallProposal>(result.Proposal).Document;
+        Assert.Equal(7, next.Rows);
+        Assert.Equal(order.Split(','), Groups(next).Select(group => group.Id));
+        Assert.Same(incoming, next.Lanes[0].Groups.Single(group => group.Id == incoming.Id));
+
+        var before = WallJson.Serialize(current);
+        var rejected = StartMenuImportPlanner.TryPlan(current, 0, [incoming],
+            budget: Budget(1, 4), insertionPosition: position, preferCurrentHeight: true);
+        Assert.Null(rejected.Proposal);
+        Assert.Equal("GROUP_TOO_TALL:incoming", rejected.Detail);
+        Assert.Equal(before, WallJson.Serialize(current));
+    }
+
+    [Fact]
+    public void PureSourceHeadUsesAdjacentLeadingSpaceWithoutShiftingTheWall()
+    {
+        var current = WallDocument.Empty(4, 6) with
+        {
+            Lanes = [new() { Groups = [] }, new() { Groups = [] },
+                new() { Groups = [Group("first")] }, new() { Groups = [Group("second")] }],
+        };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")],
+            budget: Budget(4, 12), preferCurrentHeight: true);
+
+        var next = Assert.IsType<WallProposal>(result.Proposal).Document;
+        Assert.Equal(6, next.Rows);
+        Assert.Same(current.Lanes[0], next.Lanes[0]);
+        Assert.Equal("incoming", Assert.Single(next.Lanes[1].Groups).Id);
+        Assert.Same(current.Lanes[2], next.Lanes[2]);
+        Assert.Same(current.Lanes[3], next.Lanes[3]);
+    }
+
+    [Fact]
+    public void PureSourceHeadPrependsInFirstLaneBeforeShiftingOtherLanes()
+    {
+        var first = Group("first");
+        var incoming = Group("incoming");
+        var current = WallDocument.Empty(2, 4) with
+            { Lanes = [new() { Groups = [first] }, new() { Groups = [Group("second")] }] };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [incoming],
+            budget: Budget(3, 12), preferCurrentHeight: true);
+
+        var next = Assert.IsType<WallProposal>(result.Proposal).Document;
+        Assert.Equal(4, next.Rows);
+        Assert.Equal(2, next.Columns);
+        Assert.Equal([incoming, first], next.Lanes[0].Groups);
+        Assert.Same(current.Lanes[1], next.Lanes[1]);
+    }
+
+    [Fact]
+    public void PureSourceHeadReflowsOnlyTheNecessaryPrefix()
+    {
+        var first = Group("first", Tile("first-member", column: 3, row: 2));
+        var second = Group("second");
+        var incoming = Group("incoming", Tile("new-member", row: 2));
+        var current = WallDocument.Empty(4, 6) with
+        {
+            Lanes = [new() { Groups = [first] }, new() { Groups = [second] },
+                new() { Groups = [Group("third")] }, new() { Groups = [Group("last")] }],
+        };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [incoming],
+            budget: Budget(4, 12), preferCurrentHeight: true);
+
+        var next = Assert.IsType<WallProposal>(result.Proposal).Document;
+        Assert.Equal(6, next.Rows);
+        Assert.Same(incoming, Assert.Single(next.Lanes[0].Groups));
+        Assert.Equal([first, second], next.Lanes[1].Groups);
+        Assert.Same(current.Lanes[2], next.Lanes[2]);
+        Assert.Same(current.Lanes[3], next.Lanes[3]);
+    }
+
+    [Fact]
+    public void PureSourceHeadKeepsOldLaneBoundariesWhenItMustAddAColumn()
+    {
+        var incoming = Group("incoming", Tile("new-member", row: 4));
+        var current = WallDocument.Empty(2, 6) with
+        {
+            Lanes = [new() { Groups = [Group("first"), Group("second")] },
+                new() { Groups = [Group("last", Tile("last-member", row: 2))] }],
+        };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [incoming],
+            budget: Budget(3, 12), preferCurrentHeight: true);
+
+        var next = Assert.IsType<WallProposal>(result.Proposal).Document;
+        Assert.Equal(6, next.Rows);
+        Assert.Equal(3, next.Columns);
+        Assert.Same(incoming, Assert.Single(next.Lanes[0].Groups));
+        Assert.Same(current.Lanes[0], next.Lanes[1]);
+        Assert.Same(current.Lanes[1], next.Lanes[2]);
+    }
+
+    [Fact]
     public void TailExpandedColumnLimitStillIncludesTheUniqueEmptyTail()
     {
         var current = WallDocument.Empty(64, 2) with

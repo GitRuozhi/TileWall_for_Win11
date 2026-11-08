@@ -18,7 +18,6 @@ using TileWall.Shell;
 using TileWall.Views;
 using Windows.Foundation;
 using Windows.Graphics;
-using Windows.UI;
 
 namespace TileWall;
 
@@ -1011,10 +1010,7 @@ public sealed partial class MainWindow : Window
             if (proposal?.Proposal is null)
             {
                 AppLog.Warn("WallDrop", $"rejection={proposal?.Rejection} detail={proposal?.Detail}");
-                Status(proposal?.Detail == "LAYOUT_LOCKED" ? ProductStrings.Get("Wall.LayoutLocked") :
-                    proposal?.Detail is "CONTENT_TOO_LARGE" || proposal?.Detail?.StartsWith("GROUP_TOO_TALL:", StringComparison.Ordinal) == true
-                    ? ViewportFailure(proposal!) : string.Format(ProductStrings.Get("Wall.DropFailed"),
-                        ProductStrings.WallRejectionReason(proposal?.Rejection ?? WallRejection.None)));
+                Status(DescribeDropFailure(proposal));
                 return;
             }
             _ = CommitProposalAsync(proposal.Proposal, settle: error => SettleReleasePersistence(error, automaticHeight: true));
@@ -1044,11 +1040,11 @@ public sealed partial class MainWindow : Window
         var derivedLanes = Settings.FullScreen || Settings.ExpandColumns;
         var rightAnchor = !derivedLanes && Settings.AnchorCorner is AnchorCorner.TopRight or AnchorCorner.BottomRight;
         if (point.X < 0 || point.Y < 0 || point.X >= (derivedLanes ? Math.Max(geometry.WallWidth, WallScroll.ViewportWidth) : geometry.WallWidth) || point.Y >= (derivedLanes ? WallScroll.ViewportHeight : geometry.WallHeight))
-            return InvalidDrop(ProductStrings.Get("Wall.OutsideWall"));
+            return InvalidDrop("Wall.OutsideWall");
         if (rightAnchor && point.X < _metrics.Margin)
         {
             if (Document.Columns >= 64)
-                return InvalidDrop(ProductStrings.Get("Wall.OutsideLane"));
+                return InvalidDrop("Wall.OutsideLane");
             // Extending inward from a right anchor prepends a lane. The proposal still commits once
             // against the original generation, preserving every existing group/member identity.
             var expanded = Document with { Columns = Document.Columns + 1,
@@ -1063,7 +1059,7 @@ public sealed partial class MainWindow : Window
             (int)Math.Floor((point.X - _metrics.Margin) / (_metrics.LaneWidth + _metrics.ColumnGap));
         lane = WallViewportPolicy.MapCreationLane(Document, lane);
         if (lane < 0 || lane >= 64 || !derivedLanes && lane > Document.Columns)
-            return InvalidDrop(ProductStrings.Get("Wall.OutsideLane"));
+            return InvalidDrop("Wall.OutsideLane");
         if (_gesture.GroupId is { } groupId)
         {
             var before = geometry.Groups.Count(g => g.LaneIndex == lane && g.GroupId != groupId &&
@@ -1091,11 +1087,11 @@ public sealed partial class MainWindow : Window
         var derivedLanes = Settings.FullScreen || Settings.ExpandColumns;
         var rightAnchor = !derivedLanes && Settings.AnchorCorner is AnchorCorner.TopRight or AnchorCorner.BottomRight;
         if (slot.Bounds.Row < 0)
-            return InvalidDrop(ProductStrings.Get("Wall.OutsideWall"));
+            return InvalidDrop("Wall.OutsideWall");
         if (slot.LaneIndex == -1 && rightAnchor)
         {
-            if (Document.Columns >= 64) return InvalidDrop(ProductStrings.Get("Wall.OutsideLane"));
-            if (slot.Bounds.Row == 0) return InvalidDrop(ProductStrings.Get("Wall.OutsideGroup"));
+            if (Document.Columns >= 64) return InvalidDrop("Wall.OutsideLane");
+            if (slot.Bounds.Row == 0) return InvalidDrop("Wall.OutsideGroup");
             var expanded = Document with { Columns = Document.Columns + 1,
                 Lanes = new[] { new WallLane { Groups = [] } }.Concat(Document.Lanes).ToArray() };
             var prepend = new MoveMemberAction(Document.Generation, member.Id,
@@ -1107,7 +1103,7 @@ public sealed partial class MainWindow : Window
                 2 * _metrics.Margin + _metrics.ColumnGap) / (_metrics.LaneWidth + _metrics.ColumnGap)))
             : Document.Columns + (rightAnchor ? 0 : 1);
         if (slot.LaneIndex < 0 || slot.LaneIndex >= 64 || slot.LaneIndex >= availableLanes)
-            return InvalidDrop(ProductStrings.Get("Wall.OutsideLane"));
+            return InvalidDrop("Wall.OutsideLane");
         var lane = WallViewportPolicy.MapCreationLane(_gestureDocument!, slot.LaneIndex);
         var action = _memberDropSession!.Resolve(slot with { LaneIndex = lane });
         if (_traceInput)
@@ -1119,35 +1115,53 @@ public sealed partial class MainWindow : Window
         {
             var desired = GestureLaunchIdentity(member);
             if (desired is not null && destination.Members.Any(other => other.Id != member.Id && GestureLaunchIdentity(other) == desired))
-                return InvalidDrop(ProductStrings.Get("SharedEditor.Duplicate"));
+                return InvalidDrop("Wall.DropDuplicate");
         }
         if (action.TargetBounds.Column < 0 || action.TargetBounds.Right > 8 || action.TargetBounds.Row < 0)
-            return InvalidDrop(ProductStrings.Get("Wall.OutsideGroup"));
+            return InvalidDrop("Wall.OutsideGroup");
         return CachedDrop(action);
     }
 
     private readonly Dictionary<string, WallLayoutResult> _invalidDrops = new(StringComparer.Ordinal);
-    private WallLayoutResult InvalidDrop(string reason)
+    private WallLayoutResult InvalidDrop(string reasonKey)
     {
-        if (!_invalidDrops.TryGetValue(reason, out var result))
-            _invalidDrops.Add(reason, result = new(null, WallRejection.InvalidAction, reason));
+        if (!_invalidDrops.TryGetValue(reasonKey, out var result))
+            _invalidDrops.Add(reasonKey, result = new(null, WallRejection.InvalidAction, reasonKey));
         return result;
     }
 
-    private void DrawGhost(Point point, bool allowed)
+    private string DescribeDropFailure(WallLayoutResult? result)
+    {
+        if (result?.Detail is { } detail)
+        {
+            if (detail == "LAYOUT_LOCKED") return ProductStrings.Get("Wall.LayoutLocked");
+            if (detail == "CONTENT_TOO_LARGE" || detail.StartsWith("GROUP_TOO_TALL:", StringComparison.Ordinal) ||
+                detail.StartsWith("MEMBER_TOO_TALL:", StringComparison.Ordinal)) return ViewportFailure(result);
+            if (_invalidDrops.TryGetValue(detail, out var local) && ReferenceEquals(local, result))
+                return string.Format(ProductStrings.Get("Wall.DropFailed"), ProductStrings.Get(detail));
+        }
+        return string.Format(ProductStrings.Get("Wall.DropFailed"),
+            ProductStrings.WallRejectionReason(result?.Rejection ?? WallRejection.None));
+    }
+
+    private void ClearMemberDropNotice()
+    {
+        if (_memberDropNotice is not { } message) return;
+        _memberDropNotice = null;
+        if (_statusOverlay.Text == message) ClearTransientStatus();
+    }
+
+    private void DrawGhost(Point point)
     {
         var visual = _gesture.GhostVisual;
         if (visual is null) return;
-        var inset = _gesture.GroupId is null ? 1d : 0d;
         var ghost = _gesture.GhostHost;
         if (ghost is null)
         {
             ghost = new Border
             {
-                Width = visual.Width + inset * 2,
-                Height = visual.Height + inset * 2,
-                Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
-                BorderThickness = new Thickness(inset),
+                Width = visual.Width,
+                Height = visual.Height,
                 CornerRadius = WallCornerStyle.Corners(Document.Settings.VisualStyle),
                 Child = visual,
                 RenderTransform = new TranslateTransform(),
@@ -1155,11 +1169,9 @@ public sealed partial class MainWindow : Window
             _gesture.SetGhostHost(ghost);
             DragOverlay.Children.Add(ghost);
         }
-        var color = allowed ? Color.FromArgb(210, 255, 255, 255) : Microsoft.UI.Colors.OrangeRed;
-        if (ghost.BorderBrush is not SolidColorBrush brush || brush.Color != color) ghost.BorderBrush = new SolidColorBrush(color);
         point = ContentToViewport(point);
-        PositionGhost(ghost, point.X - _gesture.GrabOffset.X - inset,
-            point.Y - (_gesture.GroupId is null ? _gesture.GrabOffset.Y : 12) - inset);
+        PositionGhost(ghost, point.X - _gesture.GrabOffset.X,
+            point.Y - (_gesture.GroupId is null ? _gesture.GrabOffset.Y : 12));
     }
 
     private void TerminateGesture(bool restoreScroll = true, bool restoreView = true)
@@ -1170,6 +1182,7 @@ public sealed partial class MainWindow : Window
         _gestureScreenStart = null;
         ClearGhostComposition();
         var wasDragging = _gesture.End();
+        ClearMemberDropNotice();
         _dropCache.Clear(); _gestureDocument = null; _gestureGeometry = null; _drawnDrop = null;
         _memberDropSession = null; _memberDropSlot = null; _memberDropResult = null;
         StopFrameSubscriptionIfIdle();

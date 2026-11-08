@@ -10,12 +10,14 @@ public static class StartMenuImportPlanner
 
     public static WallLayoutResult TryPlan(WallDocument current, long expectedGeneration,
         IReadOnlyList<StartGroup> importedGroups, WallMetrics? metrics = null, WallViewportBudget? budget = null,
-        ImportInsertionPosition insertionPosition = ImportInsertionPosition.Head, bool preserveExistingGroups = false)
+        ImportInsertionPosition insertionPosition = ImportInsertionPosition.Head, bool preserveExistingGroups = false,
+        bool preferCurrentHeight = false)
     {
         ArgumentNullException.ThrowIfNull(current);
         ArgumentNullException.ThrowIfNull(importedGroups);
         metrics ??= new();
-        var result = TryPlanCore(current, expectedGeneration, importedGroups, metrics, budget, insertionPosition, preserveExistingGroups);
+        var result = TryPlanCore(current, expectedGeneration, importedGroups, metrics, budget, insertionPosition,
+            preserveExistingGroups, preferCurrentHeight);
         if (result.Proposal is not null || current.Settings.ExpandColumns || budget is null ||
             result.Rejection is not (WallRejection.NoSpace or WallRejection.WorkAreaTooSmall) ||
             (preserveExistingGroups && result.Detail != "PACKAGE_WIDTH_LIMIT") ||
@@ -26,12 +28,13 @@ public static class StartMenuImportPlanner
         // Only import capacity gets this fallback. The source/selection and height budget stay unchanged.
         var expanded = current with { Settings = current.Settings with { ExpandColumns = true } };
         return TryPlanCore(expanded, expectedGeneration, importedGroups, metrics,
-            budget with { MaxColumns = MaxColumns, MaxWidthDip = metrics.WallWidth(MaxColumns) }, insertionPosition, preserveExistingGroups);
+            budget with { MaxColumns = MaxColumns, MaxWidthDip = metrics.WallWidth(MaxColumns) }, insertionPosition,
+            preserveExistingGroups, preferCurrentHeight);
     }
 
     private static WallLayoutResult TryPlanCore(WallDocument current, long expectedGeneration,
         IReadOnlyList<StartGroup> importedGroups, WallMetrics metrics, WallViewportBudget? budget,
-        ImportInsertionPosition insertionPosition, bool preserveExistingGroups)
+        ImportInsertionPosition insertionPosition, bool preserveExistingGroups, bool preferCurrentHeight)
     {
         ArgumentNullException.ThrowIfNull(current);
         ArgumentNullException.ThrowIfNull(importedGroups);
@@ -72,8 +75,11 @@ public static class StartMenuImportPlanner
         var contentColumns = maxColumns - (current.Settings.ExpandColumns ? 1 : 0);
         if (contentColumns < 1) return Reject(WallRejection.WorkAreaTooSmall, "CONTENT_TOO_LARGE");
         var involved = groups.Select(group => group.Id).ToHashSet(StringComparer.Ordinal);
+        if (preferCurrentHeight)
+            return TryPlaceAtCurrentHeight(current, groups, involved, maxRows, contentColumns, metrics, budget,
+                insertionPosition);
         if (insertionPosition == ImportInsertionPosition.Tail)
-            return TryTail(current, expectedGeneration, groups, involved, maxRows, contentColumns, metrics, budget);
+            return TryTailWithCompaction(current, expectedGeneration, groups, involved, maxRows, contentColumns, metrics, budget);
         var ordered = groups.Concat(current.Lanes.SelectMany(lane => lane.Groups).Where(group => !involved.Contains(group.Id))).ToArray();
         foreach (var group in ordered)
         {
@@ -260,7 +266,105 @@ public static class StartMenuImportPlanner
         return packed is not null;
     }
 
-    private static WallLayoutResult TryTail(WallDocument current, long generation, StartGroup[] incoming,
+    private static WallLayoutResult TryPlaceAtCurrentHeight(WallDocument current, StartGroup[] incoming,
+        HashSet<string> involved, int maxRows, int maxColumns, WallMetrics metrics, WallViewportBudget? budget,
+        ImportInsertionPosition position)
+    {
+        var lanes = current.Lanes.Select(lane => lane.Groups.Any(group => involved.Contains(group.Id))
+            ? lane with { Groups = lane.Groups.Where(group => !involved.Contains(group.Id)).ToArray(), ImportBatchId = null }
+            : lane).ToArray();
+        var firstContent = Array.FindIndex(lanes, lane => lane.Groups.Count != 0);
+        var lastContent = Array.FindLastIndex(lanes, lane => lane.Groups.Count != 0);
+        var untouched = lanes[..(lastContent + 1)];
+        var existing = untouched.SelectMany(lane => lane.Groups);
+        var atHead = position == ImportInsertionPosition.Head;
+        var ordered = (atHead ? incoming.Concat(existing) : existing.Concat(incoming)).ToArray();
+        var offsets = new int[untouched.Length + 1];
+        var prefixHeights = new double[untouched.Length + 1];
+        for (var index = 0; index < untouched.Length; index++)
+        {
+            offsets[index + 1] = offsets[index] + untouched[index].Groups.Count;
+            prefixHeights[index + 1] = Math.Max(prefixHeights[index],
+                WallLayoutEngine.RequiredLaneHeight(untouched[index].Groups, metrics));
+        }
+
+        var tooTall = ordered.FirstOrDefault(group =>
+            WallLayoutEngine.RequiredLaneHeight([group], metrics) > metrics.WallHeight(maxRows));
+        if (tooTall is not null)
+            return Reject(WallRejection.NoSpace, "GROUP_TOO_TALL:" + (string.IsNullOrWhiteSpace(tooTall.Title) ? tooTall.Id : tooTall.Title));
+
+        var minimumColumns = ImportWidthFloor(current, maxColumns, metrics);
+        for (var rows = Math.Min(current.Rows, maxRows); rows <= maxRows; rows++)
+        {
+            var height = metrics.WallHeight(rows);
+            // A greedy packing of the complete sequence needs the fewest lanes at this height.
+            // Only search for a smaller reflow once this height is feasible.
+            var full = Pack(ordered, maxColumns, height);
+            if (full is null) continue;
+            var placed = (atHead ? PlaceAtHead(full, height) : PlaceAtTail(full, height)).ToList();
+            while (placed.Count < minimumColumns) placed.Add(new WallLane { Groups = [] });
+            var result = FinishImport(current, current.Generation, placed, rows, metrics, budget);
+            if (result.Success) return result;
+        }
+        return Reject(WallRejection.NoSpace, "CONTENT_TOO_LARGE");
+
+        WallLane[] PlaceAtHead(WallLane[] full, double height)
+        {
+            if (firstContent < 0) return full;
+            WallLane[]? shifted = null;
+            var leastShift = int.MaxValue;
+            for (var keepFrom = firstContent; keepFrom < untouched.Length; keepFrom++)
+            {
+                var available = maxColumns - (untouched.Length - keepFrom);
+                if (available < 1) continue;
+                var prefix = Pack(ordered[..(incoming.Length + offsets[keepFrom])], available, height,
+                    fromEnd: keepFrom != firstContent);
+                if (prefix is null) continue;
+                var shift = prefix.Length - keepFrom;
+                // The first feasible unshifted prefix can only leave original leading blanks.
+                if (shift <= 0) return [.. untouched.Take(-shift), .. prefix, .. untouched.Skip(keepFrom)];
+                if (shift >= leastShift) continue;
+                shifted = [.. prefix, .. untouched.Skip(keepFrom)];
+                leastShift = shift;
+            }
+            return shifted ?? full;
+        }
+
+        WallLane[] PlaceAtTail(WallLane[] full, double height)
+        {
+            for (var start = Math.Min(untouched.Length, maxColumns - 1); start > 0; start--)
+            {
+                if (prefixHeights[start] > height) continue;
+                var suffix = Pack(ordered[offsets[start]..], maxColumns - start, height);
+                if (suffix is not null) return [.. untouched.Take(start), .. suffix];
+            }
+            return full;
+        }
+
+        WallLane[]? Pack(StartGroup[] groups, int columns, double height, bool fromEnd = false)
+        {
+            var packed = WallLayoutEngine.ArrangeSourceLanes(fromEnd ? groups.Reverse().ToArray() : groups,
+                height, metrics, columns, allowOversizedGroups: false);
+            if (packed is null) return null;
+            var occupied = packed.TakeWhile(lane => lane.Groups.Count != 0);
+            if (fromEnd) occupied = occupied.Reverse().Select(lane => lane with { Groups = lane.Groups.Reverse().ToArray() });
+            return occupied.Select(lane => lane with { ImportBatchId = CommonImportBatchId(lane.Groups) }).ToArray();
+        }
+    }
+
+    private static int ImportWidthFloor(WallDocument current, int maxColumns, WallMetrics metrics)
+    {
+        if (current.Settings.FullScreen || current.Settings.ExpandColumns) return 1;
+        if (current.Settings.ManualWindowedViewportWidthDip is { } manualWidth)
+        {
+            var tilesWidth = manualWidth - WallViewportPolicy.FixedWidth(current.Settings.MenuStart);
+            return Math.Clamp(WallViewportPolicy.CompleteColumns(tilesWidth, metrics), 1, Math.Min(current.Columns, maxColumns));
+        }
+        // Older data may have intentionally empty tail lanes without a saved manual width.
+        return current.Lanes[^1].Groups.Count == 0 ? Math.Min(current.Columns, maxColumns) : 1;
+    }
+
+    private static WallLayoutResult TryTailWithCompaction(WallDocument current, long generation, StartGroup[] incoming,
         HashSet<string> involved, int maxRows, int maxColumns, WallMetrics metrics, WallViewportBudget? budget)
     {
         var original = current.Lanes.Select(lane => lane with
@@ -321,11 +425,17 @@ public static class StartMenuImportPlanner
                 rows = Math.Max(firstRows, (int)Math.Ceiling(
                     (required - metrics.TopMargin - metrics.Margin + metrics.Gap) / metrics.Pitch - 1e-10));
             }
-            var proposal = current with { Generation = generation + 1, Columns = lanes.Count, Rows = rows, Lanes = lanes.ToArray() };
-            var result = WallLayoutEngine.NormalizeExpanded(proposal, metrics);
-            return result.Proposal is { } normalized && budget is not null
-                ? WallViewportPolicy.Validate(normalized, budget, metrics) : result;
+            return FinishImport(current, generation, lanes, rows, metrics, budget);
         }
+    }
+
+    private static WallLayoutResult FinishImport(WallDocument current, long generation, IReadOnlyList<WallLane> lanes,
+        int rows, WallMetrics metrics, WallViewportBudget? budget)
+    {
+        var proposal = current with { Generation = generation + 1, Columns = lanes.Count, Rows = rows, Lanes = lanes.ToArray() };
+        var result = WallLayoutEngine.NormalizeExpanded(proposal, metrics);
+        return result.Proposal is { } normalized && budget is not null
+            ? WallViewportPolicy.Validate(normalized, budget, metrics) : result;
     }
 
     private static string? CommonImportBatchId(IReadOnlyList<StartGroup> groups)

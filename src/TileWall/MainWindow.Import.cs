@@ -524,7 +524,7 @@ public sealed partial class MainWindow
                 expectedEntrySha256: expectedEntrySha256, managedGalleries: galleries);
             if (error?.Contains(WallStore.ImportDestinationChanged, StringComparison.Ordinal) == true)
                 return new(ProductStrings.Get("Import.SourceChanged"), true);
-            if (error is null) TransientStatus(string.Format(ProductStrings.Get("Import.PlannedChanges"), plan.AddedCount, plan.OverwrittenCount));
+            if (error is null) TransientStatus(string.Format(ProductStrings.Get("Import.Added"), plan.AddedCount));
             return new(error);
         }
         catch (Exception ex)

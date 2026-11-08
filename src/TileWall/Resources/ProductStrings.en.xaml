@@ -252,6 +252,7 @@
   <x:String x:Key="Wall.LocationFailed">Cannot open the file location. Try again later.</x:String>
   <x:String x:Key="Wall.CaptureFailed">Pointer capture failed. The gesture was canceled. Please try again.</x:String>
   <x:String x:Key="Wall.DropFailed">Cannot place object: {0}</x:String>
+  <x:String x:Key="Wall.DropDuplicate">The destination group already has the same launch target.</x:String>
   <x:String x:Key="Wall.OutsideWorkArea">Outside work area</x:String>
   <x:String x:Key="Wall.OutsideLane">Outside lane</x:String>
   <x:String x:Key="Wall.OutsideWall">Outside wall</x:String>
@@ -509,7 +510,6 @@
     <x:String x:Key="Import.WallFile">Wall file</x:String>
     <x:String x:Key="Import.ChooseWallFile">Choose wall file</x:String>
     <x:String x:Key="Import.FutureFormat">Update TileWall to read this wall file</x:String>
-    <x:String x:Key="Import.PlannedChanges">Will add {0}, overwrite {1}</x:String>
     <x:String x:Key="Import.OverwriteNotice">Overwriting replaces images, titles, size, position and other imported properties</x:String>
     <x:String x:Key="Import.FilterReason.AlreadyInGroup">Already in this group</x:String>
     <x:String x:Key="Import.FilterReason.MissingTarget">Target missing</x:String>
@@ -552,7 +552,7 @@
     <x:String x:Key="Import.Stats.DuplicateTarget">Duplicate targets</x:String>
     <x:String x:Key="Import.Stats.MissingTarget">Missing targets</x:String>
     <x:String x:Key="Import.Stats.NonPrimaryEntry">Secondary entries</x:String>
-    <x:String x:Key="Import.FilterReason.DuplicateTarget">Duplicate target</x:String>
+    <x:String x:Key="Import.FilterReason.DuplicateTarget">This group already has a matching item. It will be skipped.</x:String>
     <x:String x:Key="Import.FilterReason.NonPrimaryEntry">Secondary entries</x:String>
     <x:String x:Key="Import.ExportFailed">Export failed: {0}</x:String>
     <x:String x:Key="Import.Exported">Exported {0} members.</x:String>

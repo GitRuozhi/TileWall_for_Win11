@@ -7,7 +7,7 @@ using TileWall.Core.Wall;
 
 namespace TileWall.Core.Import;
 
-/// <summary>Shared import-page grouping, filtering, overwrite and geometry policy. Performs no IO.</summary>
+/// <summary>Shared import-page grouping, filtering and geometry policy. Performs no IO.</summary>
 public static class ImportSourcePlanner
 {
     public static ImportSourceProjection Project(WallDocument current, IReadOnlyList<ImportSourceCandidate> candidates,
@@ -60,7 +60,6 @@ public static class ImportSourcePlanner
         var packageDestinations = currentGroups.ToDictionary(group => group.Id, StringComparer.Ordinal);
         var rows = remaining.Select((row, index) => (Row: row, Group: assigned[index])).ToArray();
         var projectedGroups = new List<ImportProjectedGroup>();
-        var packageDuplicates = new List<ImportProjectedCandidate>();
         foreach (var merged in rows.GroupBy(item => item.Group.PreserveStableKey
                      ? "stable:" + item.Group.Key
                      : string.IsNullOrWhiteSpace(item.Group.Title)
@@ -86,11 +85,11 @@ public static class ImportSourcePlanner
                     packageMembers = members;
                 }
             }
-            var destinationIds = new Dictionary<string, string>(StringComparer.Ordinal);
+            var destinationIdentities = new HashSet<string>(StringComparer.Ordinal);
             if (destination is not null)
                 foreach (var member in destination.Members)
                     if (existingIdentityKeys.TryGetValue(member.Id, out var identity))
-                        destinationIds.TryAdd(identity, member.Id);
+                        destinationIdentities.Add(identity);
             var groupKey = first.PreserveStableKey ? first.Key : merged.Key;
             var projected = merged.GroupBy(item => item.Row.Error is null
                     ? item.Row.Source.SelectionIdentity : "invalid:" + item.Row.Source.SourceKey, StringComparer.Ordinal)
@@ -98,25 +97,19 @@ public static class ImportSourcePlanner
                 {
                     var representative = group.First().Row;
                     var source = representative.Source;
-                    var replaced = source.Identity is { } identity ? destinationIds.GetValueOrDefault(identity.Key) : null;
-                    var duplicate = package && representative.Error is null && (replaced is not null ||
+                    var duplicate = representative.Error is null && source.SourceKind != ImportPageSourceKind.CurrentWall &&
+                        (source.Identity is { } identity && destinationIdentities.Contains(identity.Key) ||
                         packageMembers?.GetValueOrDefault(source.Member.Id) is { } existing &&
                         SamePackageMember(source, existing, existingIdentityKeys));
                     return new ImportProjectedCandidate(source, groupKey, group.SelectMany(item => item.Row.Keys).ToArray(),
-                        representative.Error, duplicate ? ImportFilterReason.DuplicateTarget : ImportFilterReason.None,
-                        !duplicate, package ? null : replaced);
+                        representative.Error, duplicate ? ImportFilterReason.DuplicateTarget : ImportFilterReason.None, true);
                 });
             var attributed = merged.All(item => item.Row.Source.Policy == ImportSourcePolicy.Attributed);
             var ordered = attributed ? projected.OrderBy(candidate => candidate.Source.SourceOrder) :
                 projected.OrderBy(candidate => candidate.Source.DisplayName, StringComparer.CurrentCultureIgnoreCase)
                     .ThenBy(candidate => candidate.Source.SourcePriority).ThenBy(candidate => candidate.Source.SourceOrder);
-            var visible = new List<ImportProjectedCandidate>();
-            foreach (var candidate in ordered)
-                if (candidate.Visible) visible.Add(candidate);
-                else packageDuplicates.Add(candidate);
-            if (visible.Count == 0) continue;
             var sourceGroup = merged.First().Row.Source.SourceGroup;
-            projectedGroups.Add(new(groupKey, first.Title?.Trim(), projectedGroups.Count, visible.ToArray(), destination?.Id)
+            projectedGroups.Add(new(groupKey, first.Title?.Trim(), projectedGroups.Count, ordered.ToArray(), destination?.Id)
             {
                 PreserveSourceGroup = attributed, SourceGroupId = attributed ? sourceGroup?.Key : null,
                 SourceLaneIndex = attributed ? sourceGroup?.LaneIndex ?? 0 : 0,
@@ -124,16 +117,20 @@ public static class ImportSourcePlanner
         }
         var hidden = sourceRows.Where(row => row.FilterReason != ImportFilterReason.None)
             .Select(row => new ImportProjectedCandidate(row.Source, "filtered:" + row.Source.SourceKey, [row.Source.SourceKey],
-                row.Error, row.FilterReason, false, null));
-        var result = projectedGroups.SelectMany(group => group.Candidates).Concat(hidden).Concat(packageDuplicates).ToArray();
+                row.Error, row.FilterReason, false));
+        var visible = projectedGroups.SelectMany(group => group.Candidates).ToArray();
+        var result = visible.Concat(hidden).ToArray();
         var contentCounts = Enum.GetValues<ImportTargetKind>().Where(kind => kind != ImportTargetKind.Unknown)
             .ToDictionary(kind => kind, kind => candidates.Count(candidate => ContentKind(candidate) == kind));
         var filters = Enum.GetValues<ImportFilterReason>().Where(reason => reason != ImportFilterReason.None)
             .ToDictionary(reason => reason, reason => sourceRows.Count(row => row.FilterReason == reason));
-        filters[ImportFilterReason.DuplicateTarget] += packageDuplicates.Sum(candidate => candidate.SourceKeys.Count);
+        // A representative's keys can include aliases already counted by the source filter.
+        var remainingKeys = remaining.Select(row => row.Source.SourceKey).ToHashSet(StringComparer.Ordinal);
+        filters[ImportFilterReason.DuplicateTarget] += visible.Where(candidate => candidate.FilterReason == ImportFilterReason.DuplicateTarget)
+            .Sum(candidate => candidate.SourceKeys.Count(remainingKeys.Contains));
         return new(current.Generation, projectedGroups.ToArray(), result, autoFilter, recognizeGroups)
         {
-            Statistics = new(candidates.Count, filters.Values.Sum(), projectedGroups.Sum(group => group.Candidates.Count),
+            Statistics = new(candidates.Count, filters.Values.Sum(), visible.Count(candidate => candidate.FilterReason == ImportFilterReason.None),
                 contentCounts, filters),
         };
     }
@@ -228,8 +225,10 @@ public static class ImportSourcePlanner
         }
         var preserveExistingGroups = rows.All(candidate => candidate.Source.SourceKind == ImportPageSourceKind.WallPackage) &&
             current.Lanes.Any(lane => lane.Groups.Count != 0);
+        var preferCurrentHeight = rows.All(candidate =>
+            candidate.Source.Policy != ImportSourcePolicy.Attributed && !candidate.Source.HasRecordedPosition);
         var layout = StartMenuImportPlanner.TryPlan(current, expectedGeneration, incoming, metrics, budget, insertionPosition,
-            preserveExistingGroups);
+            preserveExistingGroups, preferCurrentHeight);
         return layout.Proposal is { } proposal ? new(ImportPlanStatus.Ready, proposal, accepted.Select(item => item with
             { GroupId = proposal.Document.Lanes.SelectMany(lane => lane.Groups).Single(group => group.Members.Any(member => member.Id == item.MemberId)).Id }).ToArray()) :
             Reject(layout.Rejection, layout.Detail);
@@ -310,9 +309,7 @@ public static class ImportSourcePlanner
     private static GroupBuildResult BuildGroup(ImportProjectedGroup group, IReadOnlyList<ImportProjectedCandidate> rows,
         GridSize defaultSize, StartGroup? old, string groupId, HashSet<string> usedIds, bool preview, long generation = 0)
     {
-        var replaced = rows.Select(candidate => candidate.ReplacedMemberId).OfType<string>().ToHashSet(StringComparer.Ordinal);
-        var members = old?.Members.Where(member => !replaced.Contains(member.Id)).ToList() ?? [];
-        // The overwritten member's old slot remains part of the append baseline.
+        var members = old?.Members.ToList() ?? [];
         var baseline = old?.Members.Select(member => member.LocalBounds.Bottom).DefaultIfEmpty(0).Max() ?? 0;
         var maximumRows = preview ? int.MaxValue / 2 : 256;
         var accepted = new List<ImportAcceptedCandidate>();
@@ -352,10 +349,10 @@ public static class ImportSourcePlanner
             {
                 var id = preview
                     ? usedIds.Add(candidate.Source.Member.Id) ? candidate.Source.Member.Id : AllocateId("preview-member-", candidate.Source.SourceKey, usedIds)
-                    : candidate.ReplacedMemberId ?? AllocateId("import-member-", GenerationKey(generation, candidate.Source.SourceKey), usedIds);
+                    : AllocateId("import-member-", GenerationKey(generation, candidate.Source.SourceKey), usedIds);
                 placed.Add(Remap(sized, id, groupId, group.Key) with { LocalBounds = bounds });
                 Occupy(bounds);
-                accepted.Add(new(candidate.Source.SourceKey, id, groupId, preview ? null : candidate.ReplacedMemberId));
+                accepted.Add(new(candidate.Source.SourceKey, id, groupId));
             }
         }
         var metadata = rows.Select(candidate => candidate.Source.Member.ImportSource).FirstOrDefault(source => source is not null);

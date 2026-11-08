@@ -780,6 +780,7 @@ internal sealed class ImportDialog : IWallDialogSession
         }
         if (item.Member is not { } member || item.Candidate is not { } oldCandidate) return;
         var candidate = _candidateByKey.GetValueOrDefault(oldCandidate.SelectionKey) ?? oldCandidate;
+        host.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         var card = new Grid { Width = item.Bounds.Width, Height = item.Bounds.Height };
         var isPuzzle = member is PuzzleMember;
         PuzzleCanvasView? view = null; ClockMemberView? clock = null;
@@ -816,7 +817,7 @@ internal sealed class ImportDialog : IWallDialogSession
             if (_synchronizingSelection || _adding || _reading || row is null || !row.Candidate.CanAdd) return;
             Select(row.Candidate, toggle.IsChecked == true); _error = null; _feedback.Clear(); SelectionChanged();
         };
-        row = new(candidate, member, view, clock, toggle, changed, reset, selection) { IconStamp = IconStamp(candidate) };
+        row = new(candidate, member, view, clock, host, toggle, changed, reset, selection) { IconStamp = IconStamp(candidate) };
         toggle.Checked += changed; toggle.Unchecked += changed;
         Id(toggle, "candidate-" + candidate.SelectionKey); _rows.Add(row); host.Tag = row; host.Children.Add(toggle);
         UpdateRowTooltip(row); UpdateSelectionFeedback(); UpdateAvailability(); StartRowImage(row);
@@ -827,7 +828,8 @@ internal sealed class ImportDialog : IWallDialogSession
         _preparedElements.Remove(element);
         if (element is not Grid host) return;
         if (host.Tag is CandidateRow row) ReleaseRow(row); else if (host.Tag is Action reset) reset();
-        host.Tag = null; host.Children.Clear();
+        ToolTipService.SetToolTip(host, null);
+        host.Background = null; host.Tag = null; host.Children.Clear();
     }
     private void ClearPreview()
     {
@@ -859,11 +861,27 @@ internal sealed class ImportDialog : IWallDialogSession
             diagnostics.Add(ProductStrings.Get("Import.Stale"));
         if (candidate.ErrorCode is { } error) diagnostics.Add(ErrorText(error));
         if (candidate.FilterReason != ImportFilterReason.None) diagnostics.Add(FilterText(candidate.FilterReason));
-        var diagnostic = string.Join("\n", diagnostics);
-        var isPuzzle = row.Member is PuzzleMember;
-        WallMemberVisualFactory.SetTargetTooltip(row.Toggle, row.Member, diagnostic, disabledOnly: isPuzzle);
-        if (isPuzzle) row.View?.SetPreviewTargetTooltips(WallMemberVisualFactory.TargetTooltip(row.Member, diagnostic));
+        var text = WallMemberVisualFactory.TargetTooltip(row.Member, string.Join("\n", diagnostics));
+        AutomationProperties.SetHelpText(row.Toggle, text);
+        ApplyRowTooltip(row, text);
         AutomationProperties.SetName(row.Toggle, displayName);
+    }
+
+    private static void ApplyRowTooltip(CandidateRow row, string text)
+    {
+        var tip = string.IsNullOrWhiteSpace(text) ? null : text;
+        var enabled = row.Toggle.IsEnabled;
+        var isPuzzle = row.Member is PuzzleMember;
+        // The host remains hit-testable when the candidate is disabled. Give the
+        // native tooltip service a single owner instead of manually opening a popup.
+        SetNativeTip(row.Host, enabled ? null : tip);
+        SetNativeTip(row.Toggle, enabled && !isPuzzle ? tip : null);
+        if (isPuzzle) row.View?.SetPreviewTargetTooltips(enabled ? tip : null);
+
+        static void SetNativeTip(FrameworkElement owner, string? value)
+        {
+            if (!Equals(ToolTipService.GetToolTip(owner), value)) ToolTipService.SetToolTip(owner, value);
+        }
     }
     private void UpdateSelectionFeedback()
     {
@@ -1583,7 +1601,13 @@ internal sealed class ImportDialog : IWallDialogSession
         _primary.IsEnabled = idle && !_reading && !_preparing && _sourceData?.Refreshing == false && _prepared && count > 0 &&
             (!export || !string.IsNullOrWhiteSpace(_exportPath)) && (!IsRecycle || _restoreRecycled is not null) && _context is not null && _contextCurrent(_context);
         _cancel.IsEnabled = !_closed && !_dismissRequested;
-        foreach (var row in _rows) row.Toggle.IsEnabled = idle && !_reading && row.Candidate.CanAdd && MatchesFilter(row.Candidate);
+        foreach (var row in _rows)
+        {
+            var enabled = idle && !_reading && row.Candidate.CanAdd && MatchesFilter(row.Candidate);
+            if (row.Toggle.IsEnabled == enabled) continue;
+            row.Toggle.IsEnabled = enabled;
+            ApplyRowTooltip(row, AutomationProperties.GetHelpText(row.Toggle));
+        }
         var primaryText = ProductStrings.Get(export ? "Import.ExportConfirm" : IsRecycle ? "Recycle.Restore" : "Import.Confirm");
         if (AutomationProperties.GetName(_primary) != primaryText)
             ActionIcon.Set(_primary, primaryText, export ? ActionIcon.Save : IsRecycle ? ActionIcon.Undo : ActionIcon.Import);
@@ -1869,12 +1893,13 @@ internal sealed class ImportDialog : IWallDialogSession
     private sealed record PreviewTargetInference(string SourceFact, TargetImageSourceResult? Result);
     private enum PreviewImageOutcome { Frame, NoImageOrFallback, Failed }
     private sealed class CandidateRow(ImportProjectedCandidate candidate, WallMember member, PuzzleCanvasView? view, ClockMemberView? clock,
-        ToggleButton toggle, RoutedEventHandler changed, Action reset, (Border Outline, Border Check)[] selection)
+        Grid host, ToggleButton toggle, RoutedEventHandler changed, Action reset, (Border Outline, Border Check)[] selection)
     {
         public ImportProjectedCandidate Candidate { get; set; } = candidate;
         public WallMember Member { get; set; } = member;
         public PuzzleCanvasView? View { get; } = view;
         public ClockMemberView? Clock { get; } = clock;
+        public Grid Host { get; } = host;
         public ToggleButton Toggle { get; } = toggle;
         public RoutedEventHandler Changed { get; } = changed;
         public Action Reset { get; } = reset;

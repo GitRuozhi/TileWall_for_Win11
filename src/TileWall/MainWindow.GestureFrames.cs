@@ -26,6 +26,7 @@ public sealed partial class MainWindow
     private readonly Dictionary<string, string?> _gestureLaunchKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<(WallAction Action, bool Prepend), WallLayoutResult> _dropCache = [];
     private WallLayoutResult? _drawnDrop;
+    private string? _memberDropNotice;
     private readonly GesturePerformance _performance = new();
 
     private void BeginGestureFrames(WallGeometry geometry)
@@ -180,6 +181,19 @@ public sealed partial class MainWindow
             ApplyViewport(preview?.Document ?? Document, preview?.Geometry ?? _gestureGeometry,
                 animateMode: false, animateHeight: true);
             Surface.ShowDragCue(_gesture.MemberId, preview is not null, _gesture.GroupId);
+            if (_gesture.MemberId is not null)
+            {
+                if (preview is not null) ClearMemberDropNotice();
+                else
+                {
+                    var message = DescribeDropFailure(proposal);
+                    if (_memberDropNotice != message)
+                    {
+                        _memberDropNotice = message;
+                        Status(message);
+                    }
+                }
+            }
             _drawnDrop = proposal;
             _performance.View(Stopwatch.GetTimestamp() - start);
         }
@@ -193,7 +207,7 @@ public sealed partial class MainWindow
         var originX = _pendingWindowRect?.X ?? origin.X;
         var originY = _pendingWindowRect?.Y ?? origin.Y;
         DrawGhost(new Point(point.X - (originX - _gesture.WindowOrigin.X) / Scale,
-            point.Y - (originY - _gesture.WindowOrigin.Y) / Scale), _gesture.Preview?.Proposal is not null);
+            point.Y - (originY - _gesture.WindowOrigin.Y) / Scale));
         _performance.Ghost();
     }
 

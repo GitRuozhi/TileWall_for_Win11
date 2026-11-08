@@ -521,7 +521,7 @@ public static partial class WallLayoutEngine
         return (int)Math.Ceiling((contentHeight + metrics.Gap) / metrics.Pitch - 1e-10);
     }
 
-    private static double RequiredLaneHeight(IReadOnlyList<StartGroup> groups, WallMetrics metrics)
+    internal static double RequiredLaneHeight(IReadOnlyList<StartGroup> groups, WallMetrics metrics)
     {
         var height = metrics.TopMargin + metrics.Margin;
         foreach (var group in groups)

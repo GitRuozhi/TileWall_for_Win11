@@ -46,11 +46,10 @@ public sealed record ImportSourceCandidate(string SourceKey, string DisplayName,
 }
 
 public sealed record ImportProjectedCandidate(ImportSourceCandidate Source, string GroupKey,
-    IReadOnlyList<string> SourceKeys, string? ErrorCode, ImportFilterReason FilterReason,
-    bool Visible, string? ReplacedMemberId)
+    IReadOnlyList<string> SourceKeys, string? ErrorCode, ImportFilterReason FilterReason, bool Visible)
 {
     public string SelectionKey => Source.SourceKey;
-    public bool CanAdd => ErrorCode is null && Visible;
+    public bool CanAdd => ErrorCode is null && FilterReason == ImportFilterReason.None && Visible;
 }
 
 public sealed record ImportProjectedGroup(string Key, string? Title, int Order,
@@ -84,15 +83,14 @@ public sealed record ImportSourceProjection(long Generation, IReadOnlyList<Impor
     }
 }
 
-public sealed record ImportAcceptedCandidate(string SourceKey, string MemberId, string GroupId, string? ReplacedMemberId);
+public sealed record ImportAcceptedCandidate(string SourceKey, string MemberId, string GroupId);
 public sealed record ImportSelectionMigration(IReadOnlyDictionary<string, string> Selected, int RemovedCount);
 
 /// <summary>The proposal is the exact geometry shown by the selected-content preview and committed by the caller.</summary>
 public sealed record ImportSourcePlan(ImportPlanStatus Status, WallProposal? Proposal,
     IReadOnlyList<ImportAcceptedCandidate> Accepted, WallRejection Rejection = WallRejection.None, string? Detail = null)
 {
-    public int AddedCount => Accepted.Count(candidate => candidate.ReplacedMemberId is null);
-    public int OverwrittenCount => Accepted.Count(candidate => candidate.ReplacedMemberId is not null);
+    public int AddedCount => Accepted.Count;
     public IReadOnlyList<ManagedMediaReference> ReferencedMedia => Proposal is null ? [] :
         Proposal.Document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
             .Where(member => Accepted.Any(item => item.MemberId == member.Id))
