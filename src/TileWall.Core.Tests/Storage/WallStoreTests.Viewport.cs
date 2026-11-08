@@ -68,7 +68,7 @@ public sealed partial class WallStoreTests
         Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(initial).Status);
         var saved = files.ReadAllBytes(Path.Combine(root, "state.json"));
         var candidate = WallViewportPolicy.AdaptToEnvironment(initial,
-            WallViewportPolicy.Create(500, 1080, false, expandColumns: false));
+            WallViewportPolicy.Create(465, 1080, false, expandColumns: false));
         Assert.True(candidate.Success, candidate.Detail);
         Assert.False(initial.Settings.ExpandColumns);
         var request = Plan(store, initial, candidate.Proposal!.Document);

@@ -51,6 +51,62 @@ public sealed class StartMenuImportPlannerTests
         Assert.Equal([new GridRect(3, 2, 1, 1), new GridRect(1, 5, 1, 1)], Groups(result.Proposal.Document).First().Members.Select(member => member.LocalBounds));
     }
 
+    [Theory]
+    [InlineData(ImportInsertionPosition.Head, 0)]
+    [InlineData(ImportInsertionPosition.Tail, 3)]
+    public void WallPackageReusesAnEdgeLaneWithoutMovingExistingGroups(ImportInsertionPosition position, int destination)
+    {
+        var first = Group("first");
+        var second = Group("second");
+        var current = WallDocument.Empty(4, 8) with
+        {
+            Lanes = [new() { Groups = [] }, new() { Groups = [first] }, new() { Groups = [second] }, new() { Groups = [] }],
+        };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")], budget: Budget(4, 8),
+            insertionPosition: position, preserveExistingGroups: true);
+        Assert.True(result.Success, result.Detail);
+        var lanes = result.Proposal!.Document.Lanes;
+        Assert.Equal(4, lanes.Count);
+        Assert.Equal("incoming", Assert.Single(lanes[destination].Groups).Id);
+        Assert.Same(first, Assert.Single(lanes[1].Groups));
+        Assert.Same(second, Assert.Single(lanes[2].Groups));
+    }
+
+    [Fact]
+    public void WallPackageCanExpandHorizontallyWithoutRepackingTheOldWall()
+    {
+        var first = Group("first");
+        var second = Group("second");
+        var current = WallDocument.Empty(2, 8) with { Lanes = [new() { Groups = [first] }, new() { Groups = [second] }] };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [Group("incoming")], budget: Budget(2, 8),
+            insertionPosition: ImportInsertionPosition.Tail, preserveExistingGroups: true);
+        Assert.True(result.Success, result.Detail);
+        var next = result.Proposal!.Document;
+        Assert.True(next.Settings.ExpandColumns);
+        Assert.Equal(["first", "second", "incoming"], Groups(next).Select(group => group.Id));
+        Assert.Empty(next.Lanes[^1].Groups);
+    }
+
+    [Theory]
+    [InlineData(false, "PACKAGE_HEIGHT_LIMIT")]
+    [InlineData(true, "LAYOUT_LOCKED_NO_SPACE")]
+    public void WallPackageRejectsAnExistingLaneThatCannotGrow(bool locked, string detail)
+    {
+        var first = Group("first");
+        var second = Group("second");
+        var current = WallDocument.Empty(1, 4) with
+        {
+            Settings = new() { LayoutLocked = locked },
+            Lanes = [new() { Groups = [first, second] }],
+        };
+        var updated = first with { Members = [first.Members[0], Tile("incoming", row: 1)] };
+        var result = StartMenuImportPlanner.TryPlan(current, 0, [updated], budget: Budget(4, 4),
+            preserveExistingGroups: true);
+        Assert.Null(result.Proposal);
+        Assert.Equal(detail, result.Detail);
+        Assert.False(current.Settings.ExpandColumns);
+    }
+
     [Fact]
     public void StoredImportMetadataDoesNotReclassifyUntouchedWall()
     {

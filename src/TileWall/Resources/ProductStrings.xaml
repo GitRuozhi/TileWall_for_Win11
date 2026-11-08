@@ -515,6 +515,8 @@
     <x:String x:Key="Import.FilterReason.AlreadyInGroup">本组已有</x:String>
     <x:String x:Key="Import.FilterReason.MissingTarget">目标缺失</x:String>
     <x:String x:Key="Import.LayoutRejected">空间不足或源布局无效，请调整选择</x:String>
+    <x:String x:Key="Import.LayoutHeight">保留已有分组时高度不足，请减少选中的磁贴</x:String>
+    <x:String x:Key="Import.LayoutWidth">保留已有分组和空栏时横向空间不足，请减少选中的分组</x:String>
     <x:String x:Key="Import.Adding">正在校验并添加…</x:String>
     <x:String x:Key="Import.PackageInvalid">墙文件无法校验：{0}</x:String>
     <x:String x:Key="Import.Mode">模式</x:String>

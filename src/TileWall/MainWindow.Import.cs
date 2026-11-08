@@ -140,7 +140,16 @@ public sealed partial class MainWindow
             projection.AutoFilter, context.ExistingIdentities);
         var current = context.Document;
         var destinationIds = projection.Groups.Select(group => group.DestinationGroupId).OfType<string>()
-            .Where(id => !context.ObservedDestinationGroups.Contains(id)).ToHashSet(StringComparer.Ordinal);
+            .ToHashSet(StringComparer.Ordinal);
+        if (source.Package is not null)
+        {
+            // A recorded group ID is only a candidate until its members are observed.
+            var packageGroups = source.Candidates.Select(candidate => candidate.SourceGroup?.Key)
+                .OfType<string>().ToHashSet(StringComparer.Ordinal);
+            destinationIds.UnionWith(current.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id)
+                .Where(packageGroups.Contains));
+        }
+        destinationIds.ExceptWith(context.ObservedDestinationGroups);
         // Group assignment is pure data. No entry in an unrelated wall group is
         // opened while presenting or refreshing source candidates.
         if (destinationIds.Count != 0)
@@ -245,7 +254,8 @@ public sealed partial class MainWindow
         }
         if (source != ImportPageSourceKind.WallPackage || path is null) return new([], new Dictionary<string, StartMenuImportCandidate>());
         _knownImportPackages.Add(Path.GetFullPath(path));
-        var read = await CreateWallPackageReader().ReadPreviewAsync(path, token: token);
+        var reader = CreateWallPackageReader();
+        var read = await Task.Run(() => reader.ReadPreviewAsync(path, token: token), token);
         token.ThrowIfCancellationRequested();
         if (read.Preview is null) throw new IOException(read.Status == WallPackageReadStatus.UnsupportedFormat
             ? ProductStrings.Get("Import.FutureFormat") : string.Format(ProductStrings.Get("Import.PackageInvalid"), read.Diagnostic));

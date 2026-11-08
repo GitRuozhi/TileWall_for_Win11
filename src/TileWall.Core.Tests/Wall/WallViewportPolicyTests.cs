@@ -14,21 +14,21 @@ public sealed class WallViewportPolicyTests
     };
 
     [Fact]
-    public void WindowedUsesBothNinetyPercentLimitsAndExpansionAllowsLogicalExtraColumns()
+    public void WindowedUsesSeparateWidthAndHeightLimitsAndExpansionAllowsLogicalExtraColumns()
     {
         var windowed = WallViewportPolicy.Create(1920, 1080, false, expandColumns: false);
         var full = WallViewportPolicy.Create(1920, 1080, true);
-        Assert.Equal(1680, windowed.MaxWidthDip);
+        Assert.Equal(1814.4, windowed.MaxWidthDip, 8);
         Assert.Equal(972, windowed.MaxHeightDip);
-        Assert.Equal(3, windowed.MaxColumns);
+        Assert.Equal(4, windowed.MaxColumns);
         Assert.Equal(18, windowed.MaxRows);
         Assert.Equal(64, full.MaxColumns);
         Assert.Equal(18, full.MaxRows);
     }
 
     [Theory]
-    [InlineData(false, false, false, 1680, 3)]
-    [InlineData(false, false, true, 1424, 3)]
+    [InlineData(false, false, false, 1814.4, 4)]
+    [InlineData(false, false, true, 1558.4, 3)]
     [InlineData(true, false, false, 1776, 4)]
     [InlineData(true, false, true, 1520, 3)]
     [InlineData(false, true, false, 0, 64)]
@@ -40,7 +40,7 @@ public sealed class WallViewportPolicyTests
     {
         var metrics = new WallMetrics();
         var budget = WallViewportPolicy.Create(1920, 1080, fullScreen, metrics, expand, menu);
-        Assert.Equal(expand ? metrics.WallWidth(64) : width, budget.MaxWidthDip);
+        Assert.Equal(expand ? metrics.WallWidth(64) : width, budget.MaxWidthDip, 8);
         Assert.Equal(columns, budget.MaxColumns);
         Assert.Equal(18, budget.MaxRows);
     }
@@ -81,7 +81,7 @@ public sealed class WallViewportPolicyTests
     {
         var source = WallDocument.Empty(4, 8);
         var before = WallJson.Serialize(source);
-        var budget = WallViewportPolicy.Create(1920, 1080, false, expandColumns: false);
+        var budget = WallViewportPolicy.Create(1780, 1080, false, expandColumns: false);
         var result = WallLayoutEngine.TryApply(source,
             new AddMemberAction(0, new TileMember { Id = "tile", LocalBounds = new(0, 0, 2, 2) }, null, 4, 0, "group"),
             budget.MaxWidthDip, budget.MaxHeightDip);
@@ -181,6 +181,66 @@ public sealed class WallViewportPolicyTests
         Assert.Equal(2, limited.MaxColumns);
         Assert.Equal(64, expanded.MaxColumns);
         Assert.Equal(limited.MaxRows, expanded.MaxRows);
+    }
+
+    [Theory]
+    [InlineData(2560, true, 5)]
+    [InlineData(2554, true, 4)]
+    [InlineData(2560, false, 5)]
+    public void FullscreenMenuMayUseOnlyEnoughSideMarginForOneMoreCompleteLane(
+        double screenWidth, bool menu, int columns)
+    {
+        var metrics = new WallMetrics();
+        var visible = WallViewportPolicy.FullScreenVisibleSize(screenWidth, 1440, metrics, menu);
+        var budget = WallViewportPolicy.Create(screenWidth, 1440, true, metrics, expandColumns: false, menuStart: menu);
+        var originalWidth = screenWidth * .95 - WallViewportPolicy.FixedWidth(menu);
+        Assert.Equal(columns, budget.MaxColumns);
+        Assert.Equal(visible.Width, budget.MaxWidthDip);
+        Assert.Equal(Math.Max(originalWidth, metrics.WallWidth(columns)), visible.Width);
+        Assert.Equal(1296, visible.Height);
+    }
+
+    [Theory]
+    [InlineData(2, 2251, 2)]
+    [InlineData(3, 2251, 3)]
+    [InlineData(4, 1168, 4)]
+    [InlineData(5, 2251, 5)]
+    [InlineData(6, 2251, 0)]
+    public void RestoreWidensOnlyIfNeededAndKeepsTheLastManualWidth(
+        int groups, double previousWidth, int expectedColumns)
+    {
+        var metrics = new WallMetrics();
+        var source = new WallDocument
+        {
+            Columns = groups, Rows = 12,
+            Settings = new()
+            {
+                FullScreen = true, MenuStart = true, WindowedRows = 12,
+                WindowedColumns = groups, ManualWindowedViewportWidthDip = 1168,
+                WindowedViewportWidthDip = previousWidth, AnchorCorner = AnchorCorner.BottomRight,
+            },
+            Lanes = Enumerable.Range(0, groups).Select(i => new WallLane
+            {
+                Groups = [Group("g" + i) with { Members = [new PuzzleMember
+                {
+                    Id = "p" + i, LocalBounds = new(0, 0, 2, 8),
+                    Partitions = [new(0, 0, 2, 4), new(0, 4, 2, 4)],
+                }] }],
+            }).ToArray(),
+        };
+        var before = WallJson.Serialize(source);
+        var settings = source.Settings with { FullScreen = false };
+        var budget = WallViewportPolicy.Create(2560, 1440, false, metrics, false, true);
+        var result = WallViewportPolicy.TryRestoreWindowed(source, groups, 12, settings, budget, 2483, metrics);
+        Assert.Equal(expectedColumns != 0, result.Success);
+        Assert.Equal(before, WallJson.Serialize(source));
+        if (result.Proposal is not { } proposal) return;
+        Assert.Equal(expectedColumns, proposal.Document.Columns);
+        Assert.Equal(1168d, proposal.Document.Settings.ManualWindowedViewportWidthDip);
+        Assert.Equal(WallViewportPolicy.FixedWidth(true) + metrics.WallWidth(expectedColumns),
+            proposal.Document.Settings.WindowedViewportWidthDip);
+        Assert.Equal(AnchorCorner.BottomRight, proposal.Document.Settings.AnchorCorner);
+        Assert.Equal(groups, proposal.Geometry.Groups.Count);
     }
 
     [Fact]

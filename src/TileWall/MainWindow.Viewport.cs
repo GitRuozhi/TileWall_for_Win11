@@ -20,12 +20,16 @@ public sealed partial class MainWindow
         Math.Max(1, _screenArea.Bottom - _screenArea.Top - _frameHeight) / Scale, settings.FullScreen, _metrics,
         settings.ExpandColumns, settings.MenuStart);
 
-    private double MaximumWindowedClientWidthDip =>
-        Math.Max(0, (Math.Floor((_screenArea.Right - _screenArea.Left) * .9) - _frameWidth) / Scale);
+    private int MaximumWindowedWidthPixels =>
+        (int)Math.Floor((_screenArea.Right - _screenArea.Left) * WallViewportPolicy.WindowedWidthFraction);
 
-    private double MaximumTileWidthDip(WallSettings settings) => Math.Max(0,
-        (settings.FullScreen ? (_screenArea.Right - _screenArea.Left - _frameWidth) * .95 / Scale :
-            MaximumWindowedClientWidthDip) - WallViewportPolicy.FixedWidth(settings.MenuStart));
+    private double MaximumWindowedClientWidthDip =>
+        Math.Max(0, (MaximumWindowedWidthPixels - _frameWidth) / Scale);
+
+    private double MaximumTileWidthDip(WallSettings settings) => settings.FullScreen
+        ? WallViewportPolicy.FullScreenVisibleSize((_screenArea.Right - _screenArea.Left - _frameWidth) / Scale,
+            0, _metrics, settings.MenuStart).Width
+        : Math.Max(0, MaximumWindowedClientWidthDip - WallViewportPolicy.FixedWidth(settings.MenuStart));
 
     private void ReadPrimaryScreen() => _screenArea = new WorkAreaRect
         { Left = 0, Top = 0, Right = GetSystemMetrics(0), Bottom = GetSystemMetrics(1) };
@@ -75,11 +79,14 @@ public sealed partial class MainWindow
         targetColumns = Math.Min(targetColumns, budget.MaxColumns);
         targetRows = Math.Min(targetRows, budget.MaxRows);
         var maximumWidth = MaximumWindowedClientWidthDip;
+        if (source.Settings.FullScreen && !requested.ExpandColumns)
+            return WallViewportPolicy.TryRestoreWindowed(source, targetColumns, targetRows,
+                requested with { AnchorCorner = targetAnchor }, budget, maximumWidth, _metrics);
         if (source.Settings.FullScreen)
             requested = requested with { WindowedViewportWidthDip = requested.ManualWindowedViewportWidthDip ?? maximumWidth };
         else if (requested.ExpandColumns && !source.Settings.ExpandColumns)
             requested = requested with { WindowedViewportWidthDip = maximumWidth };
-        if (!requested.ExpandColumns && (source.Settings.FullScreen || source.Settings.ExpandColumns))
+        if (!requested.ExpandColumns && source.Settings.ExpandColumns)
         {
             var clientWidth = Math.Min(maximumWidth, requested.WindowedViewportWidthDip ?? maximumWidth);
             var tileWidth = Math.Max(1, clientWidth - WallViewportPolicy.FixedWidth(requested.MenuStart));
@@ -91,7 +98,7 @@ public sealed partial class MainWindow
             WindowedRows = targetRows };
         var result = WallViewportPolicy.TryResize(source, targetColumns, targetRows, windowSettings, budget, _metrics);
         if (result.Proposal is null && !requested.ExpandColumns &&
-            (source.Settings.FullScreen || source.Settings.ExpandColumns) && targetColumns < budget.MaxColumns)
+            source.Settings.ExpandColumns && targetColumns < budget.MaxColumns)
             result = WallViewportPolicy.TryResize(source, budget.MaxColumns, targetRows,
                 windowSettings with { WindowedColumns = budget.MaxColumns }, budget, _metrics);
         if (result.Proposal is not { } proposal) return result;

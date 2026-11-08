@@ -358,9 +358,11 @@ internal sealed class ImportDialog : IWallDialogSession
     {
         try
         {
+            var kind = SourceKind;
+            if (kind == ImportPageSourceKind.WallPackage && _packagePath is not null)
+                await Task.Yield();
             if (resetPreview) { request.Token.ThrowIfCancellationRequested(); ClosePreviewSource(); }
             request.Token.ThrowIfCancellationRequested();
-            var kind = SourceKind;
             if (kind == ImportPageSourceKind.WallPackage && _packagePath is null) return;
             var context = _context is { } cached && _contextCurrent(cached) ? cached : await _readContext(request.Token);
             var source = await _readSource(kind, _packagePath, request.Token);
@@ -1621,7 +1623,14 @@ internal sealed class ImportDialog : IWallDialogSession
         if (_sourceData is { } source && (source.ReadErrors != 0 || source.Skipped != 0)) messages.Add(string.Format(ProductStrings.Get("Import.ReadErrors"), source.ReadErrors, source.Skipped));
         if (_sourceData?.ErrorCode is { } error) messages.Add(ErrorText(error));
         if (IsRecycle && !_reading && !_preparing && _sourceData?.Candidates.Count == 0) messages.Add(ProductStrings.Get("Recycle.Empty"));
-        if (_plan?.Status == ImportPlanStatus.Rejected) messages.Add(ProductStrings.Get("Import.LayoutRejected"));
+        if (_plan is { Status: ImportPlanStatus.Rejected } rejected)
+            messages.Add(ProductStrings.Get(rejected.Detail switch
+            {
+                "PACKAGE_HEIGHT_LIMIT" => "Import.LayoutHeight",
+                "PACKAGE_WIDTH_LIMIT" => "Import.LayoutWidth",
+                "LAYOUT_LOCKED" or "LAYOUT_LOCKED_NO_SPACE" => "Wall.LayoutLocked",
+                _ => "Import.LayoutRejected",
+            }));
         var message = string.Join("\n", messages);
         if (_status.Text != message) _status.Show(message);
     }

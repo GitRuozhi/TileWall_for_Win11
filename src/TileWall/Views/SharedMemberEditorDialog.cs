@@ -130,11 +130,12 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _frame = initialFrame;
         _preparedAutomaticSeries = initialAutomaticSeries;
         _previewIconSeries = initialAutomaticSeries?.Series ?? original.Images.IconSeries;
-        _explicitImageSource = original.Images.Kind != MemberImageSourceKind.Automatic;
         _managedEntryPath = managedEntryPath; _links = links; _save = save;
         _visualStyle = visualStyle;
         _maxRows = Math.Clamp(maxRows, 0, WallViewportPolicy.MaximumMemberRows);
         _originalInput = original.TargetInput ?? (original.ResourceOrigin == MemberResourceOrigin.Local ? ReadManagedTarget() : null);
+        _explicitImageSource = original.Images.Kind != MemberImageSourceKind.Automatic &&
+            !FollowsTargetImageSource(original, _originalInput);
         _draft = original with { TargetInput = _originalInput,
             Images = initialAutomaticSeries is { } prepared ? original.Images with { IconSeries = prepared.Series } : original.Images };
         if (original is PuzzleMember puzzle) _layout = new(puzzle.LocalBounds.Size, puzzle.Partitions);
@@ -1445,6 +1446,23 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         TraceImage("ConfirmSourceAccepted");
         _previewPath = null; Changed(); RefreshFields(); GallerySourceChanged?.Invoke(); await ReloadCandidatesAsync(result); return true;
     }
+    private static bool FollowsTargetImageSource(WallMember member, string? target)
+    {
+        if (member.ResourceOrigin != MemberResourceOrigin.Local ||
+            member.Images.Kind is not (MemberImageSourceKind.Single or MemberImageSourceKind.Folder) ||
+            member.Images.Path is not { } path || target is null ||
+            !Path.IsPathFullyQualified(target) || !Path.IsPathFullyQualified(path)) return false;
+        try
+        {
+            return string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(target)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
     private async Task ApplyTargetSourceAsync(string? target)
     {
         if (_closed || _previewClosing) return;

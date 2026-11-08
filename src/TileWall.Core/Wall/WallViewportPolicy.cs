@@ -7,15 +7,14 @@ public sealed record WallViewportBudget(double MaxWidthDip, double MaxHeightDip,
 public static class WallViewportPolicy
 {
     public const int MaximumMemberRows = 12;
+    public const double WindowedWidthFraction = .97;
 
     public static WallViewportBudget Create(double screenWidthDip, double screenHeightDip,
         bool fullScreen, WallMetrics? metrics = null, bool expandColumns = true, bool menuStart = false)
     {
         metrics ??= new();
-        // Fullscreen leaves five percent on the side opposite its fixed rail. Windowed
-        // mode limits the entire outer width to ninety percent of the primary screen.
-        var width = Math.Max(0, screenWidthDip * (fullScreen ? .95 : .9) - FixedWidth(menuStart));
-        var height = Math.Max(0, screenHeightDip * .9);
+        var (width, height) = fullScreen ? FullScreenVisibleSize(screenWidthDip, screenHeightDip, metrics, menuStart)
+            : (Math.Max(0, screenWidthDip * WindowedWidthFraction - FixedWidth(menuStart)), Math.Max(0, screenHeightDip * .9));
         var columns = CompleteColumns(width, metrics);
         var rows = Math.Clamp((int)Math.Floor((height - metrics.TopMargin - metrics.Margin + metrics.Gap) /
             metrics.Pitch + 1e-8), 0, 256);
@@ -105,8 +104,59 @@ public static class WallViewportPolicy
     public static (double Width, double Height) FullScreenVisibleSize(double screenWidthDip,
         double screenHeightDip, WallMetrics? metrics = null, bool menuStart = false)
     {
-        return (Math.Max(0, screenWidthDip * .95 - FixedWidth(menuStart)),
-            Math.Max(0, screenHeightDip * .9));
+        var fixedWidth = FixedWidth(menuStart);
+        var width = Math.Max(0, screenWidthDip * .95 - fixedWidth);
+        if (menuStart)
+        {
+            metrics ??= new();
+            var nextColumn = CompleteColumns(width, metrics) + 1;
+            if (nextColumn <= 64)
+            {
+                var required = metrics.WallWidth(nextColumn);
+                if (required + fixedWidth <= screenWidthDip * .96) width = required;
+            }
+        }
+        return (width, Math.Max(0, screenHeightDip * .9));
+    }
+
+    /// <summary>Restore an ordinary window, widening only when the narrower column budget rejects it.</summary>
+    public static WallLayoutResult TryRestoreWindowed(WallDocument source, int columns, int rows,
+        WallSettings settings, WallViewportBudget budget, double maximumClientWidth, WallMetrics metrics)
+    {
+        var fixedWidth = FixedWidth(settings.MenuStart);
+        var maximumTileWidth = Math.Max(0, Math.Min(budget.MaxWidthDip, maximumClientWidth - fixedWidth));
+        var preferredTileWidth = Math.Clamp((settings.ManualWindowedViewportWidthDip ?? maximumClientWidth) -
+            fixedWidth, 0, maximumTileWidth);
+        var triedColumns = 0;
+        var result = Fit(preferredTileWidth);
+        if (CanWiden(result) && source.Settings.WindowedViewportWidthDip is double previousClientWidth)
+        {
+            var previousTileWidth = Math.Min(maximumTileWidth, previousClientWidth - fixedWidth);
+            if (Capacity(previousTileWidth) > triedColumns) result = Fit(previousTileWidth);
+        }
+        return CanWiden(result) && Capacity(maximumTileWidth) > triedColumns ? Fit(maximumTileWidth) : result;
+
+        int Capacity(double width) => Math.Min(budget.MaxColumns, CompleteColumns(width, metrics));
+
+        bool CanWiden(WallLayoutResult rejected) => rows >= 1 && metrics.WallHeight(rows) <= budget.MaxHeightDip + 1e-8 &&
+            rejected is { Rejection: WallRejection.NoSpace, Detail: null } or
+                { Rejection: WallRejection.WorkAreaTooSmall, Detail: "CONTENT_TOO_LARGE" };
+
+        WallLayoutResult Fit(double tileWidth)
+        {
+            triedColumns = Capacity(tileWidth);
+            var fitBudget = budget with { MaxWidthDip = tileWidth, MaxColumns = triedColumns };
+            var target = Math.Min(columns, triedColumns);
+            var windowed = settings with { WindowedColumns = target, WindowedRows = rows };
+            var fit = TryResize(source, target, rows, windowed, fitBudget, metrics);
+            if (CanWiden(fit) && target < triedColumns)
+                fit = TryResize(source, triedColumns, rows, windowed with { WindowedColumns = triedColumns }, fitBudget, metrics);
+            if (fit.Proposal is not { } proposal) return fit;
+            return fit with { Proposal = proposal with { Document = proposal.Document with
+            {
+                Settings = proposal.Document.Settings with { WindowedViewportWidthDip = fixedWidth + proposal.Geometry.WallWidth },
+            } } };
+        }
     }
 
     /// <summary>

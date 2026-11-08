@@ -189,7 +189,7 @@ public sealed partial class MainWindow
         if (Math.Max(Math.Abs(dx), Math.Abs(dy)) < 7 * _resizeScale) return;
         var rawWidth = _resizeStartRect.Width + (_resizeWidth ? dx : 0);
         var rawHeight = _resizeStartRect.Height + (_resizeHeight ? dy : 0);
-        var maxWidth = Math.Floor((_screenArea.Right - _screenArea.Left) * .9);
+        var maxWidth = MaximumWindowedWidthPixels;
         var maxHeight = Math.Floor((_screenArea.Bottom - _screenArea.Top) * .9);
         if (!_resizeModeLocked && !source.Settings.FullScreen && (rawWidth > maxWidth || rawHeight > maxHeight))
         {

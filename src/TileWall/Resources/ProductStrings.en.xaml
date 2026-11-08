@@ -514,6 +514,8 @@
     <x:String x:Key="Import.FilterReason.AlreadyInGroup">Already in this group</x:String>
     <x:String x:Key="Import.FilterReason.MissingTarget">Target missing</x:String>
     <x:String x:Key="Import.LayoutRejected">Not enough space or invalid source layout. Adjust the selection.</x:String>
+    <x:String x:Key="Import.LayoutHeight">Not enough height to keep the existing groups. Select fewer tiles.</x:String>
+    <x:String x:Key="Import.LayoutWidth">Not enough width to keep the existing groups and empty columns. Select fewer groups.</x:String>
     <x:String x:Key="Import.Adding">Verifying and adding…</x:String>
     <x:String x:Key="Import.PackageInvalid">Cannot verify wall file: {0}</x:String>
     <x:String x:Key="Import.Mode">Mode</x:String>

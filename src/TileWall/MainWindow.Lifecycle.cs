@@ -423,7 +423,7 @@ public sealed partial class MainWindow
             (int)Math.Ceiling(geometry.WallHeight * Scale) + _frameHeight;
         if (!fullScreen)
         {
-            width = Math.Min(width, (int)Math.Floor((_screenArea.Right - _screenArea.Left) * .9));
+            width = Math.Min(width, MaximumWindowedWidthPixels);
             height = Math.Min(height, (int)Math.Floor((_screenArea.Bottom - _screenArea.Top) * .9));
         }
 
