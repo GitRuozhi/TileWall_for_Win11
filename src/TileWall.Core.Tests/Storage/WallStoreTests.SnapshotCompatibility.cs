@@ -11,6 +11,26 @@ namespace TileWall.Core.Tests.Storage;
 
 public sealed partial class WallStoreTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void HistoricalCombinedStartPreferenceInitializesIndependentSnapshotChannels(bool enabled)
+    {
+        var snapshot = UserDataSnapshotJson.Prepare(WallDocument.Empty(1, 1) with
+            { Settings = new() { ReplaceStartMenu = enabled } });
+        var settings = JsonNode.Parse(snapshot.Files["settings.json"])!;
+        settings["value"]!.AsObject().Remove("redirectTaskbarStartButton");
+        var legacy = ReplaceSettings(snapshot, Encoding.UTF8.GetBytes(settings.ToJsonString(UserDataSnapshotJson.Options)));
+        var restored = UserDataSnapshotJson.Read(legacy.Manifest, name => legacy.Files[name], _ => throw new InvalidOperationException());
+        Assert.Equal(enabled, restored.Settings.ReplaceStartMenu);
+        Assert.Equal(enabled, restored.Settings.RedirectTaskbarStartButton);
+        var next = UserDataSnapshotJson.Prepare(restored with
+            { Settings = restored.Settings with { ReplaceStartMenu = !enabled } });
+        var reopened = UserDataSnapshotJson.Read(next.Manifest, name => next.Files[name], _ => throw new InvalidOperationException());
+        Assert.Equal(!enabled, reopened.Settings.ReplaceStartMenu);
+        Assert.Equal(enabled, reopened.Settings.RedirectTaskbarStartButton);
+    }
+
     [Fact]
     public void V2MembersRetainTheirExactHistoricalSnapshotIdentityWithoutNewPresentationFields()
     {
@@ -19,6 +39,7 @@ public sealed partial class WallStoreTests
         var current = UserDataSnapshotJson.Prepare(document);
         var files = current.Files.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
         var settings = JsonNode.Parse(files["settings.json"])!; settings["schemaVersion"] = 2;
+        settings["value"]!.AsObject().Remove("redirectTaskbarStartButton");
         files["settings.json"] = Encoding.UTF8.GetBytes(settings.ToJsonString(UserDataSnapshotJson.Options));
         foreach (var name in new[] { "wall.json", "recycle-bin.json" })
         {

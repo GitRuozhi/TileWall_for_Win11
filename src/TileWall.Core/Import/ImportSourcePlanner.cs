@@ -64,11 +64,18 @@ public static class ImportSourcePlanner
                      ? "stable:" + item.Group.Key
                      : string.IsNullOrWhiteSpace(item.Group.Title)
                          ? "unnamed:" + item.Group.Key : "name:" + StartMenuSourceCache.GroupNameKey(item.Group.Title), StringComparer.Ordinal)
-                     .OrderBy(group => group.Min(item => item.Group.Category))
-                     .ThenBy(group => group.Min(item => item.Group.Order))
+                     .OrderBy(group => group.Min(item => (item.Group.Category,
+                         item.Row.Source.Policy == ImportSourcePolicy.Attributed ? item.Row.Source.SourceGroup?.LaneIndex ?? 0 : 0,
+                         item.Group.Order)))
                      .ThenBy(group => group.First().Group.Title, StringComparer.OrdinalIgnoreCase))
         {
-            var first = merged.OrderBy(item => item.Group.Category).ThenBy(item => item.Group.Order).First().Group;
+            // A merged name inherits one real source position, not independent minima
+            // from different lanes. The same position determines its preview lane.
+            var firstRow = merged.OrderBy(item => item.Group.Category)
+                .ThenBy(item => item.Row.Source.Policy == ImportSourcePolicy.Attributed
+                    ? item.Row.Source.SourceGroup?.LaneIndex ?? 0 : 0)
+                .ThenBy(item => item.Group.Order).First();
+            var first = firstRow.Group;
             var name = StartMenuSourceCache.GroupNameKey(first.Title);
             var destination = name.Length == 0 || merged.All(item => item.Row.Source.SourceKind == ImportPageSourceKind.RecycleBin)
                 ? null : destinations.GetValueOrDefault(name);
@@ -105,10 +112,11 @@ public static class ImportSourcePlanner
                         representative.Error, duplicate ? ImportFilterReason.DuplicateTarget : ImportFilterReason.None, true);
                 });
             var attributed = merged.All(item => item.Row.Source.Policy == ImportSourcePolicy.Attributed);
-            var ordered = attributed ? projected.OrderBy(candidate => candidate.Source.SourceOrder) :
+            var ordered = attributed ? projected.OrderBy(candidate => candidate.Source.SourceGroup?.LaneIndex ?? 0)
+                .ThenBy(candidate => candidate.Source.SourceGroup?.Order ?? 0).ThenBy(candidate => candidate.Source.SourceOrder) :
                 projected.OrderBy(candidate => candidate.Source.DisplayName, StringComparer.CurrentCultureIgnoreCase)
                     .ThenBy(candidate => candidate.Source.SourcePriority).ThenBy(candidate => candidate.Source.SourceOrder);
-            var sourceGroup = merged.First().Row.Source.SourceGroup;
+            var sourceGroup = firstRow.Row.Source.SourceGroup;
             projectedGroups.Add(new(groupKey, first.Title?.Trim(), projectedGroups.Count, ordered.ToArray(), destination?.Id)
             {
                 PreserveSourceGroup = attributed, SourceGroupId = attributed ? sourceGroup?.Key : null,
@@ -416,12 +424,12 @@ public static class ImportSourcePlanner
             if (presets[index] is { } preset)
             {
                 if (presetCounts.GetValueOrDefault(preset.Key) > 1)
-                    return new ImportGroupAssignment(preset.Key, preset.Title, preset.Order, 2);
+                    return new ImportGroupAssignment(preset.Key, preset.Title, preset.Order, 0);
             }
             else if (item.SourceGroup is { } source && folderCounts.GetValueOrDefault(source.Key) > 1)
                 return new ImportGroupAssignment(source.Key, source.Title, source.Order, 1);
             var initial = StartMenuSelectionRules.Initial(item.DisplayName);
-            return new ImportGroupAssignment("letter:" + initial, initial.ToString(), initial == '#' ? 0 : initial - 'A' + 1, 0);
+            return new ImportGroupAssignment("letter:" + initial, initial.ToString(), initial == '#' ? 0 : initial - 'A' + 1, 2);
         }).ToArray();
     }
 

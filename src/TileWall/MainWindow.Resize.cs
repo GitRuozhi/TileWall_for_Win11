@@ -39,6 +39,7 @@ public sealed partial class MainWindow
     private WallLayoutResult? _resizeWindowedResult;
     private readonly Dictionary<(int Columns, int Rows), WallLayoutResult> _resizeFits = [];
     private Point _resizeLastSample;
+    private Point? _resizeLastPreviewPoint;
     private int _resizeSampleCount;
 
     private void RemoveNativeFrame()
@@ -149,6 +150,7 @@ public sealed partial class MainWindow
         _resizeDeltaCount = 0;
         _resizeSampleCount = 0;
         _resizeLastSample = _resizeStart;
+        _resizeLastPreviewPoint = null;
         _resizeFullResult = null;
         _resizeWindowedResult = null;
         _resizeFits.Clear();
@@ -180,6 +182,10 @@ public sealed partial class MainWindow
             CancelResize();
             return;
         }
+        // WM_SIZING may already calculate the same sample before the shared frame
+        // consumer presents it. Present it once; final settlement still runs separately.
+        if (preview && _resizeLastPreviewPoint == cursor) return;
+        if (preview) _resizeLastPreviewPoint = cursor;
         var right = _resizeAnchor is AnchorCorner.BottomRight or AnchorCorner.TopRight;
         var bottom = _resizeAnchor is AnchorCorner.BottomLeft or AnchorCorner.BottomRight;
         var pointerRight = _resizePointerAnchor is AnchorCorner.BottomRight or AnchorCorner.TopRight;
@@ -393,6 +399,7 @@ public sealed partial class MainWindow
         _resizeSnapshot = null;
         _resizeProposal = null;
         _resizePreviewDocument = null;
+        _resizeLastPreviewPoint = null;
         _resizeFits.Clear();
         _resizeFullResult = null;
         _resizeWindowedResult = null;

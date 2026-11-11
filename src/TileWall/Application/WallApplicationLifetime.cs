@@ -60,8 +60,10 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _login = new LoginStartupController(scope);
         _window = new MainWindow(scope);
         _isTest = scope.IsTest;
-        _startReplacement = new StartReplacementService(QueueStartReplacementToggle);
-        _startReplacement.Faulted += QueueStartReplacementFault;
+        _startReplacement = new StartReplacementService(generation => QueueStartReplacementToggle(generation), StartReplacementChannel.WindowsKey);
+        _taskbarStartReplacement = new StartReplacementService(generation => QueueStartReplacementToggle(generation, taskbar: true), StartReplacementChannel.TaskbarButton);
+        _startReplacement.Faulted += failure => QueueStartReplacementFault(failure);
+        _taskbarStartReplacement.Faulted += failure => QueueStartReplacementFault(failure, taskbar: true);
         _show = new WallShowMachine(WallShowState.Hidden, this);
         _animation = new ShowHideAnimator(_window.WallContent);
         _animation.ShowCompleted += () =>
@@ -96,7 +98,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _host.HotKeyPressed += HandleGlobalHotKey;
         _host.DisplayChanged += () =>
         {
-            _startReplacement.InvalidateButtons();
+            _taskbarStartReplacement.InvalidateButtons();
             _window.QueueEnvironmentRefresh();
         };
         _host.AcceptPaths = ReceiveAdd;
@@ -134,6 +136,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             if (!_hotKey.IsRegistered && !_secondaryHotKey.IsRegistered) _window.ShowStatus(ProductStrings.Get("Wall.HotKeyUnavailable"));
             if (login.Error is not null) _window.ShowStatus(login.Error);
             if (_startReplacementError is not null) _window.ShowStatus(_startReplacementError);
+            if (_taskbarStartReplacementError is not null) _window.ShowStatus(_taskbarStartReplacementError);
             UpdateTray();
         }
         catch (OperationCanceledException) when (_exitPending) { }

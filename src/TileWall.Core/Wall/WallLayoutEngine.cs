@@ -142,7 +142,7 @@ public static partial class WallLayoutEngine
                     add.GroupInsertIndex, add.NewGroupId, current.Rows, metrics, append: true);
                 break;
             case ReplaceMemberAction replace:
-                rejection = ReplaceMember(lanes, replace, current.Rows, metrics);
+                rejection = ReplaceMember(lanes, replace, current, workWidthDip, workHeightDip, metrics);
                 break;
             case AddBatchAction batch:
                 rejection = AddBatch(lanes, batch, current.Rows, metrics);
@@ -531,14 +531,16 @@ public static partial class WallLayoutEngine
     }
 
     private static WallRejection ReplaceMember(List<List<StartGroup>> lanes, ReplaceMemberAction action,
-        int currentRows, WallMetrics metrics)
+        WallDocument current, double workWidthDip, double workHeightDip, WallMetrics metrics)
     {
         var location = FindMember(lanes, action.MemberId);
         if (location is null) return WallRejection.ObjectNotFound;
         var (laneIndex, groupIndex, original) = location.Value;
         if (action.Replacement is null ||
             !string.Equals(original.Id, action.Replacement.Id, StringComparison.Ordinal) ||
-            original.GetType() != action.Replacement.GetType())
+            original.GetType() != action.Replacement.GetType() || !MemberSizeRules.IsValid(action.Replacement) ||
+            action.Replacement.LocalBounds.Width is < 1 or > CellsPerLane ||
+            action.Replacement.LocalBounds.Height is < 1 or > MaxRows)
             return WallRejection.InvalidAction;
 
         var source = lanes[laneIndex][groupIndex];
@@ -557,8 +559,76 @@ public static partial class WallLayoutEngine
             Members = source.Members.Where(member =>
                 !string.Equals(member.Id, original.Id, StringComparison.Ordinal)).ToArray(),
         };
+        if (replacement.LocalBounds.Size != original.LocalBounds.Size)
+        {
+            // Editing a size moves this member, never the neighbours. Dragging keeps its separate avoidance rules.
+            replacement = WithBounds(replacement, replacement.LocalBounds with
+            { Column = original.LocalBounds.Column, Row = original.LocalBounds.Row });
+            var remaining = lanes[laneIndex][groupIndex];
+            var maxRows = MaxMemberRowsForGroup(lanes[laneIndex], groupIndex, MaxRows, metrics);
+            GridRect? bounds = IsLocalRect(replacement.LocalBounds) &&
+                !remaining.Members.Any(member => member.LocalBounds.Intersects(replacement.LocalBounds))
+                ? replacement.LocalBounds : null;
+            if (bounds is { } atOrigin && !TryGroupBounds(atOrigin)) bounds = null;
+            if (bounds is null)
+            {
+                bounds = FindFreeLocalRect(replacement.LocalBounds, remaining.Members, EffectiveGroupRows(source));
+                if (bounds is { } nearby && !TryGroupBounds(nearby)) bounds = null;
+            }
+            if (bounds is null)
+            {
+                bounds = MemberLayoutOrder.FindAppendBounds(remaining.Members.Select(member => member.LocalBounds).ToArray(),
+                    replacement.LocalBounds.Width, replacement.LocalBounds.Height, maxRows);
+                if (bounds is { } appended && !TryGroupBounds(appended)) bounds = null;
+            }
+            if (bounds is { } destination)
+            {
+                lanes[laneIndex][groupIndex] = remaining with
+                { Members = [.. remaining.Members, WithBounds(replacement, destination)] };
+                return WallRejection.None;
+            }
+
+            if (remaining.Members.Count == 0 && remaining.ReservedRows is null)
+                lanes[laneIndex].RemoveAt(groupIndex);
+            var lastLane = lanes.Select((lane, index) => (lane, index)).Where(pair => pair.lane.Count != 0)
+                .Select(pair => pair.index).DefaultIfEmpty(0).Max();
+            var groupId = AllocateLayoutGroupId(current, original.Id);
+            var laneLimit = current.Settings.ExpandColumns ? MaxColumns - 1 : current.Columns;
+            for (var targetLane = lastLane; targetLane < laneLimit; targetLane++)
+            {
+                while (targetLane >= lanes.Count) lanes.Add([]);
+                var tail = new StartGroup { Id = groupId, Members = [WithBounds(replacement,
+                    new GridRect(0, 0, replacement.LocalBounds.Width, replacement.LocalBounds.Height))] };
+                lanes[targetLane].Add(tail);
+                if (FitsViewport())
+                    return WallRejection.None;
+                lanes[targetLane].RemoveAt(lanes[targetLane].Count - 1);
+            }
+            return WallRejection.NoSpace;
+
+            bool TryGroupBounds(GridRect candidateBounds)
+            {
+                lanes[laneIndex][groupIndex] = remaining with
+                { Members = [.. remaining.Members, WithBounds(replacement, candidateBounds)] };
+                var fits = FitsViewport();
+                lanes[laneIndex][groupIndex] = remaining;
+                return fits;
+            }
+
+            bool FitsViewport()
+            {
+                var candidate = current with
+                {
+                    Columns = lanes.Count,
+                    Lanes = lanes.Select((groups, index) => index < current.Lanes.Count
+                        ? current.Lanes[index] with { Groups = groups.ToArray() }
+                        : new WallLane { Groups = groups.ToArray() }).ToArray(),
+                };
+                return ProbeCapacity(candidate, workWidthDip, workHeightDip, metrics) == WallRejection.None;
+            }
+        }
         var rejection = PlaceMember(lanes, replacement, source.Id, laneIndex, groupIndex,
-            null, currentRows, metrics);
+            null, current.Rows, metrics);
         if (rejection != WallRejection.None) return rejection;
 
         return WallRejection.None;

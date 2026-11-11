@@ -42,8 +42,8 @@
     <x:String x:Key="Settings.LanguageFallback">中文系统语言使用中文，其他系统语言使用英文。</x:String>
     <x:String x:Key="Settings.HotKey">快捷键 1</x:String>
     <x:String x:Key="Settings.SecondaryHotKey">快捷键 2</x:String>
-    <x:String x:Key="Settings.ReplaceStartMenu">替换系统开始（实验）</x:String>
-    <x:String x:Key="Settings.StartReplacementHelp">启用后，单按 Win 键或左击任务栏开始按钮切换 TileWall；两组快捷键及 Ctrl+Esc 打开 Windows 开始。</x:String>
+    <x:String x:Key="Settings.ReplaceStartMenu">接管物理 Win 键（实验）</x:String>
+    <x:String x:Key="Settings.StartReplacementHelp">单按左／右 Win 键切换 TileWall。接管实际生效时，两组自定义热键打开 Windows 开始。Ctrl+Esc 保留系统行为。</x:String>
     <x:String x:Key="Settings.StartReplacementOff">已关闭，系统开始入口保持原生行为。</x:String>
     <x:String x:Key="Settings.StartReplacementActive">正在替换系统开始。</x:String>
     <x:String x:Key="Settings.StartReplacementSuspended">录制快捷键期间暂时停止替换。</x:String>
@@ -615,4 +615,21 @@
     <x:String x:Key="Wall.LayoutMovedGroupEnd">原位置空间不足，已移至组尾。</x:String>
     <x:String x:Key="Wall.LayoutMovedWallEnd">原组空间不足，已移至墙尾新组。</x:String>
     <x:String x:Key="Wall.UpgradingUserData">正在升级用户数据版本…</x:String>
+    <x:String x:Key="Menu.New">新建</x:String>
+    <x:String x:Key="Editor.Type">类型</x:String>
+    <x:String x:Key="Editor.TypeTile">磁贴</x:String>
+    <x:String x:Key="Editor.TypePuzzle">拼图</x:String>
+    <x:String x:Key="Editor.TypeComponent">原生组件（暂不可用）</x:String>
+    <x:String x:Key="Editor.TypeHelp">仅新建时可以切换磁贴与拼图；原生组件暂不可用。</x:String>
+    <x:String x:Key="Editor.ExistingType">已有对象不能更改类型。磁贴为1–4格，拼图至少2×2格。</x:String>
+    <x:String x:Key="Editor.TypeChangeConfirm">改为{0}，尺寸为{1}×{2}？目标、标题、图源和外观保留；拼图分区将重新生成。</x:String>
+    <x:String x:Key="Editor.ConfirmType">确认更改类型</x:String>
+    <x:String x:Key="Editor.EmptyNotKept">目标和前景均为空，未保留空磁贴／拼图。</x:String>
+    <x:String x:Key="Gallery.SourceMissing">图集目录不存在：{0}</x:String>
+    <x:String x:Key="Welcome.RegistryEditor">Registry Editor</x:String>
+    <x:String x:Key="Welcome.Search">Windows 搜索</x:String>
+    <x:String x:Key="Welcome.PowerShell">Windows PowerShell</x:String>
+    <x:String x:Key="Wall.LayoutMovedNearby">原位置空间不足，已移至本组附近空位。</x:String>
+    <x:String x:Key="Settings.RedirectTaskbarStartButton">重定向任务栏开始按钮（实验）</x:String>
+    <x:String x:Key="Settings.TaskbarStartReplacementHelp">完整鼠标左击主／副任务栏开始按钮切换 TileWall，不改变自定义热键。右键及触摸／触笔沿系统行为。</x:String>
 </ResourceDictionary>

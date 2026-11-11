@@ -75,7 +75,10 @@ internal static class UserDataSnapshotJson
                 foreach (var extension in typeInfo.Properties.Where(property => property.IsExtensionData).ToArray())
                     typeInfo.Properties.Remove(extension);
             if (typeInfo.Type == typeof(WallSettings))
+            {
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "layoutLocked"));
+                typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "redirectTaskbarStartButton"));
+            }
             if (typeInfo.Type == typeof(StartGroup))
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "reservedRows"));
             if (version < 4 && typeInfo.Type == typeof(MemberImageSource))
@@ -203,9 +206,10 @@ internal static class UserDataSnapshotJson
             // when upgrading an older envelope that used them as opaque metadata.
             if (manifest.SchemaVersion == 4 &&
                 (settings.Value.ExtensionData?.ContainsKey("layoutLocked") == true ||
+                 settings.Value.ExtensionData?.ContainsKey("redirectTaskbarStartButton") == true ||
                  wall.Lanes.Any(lane => lane?.Groups?.Any(group =>
                      group?.ExtensionData?.ContainsKey("reservedRows") == true) == true)))
-                throw new UnsupportedSnapshotStructureException("The snapshot contains layout fields outside their supported format; its data remains untouched.");
+                throw new UnsupportedSnapshotStructureException("The snapshot contains settings or layout fields outside their supported format; its data remains untouched.");
             if (manifest.SchemaVersion >= 2)
             {
                 using var json = JsonDocument.Parse(settingsBytes);
@@ -214,6 +218,8 @@ internal static class UserDataSnapshotJson
             }
             if (!HotKeyGesture.TryParse(settings.Value.SecondaryHotKey, out _))
                 throw new InvalidDataException("Invalid secondary hotkey.");
+            using (var json = JsonDocument.Parse(settingsBytes))
+                settings = settings with { Value = WallJson.ReadStartInputPreferences(settings.Value, json.RootElement.GetProperty("value")) };
             if (recycle.Members.Count > 200 || !recycle.Enabled && recycle.Members.Count != 0)
                 throw new InvalidDataException("Invalid recycle-bin retention policy.");
             var document = new WallDocument

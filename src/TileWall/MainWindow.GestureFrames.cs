@@ -13,9 +13,11 @@ public sealed partial class MainWindow
     private bool _frameSubscribed, _dragInputPending, _resizeInputPending, _dragFrameWakeQueued;
     private Point _latestDragPoint, _latestResizePoint;
     private Point _lastConsumedDragPoint;
+    private bool _hasConsumedDragSample;
     private Point? _gestureScreenStart;
     private Point _gestureMarginStart, _gesturePointerScrollStart;
     private double _gestureScale;
+    private double _gestureThresholdDip = 7;
     private WallDocument? _gestureDocument;
     private WallGeometry? _gestureGeometry;
     private WallMemberDropSession? _memberDropSession;
@@ -40,6 +42,7 @@ public sealed partial class MainWindow
             ? new WallMemberDropSession(Document, memberId, _gesture.NewGroupId, _metrics) : null;
         _memberDropSlot = null; _memberDropResult = null;
         _dropCache.Clear(); _drawnDrop = null; _dragInputPending = false;
+        _hasConsumedDragSample = false;
         _gestureLaunchKeys.Clear();
         _performance.Begin("drag", Document, Scale, Surface.VisualCreationCount, Surface.GridCreationCount);
         RecordCompositionGateAtBegin();
@@ -74,6 +77,7 @@ public sealed partial class MainWindow
         {
             _displayPulseSource?.Stop();
             _displayPulseActive = false;
+            _displayPulseReady = false;
         }
         else CompositionTarget.Rendering -= OnInteractionFrame;
         InvalidateInteractionCommit();
@@ -82,17 +86,19 @@ public sealed partial class MainWindow
 
     private void QueueDragFrameWake()
     {
-        if (_displayPulseActive || _dragFrameWakeQueued || !_dragInputPending || _windowClosing || ShutdownStarted) return;
-        // An otherwise idle XAML surface may not deliver Rendering until something
-        // changes visually. Coalesce input at low priority to wake that first preview.
+        if (_displayPulseActive && _displayPulseReady || _dragFrameWakeQueued ||
+            !_dragInputPending && !_resizeInputPending || _windowClosing || ShutdownStarted) return;
+        // DXGI Start returns before output discovery and the first driver wait.
+        // Until a pulse actually arrives, input wakes the same latest-sample consumer.
         _dragFrameWakeQueued = true;
-        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        if (!DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
         {
             _dragFrameWakeQueued = false;
-            if (_displayPulseActive || !_dragInputPending || _gesture.Phase == GesturePhase.Idle ||
+            if (_displayPulseActive && _displayPulseReady || !_dragInputPending && !_resizeInputPending ||
+                _gesture.Phase == GesturePhase.Idle && !_resizing ||
                 _windowClosing || ShutdownStarted) return;
             OnInteractionFrame(null, EventArgs.Empty);
-            if (_dragInputPending) QueueDragFrameWake();
+            if (_dragInputPending || _resizeInputPending) QueueDragFrameWake();
         })) _dragFrameWakeQueued = false;
     }
 
@@ -157,6 +163,7 @@ public sealed partial class MainWindow
         _resizeSampleCount++;
         _performance.Input();
         EnsureFrameSubscription();
+        QueueDragFrameWake();
     }
 
     private bool GestureSnapshotIsCurrent() => _gestureDocument is not null &&
@@ -165,7 +172,9 @@ public sealed partial class MainWindow
     private void ConsumeDragSample(Point point)
     {
         if (!GestureSnapshotIsCurrent()) { TerminateGesture(); return; }
-        if (!_gesture.Advance(point, 7)) return;
+        if (_hasConsumedDragSample && point == _lastConsumedDragPoint) return;
+        if (!_gesture.Advance(point, _gestureThresholdDip)) return;
+        _hasConsumedDragSample = true;
         _lastConsumedDragPoint = point;
         var proposal = CalculateDrop(point);
         _gesture.SetPreview(proposal);

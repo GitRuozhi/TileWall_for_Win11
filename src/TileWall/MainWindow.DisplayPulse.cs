@@ -12,7 +12,7 @@ namespace TileWall;
 public sealed partial class MainWindow
 {
     private DisplayPulseSource? _displayPulseSource;
-    private bool _displayPulseActive, _displayPulseFailed;
+    private bool _displayPulseActive, _displayPulseReady, _displayPulseFailed;
     private string? _displayPulseFailure;
     private Visual? _ghostCompositionVisual;
     private double _ghostX, _ghostY;
@@ -37,6 +37,7 @@ public sealed partial class MainWindow
             if (_displayPulseSource.Start())
             {
                 _displayPulseActive = true;
+                _displayPulseReady = false;
                 _performance.Scheduler("dxgi-primary-vblank", null);
                 return true;
             }
@@ -48,6 +49,7 @@ public sealed partial class MainWindow
     private void OnDisplayPulse(long timestamp)
     {
         if (_windowClosing || _interactionStopping || !_frameSubscribed || !_displayPulseActive) return;
+        _displayPulseReady = true;
         _performance.DisplayPulse(timestamp);
         OnInteractionFrame(null, EventArgs.Empty);
     }
@@ -60,6 +62,7 @@ public sealed partial class MainWindow
         _displayPulseSource?.Stop();
         var wasActive = _displayPulseActive;
         _displayPulseActive = false;
+        _displayPulseReady = false;
         CancelInteractionCommit();
         if (_ghostCompositionVisual is { } visual)
         {

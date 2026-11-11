@@ -234,7 +234,7 @@ public sealed partial class WallImageService
         if (member.ResourceOrigin == MemberResourceOrigin.Package &&
             !(member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is not null ||
               member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is not null ||
-              member.Images.Kind == MemberImageSourceKind.Folder && member.Images.ManagedGallery is not null))
+              member.Images.Kind == MemberImageSourceKind.Folder))
             return new(null, WallImageStatus.None, "PackageImageSourceUnavailable");
         if (widthPixels < 1 || heightPixels < 1)
             throw new ArgumentOutOfRangeException(nameof(widthPixels));
@@ -255,6 +255,12 @@ public sealed partial class WallImageService
                 budget, ct, member.Images.Path, member.Images.Media?.Sha256, member.Images.Media);
         if (member.Images.Kind == MemberImageSourceKind.Folder)
         {
+            // An explicitly missing external directory must not keep displaying a cached original.
+            // Unknown IO/permission failures retain the gallery's existing fallback policy.
+            if (member.Images.ManagedGallery is null &&
+                await Task.Run(() => IsGalleryDirectoryMissing(member.Images.Path, ct), ct))
+                return new(null, WallImageStatus.Missing, "Gallery.SourceMissing")
+                    { MemoryCacheAllowed = false, CacheAllowed = false };
             IDisposable? sourceRead = null;
             try
             {

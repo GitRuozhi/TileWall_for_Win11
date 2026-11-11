@@ -23,6 +23,8 @@ internal sealed partial class IntegerStepper : UserControl
     private bool _sync;
     private string _decrease = string.Empty, _increase = string.Empty;
     internal event Action<int>? ValueChanged;
+    internal event Action<int>? OutOfRange;
+    internal void ResetPendingInput() => Sync();
     internal int Minimum { get => _minimum; set { _minimum = value; Sync(); } }
     internal int Maximum { get => _maximum; set { _maximum = value; Sync(); } }
     internal int Value { get => _value; set { if (value == _value && HasPendingInput) return; _value = value; Sync(); } }
@@ -65,13 +67,14 @@ internal sealed partial class IntegerStepper : UserControl
     }
     internal bool CommitPendingInput()
     {
-        if (!IsInputValid || !int.TryParse(_input.Text, NumberStyles.Integer, CultureInfo.CurrentCulture, out var value)) return false;
+        if (!int.TryParse(_input.Text, NumberStyles.Integer, CultureInfo.CurrentCulture, out var value)) return false;
+        if (value < Minimum || value > Maximum) { OutOfRange?.Invoke(value); return false; }
         Apply(value); return true;
     }
     private void Step(int delta) { if (CommitPendingInput()) Apply(_value + delta); }
     private void Apply(int value)
     {
-        if (value < Minimum || value > Maximum) return;
+        if (value < Minimum || value > Maximum) { OutOfRange?.Invoke(value); return; }
         var changed = _value != value; _value = value; Sync();
         if (changed) ValueChanged?.Invoke(value);
     }
@@ -85,7 +88,8 @@ internal sealed partial class IntegerStepper : UserControl
     private void UpdateButtons()
     {
         var valid = int.TryParse(_input.Text, NumberStyles.Integer, CultureInfo.CurrentCulture, out var value) && value >= Minimum && value <= Maximum;
-        _minus.IsEnabled = valid && value > Minimum; _plus.IsEnabled = valid && value < Maximum;
+        _minus.IsEnabled = valid && (value > Minimum || OutOfRange is not null);
+        _plus.IsEnabled = valid && (value < Maximum || OutOfRange is not null);
         ActionIcon.SetTip(_minus, !valid ? ProductStrings.Get("Common.CheckInput") : _minus.IsEnabled ? _decrease : string.Format(ProductStrings.Get("Common.MinimumReached"), Minimum));
         ActionIcon.SetTip(_plus, !valid ? ProductStrings.Get("Common.CheckInput") : _plus.IsEnabled ? _increase : string.Format(ProductStrings.Get("Common.MaximumReached"), Maximum));
     }

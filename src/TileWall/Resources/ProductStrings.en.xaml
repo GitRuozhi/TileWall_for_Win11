@@ -41,8 +41,6 @@
   <x:String x:Key="Settings.LanguageFallback">Chinese system languages use Chinese; all other system languages use English.</x:String>
   <x:String x:Key="Settings.HotKey">Hotkey 1</x:String>
   <x:String x:Key="Settings.SecondaryHotKey">Hotkey 2</x:String>
-  <x:String x:Key="Settings.ReplaceStartMenu">Replace system Start (experimental)</x:String>
-  <x:String x:Key="Settings.StartReplacementHelp">When enabled, pressing Win alone or left-clicking taskbar Start toggles TileWall. Both configured hotkeys and Ctrl+Esc open Windows Start.</x:String>
   <x:String x:Key="Settings.StartReplacementOff">Off. System Start entry points retain their native behavior.</x:String>
   <x:String x:Key="Settings.StartReplacementActive">Replacing system Start.</x:String>
   <x:String x:Key="Settings.StartReplacementSuspended">Replacement is paused while recording a hotkey.</x:String>
@@ -614,4 +612,23 @@
     <x:String x:Key="Wall.LayoutMovedGroupEnd">Not enough space at the original position. Moved to the end of this group.</x:String>
     <x:String x:Key="Wall.LayoutMovedWallEnd">Not enough space in this group. Moved to a new group at the end of the wall.</x:String>
     <x:String x:Key="Wall.UpgradingUserData">Upgrading user data…</x:String>
+    <x:String x:Key="Menu.New">New</x:String>
+    <x:String x:Key="Editor.Type">Type</x:String>
+    <x:String x:Key="Editor.TypeTile">Tile</x:String>
+    <x:String x:Key="Editor.TypePuzzle">Puzzle</x:String>
+    <x:String x:Key="Editor.TypeComponent">Native component (unavailable)</x:String>
+    <x:String x:Key="Editor.TypeHelp">Choose a tile or puzzle when creating. Native components are not available yet.</x:String>
+    <x:String x:Key="Editor.ExistingType">Existing items cannot change type. Tiles use 1–4 cells per axis; puzzles require at least 2×2.</x:String>
+    <x:String x:Key="Editor.TypeChangeConfirm">Change to {0} at {1}×{2}? Keep the target, title, images and appearance; regenerate puzzle partitions.</x:String>
+    <x:String x:Key="Editor.ConfirmType">Change type</x:String>
+    <x:String x:Key="Editor.EmptyNotKept">The target and foreground are empty. The empty tile or puzzle was not kept.</x:String>
+    <x:String x:Key="Gallery.SourceMissing">The image folder does not exist: {0}</x:String>
+    <x:String x:Key="Welcome.RegistryEditor">Registry Editor</x:String>
+    <x:String x:Key="Welcome.Search">Windows Search</x:String>
+    <x:String x:Key="Welcome.PowerShell">Windows PowerShell</x:String>
+    <x:String x:Key="Wall.LayoutMovedNearby">The original position was too small. Moved to a nearby free space in the group.</x:String>
+    <x:String x:Key="Settings.RedirectTaskbarStartButton">Redirect taskbar Start buttons (experimental)</x:String>
+    <x:String x:Key="Settings.TaskbarStartReplacementHelp">A complete left mouse click on a primary or secondary taskbar Start button toggles TileWall without changing custom hotkeys. Right-click, touch and pen keep system behavior.</x:String>
+    <x:String x:Key="Settings.ReplaceStartMenu">Capture physical Win keys (experimental)</x:String>
+    <x:String x:Key="Settings.StartReplacementHelp">Press either physical Win key alone to toggle TileWall. While key capture is active, both custom hotkeys open Windows Start. Ctrl+Esc keeps system behavior.</x:String>
 </ResourceDictionary>

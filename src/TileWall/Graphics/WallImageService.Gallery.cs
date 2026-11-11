@@ -47,7 +47,8 @@ public sealed partial class WallImageService
             if (_cacheStopping || _disposed) return new([], WallImageStatus.Cancelled);
             if (!_gallerySources.TryGetValue(folder, out var state)) _gallerySources.Add(folder, state = new(folder, source.ManagedGallery));
             if (state.InFlight is { } active) task = active;
-            else if (state.Snapshot is { } snapshot && state.Due > DateTimeOffset.UtcNow) return snapshot;
+            else if (state.Snapshot is { } snapshot && snapshot.Diagnostic != "Gallery.SourceMissing" &&
+                state.Due > DateTimeOffset.UtcNow) return snapshot;
             else
             {
                 task = Task.Run(() => RefreshGalleryCoreAsync(state, _cacheLifetime.Token), _cacheLifetime.Token);
@@ -134,6 +135,19 @@ public sealed partial class WallImageService
         {
             if (state.ManagedGallery is not null)
                 return new([], WallImageStatus.Invalid, "ManagedGalleryReadFailed") { IsComplete = false, DiagnosticDetail = ex.Message };
+            if (IsGalleryDirectoryMissing(state.Source, ct))
+            {
+                var missing = new PuzzleCandidateResult([], WallImageStatus.Missing, "Gallery.SourceMissing")
+                {
+                    SourceVersion = "missing:" + ManagedImageCache.Key(state.Source), DiagnosticDetail = state.Source,
+                    ChangedPaths = (state.Index?.Entries.Select(entry => Path.Combine(state.Source, entry.Name)) ?? [])
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase),
+                };
+                // Keep the path and disposable index for a later recovery, but publish an
+                // authoritative empty display so the carousel releases its previous frame.
+                lock (_workGate) state.Snapshot = missing;
+                return missing;
+            }
             var fallback = state.Index;
             var result = fallback is null ? new PuzzleCandidateResult([], WallImageStatus.Missing, "Gallery.SourceUnavailableNoCache") { IsComplete = false }
                 : GalleryResult(state, fallback, WallImageStatus.Fallback, "Gallery.SourceUnavailable", false, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
@@ -154,8 +168,42 @@ public sealed partial class WallImageService
     }
 
     public static string? DescribeCandidateDiagnostic(PuzzleCandidateResult result) => result.Diagnostic is
-        "Gallery.SourceUnavailable" or "Gallery.SourceUnavailableNoCache"
+        "Gallery.SourceUnavailable" or "Gallery.SourceUnavailableNoCache" or "Gallery.SourceMissing"
             ? string.Format(ProductStrings.Get(result.Diagnostic), result.DiagnosticDetail ?? string.Empty) : result.Diagnostic;
+
+    /// <summary>Only a readable parent can confirm absence; permission and IO failures stay unknown.</summary>
+    internal static bool IsGalleryDirectoryMissing(string? path, CancellationToken ct = default)
+    {
+        var full = NormalizeImageFilePath(path);
+        if (full is null) return false;
+        try
+        {
+            var parent = Path.GetPathRoot(full);
+            if (parent is null) return false;
+            var rootAttributes = File.GetAttributes(parent);
+            if ((rootAttributes & FileAttributes.Directory) == 0 || (rootAttributes & FileAttributes.ReparsePoint) != 0) return false;
+            foreach (var part in full[parent.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+            {
+                ct.ThrowIfCancellationRequested();
+                var child = Path.Combine(parent, part);
+                FileAttributes attributes;
+                try { attributes = File.GetAttributes(child); }
+                catch (Exception absent) when (absent is FileNotFoundException or DirectoryNotFoundException)
+                {
+                    foreach (var entry in Directory.EnumerateFileSystemEntries(parent))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        if (StringComparer.OrdinalIgnoreCase.Equals(Path.GetFileName(entry), part)) return false;
+                    }
+                    return true;
+                }
+                if ((attributes & FileAttributes.Directory) == 0 || (attributes & FileAttributes.ReparsePoint) != 0) return false;
+                parent = child;
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+        return false;
+    }
 
     private async Task EnsureGalleryOriginalAsync(MemberImageSource source, string? identity, CancellationToken ct)
     {

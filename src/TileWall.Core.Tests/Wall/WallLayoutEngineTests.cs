@@ -523,7 +523,7 @@ public sealed class WallLayoutEngineTests
     }
 
     [Fact]
-    public void ReplaceMemberUsesCollisionRulesAndKeepsIdentityKindAndSpatialOrder()
+    public void ReplaceMemberAppendsTheResizedMemberAndKeepsNeighboursIdentityAndKind()
     {
         var initial = Document(Group("g", Tile("edited", new GridRect(0, 0, 1, 1)),
             Tile("blocker", new GridRect(1, 0, 1, 1)),
@@ -538,11 +538,11 @@ public sealed class WallLayoutEngineTests
         Assert.True(result.Success, result.Detail);
         Assert.Equal(1, result.Proposal!.Document.Generation);
         var members = result.Proposal.Document.Lanes[0].Groups[0].Members;
-        Assert.Equal(["edited", "blocker", "unrelated"], members.Select(member => member.Id));
-        Assert.Equal(new GridRect(0, 0, 2, 2), members[0].LocalBounds);
-        Assert.Equal(new GridRect(3, 0, 1, 1), members[2].LocalBounds);
-        Assert.NotEqual(new GridRect(1, 0, 1, 1), members[1].LocalBounds);
-        Assert.Equal("new title", members[0].Visual.Title);
+        Assert.Equal(["blocker", "unrelated", "edited"], members.Select(member => member.Id));
+        Assert.Equal(new GridRect(4, 0, 2, 2), members[2].LocalBounds);
+        Assert.Equal(new GridRect(3, 0, 1, 1), members[1].LocalBounds);
+        Assert.Equal(new GridRect(1, 0, 1, 1), members[0].LocalBounds);
+        Assert.Equal("new title", members[2].Visual.Title);
         Assert.Equal(new GridRect(0, 0, 1, 1), initial.Lanes[0].Groups[0].Members[0].LocalBounds);
 
         Assert.Equal(WallRejection.InvalidAction, WallLayoutEngine.TryApply(initial,

@@ -87,7 +87,9 @@ public static partial class WallLayoutEngine
                 if (location is null) return Reject(WallRejection.ObjectNotFound);
                 var original = location.Value.Member;
                 if (replace.Replacement is null || replace.Replacement.Id != original.Id ||
-                    replace.Replacement.GetType() != original.GetType()) return Reject(WallRejection.InvalidAction);
+                    replace.Replacement.GetType() != original.GetType() || !MemberSizeRules.IsValid(replace.Replacement) ||
+                    replace.Replacement.LocalBounds.Width is < 1 or > CellsPerLane ||
+                    replace.Replacement.LocalBounds.Height is < 1 or > MaxRows) return Reject(WallRejection.InvalidAction);
                 var replacement = replace.Replacement with
                 {
                     ImportSource = original.ImportSource,
@@ -103,7 +105,15 @@ public static partial class WallLayoutEngine
                 var inPlace = TryLockedPlacement(lanes, replacement, sourceId, location.Value.Lane,
                     location.Value.Group, null, current, width, height, metrics);
                 if (inPlace.Proposal is not null) return inPlace;
+                var originalGroup = current.Lanes[location.Value.Lane].Groups[location.Value.Group];
                 var source = lanes[location.Value.Lane][location.Value.Group];
+                var nearby = FindFreeLocalRect(replacement.LocalBounds, source.Members, EffectiveGroupRows(originalGroup));
+                if (nearby is { } empty)
+                {
+                    var relocated = TryLockedPlacement(lanes, WithBounds(replacement, empty), sourceId,
+                        location.Value.Lane, location.Value.Group, null, current, width, height, metrics);
+                    if (relocated.Proposal is not null) return relocated with { Detail = "LAYOUT_MOVED_NEARBY" };
+                }
                 var bounds = MemberLayoutOrder.FindAppendBounds(source.Members.Select(member => member.LocalBounds).ToArray(),
                     replacement.LocalBounds.Width, replacement.LocalBounds.Height, current.Rows);
                 if (bounds is { } end)

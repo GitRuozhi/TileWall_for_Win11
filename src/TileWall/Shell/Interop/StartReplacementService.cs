@@ -5,19 +5,21 @@ using TileWall.Core.Shell;
 
 namespace TileWall.Shell.Interop;
 
+internal enum StartReplacementChannel { WindowsKey, TaskbarButton }
+
 /// <summary>
 /// Owns Start-entry capture. Prepare is pass-through; only Activate admits new gestures.
 /// One thread owns hooks and all input ledgers.
 /// The toggle delegate MUST only enqueue to its owner; the owner must recheck IsCurrentActivation on delivery.
 /// </summary>
-internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsyncDisposable
+internal sealed class StartReplacementService(Action<long> enqueueToggle, StartReplacementChannel channel) : IAsyncDisposable
 {
     private const uint WakeMessage = 0x8000 + 74;
     private readonly SemaphoreSlim _transition = new(1, 1);
     private readonly ConcurrentQueue<Action> _commands = new();
     private readonly WindowsKeyCaptureState _keyboard = new();
     private readonly StartButtonPressState _mouse = new();
-    private StartButtonLocator _locator = new();
+    private StartButtonLocator? _locator = channel == StartReplacementChannel.TaskbarButton ? new() : null;
     private readonly nuint _inputMarker = (nuint)Random.Shared.Next(1, int.MaxValue);
     private TaskCompletionSource _ready = Completion();
     private TaskCompletionSource _finished = Completion();
@@ -39,10 +41,9 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
 
     internal string? Fault => Volatile.Read(ref _fault);
     internal bool IsActive => _admission && !_desktopRecoveryPending;
-    internal bool HasRetainedResources => _locator.HasRetainedResources || _thread is not null
+    internal bool HasRetainedResources => _locator?.HasRetainedResources == true || _thread is not null
         && (!_finished.Task.IsCompletedSuccessfully || _keyboardHook != 0 || _mouseHook != 0 || _desktopHook != 0);
     internal bool IsCurrentActivation(long generation) => IsActive && Interlocked.Read(ref _generation) == generation;
-    internal StartButtonSnapshot ButtonSnapshot => _locator.CurrentSnapshot;
     internal event Action<string>? Faulted;
 
     internal async Task PrepareAsync(CancellationToken cancellationToken = default)
@@ -56,26 +57,30 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
                 throw new InvalidOperationException("Previous input resources have not finished stopping.");
             preparationStarted = true;
             _stopRequested = false;
-            await _locator.DisposeAsync().ConfigureAwait(false);
-            _locator = new StartButtonLocator();
-            _locator.Faulted += LocatorFaulted;
-            _locator.SnapshotChanged += SnapshotChanged;
             Volatile.Write(ref _fault, null);
-            await _locator.StartAsync(cancellationToken).ConfigureAwait(false);
+            if (channel == StartReplacementChannel.TaskbarButton)
+            {
+                if (_locator is not null) await _locator.DisposeAsync().ConfigureAwait(false);
+                _locator = new StartButtonLocator();
+                _locator.Faulted += LocatorFaulted;
+                _locator.SnapshotChanged += SnapshotChanged;
+                await _locator.StartAsync(cancellationToken).ConfigureAwait(false);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             if (_stopRequested) throw new InvalidOperationException("Input preparation was superseded by stop.");
-            if (!_locator.CurrentSnapshot.IsReady) throw new InvalidOperationException("Start buttons are not all recognized.");
+            if (_locator is not null && !_locator.CurrentSnapshot.IsReady) throw new InvalidOperationException("Start buttons are not all recognized.");
             _ready = Completion();
             _finished = Completion();
             _stopAttempt = null;
             while (_commands.TryDequeue(out _)) { }
             _quit = _stopping = false;
             _desktopRecoveryPending = _desktopRecoveryQueued = false;
-            _thread = new Thread(Run) { Name = "TileWall Start input", IsBackground = true };
+            _thread = new Thread(Run) { Name = channel == StartReplacementChannel.WindowsKey
+                ? "TileWall Win-key input" : "TileWall taskbar input", IsBackground = true };
             _thread.Start();
             await _ready.Task.ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            if (_stopRequested || !_locator.CurrentSnapshot.IsReady || Fault is not null)
+            if (_stopRequested || _locator is not null && !_locator.CurrentSnapshot.IsReady || Fault is not null)
                 throw new InvalidOperationException("Input preparation became unavailable.");
             _prepared = true;
         }
@@ -115,7 +120,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
                             "Input desktop recovery is still pending; wait for recovery before requesting activation."));
                         return;
                     }
-                    if (!_locator.CurrentSnapshot.IsReady) throw new InvalidOperationException("Start-button discovery is unavailable.");
+                    if (_locator is not null && !_locator.CurrentSnapshot.IsReady) throw new InvalidOperationException("Start-button discovery is unavailable.");
                     if (IsActive)
                     {
                         // Repeated requests refer to the existing activation, including its held-key ledgers.
@@ -125,10 +130,13 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
                     if (Interlocked.Read(ref _generation) != expectedGeneration)
                         throw new InvalidOperationException("Activation was superseded by stop or failure.");
                     // Mouse VKs and generic aliases for left/right modifiers never arrive as keyboard releases.
-                    var held = Enumerable.Range(8, 247).Where(key => key is not (0x10 or 0x11 or 0x12)
-                        && (Win32Api.GetAsyncKeyState(key) & 0x8000) != 0).ToArray();
-                    _keyboard.Activate(held);
-                    _mouse.Activate((Win32Api.GetAsyncKeyState(1) & 0x8000) != 0);
+                    if (channel == StartReplacementChannel.WindowsKey)
+                    {
+                        var held = Enumerable.Range(8, 247).Where(key => key is not (0x10 or 0x11 or 0x12)
+                            && (Win32Api.GetAsyncKeyState(key) & 0x8000) != 0).ToArray();
+                        _keyboard.Activate(held);
+                    }
+                    else _mouse.Activate((Win32Api.GetAsyncKeyState(1) & 0x8000) != 0);
                     var generation = Interlocked.Increment(ref _generation);
                     _admission = true;
                     completed.SetResult(generation);
@@ -176,7 +184,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
     private async Task StopCoreAsync(CancellationToken stopDeadline)
     {
         // UIA can be blocked in COM. Request its stop before waiting for input, and retain its worker until it really ends.
-        var locatorStopped = _locator.StopAsync();
+        var locatorStopped = _locator?.StopAsync() ?? Task.CompletedTask;
         if (_thread is not null && !_finished.Task.IsCompletedSuccessfully)
         {
             if (_finished.Task.IsFaulted) await _finished.Task.ConfigureAwait(false);
@@ -199,7 +207,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
         return await ActivateAsync().ConfigureAwait(false);
     }
 
-    internal void InvalidateButtons() => _locator.Invalidate();
+    internal void InvalidateButtons() => _locator?.Invalidate();
 
     private void Run()
     {
@@ -213,10 +221,16 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
         try
         {
             var module = Win32Api.GetModuleHandleW(null);
-            _keyboardHook = Win32Api.SetWindowsHookExW(13, _keyboardCallback, module, 0);
-            if (_keyboardHook == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
-            _mouseHook = Win32Api.SetWindowsHookExW(14, _mouseCallback, module, 0);
-            if (_mouseHook == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (channel == StartReplacementChannel.WindowsKey)
+            {
+                _keyboardHook = Win32Api.SetWindowsHookExW(13, _keyboardCallback, module, 0);
+                if (_keyboardHook == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            else
+            {
+                _mouseHook = Win32Api.SetWindowsHookExW(14, _mouseCallback, module, 0);
+                if (_mouseHook == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
             _desktopHook = InputDesktopState.SetWinEventHook(InputDesktopState.DesktopSwitchEvent,
                 InputDesktopState.DesktopSwitchEvent, 0, _desktopCallback, 0, 0, 0); // OUTOFCONTEXT; this message thread owns delivery.
             if (_desktopHook == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -327,7 +341,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
                 : (native.Flags & 3) != 0 ? CapturedInputSource.ExternalInjected : CapturedInputSource.Physical;
             StartButtonIdentity? hit = null;
             if (source == CapturedInputSource.Physical && (IsActive || _mouse.HasPendingRelease)
-                && _locator.TryHitTest(native.Point.X, native.Point.Y, out var target)) hit = target!.Identity;
+                && _locator is { } locator && locator.TryHitTest(native.Point.X, native.Point.Y, out var target)) hit = target!.Identity;
             var decision = _mouse.Handle(kind, source, hit);
             suppress = decision.Suppress;
             if (decision.Toggle && IsActive) enqueueToggle(Interlocked.Read(ref _generation));
@@ -436,7 +450,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
         if (Interlocked.Exchange(ref _locatorGeneration, snapshot.Generation) == snapshot.Generation || _threadId == 0) return;
         // The notification may wait behind physical input. Compare with the snapshot
         // that is current when dispatched, not an older queued notification.
-        try { Post(() => _mouse.InvalidateSnapshot(_locator.CurrentSnapshot.Generation)); }
+        try { Post(() => _mouse.InvalidateSnapshot(_locator!.CurrentSnapshot.Generation)); }
         catch (InvalidOperationException) { }
     }
 
@@ -485,9 +499,12 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle) : IAsy
     public async ValueTask DisposeAsync()
     {
         await StopAsync().ConfigureAwait(false);
-        _locator.Faulted -= LocatorFaulted;
-        _locator.SnapshotChanged -= SnapshotChanged;
-        await _locator.DisposeAsync().ConfigureAwait(false);
+        if (_locator is not null)
+        {
+            _locator.Faulted -= LocatorFaulted;
+            _locator.SnapshotChanged -= SnapshotChanged;
+            await _locator.DisposeAsync().ConfigureAwait(false);
+        }
         GC.SuppressFinalize(this);
     }
 }

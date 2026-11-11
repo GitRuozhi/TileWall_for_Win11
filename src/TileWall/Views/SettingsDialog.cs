@@ -18,7 +18,8 @@ internal sealed record SettingsDialogState(WallSettings Settings, string? Regist
     bool? LoginStartupEnabled, string? Error = null, bool StartReplacementActive = false,
     bool StartReplacementSuspended = false, string? StartReplacementError = null,
     string? RegisteredSecondaryHotKey = null, string? HotKeyError = null,
-    string? SecondaryHotKeyError = null);
+    string? SecondaryHotKeyError = null, bool TaskbarStartReplacementActive = false,
+    bool TaskbarStartReplacementSuspended = false, string? TaskbarStartReplacementError = null);
 
 /// <summary>Immediate settings edits. The host owns persistence and operating-system rollback.</summary>
 internal sealed class SettingsDialog : IWallDialogSession
@@ -30,7 +31,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly Func<SettingsDialogState> _readState;
     private readonly Func<WallSettings, bool, Task<SettingsDialogState>> _apply;
     private readonly Func<int, bool, Task>? _hotKeyRecordingChanged;
-    private readonly Func<Task<SettingsDialogState>>? _retryStartReplacement;
+    private readonly Func<bool, Task<SettingsDialogState>>? _retryStartReplacement;
     private readonly Func<CancellationToken, Task<string?>> _initializeWall;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _startReplacementWatch;
     private readonly ContentDialog _dialog;
@@ -71,6 +72,9 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly ToggleSwitch _replaceStartMenu = new();
     private readonly TextBlock _startReplacementStatus = new() { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
     private readonly Button _retryStart = new() { HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly ToggleSwitch _redirectTaskbarStartButton = new();
+    private readonly TextBlock _taskbarStartReplacementStatus = new() { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
+    private readonly Button _retryTaskbarStart = new() { HorizontalAlignment = HorizontalAlignment.Left };
     private readonly Slider _transparency = new() { Minimum = 0, Maximum = 100, StepFrequency = 1, Width = 180, MinWidth = 0, VerticalAlignment = VerticalAlignment.Center };
     private readonly NumberBox _transparencyInput = new() { Minimum = 0, Maximum = 100, SmallChange = 1, Width = 56, MinWidth = 0, Padding = new Thickness(8, 5, 8, 5), SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden };
     private readonly TextBlock _backgroundPath = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
@@ -105,7 +109,7 @@ internal sealed class SettingsDialog : IWallDialogSession
 
     public SettingsDialog(Window owner, ExplorerContextMenuController contextMenuController, Func<SettingsDialogState> readState,
         Func<WallSettings, bool, Task<SettingsDialogState>> applyAsync, Func<int, bool, Task>? hotKeyRecordingChanged = null,
-        Func<Task<SettingsDialogState>>? retryStartReplacement = null,
+        Func<bool, Task<SettingsDialogState>>? retryStartReplacement = null,
         Func<CancellationToken, Task<string?>>? initializeWall = null)
     {
         _contextMenuController = contextMenuController;
@@ -195,6 +199,11 @@ internal sealed class SettingsDialog : IWallDialogSession
         startReplacementRow.Children.Add(_startReplacementStatus);
         startReplacementRow.Children.Add(_retryStart);
         AddRow(integration, "Settings.ReplaceStartMenu", startReplacementRow);
+        var taskbarStartReplacementRow = new StackPanel { Spacing = 8 };
+        taskbarStartReplacementRow.Children.Add(_redirectTaskbarStartButton);
+        taskbarStartReplacementRow.Children.Add(_taskbarStartReplacementStatus);
+        taskbarStartReplacementRow.Children.Add(_retryTaskbarStart);
+        AddRow(integration, "Settings.RedirectTaskbarStartButton", taskbarStartReplacementRow);
         AddRow(integration, "Settings.HotKey", HotKeyRow(_resetHotKey, _hotKey, _hotKeyDiagnostic, compact));
         AutomationProperties.SetLabeledBy(_hotKey, _labels["Settings.HotKey"]);
         Id(_resetHotKey, "reset-hot-key");
@@ -283,6 +292,9 @@ internal sealed class SettingsDialog : IWallDialogSession
         _initialize.Click += (_, _) => BeginInitializeWall();
         Id(_replaceStartMenu, "replace-start-menu"); Id(_startReplacementStatus, "start-replacement-state");
         Id(_retryStart, "start-replacement-retry");
+        Id(_redirectTaskbarStartButton, "redirect-taskbar-start-button");
+        Id(_taskbarStartReplacementStatus, "taskbar-start-replacement-state");
+        Id(_retryTaskbarStart, "taskbar-start-replacement-retry");
         Id(_confirmContextTransfer, "context-menu-confirm-transfer"); Id(_cancelContextTransfer, "context-menu-cancel-transfer");
         // A switch has no separate double-tap action. Treat two quick clicks as
         // two taps rather than letting the second click disappear into DoubleTapped.
@@ -355,9 +367,14 @@ internal sealed class SettingsDialog : IWallDialogSession
         _showGrid.Toggled += (_, _) => BeginApply(s => s with { ShowGrid = _showGrid.IsOn });
         _runAtLogin.Toggled += (_, _) => BeginApply(s => s with { RunAtLogin = _runAtLogin.IsOn });
         _replaceStartMenu.Toggled += (_, _) => BeginApply(s => s with { ReplaceStartMenu = _replaceStartMenu.IsOn });
+        _redirectTaskbarStartButton.Toggled += (_, _) => BeginApply(s => s with { RedirectTaskbarStartButton = _redirectTaskbarStartButton.IsOn });
         _retryStart.Click += (_, _) =>
         {
-            if (!_busy && _retryStartReplacement is not null) _pending = RetryStartReplacementAsync();
+            if (!_busy && _retryStartReplacement is not null) _pending = RetryStartReplacementAsync(taskbar: false);
+        };
+        _retryTaskbarStart.Click += (_, _) =>
+        {
+            if (!_busy && _retryStartReplacement is not null) _pending = RetryStartReplacementAsync(taskbar: true);
         };
         _reset.Click += (_, _) =>
         {
@@ -482,6 +499,7 @@ internal sealed class SettingsDialog : IWallDialogSession
             (_showGrid, "Settings.ShowGrid"), (_runAtLogin, "Settings.RunAtLogin"), (_fullScreen, "Settings.FullScreen"),
             (_expandColumns, "Settings.ExpandColumns"), (_menuStart, "Settings.MenuStart"),
             (_replaceStartMenu, "Settings.ReplaceStartMenu"),
+            (_redirectTaskbarStartButton, "Settings.RedirectTaskbarStartButton"),
             (_contextMenu, "Settings.ContextMenuToggle"),
         })
         {
@@ -496,6 +514,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         foreach (var (key, control, helpKey) in new (string, FrameworkElement, string)[]
         {
             ("Settings.ReplaceStartMenu", _replaceStartMenu, "Settings.StartReplacementHelp"),
+            ("Settings.RedirectTaskbarStartButton", _redirectTaskbarStartButton, "Settings.TaskbarStartReplacementHelp"),
             ("Settings.RunAtLogin", _runAtLogin, "Settings.RunAtLoginHelp"),
             ("Settings.Topmost", _topmost, "Settings.TopmostHelp"),
             ("Settings.StayVisible", _stayVisible, "Settings.StayVisibleHelp"),
@@ -512,6 +531,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         ToolTipService.SetToolTip(_initialize, initializeHelp);
         AutomationProperties.SetHelpText(_initialize, initializeHelp);
         _retryStart.Content = ProductStrings.Get("Settings.StartReplacementRetry");
+        _retryTaskbarStart.Content = ProductStrings.Get("Settings.StartReplacementRetry");
         _confirmContextTransfer.Content = ProductStrings.Get("Settings.ContextMenuConfirmTransfer");
         _cancelContextTransfer.Content = ProductStrings.Get("Common.Cancel");
         AutomationProperties.SetName(_transparency, ProductStrings.Get("Settings.Transparency"));
@@ -566,7 +586,10 @@ internal sealed class SettingsDialog : IWallDialogSession
             HotKeyError = current.HotKeyError, SecondaryHotKeyError = current.SecondaryHotKeyError,
             StartReplacementActive = current.StartReplacementActive,
             StartReplacementSuspended = current.StartReplacementSuspended,
-            StartReplacementError = current.StartReplacementError };
+            StartReplacementError = current.StartReplacementError,
+            TaskbarStartReplacementActive = current.TaskbarStartReplacementActive,
+            TaskbarStartReplacementSuspended = current.TaskbarStartReplacementSuspended,
+            TaskbarStartReplacementError = current.TaskbarStartReplacementError };
         RefreshStartReplacementPresentation();
     }
 
@@ -590,6 +613,20 @@ internal sealed class SettingsDialog : IWallDialogSession
             _retryStart.Visibility = _state.Settings.ReplaceStartMenu && !_state.StartReplacementActive &&
                 !_state.StartReplacementSuspended && _retryStartReplacement is not null ? Visibility.Visible : Visibility.Collapsed;
             _retryStart.IsEnabled = !_busy && !HasPendingHotKeyTransition;
+            _redirectTaskbarStartButton.IsOn = _state.Settings.RedirectTaskbarStartButton;
+            var taskbarKey = !_state.Settings.RedirectTaskbarStartButton ? "Settings.StartReplacementOff"
+                : _state.TaskbarStartReplacementSuspended ? "Settings.StartReplacementSuspended"
+                : _state.TaskbarStartReplacementActive ? "Settings.StartReplacementActive"
+                : "Settings.StartReplacementInactive";
+            _taskbarStartReplacementStatus.Text = ProductStrings.Get(taskbarKey);
+            if (_state.TaskbarStartReplacementError is { } taskbarError)
+                _taskbarStartReplacementStatus.Text += "\n" + taskbarError;
+            var showTaskbarStatus = _state.TaskbarStartReplacementError is not null || _state.Settings.RedirectTaskbarStartButton &&
+                (!_state.TaskbarStartReplacementActive || _state.TaskbarStartReplacementSuspended);
+            _taskbarStartReplacementStatus.Visibility = showTaskbarStatus ? Visibility.Visible : Visibility.Collapsed;
+            _retryTaskbarStart.Visibility = _state.Settings.RedirectTaskbarStartButton && !_state.TaskbarStartReplacementActive &&
+                !_state.TaskbarStartReplacementSuspended && _retryStartReplacement is not null ? Visibility.Visible : Visibility.Collapsed;
+            _retryTaskbarStart.IsEnabled = !_busy && !HasPendingHotKeyTransition;
             RefreshHotKeyRegistrationPresentation();
         }
         finally { _refreshing = wasRefreshing; }
@@ -698,18 +735,19 @@ internal sealed class SettingsDialog : IWallDialogSession
     private static string DisplayHotKey(string configured) =>
         HotKeyGesture.TryParse(configured, out var gesture) ? gesture!.ToDisplayString() : configured;
 
-    private async Task RetryStartReplacementAsync()
+    private async Task RetryStartReplacementAsync(bool taskbar)
     {
         _busy = true; SetFormEnabled(false);
         try
         {
             await CancelAndWaitForHotKeysAsync();
-            _state = await _retryStartReplacement!();
+            _state = await _retryStartReplacement!(taskbar);
         }
         catch (Exception ex)
         {
-            _state = _readState() with { StartReplacementError =
-                string.Format(ProductStrings.Get("Settings.StartReplacementFailed"), ex.Message) };
+            var error = string.Format(ProductStrings.Get("Settings.StartReplacementFailed"), ex.Message);
+            _state = taskbar ? _readState() with { TaskbarStartReplacementError = error }
+                : _readState() with { StartReplacementError = error };
         }
         finally { _busy = false; SetFormEnabled(true); RestoreState(); FinishPending(); }
     }

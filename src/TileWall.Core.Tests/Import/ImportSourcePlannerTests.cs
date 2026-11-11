@@ -133,17 +133,19 @@ public sealed class ImportSourcePlannerTests
     }
 
     [Fact]
-    public void SharedOriginalGroupRetainsSourceOrderAndSingletonUsesLocalInitialFallback()
+    public void RecognizedFamiliesPrecedeOriginalGroupsAndInitialFallbacks()
     {
         var shared = new ImportSourceGroup("folder:TOOLS", "Tools", 100);
         var user = Item("user", "Alpha", shared, "alpha") with { RelativeDirectory = @"Tools\Deep" };
         var common = Item("common", "Beta", shared with { Title = "TOOLS" }, "beta", order: 1);
         var chinese = Item("chinese", "中文", new("singleton", "Single", 101), "chinese");
         var root = Item("root", "7-Zip", identity: "root");
-        var projected = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [root, chinese, common, user]);
-        Assert.Equal(["#", "Z", "Tools"], projected.Groups.Select(group => group.Title));
-        Assert.Equal(["user", "common"], projected.Groups[2].Candidates.Select(candidate => candidate.SelectionKey));
-        Assert.Equal("chinese", projected.Groups[1].Candidates[0].SelectionKey);
+        var photoshop = Item("photoshop", "Adobe Photoshop", identity: "photoshop");
+        var illustrator = Item("illustrator", "Adobe Illustrator", identity: "illustrator");
+        var projected = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), [root, chinese, common, user, photoshop, illustrator]);
+        Assert.Equal(["Adobe", "Tools", "#", "Z"], projected.Groups.Select(group => group.Title));
+        Assert.Equal(["user", "common"], projected.Groups[1].Candidates.Select(candidate => candidate.SelectionKey));
+        Assert.Equal("chinese", projected.Groups[3].Candidates[0].SelectionKey);
     }
 
     [Fact]
@@ -167,7 +169,7 @@ public sealed class ImportSourcePlannerTests
         var projected = ImportSourcePlanner.Project(WallDocument.Empty(1, 8),
             [Item("named", "Adobe Photoshop", new("named", "Creative", 0), "photoshop"),
              Item("unnamed", "Only", new("unnamed", "", 1)), Item("root", "Beta")], recognizeGroups: false);
-        Assert.Equal(["B", "Creative", ""], projected.Groups.Select(group => group.Title));
+        Assert.Equal(["Creative", "", "B"], projected.Groups.Select(group => group.Title));
     }
 
     [Fact]
@@ -810,6 +812,34 @@ public sealed class ImportSourcePlannerTests
     }
 
     [Fact]
+    public void PackageGroupOrderUsesSourceLanesBeforeLocalOrderAndTitlesThroughPlacement()
+    {
+        var wall = WallDocument.Empty(1, 24);
+        var groups = new[]
+        {
+            new ImportSourceGroup("zero-first", "Zulu", 0) { LaneIndex = 0 },
+            new ImportSourceGroup("zero-second", "Yankee", 1) { LaneIndex = 0 },
+            new ImportSourceGroup("one-first", "Bravo", 0) { LaneIndex = 1 },
+            new ImportSourceGroup("one-second", "Alpha", 1) { LaneIndex = 1 },
+        };
+        var items = groups.Select((group, index) => Item("item-" + index, "Member " + index, group,
+            bounds: new(2, 1, 1, 1), position: true, size: true) with
+        { Policy = ImportSourcePolicy.Attributed, SourceKind = ImportPageSourceKind.WallPackage }).Reverse().ToArray();
+        var projection = ImportSourcePlanner.Project(wall, items);
+        Assert.Equal(groups.Select(group => group.Key), projection.Groups.Select(group => group.SourceGroupId));
+        var preview = ImportSourcePlanner.BuildSourcePreview(projection, new(1, 1));
+        Assert.Equal(["Zulu", "Yankee"], preview.Lanes[0].Groups.Select(group => group.Title));
+        Assert.Equal(["Bravo", "Alpha"], preview.Lanes[1].Groups.Select(group => group.Title));
+        var full = Plan(wall, projection, items.Select(item => item.SourceKey));
+        Assert.Equal(ImportPlanStatus.Ready, full.Status);
+        Assert.Equal(groups.Select(group => group.Title), full.Proposal!.Document.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Title));
+        Assert.All(full.Proposal.Document.EnumerateAllMembers(), member => Assert.Equal(new GridRect(2, 1, 1, 1), member.LocalBounds));
+        var partial = Plan(wall, projection, ["item-1", "item-2"]);
+        Assert.Equal(ImportPlanStatus.Ready, partial.Status);
+        Assert.Equal(["Yankee", "Bravo"], partial.Proposal!.Document.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Title));
+    }
+
+    [Fact]
     public void AttributedMembersIgnoreFiltersAndRecognitionAndRetainSourceLaneAndGeometry()
     {
         var first = Item("one", "Adobe Photoshop", new("original", "Original", 0) { LaneIndex = 1 }, "same",
@@ -844,7 +874,7 @@ public sealed class ImportSourcePlannerTests
                 with { Policy = ImportSourcePolicy.Attributed },
         };
         var projection = ImportSourcePlanner.Project(WallDocument.Empty(1, 8), items);
-        Assert.Equal(["lane-one", "lane-zero"], projection.Groups.Select(group => group.SourceGroupId));
+        Assert.Equal(["lane-zero", "lane-one"], projection.Groups.Select(group => group.SourceGroupId));
 
         var metrics = new WallMetrics();
         var normal = ImportSourcePlanner.BuildSourcePreview(projection, new(1, 1), metrics);

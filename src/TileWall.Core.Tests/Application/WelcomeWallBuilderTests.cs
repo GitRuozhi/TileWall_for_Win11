@@ -9,7 +9,7 @@ namespace TileWall.Core.Tests.Application;
 
 public sealed class WelcomeWallBuilderTests
 {
-    private static readonly WelcomeWallText Text = new(WelcomeWallBuilder.NativeTargetKeys.Append("Settings")
+    private static readonly WelcomeWallText Text = new(WelcomeWallBuilder.NativeTargetKeys.Append("Settings").Append("Search")
         .ToDictionary(key => key, key => key, StringComparer.Ordinal));
     private static readonly WelcomeWallTargets Targets = new(WelcomeWallBuilder.NativeTargetKeys.ToDictionary(key => key,
         key => key is "ThisPC" or "ControlPanel" or "RecycleBin" or "Network" or "Store" or "Edge"
@@ -41,7 +41,7 @@ public sealed class WelcomeWallBuilderTests
         Assert.True(WallViewportPolicy.Validate(proposal, Budget(columns, rows)).Success);
         Assert.Equal(columns, proposal.Document.Columns);
         Assert.Equal(4, proposal.Document.Lanes.Sum(lane => lane.Groups.Count));
-        Assert.Equal(26, proposal.Document.EnumerateAllMembers().Count());
+        Assert.Equal(29, proposal.Document.EnumerateAllMembers().Count());
         var puzzle = Assert.Single(proposal.Document.EnumerateAllMembers().OfType<PuzzleMember>());
         Assert.Equal(Gallery, puzzle.Images.Path);
         Assert.Equal(MemberImageSourceKind.Folder, puzzle.Images.Kind);
@@ -50,7 +50,7 @@ public sealed class WelcomeWallBuilderTests
         Assert.Equal(DataRoot, puzzle.TargetInput);
         Assert.Equal(ImageDisplayMode.Fill, puzzle.ImageDisplay.Mode);
         Assert.Contains(new EntryChange.CreateLink(puzzle.Id, DataRoot), prepared.EntryChanges);
-        Assert.Equal(26, prepared.EntryChanges.Count);
+        Assert.Equal(29, prepared.EntryChanges.Count);
         var again = WelcomeWallBuilder.Prepare(before, Targets, Text, DataRoot, Gallery, Budget(columns, rows));
         Assert.Empty(proposal.Document.EnumerateAllMembers().Select(member => member.Id)
             .Intersect(again.Layout.Proposal!.Document.EnumerateAllMembers().Select(member => member.Id), StringComparer.Ordinal));
@@ -96,14 +96,14 @@ public sealed class WelcomeWallBuilderTests
         var prepared = WelcomeWallBuilder.Prepare(before, Targets, Text, DataRoot, Gallery, Budget(2, 19));
         var proposal = Assert.IsType<WallProposal>(prepared.Layout.Proposal);
         Assert.Equal(12, proposal.Document.Rows);
-        Assert.Equal(26, proposal.Document.EnumerateAllMembers().Count());
+        Assert.Equal(29, proposal.Document.EnumerateAllMembers().Count());
         Assert.Same(settings, proposal.Document.Settings);
         Assert.Equal(19, proposal.Document.Settings.WindowedRows);
         Assert.Empty(WallLayoutEngine.ValidateGeometry(proposal.Document));
     }
 
     [Fact]
-    public void DefaultGeometryKeepsTheTwoEmptySlotsAndTheTileWallLinksBelowTheAlbum()
+    public void DefaultGeometryUsesCurrentToolsAndKeepsTheTileWallLinksBelowTheAlbum()
     {
         var prepared = WelcomeWallBuilder.Prepare(WallDocument.Empty(2, 19), Targets, Text, DataRoot, Gallery, Budget());
         var document = Assert.IsType<WallProposal>(prepared.Layout.Proposal).Document;
@@ -113,7 +113,15 @@ public sealed class WelcomeWallBuilderTests
         Assert.Equal(Enumerable.Range(0, 8), windows.Members.Where(member => member.LocalBounds.Row == 2)
             .Select(member => member.LocalBounds.Column));
         var tools = document.Lanes[0].Groups[1];
-        Assert.DoesNotContain(tools.Members, member => member.LocalBounds.Column is 4 or 5);
+        Assert.Equal(new[] { "Calculator", "Notepad", "RegistryEditor", "Search", "CMD", "PowerShell" },
+            tools.Members.Select(member => member.Visual.Title));
+        Assert.Equal(new[]
+        {
+            new TileWall.Core.Grid.GridRect(0, 0, 2, 2), new(3, 0, 1, 1), new(4, 0, 1, 1),
+            new(6, 0, 2, 2), new(2, 1, 1, 1), new(3, 1, 1, 1),
+        }, tools.Members.Select(member => member.LocalBounds));
+        Assert.Equal(WelcomeWallBuilder.SearchUrl, tools.Members[3].TargetInput);
+        Assert.Contains(new EntryChange.CreateUrl(tools.Members[3].Id, WelcomeWallBuilder.SearchUrl), prepared.EntryChanges);
         var tileWall = Assert.Single(document.Lanes[1].Groups);
         Assert.Equal("TileWall", tileWall.Title);
         Assert.All(tileWall.Members, member =>
@@ -196,7 +204,7 @@ public sealed class WelcomeWallBuilderTests
         var current = result.CommittedDocument!;
         Assert.Equal(before.Settings, current.Settings);
         Assert.Empty(current.InactiveMembers);
-        Assert.Equal(26, current.EnumerateAllMembers().Count());
+        Assert.Equal(29, current.EnumerateAllMembers().Count());
         var puzzle = Assert.Single(current.EnumerateAllMembers().OfType<PuzzleMember>());
         Assert.Equal(root, puzzle.TargetInput);
         Assert.Equal(ManagedEntryKind.Lnk, puzzle.Entry!.Kind);

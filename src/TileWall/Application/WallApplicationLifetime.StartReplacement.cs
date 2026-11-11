@@ -8,13 +8,31 @@ namespace TileWall.ApplicationModel;
 
 internal sealed partial class WallApplicationLifetime
 {
-    // Settings, recorder admission and final shutdown share one resource owner.
-    // A failed/uncompleted Stop retains this service and the process instance gate.
+    // Fixed-channel input owners share settings/recording/shutdown admission.
+    // A failed Stop retains its owner and the process instance gate.
     private readonly SemaphoreSlim _inputTransition = new(1, 1);
     private readonly StartReplacementService _startReplacement;
+    private readonly StartReplacementService _taskbarStartReplacement;
     private readonly bool _isTest;
     private bool _startReplacementSuspended;
     private string? _startReplacementError;
+    private bool _taskbarStartReplacementSuspended;
+    private string? _taskbarStartReplacementError;
+
+    private StartReplacementService StartInput(bool taskbar) => taskbar ? _taskbarStartReplacement : _startReplacement;
+    private static bool StartInputEnabled(WallSettings settings, bool taskbar) => taskbar
+        ? settings.RedirectTaskbarStartButton : settings.ReplaceStartMenu;
+    private string? StartInputError(bool taskbar) => taskbar ? _taskbarStartReplacementError : _startReplacementError;
+    private void SetStartInputError(bool taskbar, string? error)
+    {
+        if (taskbar) _taskbarStartReplacementError = error;
+        else _startReplacementError = error;
+    }
+    private void SetStartInputSuspended(bool taskbar, bool suspended)
+    {
+        if (taskbar) _taskbarStartReplacementSuspended = suspended;
+        else _startReplacementSuspended = suspended;
+    }
 
     private void HandleGlobalHotKey(int slot)
     {
@@ -30,28 +48,29 @@ internal sealed partial class WallApplicationLifetime
             ? TileWall.Core.Shell.WallShowTrigger.Show : TileWall.Core.Shell.WallShowTrigger.Toggle);
     }
 
-    private void QueueStartReplacementToggle(long generation) => _window.DispatcherQueue.TryEnqueue(() =>
+    private void QueueStartReplacementToggle(long generation, bool taskbar = false) => _window.DispatcherQueue.TryEnqueue(() =>
     {
-        if (_hotKeyRecording || _settingsBusy || !_window.Settings.ReplaceStartMenu ||
-            !_startReplacement.IsCurrentActivation(generation)) return;
+        if (_hotKeyRecording || _settingsBusy || !StartInputEnabled(_window.Settings, taskbar) ||
+            !StartInput(taskbar).IsCurrentActivation(generation)) return;
         Request(TileWall.Core.Shell.WallShowTrigger.Toggle);
     });
 
-    private void QueueStartReplacementFault(string failure)
+    private void QueueStartReplacementFault(string failure, bool taskbar = false)
     {
-        _window.DispatcherQueue.TryEnqueue(() => _ = AcceptStartReplacementFaultAsync(failure));
+        _window.DispatcherQueue.TryEnqueue(() => _ = AcceptStartReplacementFaultAsync(failure, taskbar));
     }
 
-    private async Task AcceptStartReplacementFaultAsync(string failure)
+    private async Task AcceptStartReplacementFaultAsync(string failure, bool taskbar)
     {
         await _inputTransition.WaitAsync();
         try
         {
-            if (_tearingDown || !_window.Settings.ReplaceStartMenu || _startReplacement.IsActive ||
-                _startReplacement.Fault != failure) return;
-            _startReplacementError = StartReplacementFailure(failure);
-            await StopStartReplacementAsync();
-            if (!_exitPending) _window.ShowStatus(_startReplacementError!);
+            var service = StartInput(taskbar);
+            if (_tearingDown || !StartInputEnabled(_window.Settings, taskbar) || service.IsActive ||
+                service.Fault != failure) return;
+            SetStartInputError(taskbar, StartReplacementFailure(failure));
+            await StopStartReplacementAsync(taskbar: taskbar);
+            if (!_exitPending) _window.ShowStatus(StartInputError(taskbar)!);
             _window.ActiveDialog?.RefreshStrings();
         }
         catch (Exception ex) { TileWall.Core.Shell.AppLog.Warn("StartReplacement", $"Fault notification: {ex.Message}"); }
@@ -63,8 +82,9 @@ internal sealed partial class WallApplicationLifetime
         await _inputTransition.WaitAsync();
         try
         {
-            if (_window.Settings.ReplaceStartMenu && CanActivateStartReplacement)
-                await ResumeStartReplacementAsync();
+            if (CanActivateStartReplacement)
+                foreach (var taskbar in new[] { false, true })
+                    if (StartInputEnabled(_window.Settings, taskbar)) await ResumeStartReplacementAsync(taskbar);
         }
         finally { _inputTransition.Release(); }
     }
@@ -75,68 +95,104 @@ internal sealed partial class WallApplicationLifetime
     private static string StartReplacementFailure(string failure) =>
         string.Format(ProductStrings.Get("Settings.StartReplacementFailed"), failure);
 
-    private async Task<bool> StopStartReplacementAsync(bool suspend = false, CancellationToken stopDeadline = default)
+    private async Task<bool> StopStartReplacementAsync(bool suspend = false, CancellationToken stopDeadline = default, bool taskbar = false)
     {
         try
         {
-            if (suspend) await _startReplacement.SuspendAsync(stopDeadline);
-            else await _startReplacement.StopAsync(stopDeadline);
+            if (suspend) await StartInput(taskbar).SuspendAsync(stopDeadline);
+            else await StartInput(taskbar).StopAsync(stopDeadline);
             return true;
         }
         catch (Exception ex)
         {
-            _startReplacementError = StartReplacementFailure(ex.Message);
-            TileWall.Core.Shell.AppLog.Warn("StartReplacement", $"Stop incomplete: {ex.Message}");
+            SetStartInputError(taskbar, StartReplacementFailure(ex.Message));
+            TileWall.Core.Shell.AppLog.Warn("StartReplacement", $"{(taskbar ? "Taskbar" : "Win key")} stop incomplete: {ex.Message}");
             return false;
         }
     }
 
-    private async Task<bool> ResumeStartReplacementAsync()
+    private async Task<bool> StopAllStartReplacementAsync(bool suspend = false, CancellationToken stopDeadline = default)
     {
-        if (!CanActivateStartReplacement || !_window.Settings.ReplaceStartMenu) return false;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(stopDeadline);
+        budget.CancelAfter(TimeSpan.FromSeconds(5));
+        // Start both stops before awaiting either: both admissions close immediately,
+        // and native pairing/UIA cleanup consume the same remaining deadline.
+        var results = await Task.WhenAll(StopStartReplacementAsync(suspend, budget.Token),
+            StopStartReplacementAsync(suspend, budget.Token, taskbar: true));
+        return results.All(result => result);
+    }
+
+    private async Task<bool> ResumeStartReplacementAsync(bool taskbar = false)
+    {
+        if (!CanActivateStartReplacement || !StartInputEnabled(_window.Settings, taskbar)) return false;
+        var service = StartInput(taskbar);
         try
         {
-            await _startReplacement.PrepareAsync();
-            if (!CanActivateStartReplacement || !_window.Settings.ReplaceStartMenu)
+            await service.PrepareAsync();
+            if (!CanActivateStartReplacement || !StartInputEnabled(_window.Settings, taskbar))
             {
-                await StopStartReplacementAsync();
+                await StopStartReplacementAsync(taskbar: taskbar);
                 return false;
             }
-            await _startReplacement.ActivateAsync();
-            _startReplacementSuspended = false;
-            _startReplacementError = null;
+            await service.ActivateAsync();
+            SetStartInputSuspended(taskbar, false);
+            SetStartInputError(taskbar, null);
             return true;
         }
         catch (Exception ex)
         {
-            _startReplacementError = StartReplacementFailure(ex.Message);
-            await StopStartReplacementAsync();
+            SetStartInputError(taskbar, StartReplacementFailure(ex.Message));
+            await StopStartReplacementAsync(taskbar: taskbar);
             return false;
         }
     }
 
     private async Task StopInputForBlockedPersistenceAsync()
     {
-        await _inputTransition.WaitAsync();
+        if (_tearingDown || !_window.SettingsPersistenceBlocked) return;
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        _startReplacement.CloseAdmissionForStop();
+        _taskbarStartReplacement.CloseAdmissionForStop();
+        var entered = false;
         try
         {
-            if (_tearingDown || !_window.SettingsPersistenceBlocked) return;
-            _startReplacementSuspended = false;
-            await StopStartReplacementAsync();
+            await _inputTransition.WaitAsync(budget.Token);
+            entered = true;
+            if (_tearingDown) return;
+            _startReplacementSuspended = _taskbarStartReplacementSuspended = false;
+            var stopped = await StopAllStartReplacementAsync(stopDeadline: budget.Token);
+            // A successful reopen can supersede this queued stop. Finish the real
+            // stop before restoring only healthy channels from the current snapshot.
+            if (stopped && CanActivateStartReplacement)
+                foreach (var taskbar in new[] { false, true })
+                    if (StartInputError(taskbar) is null && StartInputEnabled(_window.Settings, taskbar))
+                        await ResumeStartReplacementAsync(taskbar);
         }
-        finally { _inputTransition.Release(); }
+        catch (OperationCanceledException) when (budget.IsCancellationRequested)
+        {
+            _startReplacementError = _taskbarStartReplacementError = StartReplacementFailure(
+                "Input owner did not stop within the five-second budget; resources are retained.");
+        }
+        finally { if (entered) _inputTransition.Release(); }
     }
 
-    private async Task<SettingsDialogState> RetryStartReplacementAsync()
+    private async Task<SettingsDialogState> RetryStartReplacementAsync(bool taskbar)
     {
         if (_settingsBusy) return CurrentSettingsState() with { Error = ProductStrings.Get("Wall.SettingsSaving") };
         _settingsBusy = true;
-        await _inputTransition.WaitAsync();
+        using var stopBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try { await _inputTransition.WaitAsync(stopBudget.Token); }
+        catch (OperationCanceledException) when (stopBudget.IsCancellationRequested)
+        {
+            _settingsBusy = false;
+            SetStartInputError(taskbar, StartReplacementFailure("Input owner did not stop within the five-second budget; resources are retained."));
+            return CurrentSettingsState();
+        }
         try
         {
-            if (!CanActivateStartReplacement || !_window.Settings.ReplaceStartMenu) return CurrentSettingsState();
-            if (!await StopStartReplacementAsync()) return CurrentSettingsState();
-            await ResumeStartReplacementAsync();
+            if (!CanActivateStartReplacement) return CurrentSettingsState();
+            if (StartInputEnabled(_window.Settings, taskbar) && !StartInput(taskbar).IsActive &&
+                await StopStartReplacementAsync(stopDeadline: stopBudget.Token, taskbar: taskbar)) await ResumeStartReplacementAsync(taskbar);
             return CurrentSettingsState();
         }
         finally { _settingsBusy = false; _inputTransition.Release(); }
@@ -146,7 +202,12 @@ internal sealed partial class WallApplicationLifetime
     {
         if (slot is not (1 or 2)) throw new ArgumentOutOfRangeException(nameof(slot));
         var bit = 1 << (slot - 1);
-        await _inputTransition.WaitAsync();
+        using var stopBudget = recording ? new CancellationTokenSource(TimeSpan.FromSeconds(5)) : null;
+        try { await _inputTransition.WaitAsync(stopBudget?.Token ?? CancellationToken.None); }
+        catch (OperationCanceledException) when (stopBudget?.IsCancellationRequested == true)
+        {
+            throw new InvalidOperationException(StartReplacementFailure("Input owner did not stop within the five-second budget; resources are retained."));
+        }
         try
         {
             if (recording)
@@ -161,11 +222,13 @@ internal sealed partial class WallApplicationLifetime
                 _secondaryHotKey.Unregister();
                 _startReplacementSuspended = !_isTest && _window.Settings.ReplaceStartMenu &&
                     _startReplacement.Fault is null && _startReplacementError is null;
-                if (await StopStartReplacementAsync(suspend: true)) return;
+                _taskbarStartReplacementSuspended = !_isTest && _window.Settings.RedirectTaskbarStartButton &&
+                    _taskbarStartReplacement.Fault is null && _taskbarStartReplacementError is null;
+                if (await StopAllStartReplacementAsync(suspend: true, stopDeadline: stopBudget!.Token)) return;
                 _hotKeyRecordingSlots &= ~bit;
-                _startReplacementSuspended = false;
                 RestorePausedHotKeys();
-                throw new InvalidOperationException(_startReplacementError);
+                await RestoreSuspendedStartInputsAsync();
+                throw new InvalidOperationException(_startReplacementError ?? _taskbarStartReplacementError);
             }
             if ((_hotKeyRecordingSlots & bit) == 0) return;
             _hotKeyRecordingSlots &= ~bit;
@@ -173,12 +236,21 @@ internal sealed partial class WallApplicationLifetime
             // The recorder has already unhooked. Resume only the latest committed
             // preference; never restore a gesture captured before a settings commit.
             if (_exitPending || _tearingDown) return;
-            var needResume = _startReplacementSuspended && _startReplacementError is null;
-            _startReplacementSuspended = false;
             RestorePausedHotKeys();
-            if (needResume) await ResumeStartReplacementAsync();
+            await RestoreSuspendedStartInputsAsync();
         }
         finally { _inputTransition.Release(); }
+    }
+
+    private async Task RestoreSuspendedStartInputsAsync()
+    {
+        foreach (var taskbar in new[] { false, true })
+        {
+            var suspended = taskbar ? _taskbarStartReplacementSuspended : _startReplacementSuspended;
+            SetStartInputSuspended(taskbar, false);
+            if (suspended && StartInputError(taskbar) is null && !StartInput(taskbar).HasRetainedResources)
+                await ResumeStartReplacementAsync(taskbar);
+        }
     }
 
     private void RestorePausedHotKeys()
@@ -230,6 +302,11 @@ internal sealed partial class WallApplicationLifetime
         StartReplacementError: _startReplacementError ??
             (_window.Settings.ReplaceStartMenu && _startReplacement.Fault is { } fault
                 ? StartReplacementFailure(fault) : null),
+        TaskbarStartReplacementActive: _taskbarStartReplacement.IsActive,
+        TaskbarStartReplacementSuspended: _taskbarStartReplacementSuspended,
+        TaskbarStartReplacementError: _taskbarStartReplacementError ??
+            (_window.Settings.RedirectTaskbarStartButton && _taskbarStartReplacement.Fault is { } taskbarFault
+                ? StartReplacementFailure(taskbarFault) : null),
         RegisteredSecondaryHotKey: _secondaryHotKey.CurrentGesture?.ToConfigString(),
         HotKeyError: _hotKeyError, SecondaryHotKeyError: _secondaryHotKeyError);
 
@@ -245,15 +322,19 @@ internal sealed partial class WallApplicationLifetime
         // the saved preference after uninstall or an external startup change.
         var displayedLoginEnabled = _loginEnabled ?? _window.Settings.RunAtLogin;
         _settingsBusy = true;
-        using var replacementStopBudget = !proposed.ReplaceStartMenu && _window.Settings.ReplaceStartMenu
+        using var replacementStopBudget = (!proposed.ReplaceStartMenu && _window.Settings.ReplaceStartMenu ||
+            !proposed.RedirectTaskbarStartButton && _window.Settings.RedirectTaskbarStartButton)
             ? new CancellationTokenSource(TimeSpan.FromSeconds(5)) : null;
         try { await _inputTransition.WaitAsync(replacementStopBudget?.Token ?? CancellationToken.None); }
         catch (OperationCanceledException) when (replacementStopBudget?.IsCancellationRequested == true)
         {
             _settingsBusy = false;
-            _startReplacementError = StartReplacementFailure("Input owner did not stop within the five-second budget; resources are retained.");
+            var failure = StartReplacementFailure("Input owner did not stop within the five-second budget; resources are retained.");
+            foreach (var taskbar in new[] { false, true })
+                if (!StartInputEnabled(proposed, taskbar) && StartInputEnabled(_window.Settings, taskbar))
+                    SetStartInputError(taskbar, failure);
             TileWall.Core.Shell.AppLog.Warn("StartReplacement", "Stop incomplete: settings input transition timed out.");
-            return CurrentSettingsState() with { Error = _startReplacementError };
+            return CurrentSettingsState() with { Error = failure };
         }
         var old = _window.Settings;
         var oldGeneration = _window.SettingsGeneration;
@@ -275,7 +356,9 @@ internal sealed partial class WallApplicationLifetime
         var hotKeyTouched = false;
         var secondaryHotKeyTouched = false;
         var loginTouched = false;
-        var replacementTouched = false;
+        var replacementTouched = new bool[2];
+        var replacementPrepared = new bool[2];
+        var replacementStopAttempted = new bool[2];
         var commitAttempted = false;
         var committed = false;
         try
@@ -287,17 +370,23 @@ internal sealed partial class WallApplicationLifetime
                 var duplicate = ProductStrings.Get("Settings.HotKeyDuplicate");
                 return CurrentSettingsState() with { Error = duplicate, SecondaryHotKeyError = duplicate };
             }
-            if (proposed.ReplaceStartMenu != old.ReplaceStartMenu)
+            foreach (var taskbar in new[] { false, true })
             {
-                replacementTouched = true;
-                if (proposed.ReplaceStartMenu && !_isTest)
+                if (StartInputEnabled(proposed, taskbar) == StartInputEnabled(old, taskbar)) continue;
+                replacementTouched[taskbar ? 1 : 0] = true;
+                if (StartInputEnabled(proposed, taskbar) && !_isTest)
                 {
                     if (_window.SettingsPersistenceBlocked)
                         return await RejectAsync(ProductStrings.Get("Wall.SettingsBlocked"));
-                    await _startReplacement.PrepareAsync();
+                    await StartInput(taskbar).PrepareAsync();
+                    replacementPrepared[taskbar ? 1 : 0] = true;
                 }
-                else if (!await StopStartReplacementAsync(stopDeadline: replacementStopBudget?.Token ?? CancellationToken.None))
-                    return CurrentSettingsState() with { Error = _startReplacementError };
+                else
+                {
+                    replacementStopAttempted[taskbar ? 1 : 0] = true;
+                    if (!await StopStartReplacementAsync(stopDeadline: replacementStopBudget?.Token ?? CancellationToken.None, taskbar: taskbar))
+                        return await RejectAsync(StartInputError(taskbar)!);
+                }
             }
             var oldLogin = await _login.ReadAsync();
             oldLoginEnabled = oldLogin.Enabled;
@@ -352,17 +441,22 @@ internal sealed partial class WallApplicationLifetime
             // The accepted snapshot remains authoritative even if view refresh or
             // post-commit UI work fails. Only known rejection permits rollback.
             if (_window.SettingsPersistenceBlocked)
-                await StopStartReplacementAsync();
-            else if (replacementTouched && proposed.ReplaceStartMenu && CanActivateStartReplacement)
+                await StopAllStartReplacementAsync(stopDeadline: replacementStopBudget?.Token ?? CancellationToken.None);
+            else if (CanActivateStartReplacement)
             {
-                try { await _startReplacement.ActivateAsync(); _startReplacementError = null; }
-                catch (Exception ex)
+                foreach (var taskbar in new[] { false, true })
                 {
-                    _startReplacementError = StartReplacementFailure(ex.Message);
-                    await StopStartReplacementAsync();
+                    if (!replacementTouched[taskbar ? 1 : 0] || !StartInputEnabled(proposed, taskbar)) continue;
+                    try { await StartInput(taskbar).ActivateAsync(); SetStartInputError(taskbar, null); }
+                    catch (Exception ex)
+                    {
+                        SetStartInputError(taskbar, StartReplacementFailure(ex.Message));
+                        await StopStartReplacementAsync(taskbar: taskbar);
+                    }
                 }
             }
             if (!proposed.ReplaceStartMenu) { _startReplacementError = null; _startReplacementSuspended = false; }
+            if (!proposed.RedirectTaskbarStartButton) { _taskbarStartReplacementError = null; _taskbarStartReplacementSuspended = false; }
             ProductStrings.ApplyLanguage(proposed.LanguageMode);
             _window.RefreshAppearance();
             _window.RefreshProductStrings();
@@ -381,10 +475,16 @@ internal sealed partial class WallApplicationLifetime
         {
             if (commitAttempted && _window.SettingsPersistenceBlocked)
             {
-                await StopStartReplacementAsync();
+                await StopAllStartReplacementAsync(stopDeadline: replacementStopBudget?.Token ?? CancellationToken.None);
                 return CurrentSettingsState() with { Error = failure };
             }
-            if (replacementTouched) await StopStartReplacementAsync();
+            using (var rollbackStopBudget = CancellationTokenSource.CreateLinkedTokenSource(replacementStopBudget?.Token ?? CancellationToken.None))
+            {
+                rollbackStopBudget.CancelAfter(TimeSpan.FromSeconds(5));
+                await Task.WhenAll(new[] { false, true }.Where(taskbar => replacementPrepared[taskbar ? 1 : 0] &&
+                        !replacementStopAttempted[taskbar ? 1 : 0])
+                    .Select(taskbar => StopStartReplacementAsync(stopDeadline: rollbackStopBudget.Token, taskbar: taskbar)));
+            }
             // Clear both touched replacements first, including a successful
             // half of a rejected swap, before restoring their original owners.
             if (hotKeyTouched) _hotKey.Unregister();
@@ -414,9 +514,11 @@ internal sealed partial class WallApplicationLifetime
                 if (restored.Error is not null)
                     failure += " " + string.Format(ProductStrings.Get("Wall.LoginRestoreFailed"), restored.Error);
             }
-            if (replacementTouched && old.ReplaceStartMenu && CanActivateStartReplacement &&
-                !_startReplacement.HasRetainedResources)
-                await ResumeStartReplacementAsync();
+            if (CanActivateStartReplacement)
+                foreach (var taskbar in new[] { false, true })
+                    if (replacementTouched[taskbar ? 1 : 0] && StartInputEnabled(old, taskbar) &&
+                        !StartInput(taskbar).HasRetainedResources)
+                        await ResumeStartReplacementAsync(taskbar);
             UpdateTray();
             return CurrentSettingsState() with { Error = failure };
         }
@@ -426,15 +528,17 @@ internal sealed partial class WallApplicationLifetime
     {
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         _startReplacementSuspended |= _startReplacement.IsActive;
+        _taskbarStartReplacementSuspended |= _taskbarStartReplacement.IsActive;
         _startReplacement.CloseAdmissionForStop();
+        _taskbarStartReplacement.CloseAdmissionForStop();
         var entered = false;
         try
         {
             // Include the lifetime owner in the same budget passed into the native service.
             await _inputTransition.WaitAsync(budget.Token);
             entered = true;
-            if (await StopStartReplacementAsync(stopDeadline: budget.Token)) return true;
-            _window.ShowStatus(_startReplacementError!);
+            if (await StopAllStartReplacementAsync(stopDeadline: budget.Token)) return true;
+            _window.ShowStatus((_startReplacementError ?? _taskbarStartReplacementError)!);
             return false;
         }
         catch (OperationCanceledException) when (budget.IsCancellationRequested)
@@ -451,9 +555,23 @@ internal sealed partial class WallApplicationLifetime
     {
         // A failed stop returns to the application immediately. Do not append another owner wait in exit's finally,
         // or restore registrations while an older hook/worker is still retained or its failure is unresolved.
-        if (_startReplacementError is not null || _startReplacement.HasRetainedResources && !_startReplacement.IsActive)
+        if (_startReplacementError is not null || _taskbarStartReplacementError is not null ||
+            _startReplacement.HasRetainedResources && !_startReplacement.IsActive ||
+            _taskbarStartReplacement.HasRetainedResources && !_taskbarStartReplacement.IsActive)
         {
-            _startReplacementSuspended = false;
+            // Never add a second wait for a failed stop. A different channel can
+            // still restore its own fully released owner without touching held
+            // input or registrations belonging to the failed channel.
+            if (!_inputTransition.Wait(0))
+            {
+                _startReplacementSuspended = _taskbarStartReplacementSuspended = false;
+                return;
+            }
+            try
+            {
+                if (!_tearingDown && !_hotKeyRecording) await RestoreSuspendedStartInputsAsync();
+            }
+            finally { _inputTransition.Release(); }
             return;
         }
         if (!await _inputTransition.WaitAsync(TimeSpan.FromSeconds(5)))
@@ -465,12 +583,9 @@ internal sealed partial class WallApplicationLifetime
         }
         try
         {
-            if (_tearingDown || _hotKeyRecording || _startReplacementError is not null ||
-                _startReplacement.HasRetainedResources && !_startReplacement.IsActive) return;
-            var needResume = _startReplacementSuspended && _startReplacementError is null;
-            _startReplacementSuspended = false;
+            if (_tearingDown || _hotKeyRecording) return;
             RestorePausedHotKeys();
-            if (needResume) await ResumeStartReplacementAsync();
+            await RestoreSuspendedStartInputsAsync();
         }
         finally { _inputTransition.Release(); }
     }

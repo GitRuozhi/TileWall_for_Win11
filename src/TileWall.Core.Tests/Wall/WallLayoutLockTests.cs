@@ -59,15 +59,46 @@ public sealed class WallLayoutLockTests
     }
 
     [Fact]
-    public void ResizeTriesGroupEndWithoutAvoidingTheNeighbour()
+    public void ResizeUsesAnExistingGroupGapWithoutAvoidingTheNeighbour()
     {
         var moving = Tile("moving", width: 2, height: 2);
         var source = Locked(5, new WallLane() { Groups = [Group("group", moving, Tile("neighbour", 2, width: 2, height: 2))] });
         var result = Apply(source, new ReplaceMemberAction(0, moving.Id, moving with { LocalBounds = new(0, 0, 4, 2) }));
         Assert.True(result.Success, result.Detail);
-        Assert.Equal("LAYOUT_MOVED_GROUP_END", result.Detail);
+        Assert.Equal("LAYOUT_MOVED_NEARBY", result.Detail);
         Assert.Equal(new GridRect(4, 0, 4, 2), result.Proposal!.Document.EnumerateAllMembers().Single(member => member.Id == "moving").LocalBounds);
         Assert.Equal(Position(source, "neighbour"), Position(result.Proposal.Document, "neighbour"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ResizeSearchesLeftInsideTheOriginalGroupBeforeAppending(bool locked)
+    {
+        var moving = Tile("moving", 2, width: 2, height: 2);
+        var neighbour = Tile("neighbour", 4, width: 2, height: 2);
+        var source = Locked(5, new WallLane { Groups = [Group("group", moving, neighbour)] });
+        source = source with { Settings = source.Settings with { LayoutLocked = locked } };
+        var result = Apply(source, new ReplaceMemberAction(0, moving.Id, moving with { LocalBounds = new(2, 0, 4, 2) }));
+        Assert.True(result.Success, result.Detail);
+        Assert.Equal(new GridRect(0, 0, 4, 2), result.Proposal!.Document.EnumerateAllMembers().Single(member => member.Id == "moving").LocalBounds);
+        Assert.Equal(Position(source, "neighbour"), Position(result.Proposal.Document, "neighbour"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ResizeAppendsWhenTheExistingGroupHeightHasNoCompleteGap(bool locked)
+    {
+        var moving = Tile("moving", width: 2, height: 2);
+        var source = Locked(5, new WallLane { Groups = [Group("group", moving,
+            Tile("middle", 2, width: 2, height: 2), Tile("right", 4, width: 4, height: 2))] });
+        source = source with { Settings = source.Settings with { LayoutLocked = locked } };
+        var result = Apply(source, new ReplaceMemberAction(0, moving.Id, moving with { LocalBounds = new(0, 0, 4, 2) }));
+        Assert.True(result.Success, result.Detail);
+        Assert.Equal(new GridRect(0, 2, 4, 2), result.Proposal!.Document.EnumerateAllMembers().Single(member => member.Id == "moving").LocalBounds);
+        Assert.Equal(Position(source, "middle"), Position(result.Proposal.Document, "middle"));
+        Assert.Equal(Position(source, "right"), Position(result.Proposal.Document, "right"));
     }
 
     [Fact]
@@ -87,6 +118,23 @@ public sealed class WallLayoutLockTests
         Assert.Equal(Position(source, "after-tile"), Position(next, "after-tile"));
         Assert.Empty(next.Lanes[^1].Groups);
         Assert.Equal("moving", Assert.Single(next.Lanes[1].Groups[0].Members).Id);
+    }
+
+    [Fact]
+    public void UnlockedResizeUsesWallTailWhenItsGroupCannotFitTheChosenSize()
+    {
+        var moving = Tile("moving", width: 2, height: 2);
+        var source = Locked(5, new WallLane { Groups = [Group("source", moving,
+            Tile("middle", 2, width: 2, height: 2), Tile("right", 4, width: 4, height: 2),
+            Tile("bottom-left", 0, 2, 4, 2), Tile("bottom-right", 4, 2, 4, 2))] }, new WallLane { Groups = [] });
+        source = source with { Settings = source.Settings with { LayoutLocked = false, ExpandColumns = true } };
+        var result = Apply(source, new ReplaceMemberAction(0, moving.Id, moving with { LocalBounds = new(0, 0, 4, 4) }));
+        Assert.True(result.Success, result.Detail);
+        var next = result.Proposal!.Document;
+        Assert.Equal("moving", Assert.Single(next.Lanes[1].Groups[0].Members).Id);
+        foreach (var member in source.EnumerateAllMembers().Where(member => member.Id != "moving"))
+            Assert.Equal(Position(source, member.Id), Position(next, member.Id));
+        Assert.Equal(1, next.Generation);
     }
 
     [Fact]

@@ -13,10 +13,11 @@ internal sealed record WelcomeWallText(IReadOnlyDictionary<string, string> Items
 internal static class WelcomeWallBuilder
 {
     internal const string SettingsUrl = "ms-settings:";
+    internal const string SearchUrl = "ms-search://search/";
     internal const string ProjectUrl = "https://github.com/GitRuozhi/TileWall_for_Win11";
     internal const string DiscussionsUrl = ProjectUrl + "/discussions";
     internal static readonly string[] NativeTargetKeys =
-        ["ThisPC", "ControlPanel", "RecycleBin", "Network", "Desktop", "Downloads", "Videos", "Pictures", "Documents", "Music", "Calculator", "Notepad", "CMD", "Store", "Edge"];
+        ["ThisPC", "ControlPanel", "RecycleBin", "Network", "Desktop", "Downloads", "Videos", "Pictures", "Documents", "Music", "Calculator", "Notepad", "RegistryEditor", "CMD", "PowerShell", "Store", "Edge"];
     internal static readonly string[] SeasonFileNames = ["01-spring.png", "02-summer.png", "03-autumn.png", "04-winter.png"];
     internal const string GuideImageFileName = "use-guide.png";
     internal const string ShowcaseImageFileName = "showcase.png";
@@ -74,7 +75,9 @@ internal static class WelcomeWallBuilder
         var tools = new StartGroup
         {
             Id = NewId(), Title = "Tools",
-            Members = [Native("Calculator", new(0, 0, 2, 2)), Native("Notepad", new(2, 0, 2, 2)), Native("CMD", new(6, 0, 2, 2))],
+            Members = [Native("Calculator", new(0, 0, 2, 2)), Native("Notepad", new(3, 0, 1, 1)),
+                Native("RegistryEditor", new(4, 0, 1, 1)), Url(text.Items["Search"], SearchUrl, new(6, 0, 2, 2)),
+                Native("CMD", new(2, 1, 1, 1)), Native("PowerShell", new(3, 1, 1, 1))],
         };
         var internet = new StartGroup
         {

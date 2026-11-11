@@ -20,8 +20,18 @@ public static class WallJson
     {
         var document = JsonSerializer.Deserialize<WallDocument>(bytes, Options)
             ?? throw new JsonException("Empty wall document.");
+        using var json = JsonDocument.Parse(bytes);
+        var settingsJson = json.RootElement.EnumerateObject().LastOrDefault(property =>
+            property.Name.Equals("settings", StringComparison.OrdinalIgnoreCase)).Value;
+        if (document.Settings is not null && settingsJson.ValueKind == JsonValueKind.Object)
+            document = document with { Settings = ReadStartInputPreferences(document.Settings, settingsJson, caseInsensitive: true) };
         return ValidateAndFreeze(document);
     }
+
+    internal static WallSettings ReadStartInputPreferences(WallSettings settings, JsonElement json, bool caseInsensitive = false) =>
+        json.EnumerateObject().Any(property => property.Name.Equals("redirectTaskbarStartButton",
+            caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            ? settings : settings with { RedirectTaskbarStartButton = settings.ReplaceStartMenu };
 
     internal static WallDocument ValidateAndFreeze(WallDocument document)
     {

@@ -73,7 +73,6 @@ public sealed class WallSurface : Canvas
     public event Action<string>? MemberLocationRequested;
     public event Func<string, string?, string?>? GroupRenameRequested;
     public event Action<string?, int>? NewTileRequested;
-    public event Action<string?, int>? NewPuzzleRequested;
     public event Action? PuzzleNextPageRequested;
     public event Action<string?, int>? NewClockRequested;
     public event Action? SettingsRequested;
@@ -670,7 +669,6 @@ public sealed class WallSurface : Canvas
         AddMenuItem(menu, WallMenuAction.PuzzleNextPage, () => advancePuzzles = true);
         menu.Closed += (_, _) => { if (advancePuzzles) PuzzleNextPageRequested?.Invoke(); };
         AddMenuItem(menu, WallMenuAction.NewTile, () => NewTileRequested?.Invoke(hit.GroupId, lane));
-        AddMenuItem(menu, WallMenuAction.NewPuzzle, () => NewPuzzleRequested?.Invoke(hit.GroupId, lane));
         var componentLabel = ProductStrings.Get("Menu.AddComponent");
         var addComponent = new MenuFlyoutSubItem { Text = componentLabel, Icon = ActionIcon.Glyph(ActionIcon.Add) };
         AutomationProperties.SetName(addComponent, componentLabel); ToolTipService.SetToolTip(addComponent, componentLabel);
@@ -942,7 +940,7 @@ public sealed class WallSurface : Canvas
     }
 
     private enum WallMenuAction { Open, Edit, Remove, Settings, Import, PuzzleNextPage, Location, Admin, NewTile, NewPuzzle }
-    private static string MenuLabel(WallMenuAction action) => ProductStrings.Get("Wall." + action);
+    private static string MenuLabel(WallMenuAction action) => ProductStrings.Get(action == WallMenuAction.NewTile ? "Menu.New" : "Wall." + action);
     private static string MenuGlyph(WallMenuAction action) => action switch
     {
         WallMenuAction.Edit => ActionIcon.Edit, WallMenuAction.Remove => ActionIcon.Delete,

@@ -89,7 +89,7 @@ public sealed partial class MainWindow
                     .SequenceEqual(currentTargets.Items.OrderBy(item => item.Key, StringComparer.Ordinal)))
                 throw new IOException("A welcome target changed during preparation.");
             string Text(string key) => ProductStrings.Get("Welcome." + key, before.Settings.LanguageMode);
-            var text = new WelcomeWallText(WelcomeWallBuilder.NativeTargetKeys.Append("Settings")
+            var text = new WelcomeWallText(WelcomeWallBuilder.NativeTargetKeys.Append("Settings").Append("Search")
                 .ToDictionary(key => key, Text, StringComparer.Ordinal));
             var prepared = WelcomeWallBuilder.Prepare(before, targets, text, _session.DataRoot, _session.ManagedGalleryPath(gallery.Reference),
                 ViewportBudget(before.Settings), _metrics, gallery.Reference, guideImage.Reference, showcaseImage.Reference);
@@ -144,10 +144,13 @@ public sealed partial class MainWindow
                 ? new(path) : new(item.ParsingName, identity.Key));
         }
         var system = Environment.GetFolderPath(Environment.SpecialFolder.System);
-        foreach (var (key, name) in new[] { ("Calculator", "calc.exe"), ("Notepad", "notepad.exe"), ("CMD", "cmd.exe") })
+        foreach (var (key, name) in new[] { ("Calculator", "calc.exe"), ("Notepad", "notepad.exe"),
+            ("RegistryEditor", "regedit.exe"), ("CMD", "cmd.exe"), ("PowerShell", @"WindowsPowerShell\v1.0\powershell.exe") })
         {
             token.ThrowIfCancellationRequested();
-            var path = Path.Combine(system, name);
+            var path = key == "RegistryEditor"
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), name)
+                : Path.Combine(system, name);
             if (!Path.IsPathFullyQualified(path) || !File.Exists(path))
                 throw new IOException("A required Windows application is unavailable: " + name);
             targets.Add(key, new(path));
@@ -164,7 +167,7 @@ public sealed partial class MainWindow
         AddApplication("Edge", edge);
         if (calculator is not null) AddApplication("Calculator", calculator);
         foreach (var url in WelcomeWallBuilder.WebsiteUrls.Concat(
-            [WelcomeWallBuilder.SettingsUrl, WelcomeWallBuilder.ProjectUrl, WelcomeWallBuilder.DiscussionsUrl]))
+            [WelcomeWallBuilder.SettingsUrl, WelcomeWallBuilder.SearchUrl, WelcomeWallBuilder.ProjectUrl, WelcomeWallBuilder.DiscussionsUrl]))
         {
             token.ThrowIfCancellationRequested();
             if (!RegisteredUrlProtocols.IsSupported(url)) throw new IOException("A required URL protocol is unavailable: " + url);

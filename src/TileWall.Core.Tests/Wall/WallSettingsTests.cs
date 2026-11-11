@@ -8,12 +8,43 @@ namespace TileWall.Core.Tests.Wall;
 
 public sealed class WallSettingsTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void HistoricalCombinedPreferenceInitializesBothChannelsOnce(bool enabled)
+    {
+        var source = WallDocument.Empty(1, 1) with { Settings = new() { ReplaceStartMenu = enabled } };
+        var json = JsonNode.Parse(WallJson.Serialize(source))!;
+        json["settings"]!.AsObject().Remove("redirectTaskbarStartButton");
+        var restored = WallJson.Deserialize(Encoding.UTF8.GetBytes(json.ToJsonString()));
+        Assert.Equal(enabled, restored.Settings.ReplaceStartMenu);
+        Assert.Equal(enabled, restored.Settings.RedirectTaskbarStartButton);
+        Assert.Equal(enabled, (restored.Settings with { ReplaceStartMenu = !enabled }).RedirectTaskbarStartButton);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void IndependentStartPreferencesSurvivePersistence(bool windowsKey, bool taskbarButton)
+    {
+        var source = WallDocument.Empty(1, 1) with { Settings = new()
+            { ReplaceStartMenu = windowsKey, RedirectTaskbarStartButton = taskbarButton } };
+        var restored = WallJson.Deserialize(WallJson.Serialize(source)).Settings;
+        Assert.Equal(windowsKey, restored.ReplaceStartMenu);
+        Assert.Equal(taskbarButton, restored.RedirectTaskbarStartButton);
+    }
+
     [Fact]
     public void MissingStartReplacementPreferenceRemainsDisabled()
     {
         var json = JsonNode.Parse(WallJson.Serialize(WallDocument.Empty(1, 1)))!;
         json["settings"]!.AsObject().Remove("replaceStartMenu");
-        Assert.False(WallJson.Deserialize(Encoding.UTF8.GetBytes(json.ToJsonString())).Settings.ReplaceStartMenu);
+        json["settings"]!.AsObject().Remove("redirectTaskbarStartButton");
+        var restored = WallJson.Deserialize(Encoding.UTF8.GetBytes(json.ToJsonString())).Settings;
+        Assert.False(restored.ReplaceStartMenu);
+        Assert.False(restored.RedirectTaskbarStartButton);
     }
 
     [Theory]

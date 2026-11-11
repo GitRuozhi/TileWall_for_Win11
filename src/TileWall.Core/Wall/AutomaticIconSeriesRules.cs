@@ -81,6 +81,20 @@ public static class AutomaticIconSeriesRules
         { Columns = columns, Rows = rows };
     }
 
+    /// <summary>New automatic images fill at 100%, or use the largest native plane without enlargement.</summary>
+    public static (AutomaticIconSeries Series, MemberImageDisplay Display) NewImageDefaults(
+        AutomaticIconSeries series, int physicalWidth, int physicalHeight)
+    {
+        var index = SelectFrame(series, physicalWidth, physicalHeight);
+        var frame = series.Frames[index];
+        return (series with { SelectedFrame = index }, new MemberImageDisplay
+        {
+            Mode = frame.Width >= physicalWidth && frame.Height >= physicalHeight
+                ? ImageDisplayMode.Fill : ImageDisplayMode.Original,
+            CustomScale = 1,
+        });
+    }
+
     /// <summary>Display resolution may change; the confirmed frame remains the geometry reference.</summary>
     public static int SelectForDisplay(AutomaticIconSeries series, int width, int height, MemberImageDisplay display)
     {

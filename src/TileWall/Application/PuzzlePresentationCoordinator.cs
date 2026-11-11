@@ -239,7 +239,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     private static bool ReadableSource(WallMember member) => member.ResourceOrigin != MemberResourceOrigin.Package ||
         member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is not null ||
         member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is not null ||
-        member.Images.Kind == MemberImageSourceKind.Folder && member.Images.ManagedGallery is not null ||
+        member.Images.Kind == MemberImageSourceKind.Folder ||
         member.Images.Kind == MemberImageSourceKind.None;
 
     public void SetEditorGallerySource(MemberImageSource? source)

@@ -17,6 +17,8 @@ public sealed partial class MainWindow
     private readonly Grid _backgroundLayer = new() { IsHitTestVisible = false };
     private readonly Image _backgroundImage = new() { Stretch = Stretch.UniformToFill };
     private readonly Image _snapshotImage = new() { Stretch = Stretch.Fill, Opacity = 1, Visibility = Visibility.Collapsed };
+    private readonly Canvas _snapshotViewport = new() { IsHitTestVisible = false };
+    private readonly RectangleGeometry _snapshotClip = new();
     private readonly SemaphoreSlim _snapshotSlot = new(1, 1);
     private CancellationTokenSource? _snapshotRequest;
     private DesktopBackdropSnapshot.CapturedFrame? _snapshotCapture;
@@ -47,7 +49,9 @@ public sealed partial class MainWindow
             _snapshotImage.Opacity == 1 && _backgroundLayer.Opacity == 1 && WallRoot.Opacity == 1 &&
             (WallRoot.RenderTransform is not TranslateTransform translate || translate.Y == 0);
         _backgroundLayer.Children.Add(_backgroundImage);
-        _backgroundLayer.Children.Add(_snapshotImage);
+        _snapshotViewport.Children.Add(_snapshotImage);
+        _snapshotViewport.Clip = _snapshotClip;
+        _backgroundLayer.Children.Add(_snapshotViewport);
         WallRoot.Children.Insert(0, _backgroundLayer);
         _appearanceSettings.ColorValuesChanged += OnSystemColorsChanged;
         _appearanceSettings.AdvancedEffectsEnabledChanged += OnAdvancedEffectsChanged;
@@ -242,6 +246,7 @@ public sealed partial class MainWindow
     private void UpdateBackgroundLayer()
     {
         if (_windowClosing || _appearanceStopping) return;
+        UpdateSnapshotViewport();
         var previousLayerVisibility = _backgroundLayer.Visibility;
         var previousSnapshotVisibility = _snapshotImage.Visibility;
         var previousOpacity = _backgroundLayer.Opacity;
@@ -313,8 +318,21 @@ public sealed partial class MainWindow
     }
 
     private (int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe) CurrentSnapshotKey =>
-        (AppWindow.Position.X, AppWindow.Position.Y, AppWindow.Size.Width, AppWindow.Size.Height, Scale, _themeDark,
+        (_screenArea.Left, _screenArea.Top, _screenArea.Right - _screenArea.Left, _screenArea.Bottom - _screenArea.Top, Scale, _themeDark,
             _wallBackdrop.SnapshotRecipe(_themeDark));
+
+    private void UpdateSnapshotViewport()
+    {
+        if (_snapshotCaptureGeometry is not { } capture || Scale <= 0) return;
+        var position = AppWindow.Position;
+        var size = AppWindow.Size;
+        _snapshotImage.Width = capture.W / Scale;
+        _snapshotImage.Height = capture.H / Scale;
+        Canvas.SetLeft(_snapshotImage, (capture.X - position.X) / Scale);
+        Canvas.SetTop(_snapshotImage, (capture.Y - position.Y) / Scale);
+        var clip = new Windows.Foundation.Rect(0, 0, size.Width / Scale, size.Height / Scale);
+        if (_snapshotClip.Rect != clip) _snapshotClip.Rect = clip;
+    }
     private bool MatchesSnapshotEnvironment(
         (int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe) key)
     {
@@ -332,13 +350,14 @@ public sealed partial class MainWindow
 
     private void InvalidateSnapshotIfGeometryChanged()
     {
+        UpdateSnapshotViewport();
         var current = CurrentSnapshotKey;
         var geometryChanged = _snapshotCaptureGeometry is { } geometry &&
             geometry != (current.X, current.Y, current.W, current.H, current.Scale);
         if (!geometryChanged && (_snapshotKey is null || MatchesSnapshotEnvironment(_snapshotKey.Value)) &&
             (_snapshotRequestKey is null || MatchesSnapshotEnvironment(_snapshotRequestKey.Value))) return;
-        // A recipe change can reuse the original screen pixels. A different
-        // geometry cannot; the next actual hidden show owns the next capture.
+        // Only screen/DPI changes invalidate the full-screen capture. Moving or
+        // resizing the wall changes its crop and never starts another capture.
         ReleaseBackdropSnapshot(releaseCapture: geometryChanged);
         _wallBackdrop.Configure(Settings, _backdropActive, _themeDark, false);
         UpdateBackgroundLayer();

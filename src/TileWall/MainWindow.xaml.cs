@@ -45,6 +45,7 @@ public sealed partial class MainWindow : Window
     private readonly StatusOverlay _statusOverlay;
     private string? _suppressClickMember;
     private Point _gestureScrollOffset;
+    private ulong _gesturePressTimestamp;
     private uint _tracedMovePointerId;
     private GesturePhase _tracedMovePhase;
     private readonly WallBackdrop _wallBackdrop;
@@ -115,7 +116,6 @@ public sealed partial class MainWindow : Window
         Surface.MemberLocationRequested += ShowMemberLocation;
         Surface.GroupRenameRequested += RenameGroup;
         Surface.NewTileRequested += (groupId, lane) => _ = CreateTileAsync(groupId, lane);
-        Surface.NewPuzzleRequested += (groupId, lane) => _ = CreatePuzzleAsync(groupId, lane);
         Surface.PuzzleNextPageRequested += () =>
         {
             if (PersistenceInteractionBlocked) return;
@@ -143,11 +143,12 @@ public sealed partial class MainWindow : Window
             TraceInput($"CaptureLost source={e.OriginalSource?.GetType().Name} phase={_gesture.Phase} pointer={e.Pointer.PointerId}");
             // Capturing on the surface transfers capture away from the child Button.
             // Its routed loss is expected; only loss of the surface's own capture cancels the gesture.
-            if (ReferenceEquals(e.OriginalSource, Surface)) TerminateGesture();
+            if (ReferenceEquals(e.OriginalSource, Surface)) { CancelDeferredGesturePress(e.Pointer.PointerId); TerminateGesture(); }
         };
         Surface.PointerCanceled += (_, e) =>
         {
             TraceInput($"Canceled source={e.OriginalSource?.GetType().Name} phase={_gesture.Phase} pointer={e.Pointer.PointerId}");
+            CancelDeferredGesturePress(e.Pointer.PointerId);
             TerminateGesture();
         };
         WallRoot.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(OnKeyDown), true);
@@ -604,8 +605,8 @@ public sealed partial class MainWindow : Window
                 ProductStrings.WallRejectionReason(result.Rejection), string.Empty).TrimEnd();
         }
         var error = CommitProposal(result.Proposal, changes, preparedMedia);
-        if (error is null && result.Detail is "LAYOUT_MOVED_GROUP_END" or "LAYOUT_MOVED_WALL_END")
-            TransientStatus(ProductStrings.Get(result.Detail == "LAYOUT_MOVED_GROUP_END" ? "Wall.LayoutMovedGroupEnd" : "Wall.LayoutMovedWallEnd"));
+        if (error is null && result.Detail is "LAYOUT_MOVED_GROUP_END" or "LAYOUT_MOVED_WALL_END" or "LAYOUT_MOVED_NEARBY")
+            TransientStatus(ProductStrings.Get(result.Detail == "LAYOUT_MOVED_NEARBY" ? "Wall.LayoutMovedNearby" : result.Detail == "LAYOUT_MOVED_GROUP_END" ? "Wall.LayoutMovedGroupEnd" : "Wall.LayoutMovedWallEnd"));
         return error;
     }
 
@@ -661,26 +662,44 @@ public sealed partial class MainWindow : Window
         ImportReadinessChanged?.Invoke();
     }
 
-    private async Task CreateTileAsync(string? groupId, int lane)
-    {
-        if (PersistenceInteractionBlocked || _modal || _viewBlocked || !_hasDocument) return;
-        var tile = new TileMember { Id = $"tile-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 2, 2) };
-        string? error = null;
-        await QueueUserMutationAsync(() => { error = AddDefaultMember(tile, groupId, lane); return Task.CompletedTask; });
-        if (FindMember(tile.Id) is null) { if (error is not null) Status(error); return; }
-        await EditMemberAsync(tile.Id, isNewPlaceholder: true);
-    }
+    private Task CreateTileAsync(string? groupId, int lane) => CreateMemberAsync(groupId, lane);
 
-    private async Task CreatePuzzleAsync(string? groupId, int lane)
+    private async Task CreateMemberAsync(string? groupId, int lane)
     {
         if (PersistenceInteractionBlocked || _modal || _viewBlocked || !_hasDocument) return;
-        var puzzle = new PuzzleMember { Id = $"puzzle-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 4, 4),
-            Partitions = [new GridRect(0, 0, 2, 2), new GridRect(2, 0, 2, 2),
-                new GridRect(0, 2, 2, 2), new GridRect(2, 2, 2, 2)] };
-        string? error = null;
-        await QueueUserMutationAsync(() => { error = AddDefaultMember(puzzle, groupId, lane); return Task.CompletedTask; });
-        if (FindMember(puzzle.Id) is null) { if (error is not null) Status(error); return; }
-        await EditMemberAsync(puzzle.Id, isNewPlaceholder: true);
+        string? notice = null, duplicateId = null;
+        try
+        {
+            if (!await BeginModalAsync()) return;
+            var tile = new TileMember { Id = $"member-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 2, 2) };
+            var destinationLane = Math.Clamp(WallViewportPolicy.MapCreationLane(Document, lane), 0, 63);
+            var dialog = new SharedMemberEditorDialog(DialogOwner, tile, _images, null, _session.LinkFiles, MaxMemberRows(),
+                (member, changes, assets) =>
+                {
+                    if (string.IsNullOrWhiteSpace(member.TargetInput) && member.Images.Kind is MemberImageSourceKind.Automatic or MemberImageSourceKind.None)
+                    { notice = ProductStrings.Get("Editor.EmptyNotKept"); return null; }
+                    var group = groupId is null ? null : Document.Lanes.SelectMany(l => l.Groups).FirstOrDefault(g => g.Id == groupId);
+                    var identity = DesiredEditorIdentity(tile, member, changes, ImportIdentities);
+                    var duplicate = identity is null || group is null ? null : group.Members.FirstOrDefault(other =>
+                        StartMenuImportPreparation.TryIdentity(other, _session.DataRoot, ImportIdentities)?.Key == identity.Key);
+                    if (duplicate is not null) { duplicateId = duplicate.Id; return null; }
+                    var action = new AddMemberAction(Document.Generation, member, groupId, destinationLane,
+                        destinationLane >= Document.Lanes.Count ? 0 : Document.Lanes[destinationLane].Groups.Count,
+                        groupId is null ? $"group-{Guid.NewGuid():N}" : null);
+                    return Apply(action, changes, assets);
+                }, Settings.VisualStyle, isNew: true);
+            ActiveDialog = dialog;
+            AttachGalleryEditor(dialog);
+            await dialog.ShowAsync();
+            if (dialog.IsEmptyCreation) notice = ProductStrings.Get("Editor.EmptyNotKept");
+        }
+        catch (Exception ex) { notice = string.Format(ProductStrings.Get("Wall.EditFailed"), ex.Message); }
+        finally
+        {
+            EndModal();
+            if (duplicateId is not null) { Surface.FocusMember(duplicateId); notice = ProductStrings.Get("SharedEditor.DuplicateLocated"); }
+            if (notice is not null) Status(notice);
+        }
     }
 
     private string? AddDefaultMember(WallMember member, string? groupId, int lane)
@@ -875,6 +894,7 @@ public sealed partial class MainWindow : Window
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
         if (PersistenceInteractionBlocked) { e.Handled = true; return; }
+        if (e.Key == Windows.System.VirtualKey.Escape && CancelDeferredGesturePress()) { e.Handled = true; return; }
         if (e.Key == Windows.System.VirtualKey.Escape && !_modal && _gesture.Phase == GesturePhase.Idle)
         {
             if (_resizing) CancelResize();
@@ -902,6 +922,7 @@ public sealed partial class MainWindow : Window
         _tracedMovePointerId = 0;
         _tracedMovePhase = GesturePhase.Idle;
         TraceInput($"Press source={e.OriginalSource?.GetType().Name} pointer={e.Pointer.PointerId} phase={_gesture.Phase} left={e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed}");
+        if (TryDeferGesturePress(e)) return;
         if (LayoutMutationBlocked || _modal || _viewBlocked || !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return;
         try
         {
@@ -932,6 +953,8 @@ public sealed partial class MainWindow : Window
             if (_traceInput) TraceInput($"DragOrigin grab={offset.X:F1},{offset.Y:F1} window={origin.X},{origin.Y} bounds={bounds.X:F1},{bounds.Y:F1},{bounds.Width:F1},{bounds.Height:F1}");
             if (began)
             {
+                _gesturePressTimestamp = e.GetCurrentPoint(Surface).Timestamp;
+                _gestureThresholdDip = e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse ? 3 : 7;
                 _gestureScreenStart = screenStart;
                 _gesturePointerScrollStart = pointerScrollStart;
                 _gestureMarginStart = marginStart;
@@ -961,6 +984,7 @@ public sealed partial class MainWindow : Window
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
+        if (UpdateDeferredGesturePress(e)) return;
         if (_traceInput && e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed &&
             (_tracedMovePointerId != e.Pointer.PointerId || _tracedMovePhase != _gesture.Phase))
         {
@@ -971,7 +995,9 @@ public sealed partial class MainWindow : Window
         if (_gesture.Phase == GesturePhase.Idle || _gesture.PointerId != e.Pointer.PointerId) return;
         try
         {
+            LatchGesturePointerHistory(e);
             _latestDragPoint = CommittedPointerPoint(e);
+            _gesture.Advance(_latestDragPoint, _gestureThresholdDip);
             _dragInputPending = true;
             _performance.Input();
             EnsureFrameSubscription();
@@ -982,12 +1008,14 @@ public sealed partial class MainWindow : Window
 
     private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {
+        if (ReleaseDeferredGesturePress(e)) return;
         TraceInput($"Release source={e.OriginalSource?.GetType().Name} pointer={e.Pointer.PointerId} phase={_gesture.Phase}");
         if (_gesture.Phase == GesturePhase.Idle || _gesture.PointerId != e.Pointer.PointerId) return;
         try
         {
             if (!GestureSnapshotIsCurrent()) { TerminateGesture(); return; }
             _dragInputPending = false;
+            LatchGesturePointerHistory(e);
             var point = CommittedPointerPoint(e);
             _performance.Input();
             // A release can arrive before the next display callback. Consume and draw its
@@ -1016,6 +1044,20 @@ public sealed partial class MainWindow : Window
             _ = CommitProposalAsync(proposal.Proposal, settle: error => SettleReleasePersistence(error, automaticHeight: true));
         }
         catch (Exception ex) { RecoverGestureError(ex); }
+    }
+
+    private void LatchGesturePointerHistory(PointerRoutedEventArgs e)
+    {
+        if (_gesture.Phase != GesturePhase.Pressed || _gesture.PointerId != e.Pointer.PointerId) return;
+        // Before the first drag preview the wall has not moved. These event-time
+        // positions preserve an excursion even when the live cursor has returned.
+        foreach (var sample in e.GetIntermediatePoints(Surface))
+        {
+            if (sample.Timestamp < _gesturePressTimestamp) continue;
+            if (_gesture.Advance(sample.Position, _gestureThresholdDip)) break;
+        }
+        // Placement continues to use the real screen cursor below; historical
+        // local points must never be combined with a window moved by a preview.
     }
 
     private Point CommittedPointerPoint(PointerRoutedEventArgs e)
@@ -1176,6 +1218,7 @@ public sealed partial class MainWindow : Window
 
     private void TerminateGesture(bool restoreScroll = true, bool restoreView = true)
     {
+        CancelDeferredGesturePress();
         if (_gesture.Phase == GesturePhase.Idle) return;
         TraceInput($"End phase={_gesture.Phase} member={_gesture.MemberId} group={_gesture.GroupId}");
         _dragInputPending = false;

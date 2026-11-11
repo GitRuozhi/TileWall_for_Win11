@@ -509,6 +509,7 @@ internal sealed class OwnedDialogWindow : Window
     private void FitToContent()
     {
         if (_releasing || _dialog is null || _fitting) return;
+        if (_dragPointer is not null || _resizePointer is not null) return;
         if (_userSized) { ApplyCardRegion(AppWindow.Size.Width, AppWindow.Size.Height); return; }
         var desired = _dialog.DesiredSize;
         if (desired.Width <= 0 || desired.Height <= 0) return;
@@ -662,7 +663,13 @@ internal sealed class OwnedDialogWindow : Window
                 EndDrag(e, "button-up");
                 return;
             }
-            if (TryGetScreenPoint(point.Position, out var cursor)) ApplyDragPoint(cursor);
+            // Mouse events may have been queued before the last HWND move. Their
+            // local coordinates must never be added to the new window origin.
+            if (e.Pointer.PointerDeviceType == PointerDeviceType.Mouse)
+            {
+                if (GetCursorPos(out var cursor)) ApplyDragPoint(cursor);
+            }
+            else if (TryGetScreenPoint(point.Position, out var cursor)) ApplyDragPoint(cursor);
             e.Handled = true;
             return;
         }
@@ -741,7 +748,10 @@ internal sealed class OwnedDialogWindow : Window
         {
             // Freeze the release event before applying its rectangle or relinquishing
             // capture. Cancel/loss never substitutes the current cursor for that event.
-            if (consumeFinal && TryGetScreenPoint(e.GetCurrentPoint(_root).Position, out var releasedAt))
+            var haveReleasePoint = e.Pointer.PointerDeviceType == PointerDeviceType.Mouse
+                ? GetCursorPos(out var releasedAt)
+                : TryGetScreenPoint(e.GetCurrentPoint(_root).Position, out releasedAt);
+            if (consumeFinal && haveReleasePoint)
             {
                 finalPoint = releasedAt;
                 ApplyDragPoint(releasedAt);
@@ -775,6 +785,9 @@ internal sealed class OwnedDialogWindow : Window
         };
         return true;
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint point);
 
     private void TraceDrag(string phase, uint pointer, string kind, int edges, NativePoint? point)
     {

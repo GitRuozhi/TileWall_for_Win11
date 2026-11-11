@@ -670,7 +670,9 @@ public sealed partial class MainWindow
         foreach (var input in inputs)
         {
             requireCurrent(); token.ThrowIfCancellationRequested();
-            var source = input.Inference ?? await _images.ResolveTargetSourceAsync(input.Input, token)
+            // TargetInput is the target observed together with the source entry bytes.
+            // Keep Input as the original shortcut for automatic icons and launch presentation.
+            var source = input.Inference ?? await _images.ResolveTargetSourceAsync(input.Member.TargetInput ?? input.Input, token)
                 ?? throw new OperationCanceledException(token);
             requireCurrent();
             if (input.Inference is not null && !await _images.IsTargetSourceCurrentAsync(source, token))
@@ -703,6 +705,8 @@ public sealed partial class MainWindow
             else if (member.ResourceOrigin == MemberResourceOrigin.Local && member.Images.Kind == MemberImageSourceKind.Automatic &&
                 member.Images.IconSeries is null)
             {
+                var width = (int)Math.Clamp(Math.Ceiling(_metrics.WidthOf(member.LocalBounds.Width) * Scale), 1, 4096);
+                var height = (int)Math.Clamp(Math.Ceiling(_metrics.HeightOf(member.LocalBounds.Height) * Scale), 1, 4096);
                 var reserve = member.ImageDisplay.Mode == TileWall.Core.Imaging.ImageDisplayMode.Custom
                     ? Math.Max(1, member.ImageDisplay.CustomScale) : 1;
                 var prepared = await _images.PrepareAutomaticIconSeriesAsync(member, input.Input,
@@ -714,8 +718,11 @@ public sealed partial class MainWindow
                 requireCurrent();
                 if (prepared is not null)
                 {
+                    // This method only receives newly accepted pure-source/Explorer members.
+                    // Attributed records retain their saved display and never enter this preparation.
+                    member = MemberPresentationRules.ApplyAutomaticImageDefaults(member, prepared.Series, width, height);
+                    prepared = prepared with { Series = member.Images.IconSeries! };
                     foreach (var asset in prepared.Assets) await AddAssetAsync(asset);
-                    member = member with { Images = member.Images with { IconSeries = prepared.Series } };
                 }
             }
             members.Add(member.Id, member);

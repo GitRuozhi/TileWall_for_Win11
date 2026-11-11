@@ -31,6 +31,41 @@ public sealed class AutomaticIconSeriesRulesTests
             48, 48, static size => size));
     }
 
+    [Theory]
+    [InlineData(100, 50, 1, TileWall.Core.Imaging.ImageDisplayMode.Fill)]
+    [InlineData(300, 150, 2, TileWall.Core.Imaging.ImageDisplayMode.Original)]
+    [InlineData(100, 150, 2, TileWall.Core.Imaging.ImageDisplayMode.Original)]
+    public void NewAutomaticDefaultFillsOrUsesTheLargestOriginalPlane(int width, int height, int selected,
+        TileWall.Core.Imaging.ImageDisplayMode mode)
+    {
+        var series = Series((48, 24), (128, 64), (256, 128));
+        var member = new TileMember { Id = "new", LocalBounds = new(0, 0, 2, 2) };
+        var result = MemberPresentationRules.ApplyAutomaticImageDefaults(member, series, width, height);
+        Assert.Equal(selected, result.Images.IconSeries!.SelectedFrame);
+        Assert.Equal(mode, result.ImageDisplay.Mode);
+        Assert.Equal(1, result.ImageDisplay.CustomScale);
+        if (mode == TileWall.Core.Imaging.ImageDisplayMode.Original)
+        {
+            var frame = result.Images.IconSeries.Frames[selected];
+            var placement = TileWall.Core.Imaging.MemberImageGeometry.Calculate(width / 1.5, height / 1.5,
+                frame.Width, frame.Height, 1.5, result.ImageDisplay);
+            Assert.Equal(frame.Width, placement.Bounds.Width * 1.5, 8);
+            Assert.Equal(frame.Height, placement.Bounds.Height * 1.5, 8);
+        }
+    }
+
+    [Fact]
+    public void BindingWithoutDefaultsPreservesExplicitDisplayAndTheConfirmedReference()
+    {
+        var display = new TileWall.Core.Imaging.MemberImageDisplay
+        { Mode = TileWall.Core.Imaging.ImageDisplayMode.Custom, CustomScale = 1.75 };
+        var series = Series((48, 48), (256, 256));
+        var member = new TileMember { Id = "existing", LocalBounds = new(0, 0, 2, 2), ImageDisplay = display };
+        var result = MemberPresentationRules.ApplyAutomaticImageDefaults(member, series, 500, 500, applyDefaults: false);
+        Assert.Same(display, result.ImageDisplay);
+        Assert.Same(series, result.Images.IconSeries);
+    }
+
     [Fact]
     public void GeometryReferenceStaysStableWhileDisplayResolutionFollowsDemand()
     {
