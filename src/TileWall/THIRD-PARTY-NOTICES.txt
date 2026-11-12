@@ -19,14 +19,15 @@ MIT License. See Licenses\AsmResolverLicense.txt.
 Source: https://github.com/Washi1337/AsmResolver/blob/master/LICENSE.md
 Packages: AsmResolver, AsmResolver.PE, AsmResolver.PE.File, AsmResolver.PE.Win32Resources.
 
-Microsoft .NET Runtime 10.0.11
+Microsoft .NET Runtime 10.0.14
 MIT License and third-party notices: Licenses\DotNetRuntimeLicense.txt and Licenses\DotNetRuntimeThirdPartyNotices.txt.
-Source package: Microsoft.NETCore.App.Runtime.win-x64 10.0.11.
+Source package: Microsoft.NETCore.App.Runtime.win-x64 10.0.14.
 
 Microsoft Windows App SDK components
 Microsoft software license terms: Licenses\WindowsAppSdkLicense.txt.
 Third-party notices: Licenses\WindowsAppSdkThirdPartyNotices.txt and Licenses\WindowsAppSdkWinUiThirdPartyNotices.txt.
 Packages: Microsoft.WindowsAppSDK.Base 2.0.4; Microsoft.WindowsAppSDK.Foundation 2.3.12; Microsoft.WindowsAppSDK.InteractiveExperiences 2.1.9; Microsoft.WindowsAppSDK.WinUI 2.3.9.
+Microsoft.WindowsAppSDK.Runtime 2.5.1 supplies Microsoft.WindowsAppRuntime.Insights.Resource.dll; its license and third-party notices are the Windows App SDK files listed above.
 
 Microsoft Windows SDK for .NET
 Microsoft license terms: Licenses\WindowsSdkNetLicense.rtf.
@@ -42,15 +43,8 @@ Assets\FallbackIcons\Generic\file.png, folder.png, website.png, and unknown.png 
 Per-file dimensions and SHA-256 provenance are recorded in Assets\FallbackIcons\Generic\assets.json.
 
 Bundled website icons
-The local images identify the websites linked from TileWall. File-level source URLs, pinned revisions, hashes, and recorded usage terms are listed in Assets\FallbackIcons\Websites\catalog.json. Collection notes are in Assets\FallbackIcons\Websites\NOTICE.txt; source originals and supporting records are retained in the source repository at Showcase\website-icons.
+The local images identify the websites linked from TileWall. File-level source URLs, pinned revisions, hashes, and source license records are listed in Assets\FallbackIcons\Websites\catalog.json. Attribution and license-file references are in Assets\FallbackIcons\Websites\NOTICE.txt; source originals and supporting records are retained in the private repository at Showcase\website-icons.
 
 TileWall system fallback artwork
 Assets\FallbackIcons\System contains original geometric system-function illustrations created for TileWall. They supplement unavailable native images and do not include Windows DLL exports, third-party logos, fonts, or traced artwork. No third-party asset license applies.
 Per-file dimensions and SHA-256 digests are recorded in Assets\FallbackIcons\System\assets.json. The source generator is tools\GenerateSystemFallbackIcons.py.
-
-Retained historical license material
-The following files are retained from earlier dependency sets. Their presence does not mean that Windows ML or System.Numerics.Tensors is a runtime dependency of the current build.
-Microsoft.WindowsAppSDK.ML 2.1.94: Licenses\WindowsAppSdkMlLicense.txt.
-Microsoft.Windows.AI.MachineLearning 2.1.74: Licenses\WindowsMlRuntimeLicense.txt and Licenses\WindowsMlRuntimeThirdPartyNotices.txt.
-System.Numerics.Tensors 9.0.0: Licenses\SystemNumericsTensorsLicense.txt and Licenses\SystemNumericsTensorsThirdPartyNotices.txt.
-

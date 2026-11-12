@@ -224,13 +224,18 @@ public sealed partial class WallImageService : IDisposable
     {
         if (!frame.MemoryCacheAllowed || !frame.CacheAllowed && !allowMemoryOnly ||
             frame.Pixels is null || frame.Pixels.LongLength > CacheLimitBytes / 2) return;
+        CachePrepared(key, frame, frame.Pixels.LongLength);
+    }
+
+    private void CachePrepared(string key, object value, long bytes)
+    {
         lock (_cacheLock)
         {
             if (_disposed || _cacheLifetime.IsCancellationRequested || _cache.ContainsKey(key)) return;
-            var item = new CacheItem(key, frame, frame.Pixels.LongLength);
+            var item = new CacheItem(key, value, bytes);
             var node = _lru.AddFirst(item);
             _cache.Add(key, node);
-            _cacheBytes += frame.Pixels.LongLength;
+            _cacheBytes += bytes;
             while (_cacheBytes > CacheLimitBytes && _lru.Last is { } last)
             {
                 _cacheBytes -= last.Value.Bytes;

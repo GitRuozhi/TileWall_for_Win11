@@ -103,6 +103,7 @@ public sealed partial class WallStoreTests
         var files = prepared.Files.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
         var settings = JsonNode.Parse(files["settings.json"])!; settings["schemaVersion"] = 3;
         settings["value"]!.AsObject().Remove("redirectTaskbarStartButton");
+        settings["value"]!.AsObject().Remove("activateTaskbar");
         files["settings.json"] = Encoding.UTF8.GetBytes(settings.ToJsonString(UserDataSnapshotJson.Options));
         Assert.DoesNotContain("iconSeries", Encoding.UTF8.GetString(files["wall.json"]));
         UserDataFileDigest Digest(string name) => new(files[name].Length, UserDataSnapshotJson.Hash(files[name]));

@@ -117,14 +117,30 @@ public sealed class WallViewportPolicyTests
     }
 
     [Fact]
-    public void WindowedImportBeyondAvailableColumnsIsAtomic()
+    public void WindowedImportBeyondAvailableColumnsFallsBackToExpansionAtomically()
     {
         var metrics = new WallMetrics();
-        var source = WallDocument.Empty(1, 4) with { Lanes = [new WallLane { Groups = [Group("retained")] }] };
+        var source = WallDocument.Empty(1, 4) with
+        {
+            Lanes = [new WallLane { Groups = [Group("retained")] }],
+            Settings = new() { FullScreen = false, ExpandColumns = false, WindowedColumns = 1, WindowedRows = 4,
+                WindowedViewportWidthDip = 960, ManualWindowedViewportWidthDip = 900 },
+        };
+        var serialized = WallJson.Serialize(source);
         var budget = new WallViewportBudget(metrics.WallWidth(2), metrics.WallHeight(4), 2, 4, false);
-        var result = StartMenuImportPlanner.TryPlan(source, 0, [Group("one"), Group("two")], metrics, budget);
-        Assert.False(result.Success);
-        Assert.Equal("CONTENT_TOO_LARGE", result.Detail);
+        var incoming = new[] { Group("one"), Group("two") };
+        var result = StartMenuImportPlanner.TryPlan(source, 0, incoming, metrics, budget);
+        Assert.True(result.Success, result.Detail);
+        var proposed = result.Proposal!.Document;
+        Assert.Equal(["one", "two", "retained"],
+            proposed.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id));
+        Assert.Equal(4, proposed.Columns);
+        Assert.Equal(4, proposed.Rows);
+        Assert.Empty(proposed.Lanes[^1].Groups);
+        Assert.Equal(source.Generation + 1, proposed.Generation);
+        Assert.Equal(source.Settings with { ExpandColumns = true }, proposed.Settings);
+        Assert.All(incoming, group => Assert.Equal(new GridRect(0, 0, 2, 2), Assert.Single(group.Members).LocalBounds));
+        Assert.Equal(serialized, WallJson.Serialize(source));
         Assert.Single(source.Lanes);
     }
 

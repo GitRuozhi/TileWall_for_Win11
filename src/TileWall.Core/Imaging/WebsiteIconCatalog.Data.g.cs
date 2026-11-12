@@ -4,7 +4,7 @@ namespace TileWall.Core.Imaging;
 
 internal static partial class WebsiteIconCatalog
 {
-    private const string CatalogVersion = "website-icons-v1:1.2.0:B87CE683B40CDB49712BDABB8EA8DE5610266E959D2B00418008552C9DA53325";
+    private const string CatalogVersion = "website-icons-v1:1.2.0:2FF7058286A27FE7201BD39172B407D4B59DA6A26660A3A96FF8EFAD6B44E203";
 
     private static IReadOnlyDictionary<string, WebsiteIconMatch> CreateHostMap()
     {

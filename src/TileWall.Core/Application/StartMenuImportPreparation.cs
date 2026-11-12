@@ -4,7 +4,6 @@ using TileWall.Core.Shell;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
 using System.Globalization;
-using System.Text;
 
 namespace TileWall.Core.Application;
 
@@ -39,18 +38,10 @@ internal static class StartMenuImportPreparation
 
     private static (string? Path, int? Index) ReadUrlIcon(byte[] bytes)
     {
-        string text;
-        try { text = new UTF8Encoding(false, true).GetString(bytes); }
-        catch (DecoderFallbackException) { text = Encoding.Latin1.GetString(bytes); }
-        string? path = null;
-        int? index = null;
-        foreach (var line in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-        {
-            if (line.StartsWith("IconFile=", StringComparison.OrdinalIgnoreCase)) path ??= line[9..];
-            if (line.StartsWith("IconIndex=", StringComparison.OrdinalIgnoreCase) && index is null &&
-                int.TryParse(line.AsSpan(10), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)) index = parsed;
-        }
-        return (path, index);
+        var metadata = UrlShortcut.ReadMetadata(bytes);
+        int? index = int.TryParse(metadata.IconIndex, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed : null;
+        return (metadata.IconFile, index);
     }
 
     internal static LaunchIdentity? TryIdentity(WallMember member, string dataRoot,

@@ -136,16 +136,29 @@ public sealed class ExplorerAppendPlannerTests
     }
 
     [Fact]
-    public void LastItemFailureRejectsWholeAppendAndLeavesSnapshotUntouched()
+    public void LastItemFallsBackToExpansionAndLeavesSnapshotUntouched()
     {
-        var before = Document(Lane(Group("tail", Tile("old-a"), Tile("old-b", 2), Tile("old-c", 4))));
+        var before = Document(Lane(Group("tail", Tile("old-a"), Tile("old-b", 2), Tile("old-c", 4)))) with
+        {
+            Settings = new() { FullScreen = false, ExpandColumns = false, WindowedColumns = 1, WindowedRows = 3,
+                WindowedViewportWidthDip = 960, ManualWindowedViewportWidthDip = 900 },
+        };
         var serialized = WallJson.Serialize(before);
+        var first = Tile("first");
+        var last = Tile("cannot-fit");
 
-        var result = Plan(before, [Tile("first"), Tile("cannot-fit")]);
+        var result = Plan(before, [first, last]);
 
-        Assert.False(result.Success);
-        Assert.Equal(WallRejection.NoSpace, result.Rejection);
-        Assert.Null(result.Proposal);
+        Assert.True(result.Success, result.Detail);
+        var proposed = result.Proposal!.Document;
+        Assert.Equal(["old-a", "old-b", "old-c", "first"], proposed.Lanes[0].Groups[0].Members.Select(member => member.Id));
+        Assert.Equal("cannot-fit", Assert.Single(Assert.Single(proposed.Lanes[1].Groups).Members).Id);
+        Assert.Empty(proposed.Lanes[^1].Groups);
+        Assert.Equal(3, proposed.Rows);
+        Assert.Equal(before.Generation + 1, proposed.Generation);
+        Assert.Equal(before.Settings with { ExpandColumns = true }, proposed.Settings);
         Assert.Equal(serialized, WallJson.Serialize(before));
+        Assert.Equal(new GridRect(0, 0, 2, 2), first.LocalBounds);
+        Assert.Equal(new GridRect(0, 0, 2, 2), last.LocalBounds);
     }
 }

@@ -55,7 +55,7 @@ public sealed class WallPackageForegroundTests : IDisposable
         var preview = (await Reader().ReadPreviewAsync(path)).Preview!;
         var imported = preview.Content.ToDocument();
         var image = imported.EnumerateAllMembers().Single(member => member.Id == "image");
-        Assert.Equal(5, preview.Manifest.FormatVersion);
+        Assert.Equal(WallPackageManifest.CurrentFormatVersion, preview.Manifest.FormatVersion);
         Assert.Equal(MemberImageSourceKind.Automatic, image.Images.Kind);
         Assert.True(AutomaticIconSeriesRules.SameSeries(series, image.Images.IconSeries));
         Assert.Null(image.Images.Media); Assert.Null(image.Images.Path);
@@ -168,6 +168,9 @@ public sealed class WallPackageForegroundTests : IDisposable
         if (formatVersion >= 4)
             content = content with { Members = content.Members.Select(member => member.Id == "image"
                 ? member with { Images = new() { Kind = MemberImageSourceKind.Single, Media = legacySingle.Reference } } : member).ToArray() };
+        if (formatVersion == 5)
+            content = content with { Members = content.Members.Select(member => member.Id == "empty"
+                ? member with { Images = new() { Kind = MemberImageSourceKind.None } } : member).ToArray() };
         var bytes = WallPackageJson.Serialize(content, formatVersion);
         if (formatVersion == 2) Assert.DoesNotContain("targetDisplayName", System.Text.Encoding.UTF8.GetString(bytes));
         Assert.DoesNotContain("iconSeries", System.Text.Encoding.UTF8.GetString(bytes));
@@ -187,7 +190,8 @@ public sealed class WallPackageForegroundTests : IDisposable
         Assert.Equal(corruptFingerprint ? WallPackageReadStatus.InvalidPackage : WallPackageReadStatus.Valid, read.Status);
         if (corruptFingerprint) return;
         Assert.All(read.Preview!.Content.Members.Where(member => formatVersion < 4 || member.Id == "empty"),
-            member => Assert.Equal(MemberImageSourceKind.Automatic, member.Images.Kind));
+            member => Assert.Equal(formatVersion == 5 ? MemberImageSourceKind.None : MemberImageSourceKind.Automatic,
+                member.Images.Kind));
         Assert.All(read.Preview.Content.ToDocument().EnumerateAllMembers().Where(member => formatVersion < 4 || member.Id == "empty"), member =>
         { Assert.Equal(MemberResourceOrigin.Package, member.ResourceOrigin); Assert.Equal(MemberImageSourceKind.None, member.Images.Kind); });
         if (formatVersion >= 4)
@@ -196,6 +200,29 @@ public sealed class WallPackageForegroundTests : IDisposable
             Assert.Equal(MemberImageSourceKind.Single, restored.Images.Kind); Assert.Null(restored.Images.IconSeries);
             Assert.Equal(legacySingle.Reference, restored.Images.Media);
         }
+    }
+
+    [Fact]
+    public async Task Format5AutomaticWithoutAnIconSeriesRejectsTheWholePackage()
+    {
+        var content = WallPackageContent.FromSelection(Source(), ["empty"]);
+        Assert.Equal(MemberImageSourceKind.Automatic, Assert.Single(content.Members).Images.Kind);
+        Assert.Null(content.Members[0].Images.IconSeries);
+        var bytes = WallPackageJson.Serialize(content, 5);
+        var files = new[] { new WallPackageFile("wall.json", bytes.Length, WallPackageJson.Hash(bytes), "wall") };
+        var manifest = new WallPackageManifest { FormatVersion = 5, WallSchemaVersion = 5,
+            AppVersion = "1.4.1", CreatedUtc = DateTimeOffset.UtcNow,
+            ContentFingerprint = WallPackageJson.Fingerprint(content, files, 5), Files = files };
+        var path = Path.Combine(_directory, "missing-series.zip");
+        using (var zip = ZipFile.Open(path, ZipArchiveMode.Create))
+        {
+            using (var wall = zip.CreateEntry("wall.json").Open()) wall.Write(bytes);
+            using (var description = zip.CreateEntry("manifest.json").Open()) description.Write(WallPackageJson.Serialize(manifest));
+        }
+
+        var read = await Reader().ReadPreviewAsync(path);
+        Assert.Equal(WallPackageReadStatus.InvalidPackage, read.Status);
+        Assert.Null(read.Preview);
     }
 
     [Fact]

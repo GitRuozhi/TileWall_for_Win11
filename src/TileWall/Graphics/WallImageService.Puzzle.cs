@@ -445,19 +445,7 @@ public sealed partial class WallImageService
         var pair = prepared.Pair!;
         var bytes = pair.Sharp.BgraPremultiplied.Length + (pair.BlurSource?.BgraPremultiplied.Length ?? 0);
         if (bytes > CacheLimitBytes / 2) return;
-        lock (_cacheLock)
-        {
-            if (_disposed || _cacheLifetime.IsCancellationRequested || _cache.ContainsKey(key)) return;
-            var node = _lru.AddFirst(new CacheItem(key, prepared, bytes));
-            _cache.Add(key, node);
-            _cacheBytes += bytes;
-            while (_cacheBytes > CacheLimitBytes && _lru.Last is { } last)
-            {
-                _cacheBytes -= last.Value.Bytes;
-                _cache.Remove(last.Value.Key);
-                _lru.RemoveLast();
-            }
-        }
+        CachePrepared(key, prepared, bytes);
     }
 
     private static ImageSource MakeBitmap(DecodedImageFrame frame)

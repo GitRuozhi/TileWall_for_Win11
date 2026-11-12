@@ -182,16 +182,25 @@ public sealed class WallBatchPlannerTests
     }
 
     [Fact]
-    public void NewLaneRespectsBudgetAndGroupIdsAvoidMemberIds()
+    public void NewLaneFallsBackToExpansionAndGroupIdsAvoidMemberIds()
     {
         var full = Enumerable.Range(0, 8).Select(i => Tile($"old-{i}", i)).ToArray();
-        var before = Document(Lane(Group("target", full)));
+        var before = Document(Lane(Group("target", full))) with
+        {
+            Settings = new() { FullScreen = false, ExpandColumns = false, WindowedColumns = 1, WindowedRows = 2,
+                WindowedViewportWidthDip = 960, ManualWindowedViewportWidthDip = 900 },
+        };
         var serialized = WallJson.Serialize(before);
         var beyondMonitor = WallBatchPlanner.TryPlan(before, [Tile("added")], "target", 0,
             "batch", OneLaneWidth, OneGroupHeight);
-        Assert.False(beyondMonitor.Success);
-        Assert.Equal(WallRejection.NoSpace, beyondMonitor.Rejection);
-        Assert.Null(beyondMonitor.Proposal);
+        Assert.True(beyondMonitor.Success, beyondMonitor.Detail);
+        var expanded = beyondMonitor.Proposal!.Document;
+        Assert.Equal(3, expanded.Columns);
+        Assert.Equal("added", Assert.Single(Assert.Single(expanded.Lanes[1].Groups).Members).Id);
+        Assert.Equal(8, Assert.Single(expanded.Lanes[0].Groups).Members.Count);
+        Assert.Empty(expanded.Lanes[^1].Groups);
+        Assert.Equal(before.Generation + 1, expanded.Generation);
+        Assert.Equal(before.Settings with { ExpandColumns = true }, expanded.Settings);
         Assert.Equal(serialized, WallJson.Serialize(before));
 
         var incoming = Tile("batch-0001");
@@ -200,6 +209,8 @@ public sealed class WallBatchPlannerTests
         Assert.True(allowed.Success, allowed.Detail);
         Assert.Equal("batch-0002", Assert.Single(allowed.Proposal!.Document.Lanes[1].Groups).Id);
         Assert.Equal("batch-0001", Assert.Single(allowed.Proposal.Document.Lanes[1].Groups[0].Members).Id);
+        Assert.Equal(before.Settings, allowed.Proposal.Document.Settings);
+        Assert.Equal(serialized, WallJson.Serialize(before));
     }
 
     [Fact]
@@ -256,12 +267,17 @@ public sealed class WallBatchPlannerTests
     }
 
     [Fact]
-    public void LastTileStillRejectsWholeBatchAfterCompression()
+    public void LastTileFallsBackToExpansionAfterCompressionWithoutChangingTheSource()
     {
         var metrics = new WallMetrics();
         var existing = Tile("existing") with { LocalBounds = new GridRect(0, 6, 4, 2) };
         var existingRight = Tile("existing-right") with { LocalBounds = new GridRect(4, 6, 4, 2) };
-        var before = Document(Lane(Group("target", existing, existingRight))) with { Rows = 10 };
+        var before = Document(Lane(Group("target", existing, existingRight))) with
+        {
+            Rows = 10,
+            Settings = new() { FullScreen = false, ExpandColumns = false, WindowedColumns = 1, WindowedRows = 10,
+                WindowedViewportWidthDip = 960, ManualWindowedViewportWidthDip = 900 },
+        };
         var serialized = WallJson.Serialize(before);
         var first = Tile("first") with { LocalBounds = new GridRect(0, 0, 4, 2) };
         var second = Tile("second") with { LocalBounds = new GridRect(0, 0, 4, 2) };
@@ -272,10 +288,63 @@ public sealed class WallBatchPlannerTests
 
         var result = WallBatchPlanner.TryPlan(before, [first, second, last], "target", 0, "batch", width, height, metrics);
 
-        Assert.False(result.Success);
-        Assert.Equal(WallRejection.NoSpace, result.Rejection);
-        Assert.Null(result.Proposal);
+        Assert.True(result.Success, result.Detail);
+        var proposed = result.Proposal!.Document;
+        Assert.Equal(["existing", "existing-right", "first", "last", "second"],
+            proposed.EnumerateAllMembers().Select(member => member.Id).OrderBy(id => id));
+        Assert.Equal(5, proposed.Rows);
+        Assert.Empty(proposed.Lanes[^1].Groups);
+        Assert.Equal(before.Generation + 1, proposed.Generation);
+        Assert.Equal(before.Settings with { ExpandColumns = true }, proposed.Settings);
         Assert.Equal(serialized, WallJson.Serialize(before));
+    }
+
+    [Fact]
+    public void LastLegalTileExhaustsAll64LanesAndRejectsTheWholeBatchAtomically()
+    {
+        var metrics = new WallMetrics();
+        TileMember WideTile(string id, int column = 0) => Tile(id) with { LocalBounds = new(column, 0, 4, 1) };
+        // Default DIPs: cell 48, gap 4, lane gap 16, margin 12, top 0, title 48 + gap 4;
+        // lane width 412, 64-lane width 27400, two-row height 112. Lanes 0-61 are full,
+        // lane 62 has one 4x1 tile and lane 63 is the required empty expansion tail.
+        var lanes = Enumerable.Range(0, 62).Select(index => Lane(Group($"group-{index}",
+            WideTile($"left-{index}"), WideTile($"right-{index}", 4))))
+            .Concat([Lane(Group("target", WideTile("target-left"))), Lane()]).ToArray();
+        var before = Document(lanes) with
+        {
+            Settings = new() { FullScreen = false, ExpandColumns = true, LayoutLocked = false },
+        };
+        Assert.Equal(WallDocument.CurrentSchemaVersion, before.SchemaVersion);
+        Assert.Equal(7, before.Generation);
+        Assert.Equal(64, before.Columns);
+        Assert.Equal(2, before.Rows);
+        Assert.All(before.Lanes.SelectMany(lane => lane.Groups), group => Assert.Null(group.ReservedRows));
+        Assert.Empty(WallLayoutEngine.ValidateGeometry(before, metrics));
+        var serialized = WallJson.Serialize(before);
+        var prefix = WideTile("prefix");
+        var last = WideTile("last");
+        var width = metrics.WallWidth(64);
+        var height = metrics.WallHeight(2);
+        Assert.Equal(27400, width);
+        Assert.Equal(112, height);
+
+        var fits = WallBatchPlanner.TryPlan(before, [prefix], "target", 62, "batch", width, height, metrics,
+            appendOnly: false);
+        Assert.True(fits.Success, fits.Detail);
+        var target = fits.Proposal!.Document.Lanes[62].Groups.Single(group => group.Id == "target");
+        Assert.Equal(new GridRect(4, 0, 4, 1), target.Members.Single(member => member.Id == "prefix").LocalBounds);
+        Assert.Equal(serialized, WallJson.Serialize(before));
+
+        // The legal last 4x1 tile needs a second content row (164 DIP) or a 64th
+        // occupied lane, which would leave no room for the required empty tail.
+        var exhausted = WallBatchPlanner.TryPlan(before, [prefix, last], "target", 62, "batch", width, height, metrics,
+            appendOnly: false);
+        Assert.False(exhausted.Success);
+        Assert.Equal(WallRejection.NoSpace, exhausted.Rejection);
+        Assert.Null(exhausted.Proposal);
+        Assert.Equal(serialized, WallJson.Serialize(before));
+        Assert.Equal(new GridRect(0, 0, 4, 1), prefix.LocalBounds);
+        Assert.Equal(new GridRect(0, 0, 4, 1), last.LocalBounds);
     }
 
     [Theory]

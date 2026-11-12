@@ -91,10 +91,9 @@ public sealed class RollingFileSinkTests : IDisposable
         Assert.True(sink.Abandoned); // 达上限后停止尝试，宿主业务不受影响
     }
 
-    [Fact]
+    [SymbolicLinkFact(directory: true)]
     public void TrustedRoot是目录联接时不创建或写入外部日志()
     {
-        if (!OperatingSystem.IsWindows()) throw Xunit.Sdk.SkipException.ForSkip("Windows junction fixture required.");
         Directory.CreateDirectory(_dir);
         var outside = _dir + "-outside";
         Directory.CreateDirectory(outside);
@@ -119,10 +118,9 @@ public sealed class RollingFileSinkTests : IDisposable
         }
     }
 
-    [Fact]
+    [SymbolicLinkFact(directory: true)]
     public void Logs目录联接到外部时不写入外部日志()
     {
-        if (!OperatingSystem.IsWindows()) throw Xunit.Sdk.SkipException.ForSkip("Windows junction fixture required.");
         Directory.CreateDirectory(_dir);
         var outside = _dir + "-outside";
         Directory.CreateDirectory(outside);
@@ -146,10 +144,9 @@ public sealed class RollingFileSinkTests : IDisposable
         }
     }
 
-    [Fact]
+    [WindowsFact]
     public void 实际Windows目录Junction根和Logs均拒绝且外部Sentinel不变()
     {
-        if (!OperatingSystem.IsWindows()) throw Xunit.Sdk.SkipException.ForSkip("Windows mklink /J fixture required.");
         Directory.CreateDirectory(_dir);
         var fixtureRoot = Path.GetFullPath(_dir);
         var outside = Path.Combine(fixtureRoot, "outside-target");
@@ -181,10 +178,9 @@ public sealed class RollingFileSinkTests : IDisposable
         }
     }
 
-    [Fact]
+    [SymbolicLinkFact(directory: false)]
     public void 当前日志是外部文件符号链接时保持链接和目标不变()
     {
-        if (!OperatingSystem.IsWindows()) throw Xunit.Sdk.SkipException.ForSkip("Windows symbolic-link fixture required.");
         Directory.CreateDirectory(_dir);
         var outside = _dir + "-outside.log";
         File.WriteAllBytes(outside, [9, 2, 6, 5]);
@@ -206,10 +202,9 @@ public sealed class RollingFileSinkTests : IDisposable
         }
     }
 
-    [Fact]
+    [SymbolicLinkFact(directory: false)]
     public void 历史日志是外部文件符号链接时轮转拒绝且外部目标不变()
     {
-        if (!OperatingSystem.IsWindows()) throw Xunit.Sdk.SkipException.ForSkip("Windows symbolic-link fixture required.");
         Directory.CreateDirectory(_dir);
         var outside = _dir + "-outside.log";
         File.WriteAllBytes(outside, [5, 3, 5, 8]);
@@ -231,10 +226,9 @@ public sealed class RollingFileSinkTests : IDisposable
         }
     }
 
-    [Fact]
+    [WindowsFact]
     public void 活动日志句柄打开期间不能被替换()
     {
-        if (!OperatingSystem.IsWindows()) throw Xunit.Sdk.SkipException.ForSkip("Windows file-sharing fixture required.");
         using var sink = NewSink(maxFileBytes: 1 << 20, maxHistoryFiles: 1);
         sink.Write(Entry("pin-active-file"));
         var current = sink.CurrentFilePath;
@@ -248,19 +242,9 @@ public sealed class RollingFileSinkTests : IDisposable
     private static AppLogEntry Entry(string message) =>
         new(DateTimeOffset.UtcNow, AppLogLevel.Warn, "PathGuard", message);
 
-    private static void CreateDirectoryLink(string path, string target)
-    {
-        try { Directory.CreateSymbolicLink(path, target); }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
-        { throw Xunit.Sdk.SkipException.ForSkip($"Windows directory link fixture unavailable: {ex.GetType().Name}"); }
-    }
+    private static void CreateDirectoryLink(string path, string target) => Directory.CreateSymbolicLink(path, target);
 
-    private static void CreateFileLink(string path, string target)
-    {
-        try { File.CreateSymbolicLink(path, target); }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
-        { throw Xunit.Sdk.SkipException.ForSkip($"Windows file link fixture unavailable: {ex.GetType().Name}"); }
-    }
+    private static void CreateFileLink(string path, string target) => File.CreateSymbolicLink(path, target);
 
     private static void CreateDirectoryJunction(string path, string target, string fixtureRoot)
     {
@@ -268,7 +252,7 @@ public sealed class RollingFileSinkTests : IDisposable
         EnsureFixturePath(target, fixtureRoot);
         if (!Directory.Exists(target)) throw new IOException("Junction target must be an existing fixture directory.");
         if (new[] { path, target }.Any(value => value.IndexOfAny(['"', '&', '|', '<', '>', '^', '%', '!', '\r', '\n']) >= 0))
-            throw Xunit.Sdk.SkipException.ForSkip("Fixture path contains cmd.exe metacharacters.");
+            throw new IOException("Fixture path contains cmd.exe metacharacters.");
 
         var start = new ProcessStartInfo("cmd.exe")
         {
@@ -290,7 +274,7 @@ public sealed class RollingFileSinkTests : IDisposable
         }
         Task.WaitAll(output, error);
         if (process.ExitCode != 0)
-            throw Xunit.Sdk.SkipException.ForSkip($"mklink /J fixture unavailable: {error.Result.Trim()} {output.Result.Trim()}");
+            throw new IOException($"mklink /J fixture failed: {error.Result.Trim()} {output.Result.Trim()}");
 
         EnsureFixturePath(path, fixtureRoot);
         var attributes = File.GetAttributes(path);
@@ -327,6 +311,55 @@ public sealed class RollingFileSinkTests : IDisposable
     private static void DeleteDirectoryLink(string path)
     {
         if (Directory.Exists(path)) Directory.Delete(path, recursive: false);
+    }
+
+    private sealed class WindowsFactAttribute : FactAttribute
+    {
+        public WindowsFactAttribute()
+        {
+            if (!OperatingSystem.IsWindows()) Skip = "Requires Windows junction or file-sharing semantics.";
+        }
+    }
+
+    private sealed class SymbolicLinkFactAttribute : FactAttribute
+    {
+        public SymbolicLinkFactAttribute(bool directory)
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                Skip = "Requires Windows symbolic links.";
+                return;
+            }
+
+            var root = Path.Combine(Path.GetTempPath(), "tilewall-link-capability-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            var target = Path.Combine(root, "target");
+            var link = Path.Combine(root, "link");
+            try
+            {
+                if (directory) Directory.CreateDirectory(target);
+                else File.WriteAllText(target, "capability probe");
+                try
+                {
+                    if (directory) Directory.CreateSymbolicLink(link, target);
+                    else File.CreateSymbolicLink(link, target);
+                }
+                catch (Exception error) when (error is UnauthorizedAccessException or PlatformNotSupportedException ||
+                    error is IOException && (error.HResult & 0xffff) is 1 or 5 or 50 or 1314)
+                {
+                    // ERROR_INVALID_FUNCTION / ACCESS_DENIED / NOT_SUPPORTED / PRIVILEGE_NOT_HELD only.
+                    // Unexpected IO failures and every failure in the real fixture remain test failures.
+                    Skip = $"Windows {(directory ? "directory" : "file")} symbolic-link creation is unavailable: " +
+                        $"{error.GetType().Name} (0x{error.HResult:X8}).";
+                }
+            }
+            finally
+            {
+                if (directory && Directory.Exists(link)) Directory.Delete(link, recursive: false);
+                else if (!directory) File.Delete(link);
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     private RollingFileSink NewSink(long maxFileBytes, int maxHistoryFiles) =>

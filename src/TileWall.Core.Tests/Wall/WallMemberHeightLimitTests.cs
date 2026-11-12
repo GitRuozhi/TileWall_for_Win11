@@ -54,7 +54,10 @@ public sealed class WallMemberHeightLimitTests
         else
         {
             Assert.Equal(WallRejection.InvalidAction, geometryProposal.Rejection);
-            Assert.Contains("MEMBER_SIZE_LIMIT", geometryProposal.Detail);
+            // Replacement rejects the invalid member before building candidate geometry;
+            // only add/move reach the geometry validator that supplies this diagnostic.
+            if (actionKind is "add" or "move")
+                Assert.Contains("MEMBER_SIZE_LIMIT", geometryProposal.Detail);
             Assert.Null(geometryProposal.Proposal);
         }
         Assert.Equal(before, WallJson.Serialize(source));

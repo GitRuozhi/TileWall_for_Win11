@@ -99,4 +99,34 @@ public sealed class StartMenuImportPreparationTests
         Assert.Equal(LaunchIdentityService.ForUrl("steam://rungameid/10"), (await operation).Identity);
         Assert.Equal(0, links.Reads);
     }
+
+    [Theory]
+    [InlineData("utf16")]
+    [InlineData("sections")]
+    [InlineData("whitespace")]
+    public async Task UrlIconUsesTheSameSectionAndEncodingRulesAsItsObservedTarget(string shape)
+    {
+        const string iconPath = @"%SystemRoot%\图标\page.ico";
+        var text = shape switch
+        {
+            "sections" => $"[Other]\r\nIconFile=wrong.ico\r\nIconIndex=9\r\n[InternetShortcut]\r\nURL=steam://rungameid/10\r\nIconFile={iconPath}\r\nIconIndex=-2\r\n[After]\r\nIconFile=after.ico\r\nIconIndex=8\r\n",
+            "whitespace" => $"  [InternetShortcut]  \r\n  URL = steam://rungameid/10  \r\n  IconFile = {iconPath}  \r\n  IconIndex = -2  \r\n",
+            _ => $"[InternetShortcut]\r\nURL=steam://rungameid/10\r\nIconFile={iconPath}\r\nIconIndex=-2\r\n",
+        };
+        byte[] bytes = shape == "utf16"
+            ? [.. System.Text.Encoding.Unicode.GetPreamble(), .. System.Text.Encoding.Unicode.GetBytes(text)]
+            : System.Text.Encoding.UTF8.GetBytes(text);
+        var sha = Convert.ToHexString(SHA256.HashData(bytes));
+        var executor = new Executor(); var links = new Links(_ => throw new InvalidOperationException());
+        var operation = StartMenuImportPreparation.PrepareSourceAsync(executor, Candidate(EntryKind.Url), bytes,
+            sha, new(new InMemoryFileStore(), links), links, CancellationToken.None);
+        Array.Fill(bytes, (byte)0); // The queued job must consume its frozen observation, not the caller's later bytes.
+        await executor.RunNextAsync();
+        var source = await operation;
+        Assert.Equal(LaunchIdentityService.ForUrl("steam://rungameid/10"), source.Identity);
+        Assert.Equal(iconPath, source.UrlIconPath);
+        Assert.Equal(-2, source.UrlIconIndex);
+        Assert.Equal(sha, source.SourceSha256);
+        Assert.Equal(0, links.Reads);
+    }
 }

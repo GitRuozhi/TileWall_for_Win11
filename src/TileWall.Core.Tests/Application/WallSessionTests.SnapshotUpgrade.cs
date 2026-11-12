@@ -113,7 +113,11 @@ public sealed partial class WallSessionTests
         var bytes = prepared.Files.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
         var settings = JsonNode.Parse(bytes["settings.json"])!;
         settings["schemaVersion"] = version;
-        if (version < 5) settings["value"]!.AsObject().Remove("redirectTaskbarStartButton");
+        if (version < 5)
+        {
+            settings["value"]!.AsObject().Remove("redirectTaskbarStartButton");
+            settings["value"]!.AsObject().Remove("activateTaskbar");
+        }
         if (version == 1) settings["value"]!.AsObject().Remove("secondaryHotKey");
         bytes["settings.json"] = Encoding.UTF8.GetBytes(settings.ToJsonString(UserDataSnapshotJson.Options));
         if (version < 3)
