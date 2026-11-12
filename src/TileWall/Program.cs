@@ -10,6 +10,11 @@ public static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        // The SDK module initializer has already loaded our non-single-file runtime.
+        // Older WinAppSDK apps must not inherit TileWall's resource directory (#1).
+        // https://github.com/microsoft/PowerToys/pull/51235
+        Environment.SetEnvironmentVariable("MICROSOFT_WINDOWSAPPRUNTIME_BASE_DIRECTORY", null);
+
         if (ApplicationModel.TaskbarRecoveryCommand.IsRequested(args))
             return ApplicationModel.TaskbarRecoveryCommand.Run(args);
         if (ApplicationModel.CurrentUserUninstallCommand.IsNotificationRequested(args))
