@@ -77,7 +77,8 @@ public sealed partial class MainWindow
         IReadOnlyList<EntryChange>? changes = null, bool carousel = false,
         Action<string?>? settle = null, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
         IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
-        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null, bool background = false)
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null, bool background = false,
+        bool useWelcomeIconDefaults = false)
     {
         Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
         if (PersistenceWriteBlocked || background && !CanAcceptBackgroundWrite) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
@@ -93,20 +94,22 @@ public sealed partial class MainWindow
         UpdateWallHitTesting();
         Surface.IsHitTestVisible = !_viewBlocked && !PersistenceInteractionBlocked;
         UpdateResizeZones();
-        var operation = CommitProposalAsyncCore(proposal, changes, settle, preparedMedia, expectedEntrySha256, managedGalleries);
+        var operation = CommitProposalAsyncCore(proposal, changes, settle, preparedMedia, expectedEntrySha256, managedGalleries,
+            useWelcomeIconDefaults);
         _pendingPersistence = operation.IsCompleted ? null : operation;
         return operation;
     }
 
     private async Task<string?> CommitProposalAsyncCore(WallProposal proposal,
         IReadOnlyList<EntryChange>? changes, Action<string?>? settle, IReadOnlyList<PreparedMediaAsset>? preparedMedia,
-        IReadOnlyDictionary<string, string>? expectedEntrySha256, IReadOnlyList<PreparedManagedGallery>? managedGalleries)
+        IReadOnlyDictionary<string, string>? expectedEntrySha256, IReadOnlyList<PreparedManagedGallery>? managedGalleries,
+        bool useWelcomeIconDefaults)
     {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         string? error = null;
         try
         {
-            var media = await PrepareFormalMediaAsync(proposal, changes, Scale);
+            var media = await PrepareFormalMediaAsync(proposal, changes, Scale, useWelcomeIconDefaults);
             var result = await _session.CommitAsync(media.Proposal, changes,
                 AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia), expectedEntrySha256, managedGalleries);
             _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);

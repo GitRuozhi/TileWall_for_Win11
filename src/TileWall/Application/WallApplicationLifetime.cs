@@ -60,6 +60,9 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _login = new LoginStartupController(scope);
         _window = new MainWindow(scope);
         _isTest = scope.IsTest;
+        _taskbarActivation = new TaskbarActivationService(scope.DataRoot, scope.IsTest,
+            WinRT.Interop.WindowNative.GetWindowHandle(_window));
+        _taskbarActivation.StateChanged += QueueTaskbarActivationState;
         _startReplacement = new StartReplacementService(generation => QueueStartReplacementToggle(generation), StartReplacementChannel.WindowsKey);
         _taskbarStartReplacement = new StartReplacementService(generation => QueueStartReplacementToggle(generation, taskbar: true), StartReplacementChannel.TaskbarButton);
         _startReplacement.Faulted += failure => QueueStartReplacementFault(failure);
@@ -83,7 +86,11 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _window.ImportReadinessChanged += () =>
         {
             if (_window.CanProcessExternalImport) QueueAddDrain();
-            if (_started && _window.SettingsPersistenceBlocked) _ = StopInputForBlockedPersistenceAsync();
+            if (_started && _window.SettingsPersistenceBlocked)
+            {
+                _ = StopInputForBlockedPersistenceAsync();
+                SuspendTaskbarForBlockedPersistence();
+            }
         };
         _window.DialogOpened += () => _show.Request(WallShowTrigger.Show);
         _window.AppWindow.Closing += (sender, e) =>
@@ -100,7 +107,9 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         {
             _taskbarStartReplacement.InvalidateButtons();
             _window.QueueEnvironmentRefresh();
+            QueueTaskbarEnvironmentRefresh();
         };
+        _host.TaskbarCreated += QueueTaskbarEnvironmentRefresh;
         _host.AcceptPaths = ReceiveAdd;
         _hotKey.RegistrationChanged += UpdateTray;
         _secondaryHotKey.RegistrationChanged += UpdateTray;
@@ -115,9 +124,29 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         try
         {
             _notifications.Register(intent.NotificationActivation);
+            await RecoverPreviousTaskbarAsync();
+            if (_exitPending || _tearingDown) return;
             // No Activate/Show is needed to open the committed session or register process resources.
             await _window.InitializeSessionAsync(_showWhenStarted || !intent.Background && intent.Add is null);
             if (_exitPending || _tearingDown) return;
+#if !TILEWALL_PACKAGED
+            // RuntimeScope.IsTest is retained in _isTest; only the normal data
+            // scope may upgrade its own existing, ordinary-user Explorer verbs.
+            if (!_isTest)
+            {
+                try
+                {
+                    await Task.Run(() =>
+                    {
+                        if (ContextMenuUserCommand.IsElevated()) return;
+                        var migration = ExplorerContextMenuRegistration.ReconcileCurrentUserForCurrentExecutable();
+                        if (!migration.Success) AppLog.Warn("ContextMenuMigration", migration.Error ?? "Explorer registration upgrade failed.");
+                    });
+                }
+                catch (Exception ex) { AppLog.Warn("ContextMenuMigration", ex.ToString()); }
+                if (_exitPending || _tearingDown) return;
+            }
+#endif
             _window.ScheduleStartMenuStartupRefresh();
             ProductStrings.ApplyLanguage(_window.Settings.LanguageMode);
             _window.RefreshAppearance();
@@ -318,7 +347,10 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             _window.TraceExit("dialog-closed");
             if (!await StopInputForExitAsync()) return;
             _window.TraceExit("shutdown-workers");
+            BeginTaskbarShutdown();
             CancelAnimations(); // Cancel a pending backdrop fence before appearance drains it.
+            SnapHide();
+            await ShutdownTaskbarAsync();
             try { await _window.ShutdownPersistenceAsync(); }
             catch (Exception ex) { AppLog.Warn("Exit", $"Storage worker shutdown: {ex.Message}"); }
             _tearingDown = true;
@@ -399,7 +431,9 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         CancelAnimationPreparation();
         _animation.ResetVisual();
+        PrepareTaskbarPlacement();
         _window.ShowWall();
+        TaskbarWallShown();
         if (_show.State == WallShowState.Visible) _window.CompleteBackdropAnimation(visible: true);
     }
     public void SnapHide()
@@ -407,6 +441,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         CancelAnimationPreparation();
         _animation.ResetVisual();
         _window.HideWall();
+        TaskbarWallHidden();
         _window.CompleteBackdropAnimation(visible: false);
     }
     public void FocusWall() => _window.FocusTopSession();

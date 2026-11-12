@@ -19,7 +19,7 @@ internal static class ActionIcon
         Edit = "\uE70F", Undo = "\uE7A7", Redo = "\uE7A6", Add = "\uE710", Remove = "\uE738",
         Delete = "\uE74D", Previous = "\uE76B", Next = "\uE76C", Refresh = "\uE72C",
         OpenFile = "\uE8E5", Folder = "\uE8B7", Picture = "\uE8B9", Confirm = "\uE73E",
-        PresetSmall = "\uE743", PresetMedium = "\uE744", PresetWide = "\uE745", PresetLarge = "\uE747",
+        PresetSmall = "\uE743", PresetMedium = "\uE744", PresetWide = "\uE745", PresetLarge = "\uE747", Tiles = "\uECA5",
         Fit = "\uE799", Fill = "\uE9A6", Original = "\uE91B", Custom = "\uE932",
         Photo2 = "\uEB9F", GallerySet = "\uF5ED", Checkbox = "\uE739", OpenFolderHorizontal = "\uED25", Share = "\uE72D",
         ImportAllMirrored = "\uEA53", PreviousItem = "\uE892", NextItem = "\uE893",

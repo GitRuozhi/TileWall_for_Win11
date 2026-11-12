@@ -17,10 +17,19 @@
     <Compile Include="..\TileWall\Graphics\ShellImageListFrameRules.cs" Link="Graphics\ShellImageListFrameRules.cs" />
     <Compile Include="..\TileWall\Graphics\IconCompositionRules.cs" Link="Graphics\IconCompositionRules.cs" />
     <Compile Include="..\TileWall\Application\FullscreenResizeGesture.cs" Link="Application\FullscreenResizeGesture.cs" />
+    <Compile Include="..\TileWall\Application\WallPresentationGeometry.cs" Link="Application\WallPresentationGeometry.cs" />
     <Compile Include="..\TileWall\Shell\Interop\ExplorerContextMenuRegistration.cs" Link="Shell\ExplorerContextMenuRegistration.cs" />
     <Compile Include="..\TileWall\Application\ContextMenuUserCommand.cs" Link="Application\ContextMenuUserCommand.cs" />
     <Compile Include="..\TileWall\Application\CurrentUserUninstallCommand.cs" Link="Application\CurrentUserUninstallCommand.cs" />
     <Compile Include="..\TileWall\Shell\Interop\DesktopUserUninstallLauncher.cs" Link="Shell\DesktopUserUninstallLauncher.cs" />
+    <Compile Include="..\TileWall\Application\TaskbarActivationState.cs" Link="Application\TaskbarActivationState.cs" />
+    <Compile Include="..\TileWall\Application\TaskbarLease.cs" Link="Application\TaskbarLease.cs" />
+    <Compile Include="..\TileWall\Application\TaskbarRecovery.cs" Link="Application\TaskbarRecovery.cs" />
+    <Compile Include="..\TileWall\Application\TaskbarRecoveryStore.cs" Link="Application\TaskbarRecoveryStore.cs" />
+    <Compile Include="..\TileWall\Application\TaskbarRecoveryCommand.cs" Link="Application\TaskbarRecoveryCommand.cs" />
+    <Compile Include="..\TileWall\Shell\Interop\TaskbarActivationBackend.cs" Link="Shell\TaskbarActivationBackend.cs" />
+    <Compile Include="..\TileWall\Shell\Interop\TaskbarNativeRegion.cs" Link="Shell\TaskbarNativeRegion.cs" />
+    <Compile Include="..\TileWall\Shell\Interop\KnownFolderPaths.cs" Link="Shell\KnownFolderPaths.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />

@@ -40,6 +40,7 @@ public sealed partial class WallStoreTests
         var files = current.Files.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
         var settings = JsonNode.Parse(files["settings.json"])!; settings["schemaVersion"] = 2;
         settings["value"]!.AsObject().Remove("redirectTaskbarStartButton");
+        settings["value"]!.AsObject().Remove("activateTaskbar");
         files["settings.json"] = Encoding.UTF8.GetBytes(settings.ToJsonString(UserDataSnapshotJson.Options));
         foreach (var name in new[] { "wall.json", "recycle-bin.json" })
         {

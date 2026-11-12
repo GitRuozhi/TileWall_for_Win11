@@ -1,5 +1,12 @@
 Third-Party Notices
 
+ReStart taskbar activation and recovery implementation
+Copyright (c) 2026 ReStart contributors
+MIT License. See Licenses\ReStartLicense.txt.
+Source: https://github.com/LastResolution/ReStart
+Adapted from commits 297c8f5 and b9c2718 (PR #63, released in v2.1.1),
+including the taskbar backend, scoped recovery, and bounded retry behavior.
+
 Inno Setup Simplified Chinese translation (EXE installer)
 Copyright (c) 2019 - 2020 kirakira
 MIT License. See Licenses\InnoSetupChineseTranslationLicense.txt.

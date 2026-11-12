@@ -166,7 +166,7 @@ public sealed partial class MainWindow
                         UpdateResizeProposal(preview: false, _nativeSizingMessagePoint);
                         if (_resizing && !_nativeSizingCancelRequested)
                         {
-                            var target = _nativeSizingTargetRect;
+                            var target = ConstrainPresentationRectangle(_nativeSizingTargetRect);
                             var rectangle = new Win32Api.NativeRect { Left = target.X, Top = target.Y,
                                 Right = target.X + target.Width, Bottom = target.Y + target.Height };
                             Marshal.StructureToPtr(rectangle, lParam, false);

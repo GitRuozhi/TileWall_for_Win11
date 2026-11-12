@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using TileWall.ApplicationModel;
 using TileWall.Core.Wall;
 using TileWall.Resources;
 using Windows.Foundation;
@@ -12,6 +13,67 @@ namespace TileWall;
 public sealed partial class MainWindow
 {
     private WorkAreaRect _screenArea;
+    private RectInt32? _taskbarPlacementArea;
+    private WallPresentationBounds _taskbarPlacementScreen;
+    private nint _taskbarWindow;
+    private bool _presentationOverflow;
+    private WallPresentationBounds ScreenPresentationBounds => new(_screenArea.Left, _screenArea.Top,
+        Math.Max(1, _screenArea.Right - _screenArea.Left), Math.Max(1, _screenArea.Bottom - _screenArea.Top));
+    private WallPresentationBounds PresentationBounds => WallPresentationGeometry.ResolveArea(ScreenPresentationBounds,
+        _taskbarPlacementScreen == ScreenPresentationBounds && _taskbarPlacementArea is { } area
+            ? new(area.X, area.Y, area.Width, area.Height) : null, Settings.ActivateTaskbar);
+    internal bool HasTaskbarPresentationBounds => PresentationBounds != ScreenPresentationBounds;
+
+    // Observe/apply callers own Explorer effects. This entry only changes this window's
+    // presentation and must never show, activate, capture, or publish a layout proposal.
+    internal void SetTaskbarPlacement(RectInt32? area, nint taskbarWindow)
+    {
+        var previous = PresentationBounds;
+        ReadPrimaryScreen();
+        _taskbarPlacementArea = area;
+        _taskbarPlacementScreen = ScreenPresentationBounds;
+        _taskbarWindow = area is not null ? taskbarWindow : 0;
+        if (previous != PresentationBounds)
+        {
+            CancelTransientState();
+            StopViewportTransition();
+            if (_hasDocument && !_viewBlocked) ApplyViewport(animateMode: false);
+            _dialogHost?.RefreshPlacementBounds();
+        }
+        UpdateWindowZOrder(IsForegroundWallSession());
+    }
+
+    internal RectInt32 ConstrainDialogWorkArea(RectInt32 workArea)
+    {
+        if (!Settings.ActivateTaskbar || _taskbarPlacementArea is null) return workArea;
+        var screen = ScreenPresentationBounds;
+        // A dragged page on another display keeps that display's ordinary work area.
+        if ((long)workArea.X + workArea.Width <= screen.X || workArea.X >= (long)screen.X + screen.Width ||
+            (long)workArea.Y + workArea.Height <= screen.Y || workArea.Y >= (long)screen.Y + screen.Height)
+            return workArea;
+        var area = PresentationBounds;
+        var left = Math.Max(workArea.X, area.X); var top = Math.Max(workArea.Y, area.Y);
+        var right = Math.Min((long)workArea.X + workArea.Width, (long)area.X + area.Width);
+        var bottom = Math.Min((long)workArea.Y + workArea.Height, (long)area.Y + area.Height);
+        return right > left && bottom > top ? new(left, top, (int)(right - left), (int)(bottom - top)) : workArea;
+    }
+
+    private RectInt32 ConstrainPresentationRectangle(RectInt32 rectangle)
+    {
+        var bounded = WallPresentationGeometry.Constrain(new(rectangle.X, rectangle.Y, rectangle.Width, rectangle.Height), PresentationBounds);
+        return new(bounded.X, bounded.Y, bounded.Width, bounded.Height);
+    }
+
+    private int MaximumPresentedWindowedWidthPixels => Math.Max(1, Math.Min(MaximumWindowedWidthPixels, PresentationBounds.Width));
+    private int MaximumPresentedWindowedHeightPixels => Math.Max(1, Math.Min(
+        (int)Math.Floor((_screenArea.Bottom - _screenArea.Top) * .9), PresentationBounds.Height));
+
+    private double CurrentWindowedViewportWidthDip(WallDocument source) =>
+        !source.Settings.FullScreen && PresentationBounds != ScreenPresentationBounds
+            ? source.Settings.WindowedViewportWidthDip ?? (source.Settings.ExpandColumns
+                ? MaximumWindowedClientWidthDip
+                : WallLayoutEngine.Measure(source, _metrics).WallWidth + WallViewportPolicy.FixedWidth(source.Settings.MenuStart))
+            : Math.Max(1, (AppWindow.Size.Width - _frameWidth) / Scale);
     private WallViewportBudget CurrentViewportBudget => RecoverableViewportBudget(Settings);
     private WallViewportBudget ViewportBudget(bool fullScreen) => ViewportBudget(Settings with
         { FullScreen = fullScreen });
@@ -57,7 +119,7 @@ public sealed partial class MainWindow
              requested.MenuStart != source.Settings.MenuStart || requested.ExpandColumns != source.Settings.ExpandColumns))
             return new(null, WallRejection.InvalidAction, "LAYOUT_LOCKED");
         if (requested.LayoutLocked && !source.Settings.LayoutLocked)
-            requested = requested with { WindowedViewportWidthDip = Math.Max(1, (AppWindow.Size.Width - _frameWidth) / Scale) };
+            requested = requested with { WindowedViewportWidthDip = CurrentWindowedViewportWidthDip(source) };
         requested = WallViewportPolicy.ForModeTransition(source.Settings, requested);
         var maximumTileWidth = MaximumTileWidthDip(requested);
         if (maximumTileWidth > 0 && WallViewportPolicy.CompleteColumns(maximumTileWidth, _metrics) == 0)
@@ -68,7 +130,7 @@ public sealed partial class MainWindow
             var settings = source.Settings.FullScreen ? requested : requested with
             {
                 WindowedColumns = source.Columns, WindowedRows = source.Rows,
-                WindowedViewportWidthDip = Math.Max(1, (AppWindow.Size.Width - _frameWidth) / Scale),
+                WindowedViewportWidthDip = CurrentWindowedViewportWidthDip(source),
             };
             return WallViewportPolicy.TryResize(source, Math.Min(source.Columns, budget.MaxColumns), budget.MaxRows, settings, budget, _metrics);
         }
@@ -145,16 +207,17 @@ public sealed partial class MainWindow
         WallSettings? presentationSettings = null)
     {
         if (presentationSettings is not null) _presentedViewportSettings = presentationSettings;
-        var scrolling = PresentedViewportSettings.ExpandColumns || _environmentOverflow;
-        if (_scrollMode != scrolling || _verticalScrollMode != _environmentOverflow)
+        var overflow = _environmentOverflow || _presentationOverflow;
+        var scrolling = PresentedViewportSettings.ExpandColumns || overflow;
+        if (_scrollMode != scrolling || _verticalScrollMode != overflow)
         {
             _scrollMode = scrolling;
-            _verticalScrollMode = _environmentOverflow;
+            _verticalScrollMode = overflow;
             WallScroll.HorizontalScrollMode = scrolling ? ScrollMode.Enabled : ScrollMode.Disabled;
             WallScroll.HorizontalScrollBarVisibility = scrolling ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
-            WallScroll.VerticalScrollMode = _environmentOverflow ? ScrollMode.Enabled : ScrollMode.Disabled;
-            WallScroll.VerticalScrollBarVisibility = _environmentOverflow ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
-            if (!scrolling || !_environmentOverflow) WallScroll.ChangeView(scrolling ? null : 0, _environmentOverflow ? null : 0, null, disableAnimation: true);
+            WallScroll.VerticalScrollMode = overflow ? ScrollMode.Enabled : ScrollMode.Disabled;
+            WallScroll.VerticalScrollBarVisibility = overflow ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+            if (!scrolling || !overflow) WallScroll.ChangeView(scrolling ? null : 0, overflow ? null : 0, null, disableAnimation: true);
         }
         if (_scrollRegion != region)
         {

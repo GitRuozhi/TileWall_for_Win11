@@ -49,6 +49,7 @@ internal static class WelcomeWallBuilder
         {
             var target = targets.Items[key];
             var member = new TileMember { Id = NewId(), LocalBounds = bounds, TargetInput = target.Input,
+                RotationInterval = MemberPresentationRules.NewRotationInterval,
                 Visual = Title(text.Items.GetValueOrDefault(key, key)) };
             changes.Add(target.ShellIdentityKey is { } identity
                 ? new EntryChange.CreateShellLink(member.Id, target.Input, identity)
@@ -58,6 +59,7 @@ internal static class WelcomeWallBuilder
         TileMember Url(string title, string target, GridRect bounds, ManagedMediaReference? image = null)
         {
             var member = new TileMember { Id = NewId(), LocalBounds = bounds, TargetInput = target, Visual = Title(title),
+                RotationInterval = MemberPresentationRules.NewRotationInterval,
                 Images = image is null ? new() : new() { Kind = MemberImageSourceKind.Single, Media = image } };
             changes.Add(new EntryChange.CreateUrl(member.Id, target));
             return member;
@@ -92,7 +94,7 @@ internal static class WelcomeWallBuilder
         {
             Id = NewId(), LocalBounds = new(2, 0, 6, 4), TargetInput = dataRoot,
             Visual = Title("Puzzle Album"), Images = new() { Kind = MemberImageSourceKind.Folder, Path = galleryFolder, ManagedGallery = managedGallery },
-            ImageDisplay = new() { Mode = ImageDisplayMode.Fill }, RotationInterval = ImageRotationInterval.Seconds5,
+            ImageDisplay = new() { Mode = ImageDisplayMode.Fill }, RotationInterval = MemberPresentationRules.NewRotationInterval,
             Partitions = [new(0, 0, 2, 2), new(2, 0, 2, 2), new(4, 0, 2, 2),
                 new(0, 2, 2, 2), new(2, 2, 2, 2), new(4, 2, 2, 2)],
         };

@@ -91,6 +91,7 @@ public sealed partial class MainWindow : Window
         Surface.ResolvePuzzleFrame = _puzzles.FrameFor;
         Surface.ResolvePuzzleProgress = _puzzles.ProgressFor;
         Surface.ResolvePuzzleTransition = _puzzles.TransitionFor;
+        Surface.CanAdvanceMemberImage = _puzzles.CanAdvance;
         Title = $"TileWall {ProductVersion.Display}";
         if (AppWindow.Presenter is OverlappedPresenter presenter)
         {
@@ -114,13 +115,15 @@ public sealed partial class MainWindow : Window
         Surface.MemberRemoveRequested += RemoveMember;
         Surface.MemberAdminRequested += id => LaunchMember(id, elevated: true);
         Surface.MemberLocationRequested += ShowMemberLocation;
+        Surface.MemberSizeRequested += ResizeMemberPreset;
         Surface.GroupRenameRequested += RenameGroup;
         Surface.NewTileRequested += (groupId, lane) => _ = CreateTileAsync(groupId, lane);
-        Surface.PuzzleNextPageRequested += () =>
+        Surface.MemberNextImageRequested += id =>
         {
-            if (PersistenceInteractionBlocked) return;
+            if (PersistenceInteractionBlocked || _modal || _viewBlocked ||
+                FindMember(id)?.Images.Kind != MemberImageSourceKind.Folder) return;
             UpdatePuzzleGate();
-            _puzzles.AdvanceAll();
+            _puzzles.Advance(id);
         };
         Surface.NewClockRequested += (groupId, lane) => _ = CreateClockAsync(groupId, lane);
         Surface.SettingsRequested += () => SettingsRequested?.Invoke();
@@ -552,9 +555,15 @@ public sealed partial class MainWindow : Window
     {
         if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (_viewBlocked) return ProductStrings.Get("Wall.ViewBlocked");
-        var fit = WallViewportPolicy.Validate(proposal, RecoverableViewportBudget(proposal.Document.Settings), _metrics);
-        if (fit.Proposal is null) return ViewportFailure(fit);
-        if (WallLayoutEngine.ValidateLockedChange(Document, fit.Proposal.Document, _metrics) is not null)
+        // Only a presentation preference can retain an already oversized grid.
+        // The complete document comparison prevents this from admitting any
+        // layout, member, recycle, or unrelated settings change.
+        if (!IsTaskbarPresentationOnly(proposal.Document))
+        {
+            var fit = WallViewportPolicy.Validate(proposal, RecoverableViewportBudget(proposal.Document.Settings), _metrics);
+            if (fit.Proposal is null) return ViewportFailure(fit);
+        }
+        if (WallLayoutEngine.ValidateLockedChange(Document, proposal.Document, _metrics) is not null)
             return ProductStrings.Get("Wall.LayoutLocked");
         try
         {
@@ -575,6 +584,12 @@ public sealed partial class MainWindow : Window
             return error;
         }
     }
+
+    private bool IsTaskbarPresentationOnly(WallDocument next) =>
+        next.Generation == checked(Document.Generation + 1) &&
+        next.Settings.ActivateTaskbar != Settings.ActivateTaskbar &&
+        (next.Settings with { ActivateTaskbar = Settings.ActivateTaskbar }) == Settings &&
+        (next with { Generation = Document.Generation, Settings = Settings }) == Document;
 
     private string? DescribeCommit(WallSessionResult result)
     {
@@ -671,7 +686,8 @@ public sealed partial class MainWindow : Window
         try
         {
             if (!await BeginModalAsync()) return;
-            var tile = new TileMember { Id = $"member-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 2, 2) };
+            var tile = new TileMember { Id = $"member-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 2, 2),
+                RotationInterval = MemberPresentationRules.NewRotationInterval };
             var destinationLane = Math.Clamp(WallViewportPolicy.MapCreationLane(Document, lane), 0, 63);
             var dialog = new SharedMemberEditorDialog(DialogOwner, tile, _images, null, _session.LinkFiles, MaxMemberRows(),
                 (member, changes, assets) =>
@@ -818,6 +834,20 @@ public sealed partial class MainWindow : Window
 
     private int MaxMemberRows() => Math.Max(0,
         Math.Min(WallViewportPolicy.MaximumMemberRows, CurrentViewportBudget.MaxRows - 1));
+
+    private void ResizeMemberPreset(string id, GridSize size)
+    {
+        if (PersistenceInteractionBlocked || _modal || _viewBlocked || _windowClosing || ShutdownStarted) return;
+        _ = QueueUserMutationAsync(() =>
+        {
+            if (PersistenceMutationBlocked || _modal || _viewBlocked || FindMember(id) is not TileMember current)
+                return Task.CompletedTask;
+            var replacement = current with { LocalBounds = current.LocalBounds with { Width = size.Columns, Height = size.Rows } };
+            var error = SaveSharedMember(replacement, [], isNewPlaceholder: false, static _ => { });
+            if (error is not null) Status(error);
+            return Task.CompletedTask;
+        });
+    }
     private void RemoveMember(string id)
     {
         BeginUnpinMembers([id]);

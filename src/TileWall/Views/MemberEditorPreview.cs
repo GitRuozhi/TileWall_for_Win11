@@ -19,7 +19,7 @@ internal sealed partial class MemberEditorPreview : Grid
     private readonly Canvas _viewport = new();
     private readonly Canvas _scene = new();
     private readonly PuzzleCanvasView _formal = new() { PreviewHover = true };
-    private readonly Microsoft.UI.Xaml.Shapes.Path _underlay = new() { IsHitTestVisible = false, Opacity = 0.35 };
+    private readonly Microsoft.UI.Xaml.Shapes.Path _underlay = new() { IsHitTestVisible = false, Opacity = 0.75 };
     private readonly Canvas _guides = new() { IsHitTestVisible = false }, _hint = new() { IsHitTestVisible = false };
     private readonly TextBlock _pointerText = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, MaxWidth = 300 };
     private readonly Border _pointerTip;

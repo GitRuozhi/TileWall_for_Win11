@@ -1,4 +1,5 @@
 using TileWall.Core.Storage;
+using TileWall.Core.Imaging;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
 using TileWall.ApplicationModel;
@@ -37,7 +38,7 @@ public sealed partial class MainWindow
     }
 
     private async Task<(WallProposal Proposal, IReadOnlyList<PreparedMediaAsset> Assets)> PrepareFormalMediaAsync(
-        WallProposal proposal, IReadOnlyList<EntryChange>? changes, double scale)
+        WallProposal proposal, IReadOnlyList<EntryChange>? changes, double scale, bool useWelcomeIconDefaults = false)
     {
         var document = proposal.Document;
         var pending = document.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
@@ -45,6 +46,7 @@ public sealed partial class MainWindow
         var background = document.Settings.BackgroundMode == WallBackgroundMode.Custom && document.Settings.BackgroundMedia is null;
         var assets = new Dictionary<string, PreparedMediaAsset>(StringComparer.Ordinal);
         var images = new Dictionary<string, MemberImageSource>(StringComparer.Ordinal);
+        var welcomeDisplays = new Dictionary<string, MemberImageDisplay>(StringComparer.Ordinal);
         foreach (var member in pending)
         {
             var asset = await _images.PrepareMediaAsync(member.Images.Path ?? throw new IOException("Missing image source."));
@@ -74,13 +76,22 @@ public sealed partial class MainWindow
             try
             {
                 if (await _images.PrepareAutomaticIconSeriesAsync(member, entry, width, height) is not { } prepared) continue;
-                images[member.Id] = member.Images with { IconSeries = prepared.Series };
+                if (useWelcomeIconDefaults && !previous.ContainsKey(member.Id) && member.ImageDisplay == new MemberImageDisplay())
+                {
+                    // Only the authored welcome proposal opts in. This is the same
+                    // successful preparation, not a retry or a rule for user-created IDs.
+                    var initialized = MemberPresentationRules.ApplyAutomaticImageDefaults(member, prepared.Series, width, height);
+                    images[member.Id] = initialized.Images;
+                    welcomeDisplays[member.Id] = initialized.ImageDisplay;
+                }
+                else images[member.Id] = member.Images with { IconSeries = prepared.Series };
                 foreach (var asset in prepared.Assets) assets.TryAdd(asset.Reference.Sha256, asset);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException)
             { AppLog.Warn("AutomaticIconCapture", $"member={member.Id} {ex.Message}"); }
         }
-        WallMember Map(WallMember member) => images.TryGetValue(member.Id, out var source) ? member with { Images = source } : member;
+        WallMember Map(WallMember member) => images.TryGetValue(member.Id, out var source) ? member with
+        { Images = source, ImageDisplay = welcomeDisplays.GetValueOrDefault(member.Id, member.ImageDisplay) } : member;
         var settings = document.Settings;
         if (background)
         {

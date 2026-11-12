@@ -34,6 +34,7 @@ internal sealed record ImportBatchItem(string SourcePath, TileMember Member, Exp
         return new(path, new TileMember
         {
             Id = $"tile-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 2, 2),
+            RotationInterval = MemberPresentationRules.NewRotationInterval,
             Visual = new MemberVisual { Title = name },
             TargetInput = path,
         }, kind);

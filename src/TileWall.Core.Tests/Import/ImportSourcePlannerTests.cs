@@ -29,6 +29,23 @@ public sealed class ImportSourcePlannerTests
         .SelectMany(lane => lane.Groups).Single(group => title is null || group.Title == title);
 
     [Theory]
+    [InlineData(ImportPageSourceKind.CurrentWall)]
+    [InlineData(ImportPageSourceKind.WallPackage)]
+    [InlineData(ImportPageSourceKind.RecycleBin)]
+    public void AttributedImportPreservesSavedRotationInsteadOfApplyingNewMemberDefaults(ImportPageSourceKind source)
+    {
+        var wall = WallDocument.Empty(1, 8);
+        var member = Tile("saved") with { RotationInterval = ImageRotationInterval.Seconds15 };
+        var candidate = Item("saved", "Saved", new("original", "Original", 0), position: true, size: true) with
+        { SourceKind = source, Policy = ImportSourcePolicy.Attributed, Member = member };
+        var projection = ImportSourcePlanner.Project(wall, [candidate]);
+        var plan = Plan(wall, projection, [candidate.SourceKey]);
+        Assert.Equal(ImportPlanStatus.Ready, plan.Status);
+        Assert.Equal(ImageRotationInterval.Seconds15, Assert.Single(Destination(plan).Members).RotationInterval);
+        Assert.Equal(ImageRotationInterval.Seconds15, member.RotationInterval);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void ReservedSourceFootprintRequiresAllOriginalMembersEvenWhenOneCannotBeSelected(bool filtered)

@@ -42,6 +42,7 @@ public sealed class WelcomeWallBuilderTests
         Assert.Equal(columns, proposal.Document.Columns);
         Assert.Equal(4, proposal.Document.Lanes.Sum(lane => lane.Groups.Count));
         Assert.Equal(29, proposal.Document.EnumerateAllMembers().Count());
+        Assert.All(proposal.Document.EnumerateAllMembers(), member => Assert.Equal(ImageRotationInterval.Seconds5, member.RotationInterval));
         var puzzle = Assert.Single(proposal.Document.EnumerateAllMembers().OfType<PuzzleMember>());
         Assert.Equal(Gallery, puzzle.Images.Path);
         Assert.Equal(MemberImageSourceKind.Folder, puzzle.Images.Kind);

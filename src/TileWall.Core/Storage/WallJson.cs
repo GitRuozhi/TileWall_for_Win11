@@ -24,7 +24,12 @@ public static class WallJson
         var settingsJson = json.RootElement.EnumerateObject().LastOrDefault(property =>
             property.Name.Equals("settings", StringComparison.OrdinalIgnoreCase)).Value;
         if (document.Settings is not null && settingsJson.ValueKind == JsonValueKind.Object)
+        {
+            if (document.SchemaVersion < WallDocument.CurrentSchemaVersion && settingsJson.EnumerateObject().Any(property =>
+                property.Name.Equals("activateTaskbar", StringComparison.OrdinalIgnoreCase)))
+                throw new JsonException("Taskbar activation requires the current wall schema.");
             document = document with { Settings = ReadStartInputPreferences(document.Settings, settingsJson, caseInsensitive: true) };
+        }
         return ValidateAndFreeze(document);
     }
 
@@ -48,9 +53,9 @@ public static class WallJson
             throw new JsonException("Malformed wall document collection.");
         if (document.SchemaVersion == 4 && document.EnumerateAllMembers().Any(member => member.Images.IconSeries is not null))
             throw new JsonException("Automatic icon series require the current wall schema.");
-        if (document.SchemaVersion < 6 && (document.Settings.LayoutLocked ||
+        if (document.SchemaVersion < 6 && (!document.Settings.ActivateTaskbar || document.Settings.LayoutLocked ||
             document.Lanes.SelectMany(lane => lane.Groups).Any(group => group.ReservedRows is not null)))
-            throw new JsonException("Reserved layout geometry requires the current wall schema.");
+            throw new JsonException("Taskbar activation and reserved layout geometry require the current wall schema.");
         document = document with { SchemaVersion = WallDocument.CurrentSchemaVersion };
         return Freeze(document);
     }

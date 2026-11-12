@@ -11,9 +11,10 @@ public sealed class ExplorerContextMenuRegistrationTests
     private const string Executable = @"C:\Program Files\TileWall 测试\TileWall.exe";
     private const string OtherExecutable = @"D:\Portable\TileWall.exe";
     private static readonly string[] Paths = [ExplorerContextMenuRegistration.FileVerbPath,
-        ExplorerContextMenuRegistration.DirectoryVerbPath, ExplorerContextMenuRegistration.UrlVerbPath];
+        ExplorerContextMenuRegistration.DirectoryVerbPath, ExplorerContextMenuRegistration.UrlVerbPath,
+        ExplorerContextMenuRegistration.ShortcutVerbPath];
     private static readonly string[] LegacyPaths = [ExplorerContextMenuRegistration.LegacyInternetShortcutVerbPath,
-        ExplorerContextMenuRegistration.LegacyUrlAssociationVerbPath, ExplorerContextMenuRegistration.LegacyVerbPath];
+        ExplorerContextMenuRegistration.LegacyUrlAssociationVerbPath];
 
     [Fact]
     public void ProductionRegistrationIs64BitCurrentUserAndLockIsUserScoped()
@@ -26,7 +27,7 @@ public sealed class ExplorerContextMenuRegistrationTests
     }
 
     [Fact]
-    public void RegistrationWritesThreeClassesAndDoesNotTouchLegacyOrParentHandlers()
+    public void RegistrationWritesFourClassesIncludingShortcutSourceAndDoesNotTouchLegacyOrParentHandlers()
     {
         if (!OperatingSystem.IsWindows()) return;
         using var sandbox = new RegistrySandbox();
@@ -62,6 +63,64 @@ public sealed class ExplorerContextMenuRegistrationTests
         Assert.Equal(ContextMenuStatus.CurrentExecutable, State(sandbox).Status);
     }
 
+    [Fact]
+    public void ReconcileAddsShortcutToOwnedThreeClassRegistrationWithoutRewritingExistingKeys()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var sandbox = new RegistrySandbox();
+        Assert.True(ExplorerContextMenuRegistration.RegisterCurrentUser("添加到 TileWall", sandbox.Root, Executable, () => { }, _ => false).Success);
+        sandbox.Root.DeleteSubKeyTree(ExplorerContextMenuRegistration.ShortcutVerbPath);
+        using (var file = sandbox.Root.OpenSubKey(Paths[0], writable: true)!) file.SetValue("Custom", "retain");
+        Assert.Equal(ContextMenuStatus.PartialOrMixed, State(sandbox).Status);
+        var notifications = 0;
+        for (var repeat = 0; repeat < 2; repeat++)
+            Assert.True(ExplorerContextMenuRegistration.ReconcileCurrentUser(sandbox.Root, Executable, () => notifications++).Success);
+        Assert.Equal(ContextMenuStatus.CurrentExecutable, State(sandbox).Status);
+        using var shortcut = sandbox.Root.OpenSubKey(ExplorerContextMenuRegistration.ShortcutVerbPath)!;
+        Assert.Equal("添加到 TileWall", shortcut.GetValue("MUIVerb"));
+        using var command = shortcut.OpenSubKey("command")!;
+        Assert.Equal(ExplorerContextMenuRegistration.BuildCommand(Executable), command.GetValue(string.Empty));
+        using var unchanged = sandbox.Root.OpenSubKey(Paths[0])!;
+        Assert.Equal("retain", unchanged.GetValue("Custom"));
+        Assert.Equal(1, notifications);
+    }
+
+    [Theory]
+    [InlineData("absent")]
+    [InlineData("other-executable")]
+    [InlineData("partial")]
+    [InlineData("shortcut-conflict")]
+    public void ReconcileNeverEnablesOrTakesOverAnUnownedOrIncompleteMenu(string scenario)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var sandbox = new RegistrySandbox();
+        if (scenario != "absent")
+        {
+            Assert.True(ExplorerContextMenuRegistration.RegisterCurrentUser("Add", sandbox.Root,
+                scenario == "other-executable" ? OtherExecutable : Executable, () => { }, _ => false).Success);
+            sandbox.Root.DeleteSubKeyTree(ExplorerContextMenuRegistration.ShortcutVerbPath);
+            if (scenario == "partial") sandbox.Root.DeleteSubKeyTree(Paths[0]);
+            if (scenario == "shortcut-conflict") SeedVerb(sandbox.Root, ExplorerContextMenuRegistration.ShortcutVerbPath, OtherExecutable);
+        }
+        var notifications = 0;
+        Assert.True(ExplorerContextMenuRegistration.ReconcileCurrentUser(sandbox.Root, Executable, () => notifications++).Success);
+        if (scenario == "shortcut-conflict") AssertSeedVerb(sandbox.Root, ExplorerContextMenuRegistration.ShortcutVerbPath, OtherExecutable);
+        else Assert.Null(sandbox.Root.OpenSubKey(ExplorerContextMenuRegistration.ShortcutVerbPath));
+        Assert.Equal(0, notifications);
+    }
+
+    [Fact]
+    public void UnknownShortcutRegistrationBlocksEnableBeforeAnyOtherClassIsWritten()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var sandbox = new RegistrySandbox();
+        SeedVerb(sandbox.Root, ExplorerContextMenuRegistration.ShortcutVerbPath, OtherExecutable);
+        Assert.False(ExplorerContextMenuRegistration.RegisterCurrentUser("Add", sandbox.Root, Executable, () => { }, _ => false).Success);
+        foreach (var path in Paths.Where(path => path != ExplorerContextMenuRegistration.ShortcutVerbPath))
+            Assert.Null(sandbox.Root.OpenSubKey(path));
+        AssertSeedVerb(sandbox.Root, ExplorerContextMenuRegistration.ShortcutVerbPath, OtherExecutable);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("\"D:\\Other\\TileWall.exe\" --add \"%1\"")]
@@ -93,6 +152,7 @@ public sealed class ExplorerContextMenuRegistrationTests
     [Theory]
     [InlineData(ExplorerContextMenuRegistration.DirectoryVerbPath)]
     [InlineData(ExplorerContextMenuRegistration.UrlVerbPath)]
+    [InlineData(ExplorerContextMenuRegistration.ShortcutVerbPath)]
     public void FailedEnableRestoresCompleteSnapshotsAndRemovesOnlyNewVerbs(string failAfter)
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -107,6 +167,7 @@ public sealed class ExplorerContextMenuRegistrationTests
         AssertSeedVerb(sandbox.Root, Paths[0], Executable);
         AssertSeedVerb(sandbox.Root, Paths[2], OtherExecutable);
         Assert.Null(sandbox.Root.OpenSubKey(Paths[1]));
+        Assert.Null(sandbox.Root.OpenSubKey(ExplorerContextMenuRegistration.ShortcutVerbPath));
     }
 
     [Fact]
@@ -133,6 +194,7 @@ public sealed class ExplorerContextMenuRegistrationTests
         SeedVerb(sandbox.Root, Paths[0], Executable);
         SeedVerb(sandbox.Root, Paths[1], OtherExecutable);
         SeedVerb(sandbox.Root, Paths[2], Executable);
+        SeedVerb(sandbox.Root, ExplorerContextMenuRegistration.ShortcutVerbPath, Executable);
         using (var command = sandbox.Root.OpenSubKey(Paths[2] + @"\command", writable: true)!)
             command.SetValue(string.Empty, ExplorerContextMenuRegistration.BuildCommand(Executable) + " --background");
         foreach (var path in LegacyPaths) SeedVerb(sandbox.Root, path, Executable);
@@ -144,11 +206,11 @@ public sealed class ExplorerContextMenuRegistrationTests
         using (var preserved = sandbox.Root.OpenSubKey(Paths[2])) Assert.NotNull(preserved);
         AssertSeedVerb(sandbox.Root, ExplorerContextMenuRegistration.LegacyInternetShortcutVerbPath, Executable);
         AssertSeedVerb(sandbox.Root, ExplorerContextMenuRegistration.LegacyUrlAssociationVerbPath, OtherExecutable);
-        AssertSeedVerb(sandbox.Root, ExplorerContextMenuRegistration.LegacyVerbPath, Executable);
+        Assert.Null(sandbox.Root.OpenSubKey(ExplorerContextMenuRegistration.ShortcutVerbPath));
         Assert.True(ExplorerContextMenuRegistration.UnregisterOwned(sandbox.Root, Executable, () => { }, includeLegacy: true).Success);
         Assert.Null(sandbox.Root.OpenSubKey(ExplorerContextMenuRegistration.LegacyInternetShortcutVerbPath));
         AssertSeedVerb(sandbox.Root, ExplorerContextMenuRegistration.LegacyUrlAssociationVerbPath, OtherExecutable);
-        Assert.Null(sandbox.Root.OpenSubKey(ExplorerContextMenuRegistration.LegacyVerbPath));
+        Assert.Null(sandbox.Root.OpenSubKey(ExplorerContextMenuRegistration.ShortcutVerbPath));
         Assert.True(ExplorerContextMenuRegistration.UnregisterOwned(sandbox.Root, Executable, () => { }, includeLegacy: true).Success);
     }
 
@@ -229,7 +291,6 @@ public sealed class ExplorerContextMenuRegistrationTests
     [Theory]
     [InlineData(ExplorerContextMenuRegistration.LegacyInternetShortcutVerbPath)]
     [InlineData(ExplorerContextMenuRegistration.LegacyUrlAssociationVerbPath)]
-    [InlineData(ExplorerContextMenuRegistration.LegacyVerbPath)]
     public void FailedLegacyDisableRestoresActiveAndLegacyKeys(string failAfter)
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -268,6 +329,7 @@ public sealed class ExplorerContextMenuRegistrationTests
     [InlineData(ExplorerContextMenuRegistration.UrlVerbPath, "System.FileExtension:=\".txt\"")]
     [InlineData(ExplorerContextMenuRegistration.FileVerbPath, ExplorerContextMenuRegistration.UrlAppliesTo)]
     [InlineData(ExplorerContextMenuRegistration.DirectoryVerbPath, ExplorerContextMenuRegistration.UrlAppliesTo)]
+    [InlineData(ExplorerContextMenuRegistration.ShortcutVerbPath, ExplorerContextMenuRegistration.UrlAppliesTo)]
     public void IncorrectScopeFilterReadsPartialAndEnableRepairsIt(string path, string? appliesTo)
     {
         if (!OperatingSystem.IsWindows()) return;

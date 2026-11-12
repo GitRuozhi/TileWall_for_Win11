@@ -23,6 +23,7 @@ public sealed partial class MainWindow
 
     private void MoveWindowIfChanged(RectInt32 rectangle, bool continuousResizeFrame = false)
     {
+        rectangle = ConstrainPresentationRectangle(rectangle);
         if (_nativeSizingActive) return; // WM_SIZING owns the real HWND rectangle in the diagnostic prototype.
         if (_processingFrame)
         {
@@ -73,6 +74,7 @@ public sealed partial class MainWindow
     private void PresentViewport(RectInt32 rectangle, bool fullScreen, AnchorCorner anchor, bool animate,
         WallSettings? presentationSettings = null, bool animateHeight = false)
     {
+        rectangle = ConstrainPresentationRectangle(rectangle);
         var settings = presentationSettings ?? Settings;
         _presentedViewportSettings = settings;
         _sidebarFullScreen = fullScreen;
@@ -84,6 +86,10 @@ public sealed partial class MainWindow
         var from = _pendingWindowRect ?? new RectInt32(position.X, position.Y, size.Width, size.Height);
         var toClip = ScrollRegionFor(fullScreen, (rectangle.Width - _frameWidth) / Scale,
             (rectangle.Height - _frameHeight) / Scale, anchor, settings);
+        // Temporary taskbar occupancy enables access to clipped committed content.
+        // It never changes the document budget used by resize/save/adaptation.
+        _presentationOverflow = PresentationBounds != ScreenPresentationBounds && Surface.Geometry is { } geometry &&
+            (!settings.ExpandColumns && geometry.WallWidth > toClip.Width + .01 || geometry.WallHeight > toClip.Height + .01);
         if (_nativeSizingActive)
         {
             // The OS applies the WM_SIZING rectangle. Never race it with application

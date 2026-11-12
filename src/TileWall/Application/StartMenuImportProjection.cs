@@ -53,6 +53,7 @@ internal sealed class StartMenuImportProjection
             candidates.Add(new(candidate.SourceKey, candidate.DisplayName, new TileMember
             {
                 Id = id, LocalBounds = new GridRect(0, 0, 1, 1),
+                RotationInterval = MemberPresentationRules.NewRotationInterval,
                 Entry = new(id, $"Objects/{id}/entry.{(kind == ManagedEntryKind.Lnk ? "lnk" : "url")}", kind),
                 TargetInput = source.Identity is { } target && !target.Key.StartsWith("opaque", StringComparison.Ordinal)
                     ? target.Target : candidate.FullPath,

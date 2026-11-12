@@ -83,7 +83,10 @@ public sealed partial class MainWindow
             return ProductStrings.Get("Recycle.Changed");
         var result = RecycleBinRules.Propose(before, recycle, action, CurrentViewportBudget.MaxWidthDip,
             CurrentViewportBudget.MaxHeightDip, _metrics);
-        return result.Proposal is { } proposal ? await CommitProposalAsync(proposal, [], expectedEntrySha256: observed.Hashes) : RecycleFailure(result);
+        if (result.Proposal is not { } proposal) return RecycleFailure(result);
+        var error = await CommitProposalAsync(proposal, [], expectedEntrySha256: observed.Hashes);
+        if (error is null) TransientStatus(string.Format(ProductStrings.Get("Recycle.RestoredCount"), ids.Count));
+        return error;
     }
 
     private string RecycleFailure(WallLayoutResult result) => result.Detail switch

@@ -97,7 +97,7 @@ public sealed partial class MainWindow
             RequireCurrentWelcomeSource(before, token);
             // This is the acceptance boundary. Cancellation after it cannot abandon the joint transaction.
             var error = await CommitProposalAsync(proposal, prepared.EntryChanges,
-                preparedMedia: [guideImage, showcaseImage], managedGalleries: [gallery]);
+                preparedMedia: [guideImage, showcaseImage], managedGalleries: [gallery], useWelcomeIconDefaults: true);
             if (error is not null) AppLog.Warn("WelcomeWall", (fresh ? "First initialization: " : "Manual initialization: ") + error);
             return error;
         }

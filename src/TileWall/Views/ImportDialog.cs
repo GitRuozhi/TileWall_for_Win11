@@ -158,6 +158,7 @@ internal sealed class ImportDialog : IWallDialogSession
         _readContext = readContext; _readSource = readSource; _prepare = prepare; _save = save; _saveExport = saveExport;
         _contextCurrent = contextCurrent; _style = style; _loadIcon = loadIcon; _initialExportDirectory = initialExportDirectory;
         _restoreRecycled = restoreRecycled;
+        _position.SelectedIndex = 1;
         if (!string.IsNullOrWhiteSpace(initialExportDirectory)) _exportPath = Path.Combine(initialExportDirectory, DefaultExportFileName());
         _catalogChanged = () => owner.DispatcherQueue.TryEnqueue(() => SourceChanged(ImportPageSourceKind.StartMenu));
         _clockTimer = owner.DispatcherQueue.CreateTimer(); _clockTimer.Interval = TimeSpan.FromSeconds(1);
@@ -239,6 +240,8 @@ internal sealed class ImportDialog : IWallDialogSession
         _dialog = new ContentDialog { XamlRoot = (owner.Content as FrameworkElement)?.XamlRoot, Content = page, DefaultButton = ContentDialogButton.None };
         _dialog.Resources["ContentDialogMaxWidth"] = budget.Width + 48; _dialog.Resources["ContentDialogMaxHeight"] = budget.Height + 180;
         OwnedDialogWindow.EnablePageChrome(_dialog, page);
+        DialogActionFeedback.Attach(page, ShowFeedback, () => InteractionBlockedReason() ?? _error ?? ProductStrings.Get("Import.SourceUnavailable"));
+        ConfigureActionFeedback();
         Id(_dialog, "dialog"); Id(_mode, "mode"); Id(_source, "source"); Id(_path, "path"); Id(_chooseFile, "choose-wall-file");
         Id(_autoFilter, "auto-trim"); Id(_recognizeGroups, "recognize-groups"); Id(_small, "small"); Id(_medium, "medium");
         Id(_position, "position"); Id(_selectAll, "select-all"); Id(_filter, "filter"); Id(_repeater, "candidates"); Id(_status, "status");
@@ -249,16 +252,30 @@ internal sealed class ImportDialog : IWallDialogSession
             _refreshingStrings = true;
             _source.SelectedIndex = Mode == ImportPageMode.Export ? 5 : _lastImportSource;
             _refreshingStrings = false; ResetSource();
+            ShowApplied(ProductStrings.Get(Mode == ImportPageMode.Export ? "Import.Mode.Export" : "Import.Mode.Import"));
         };
         _source.SelectionChanged += (_, _) =>
         {
             if (_refreshingStrings || !_shown || _adding) return;
             if (Mode == ImportPageMode.Import && SourceKind != ImportPageSourceKind.CurrentWall) _lastImportSource = _source.SelectedIndex;
             ResetSource();
+            ShowApplied(ProductStrings.Get(SourceLabels[Math.Clamp(_source.SelectedIndex, 0, SourceLabels.Length - 1)]));
         };
-        _autoFilter.Toggled += (_, _) => { if (!_refreshingStrings) Reproject(); };
-        _recognizeGroups.Toggled += (_, _) => { if (!_refreshingStrings) Reproject(); };
-        _position.SelectionChanged += (_, _) => { if (!_refreshingStrings) SelectionChanged(); };
+        _autoFilter.Toggled += (_, _) =>
+        {
+            if (_refreshingStrings) return;
+            Reproject(); ShowOptionState("Import.AutoFilter", _autoFilter.IsOn);
+        };
+        _recognizeGroups.Toggled += (_, _) =>
+        {
+            if (_refreshingStrings) return;
+            Reproject(); ShowOptionState("Import.RecognizeGroups", _recognizeGroups.IsOn);
+        };
+        _position.SelectionChanged += (_, _) =>
+        {
+            if (_refreshingStrings) return;
+            SelectionChanged(); ShowApplied(ProductStrings.Get(_position.SelectedIndex == 1 ? "Import.Position.Tail" : "Import.Position.Head"));
+        };
         _small.Click += (_, _) => SetSize(1); _medium.Click += (_, _) => SetSize(2);
         _filter.TextChanged += (_, _) =>
         {
@@ -274,6 +291,8 @@ internal sealed class ImportDialog : IWallDialogSession
             var addable = FilteredAddableCandidates(); var clear = addable.All(IsSelected);
             foreach (var candidate in addable) Select(candidate, !clear);
             _error = null; _feedback.Clear(); SelectionChanged();
+            ShowFeedback(clear ? ProductStrings.Get("Import.SelectionCleared")
+                : string.Format(ProductStrings.Get("Import.SelectedCount"), addable.Count(IsSelected)));
         };
         _chooseFile.Click += (_, _) =>
         {
@@ -466,6 +485,7 @@ internal sealed class ImportDialog : IWallDialogSession
             {
                 _packagePath = file.Path; ResetSource();
             }
+            ShowApplied(Path.GetFileName(file.Path));
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (IsCurrent(epoch, request.Token)) _error = ex.Message; }
@@ -485,9 +505,16 @@ internal sealed class ImportDialog : IWallDialogSession
 
     private void SetSize(int size)
     {
-        if (_tileSize == size || _adding) return;
+        if (_adding) return;
+        if (_tileSize == size)
+        {
+            _small.IsChecked = size == 1; _medium.IsChecked = size == 2;
+            ShowApplied(ProductStrings.Get(size == 1 ? "Import.Small" : "Import.Medium"));
+            return;
+        }
         _tileSize = size; _small.IsChecked = size == 1; _medium.IsChecked = size == 2;
         _error = null; _plan = null; RefreshPreview(); SelectionChanged();
+        ShowApplied(ProductStrings.Get(size == 1 ? "Import.Small" : "Import.Medium"));
     }
 
     private void Reproject(bool prepare = true)
@@ -826,6 +853,7 @@ internal sealed class ImportDialog : IWallDialogSession
             Select(row.Candidate, toggle.IsChecked == true); _error = null; _feedback.Clear(); SelectionChanged();
         };
         row = new(candidate, member, view, clock, host, toggle, changed, reset, selection) { IconStamp = IconStamp(candidate) };
+        DialogActionFeedback.SetReason(toggle, () => PreviewBlockedReason(row!));
         toggle.Checked += changed; toggle.Unchecked += changed;
         Id(toggle, "candidate-" + candidate.SelectionKey); _rows.Add(row); host.Tag = row; host.Children.Add(toggle);
         UpdateRowTooltip(row); UpdateSelectionFeedback(); UpdateAvailability(); StartRowImage(row);
@@ -1710,6 +1738,69 @@ internal sealed class ImportDialog : IWallDialogSession
         if (!_adding) RefreshRecognitionSelection();
     }
 
+    private void ConfigureActionFeedback()
+    {
+        DialogActionFeedback.SetReason(_optionsHost, InteractionBlockedReason);
+        DialogActionFeedback.SetReason(_source, () => InteractionBlockedReason() ?? ProductStrings.Get("Import.Source.ImportOnly"));
+        foreach (var control in new FrameworkElement[] { _path, _chooseFile })
+            DialogActionFeedback.SetReason(control, () => InteractionBlockedReason() ?? ProductStrings.Get("Import.Path.System"));
+        DialogActionFeedback.SetReason(_autoFilter, () => InteractionBlockedReason() ?? OptionBlockedReason());
+        DialogActionFeedback.SetReason(_recognizeGroups, () => InteractionBlockedReason() ??
+            ProductStrings.Get(!Attributed && SourceKind == ImportPageSourceKind.SystemFeatures
+                ? "Import.Option.SystemGroups" : Mode == ImportPageMode.Export ? "Import.Option.ImportOnly" : "Import.Option.RecordedAttributes"));
+        foreach (var control in new FrameworkElement[] { _small, _medium })
+            DialogActionFeedback.SetReason(control, () => InteractionBlockedReason() ?? OptionBlockedReason());
+        DialogActionFeedback.SetReason(_filter, InteractionBlockedReason);
+        DialogActionFeedback.SetReason(_selectAll, () => InteractionBlockedReason() ??
+            (!CanSelectPreview ? PreviewContextBlockedReason() : ProductStrings.Get(IsRecycle && _sourceData?.Candidates.Count == 0
+                ? "Recycle.Empty" : "Import.NoSelectableItems")));
+        DialogActionFeedback.SetReason(_primary, PrimaryBlockedReason);
+        DialogActionFeedback.SetReason(_cancel, InteractionBlockedReason);
+    }
+
+    private string? InteractionBlockedReason() => _adding
+        ? ProductStrings.Get(IsRecycle ? "Editor.PendingOperation" : Mode == ImportPageMode.Export ? "Import.Exporting" : "Import.Adding")
+        : _closed || _dismissRequested || _readsSuspended || _picking ? ProductStrings.Get("Editor.PendingOperation") : null;
+
+    private string OptionBlockedReason() => ProductStrings.Get(Mode == ImportPageMode.Export
+        ? "Import.Option.ImportOnly" : "Import.Option.RecordedAttributes");
+
+    private string PreviewContextBlockedReason()
+    {
+        if (_context is not null && !_contextCurrent(_context)) return ProductStrings.Get("Import.SourceChanged");
+        if (_error is { Length: > 0 }) return _error;
+        if (SourceKind == ImportPageSourceKind.WallPackage && string.IsNullOrWhiteSpace(_packagePath))
+            return ProductStrings.Get("Import.Path.Empty");
+        if (_reading || _preparing || _sourceData?.Refreshing == true) return ProductStrings.Get("Import.Updating");
+        return _sourceData?.ErrorCode is { } error ? ErrorText(error) : ProductStrings.Get("Import.SourceUnavailable");
+    }
+
+    private string PreviewBlockedReason(CandidateRow row)
+    {
+        if (InteractionBlockedReason() is { } busy) return busy;
+        if (!CanSelectPreview) return PreviewContextBlockedReason();
+        if (row.Candidate.ErrorCode is { } error) return ErrorText(error);
+        if (row.Candidate.FilterReason != ImportFilterReason.None) return FilterText(row.Candidate.FilterReason);
+        return ProductStrings.Get("Import.NoSelectableItems");
+    }
+
+    private string PrimaryBlockedReason()
+    {
+        if (InteractionBlockedReason() is { } busy) return busy;
+        if (!CanSelectPreview) return PreviewContextBlockedReason();
+        if (_reading || _preparing || _sourceData?.Refreshing == true || !_prepared)
+            return _error ?? ProductStrings.Get("Import.Updating");
+        if (Mode == ImportPageMode.Export && string.IsNullOrWhiteSpace(_exportPath))
+            return ProductStrings.Get("Import.Path.ExportEmpty");
+        if (IsRecycle && _restoreRecycled is null) return ProductStrings.Get("Import.SourceUnavailable");
+        return ProductStrings.Get("Import.SelectionEmpty");
+    }
+
+    private void ShowFeedback(string message) => _feedback.Show(message, transient: true, renew: true);
+    private void ShowApplied(string value) => ShowFeedback(string.Format(ProductStrings.Get("Import.OptionApplied"), value));
+    private void ShowOptionState(string key, bool enabled) => ShowFeedback(string.Format(
+        ProductStrings.Get(enabled ? "Import.OptionEnabled" : "Import.OptionDisabled"), ProductStrings.Get(key)));
+
     private void ShowSourceChanged()
     {
         var message = ProductStrings.Get("Import.SourceChanged");
@@ -1806,12 +1897,24 @@ internal sealed class ImportDialog : IWallDialogSession
                 showLabels: true, notifyOnReselect: false);
             Id(_mode.Children[0], "mode-import"); Id(_mode.Children[1], "mode-export");
             _mode.SelectedIndex = mode < 0 || mode == 1 ? 1 : 0;
-            _source.Items.Clear(); foreach (var key in SourceLabels) _source.Items.Add(new ComboBoxItem { Content = ProductStrings.Get(key) });
+            _source.Items.Clear();
+            for (var index = 0; index < SourceLabels.Length; index++)
+            {
+                var kind = SourceKinds[index];
+                var item = new ComboBoxItem { Content = ProductStrings.Get(SourceLabels[index]) };
+                DialogActionFeedback.SetReason(item, () => InteractionBlockedReason() ?? ProductStrings.Get(
+                    kind == ImportPageSourceKind.CurrentWall ? "Import.Source.ExportOnly" : "Import.Source.ImportOnly"));
+                _source.Items.Add(item);
+            }
             _source.SelectedIndex = source >= 0 && source < SourceKinds.Length ? source : Mode == ImportPageMode.Export ? 5 : 0;
             _position.SetItems([ProductStrings.Get("Import.Position.Head"), ProductStrings.Get("Import.Position.Tail")],
                 showLabels: true, notifyOnReselect: false);
             Id(_position.Children[0], "position-head"); Id(_position.Children[1], "position-tail");
-            _position.SelectedIndex = position == 1 ? 1 : 0;
+            _position.SelectedIndex = position == 0 ? 0 : 1;
+            foreach (var button in _mode.Children.OfType<ToggleButton>())
+                DialogActionFeedback.SetReason(button, InteractionBlockedReason);
+            foreach (var button in _position.Children.OfType<ToggleButton>())
+                DialogActionFeedback.SetReason(button, () => InteractionBlockedReason() ?? OptionBlockedReason());
         }
         finally { _refreshingStrings = false; }
         string[] labels = ["Import.Mode", "Import.Source", "Import.Path", "Import.AutoFilter", "Import.RecognizeGroups", "Import.DefaultTileSize", "Import.Position", "Import.SelectAll", "Import.Filter"];

@@ -24,13 +24,17 @@ internal static class ExplorerContextMenuRegistration
     // Internet shortcuts use a special menu provider; its shared file-system verb needs an explicit URL scope.
     internal const string UrlVerbPath = @"Software\Classes\AllFilesystemObjects\shell\TileWall.AddToWall";
     internal const string UrlAppliesTo = "System.FileExtension:=\".url\"";
+    // Register on the shortcut's own ProgID so the verb receives the .lnk,
+    // rather than inheriting the target's generic file verb after Shell resolution.
+    // Keep the same canonical verb name as the generic registration.
+    internal const string ShortcutVerbPath = @"Software\Classes\lnkfile\shell\TileWall.AddToWall";
     internal const string LegacyInternetShortcutVerbPath = @"Software\Classes\InternetShortcut\shell\TileWall.AddToWall";
     internal const string LegacyUrlAssociationVerbPath = @"Software\Classes\IE.AssocFile.URL\shell\TileWall.AddToWall";
-    internal const string LegacyVerbPath = @"Software\Classes\lnkfile\shell\TileWall.AddToWall";
+    internal const string LegacyVerbPath = ShortcutVerbPath;
     private static readonly string[] VerbPaths =
-        [FileVerbPath, DirectoryVerbPath, UrlVerbPath];
+        [FileVerbPath, DirectoryVerbPath, UrlVerbPath, ShortcutVerbPath];
     private static readonly string[] LegacyCleanupPaths =
-        [.. VerbPaths, LegacyInternetShortcutVerbPath, LegacyUrlAssociationVerbPath, LegacyVerbPath];
+        [.. VerbPaths, LegacyInternetShortcutVerbPath, LegacyUrlAssociationVerbPath];
     internal const RegistryHive RegistrationHive = RegistryHive.CurrentUser;
     internal const RegistryView RegistrationView = RegistryView.Registry64;
     private const string CommandSuffix = "\" " + ExplorerAddCommandLine.AddArgument + " \"%1\"";
@@ -86,6 +90,38 @@ internal static class ExplorerContextMenuRegistration
     internal static ContextMenuRegistrationResult RegisterCurrentUserForCurrentExecutable(string menuText) =>
         WithCurrentUserWriteLock(root => RegisterCurrentUser(menuText, root, CurrentExecutable(), NotifyShell, IsRecognizedTileWall));
 
+    internal static ContextMenuRegistrationResult ReconcileCurrentUserForCurrentExecutable()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        if (new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
+            return new(false, Error: "Context-menu migration requires the ordinary user.");
+        return WithCurrentUserWriteLock(root => ReconcileCurrentUser(root, CurrentExecutable(), NotifyShell));
+    }
+
+    // Upgrade only the complete, current-executable registration written before
+    // shortcuts had their own verb. Do not enable an absent menu or take ownership.
+    internal static ContextMenuRegistrationResult ReconcileCurrentUser(RegistryKey root, string executable, Action notifyShell)
+    {
+        try
+        {
+            using (var shortcut = root.OpenSubKey(ShortcutVerbPath))
+                if (shortcut is not null) return new(true);
+            string? menuText = null;
+            foreach (var path in new[] { FileVerbPath, DirectoryVerbPath, UrlVerbPath })
+            {
+                using var key = root.OpenSubKey(path);
+                if (key is null || ReadTarget(key) is not { } target || !SameExecutable(target, executable) ||
+                    !IsComplete(key, target, path)) return new(true);
+                var label = (string)key.GetValue("MUIVerb")!;
+                if (menuText is not null && menuText != label) return new(true);
+                menuText = label;
+            }
+            return Mutate(root, [ShortcutVerbPath], notifyShell, (_, previous) => previous is null,
+                path => WriteVerb(root, path, menuText!, executable), null, null, null);
+        }
+        catch (Exception ex) when (IsRegistryError(ex)) { return new(false, Error: ex.Message); }
+    }
+
     internal static ContextMenuRegistrationResult UnregisterCurrentUserOwnedByCurrentExecutable(Action? afterMutation = null) =>
         WithCurrentUserWriteLock(root => UnregisterOwned(root, CurrentExecutable(), NotifyShell,
             includeLegacy: true, afterMutation: afterMutation));
@@ -130,18 +166,20 @@ internal static class ExplorerContextMenuRegistration
                     throw new IOException($"Unrecognized context-menu registration: {path}");
             }
             return true;
-        }, path =>
-        {
-            root.DeleteSubKeyTree(path, throwOnMissingSubKey: false);
-            using var key = root.CreateSubKey(path, writable: true);
-            key.SetValue(string.Empty, menuText, RegistryValueKind.String);
-            key.SetValue("MUIVerb", menuText, RegistryValueKind.String);
-            key.SetValue("Icon", Quote(executable), RegistryValueKind.String);
-            key.SetValue("MultiSelectModel", "Single", RegistryValueKind.String);
-            if (path == UrlVerbPath) key.SetValue("AppliesTo", UrlAppliesTo, RegistryValueKind.String);
-            using var command = key.CreateSubKey("command", writable: true);
-            command.SetValue(string.Empty, BuildCommand(executable), RegistryValueKind.String);
-        }, afterChange, beforeRollback, afterMutation: null);
+        }, path => WriteVerb(root, path, menuText, executable), afterChange, beforeRollback, afterMutation: null);
+    }
+
+    private static void WriteVerb(RegistryKey root, string path, string menuText, string executable)
+    {
+        root.DeleteSubKeyTree(path, throwOnMissingSubKey: false);
+        using var key = root.CreateSubKey(path, writable: true);
+        key.SetValue(string.Empty, menuText, RegistryValueKind.String);
+        key.SetValue("MUIVerb", menuText, RegistryValueKind.String);
+        key.SetValue("Icon", Quote(executable), RegistryValueKind.String);
+        key.SetValue("MultiSelectModel", "Single", RegistryValueKind.String);
+        if (path == UrlVerbPath) key.SetValue("AppliesTo", UrlAppliesTo, RegistryValueKind.String);
+        using var command = key.CreateSubKey("command", writable: true);
+        command.SetValue(string.Empty, BuildCommand(executable), RegistryValueKind.String);
     }
 
     internal static ContextMenuRegistrationResult UnregisterOwned(RegistryKey root, string executable,

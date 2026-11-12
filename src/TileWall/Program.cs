@@ -10,6 +10,8 @@ public static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        if (ApplicationModel.TaskbarRecoveryCommand.IsRequested(args))
+            return ApplicationModel.TaskbarRecoveryCommand.Run(args);
         if (ApplicationModel.CurrentUserUninstallCommand.IsNotificationRequested(args))
         {
 #if TILEWALL_PACKAGED

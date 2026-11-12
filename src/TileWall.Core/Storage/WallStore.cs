@@ -241,8 +241,7 @@ public sealed partial class WallStore
                         EntryChange.CreateUrl url when UrlShortcut.ValidateUrl(url.Url).Count == 0 => ManagedEntryKind.Url,
                         _ => throw new InvalidDataException($"Invalid entry source: {id}")
                     };
-                    var title = after.Visual.TitleMode == MemberTitleMode.Manual ? after.Visual.Title :
-                        MemberPresentationRules.AutomaticTitle(after.TargetInput);
+                    var title = MemberPresentationRules.ResolveTitle(after);
                     var name = string.IsNullOrEmpty(title) ? "entry" : ValidName(title);
                     entry = new ManagedEntryReference(id, $"Objects/{id}/{name}.{(kind == ManagedEntryKind.Lnk ? "lnk" : "url")}", kind);
                 }

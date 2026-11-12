@@ -57,6 +57,15 @@ internal sealed class OwnedDialogWindow : Window
     private WallBackdrop? _backdrop;
     private readonly Grid _backgroundLayer = new() { IsHitTestVisible = false, Visibility = Visibility.Collapsed };
     private readonly Image _backgroundImage = new() { Stretch = Stretch.UniformToFill };
+    private readonly Image _snapshotImage = new() { Stretch = Stretch.Fill, Opacity = 1 };
+    private readonly Canvas _snapshotViewport = new() { IsHitTestVisible = false, Visibility = Visibility.Collapsed };
+    private readonly RectangleGeometry _snapshotClip = new();
+    private RectInt32? _snapshotBounds;
+    private CancellationTokenSource? _backgroundCommitRequest;
+    private Task<bool>? _backgroundCommitWork;
+    private readonly HashSet<Task> _backgroundWork = [];
+    private bool _backgroundClosing;
+    private double _appearanceScale;
     private readonly SolidColorBrush _solidBackground = new();
     private readonly SolidColorBrush _previewCardBackground = new();
     private readonly TaskCompletionSource _loaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -82,12 +91,16 @@ internal sealed class OwnedDialogWindow : Window
     private ComboBox? _themeWaitCombo;
     private bool _themeQueued;
     private readonly bool _traceInput = Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1";
+    internal bool IsMaterialActive => !_releasing && !_backgroundClosing && _pageChrome && _materialActive;
 
     internal OwnedDialogWindow(Window owner, Action dismiss)
     {
         _owner = owner;
         _root = new DialogRoot(this) { Background = Transparent };
         _backgroundLayer.Children.Add(_backgroundImage);
+        _snapshotViewport.Children.Add(_snapshotImage);
+        _snapshotViewport.Clip = _snapshotClip;
+        _backgroundLayer.Children.Add(_snapshotViewport);
         _root.Children.Add(_backgroundLayer);
         _root.RequestedTheme = (owner.Content as FrameworkElement)?.RequestedTheme ?? ElementTheme.Default;
         Title = "TileWall";
@@ -133,7 +146,16 @@ internal sealed class OwnedDialogWindow : Window
             _materialActive = active;
             UpdateMaterial();
         };
-        AppWindow.Changed += (_, e) => { if (e.DidPositionChange && !_fitting) QueueFit(); };
+        AppWindow.Changed += (_, e) =>
+        {
+            if (_releasing) return;
+            if (e.DidPositionChange || e.DidSizeChange)
+            {
+                CancelBackgroundCommit();
+                UpdateMaterial();
+            }
+            if (e.DidPositionChange && !_fitting) QueueFit();
+        };
         AppWindow.Closing += (_, e) =>
         {
             if (_releasing) return;
@@ -156,16 +178,33 @@ internal sealed class OwnedDialogWindow : Window
         // foreground owner. Transfer activation only once the fitted card is visible.
         AppWindow.Show(false);
         await _loaded.Task;
-        _root.XamlRoot!.Changed += (_, _) => { _root.InvalidateMeasure(); QueueFit(); };
+        _appearanceScale = Scale;
+        _root.XamlRoot!.Changed += (_, _) =>
+        {
+            if (_releasing) return;
+            if (_appearanceScale != Scale)
+            {
+                _appearanceScale = Scale;
+                CancelBackgroundCommit();
+                UpdateMaterial();
+            }
+            _root.InvalidateMeasure(); QueueFit();
+        };
     }
 
-    internal void ApplyAppearance(ElementTheme theme, WallSettings settings, ImageSource? image, Color? contrastBackground)
+    internal void ApplyAppearance(ElementTheme theme, WallSettings settings, ImageSource? image, Color? contrastBackground,
+        ImageSource? snapshot = null, RectInt32? snapshotBounds = null)
     {
         if (_releasing) return;
         _backgroundMode = settings.BackgroundMode;
         _backgroundTransparency = settings.BackgroundTransparency;
         _highContrastBackground = contrastBackground;
-        if (!ReferenceEquals(_backgroundImage.Source, image)) _backgroundImage.Source = image;
+        var imageChanged = !ReferenceEquals(_backgroundImage.Source, image);
+        var snapshotChanged = !ReferenceEquals(_snapshotImage.Source, snapshot);
+        if (imageChanged || snapshotChanged || !Nullable.Equals(_snapshotBounds, snapshotBounds)) CancelBackgroundCommit();
+        if (imageChanged) _backgroundImage.Source = image;
+        if (snapshotChanged) _snapshotImage.Source = snapshot;
+        _snapshotBounds = snapshotBounds;
         ApplyTheme(theme);
         UpdateMaterial();
     }
@@ -186,10 +225,14 @@ internal sealed class OwnedDialogWindow : Window
         {
             _nativeBackdropSurface = new NativeBackdropSurface(WinRT.Interop.WindowNative.GetWindowHandle(this));
             _backdrop = new WallBackdrop(DispatcherQueue, OnMaterialFallbackChanged);
-            _backdrop.Configure(mode, _backgroundTransparency, active, dark);
+            _backdrop.WaitForFallbackCommit = EnsureBackgroundCommittedAsync;
+            _backdrop.HasOpaqueSnapshotCover = () => !_releasing && !_backgroundClosing && HasValidSnapshot &&
+                _snapshotViewport.Visibility == Visibility.Visible && _backgroundLayer.Visibility == Visibility.Visible &&
+                _backgroundLayer.Opacity == 1 && _snapshotImage.Opacity == 1 && _root.Opacity == 1;
+            _backdrop.Configure(mode, _backgroundTransparency, active, dark, HasValidSnapshot);
             SystemBackdrop = _backdrop;
         }
-        else _backdrop.Configure(mode, _backgroundTransparency, active, dark);
+        else _backdrop.Configure(mode, _backgroundTransparency, active, dark, HasValidSnapshot);
         UpdateBackground();
     }
 
@@ -206,17 +249,114 @@ internal sealed class OwnedDialogWindow : Window
         var reduced = _materialReduced || _highContrastBackground is not null;
         var custom = _backgroundMode == WallBackgroundMode.Custom;
         var showImage = _pageChrome && custom && !reduced && _backgroundImage.Source is not null;
-        var showSolid = _pageChrome && !showImage && (custom || reduced || _materialFallback);
+        var showSnapshot = _pageChrome && !reduced && _backgroundMode == WallBackgroundMode.Acrylic &&
+            HasValidSnapshot && (!_materialActive && _shown || _materialFallback);
+        var showSolid = _pageChrome && !showImage && !showSnapshot && (custom || reduced || _materialFallback);
         if (showSolid)
         {
             var color = _highContrastBackground ?? WallBackdrop.SolidBackgroundColor(_root.RequestedTheme == ElementTheme.Dark);
             if (_solidBackground.Color != color) _solidBackground.Color = color;
         }
-        _backgroundLayer.Background = showSolid ? _solidBackground : null;
-        _backgroundLayer.Opacity = reduced || showSolid && _backdrop?.NativeMaterialAttached == true
+        var opacity = showSnapshot || reduced || showSolid && _backdrop?.NativeMaterialAttached == true
             ? 1 : WallBackdrop.LinearBackgroundOpacity(_backgroundTransparency);
-        _backgroundImage.Visibility = showImage ? Visibility.Visible : Visibility.Collapsed;
-        _backgroundLayer.Visibility = showImage || showSolid ? Visibility.Visible : Visibility.Collapsed;
+        var imageVisibility = showImage ? Visibility.Visible : Visibility.Collapsed;
+        var snapshotVisibility = showSnapshot ? Visibility.Visible : Visibility.Collapsed;
+        var layerVisibility = showImage || showSnapshot || showSolid ? Visibility.Visible : Visibility.Collapsed;
+        if (_backgroundLayer.Background != (showSolid ? _solidBackground : null) || _backgroundLayer.Opacity != opacity ||
+            _backgroundImage.Visibility != imageVisibility || _snapshotViewport.Visibility != snapshotVisibility ||
+            _backgroundLayer.Visibility != layerVisibility) CancelBackgroundCommit();
+        if (HasValidSnapshot) UpdateSnapshotViewport();
+        _backgroundLayer.Background = showSolid ? _solidBackground : null;
+        _backgroundLayer.Opacity = opacity;
+        _backgroundImage.Visibility = imageVisibility;
+        _snapshotViewport.Visibility = snapshotVisibility;
+        _backgroundLayer.Visibility = layerVisibility;
+        if (layerVisibility == Visibility.Visible && (opacity == 1 || _backdrop?.NativeMaterialAttached == true))
+            _ = EnsureBackgroundCommittedAsync();
+    }
+
+    private bool HasValidSnapshot
+    {
+        get
+        {
+            if (!_pageChrome || _root.RequestedTheme != _pendingTheme || _snapshotImage.Source is null ||
+                _snapshotBounds is not { Width: > 0, Height: > 0 } bounds || Scale <= 0) return false;
+            var position = AppWindow.Position; var size = AppWindow.Size;
+            return position.X >= bounds.X && position.Y >= bounds.Y && size.Width > 0 && size.Height > 0 &&
+                (long)position.X + size.Width <= (long)bounds.X + bounds.Width &&
+                (long)position.Y + size.Height <= (long)bounds.Y + bounds.Height;
+        }
+    }
+
+    private void UpdateSnapshotViewport()
+    {
+        if (_snapshotBounds is not { } bounds || Scale <= 0) return;
+        var position = AppWindow.Position; var size = AppWindow.Size; var scale = Scale;
+        // F is shared in physical screen pixels. Each HWND applies only its own
+        // physical-to-DIP mapping; moving between scales never stretches it to fit.
+        var width = bounds.Width / scale; var height = bounds.Height / scale;
+        if (_snapshotImage.Width != width) _snapshotImage.Width = width;
+        if (_snapshotImage.Height != height) _snapshotImage.Height = height;
+        Canvas.SetLeft(_snapshotImage, (bounds.X - position.X) / scale);
+        Canvas.SetTop(_snapshotImage, (bounds.Y - position.Y) / scale);
+        var clip = new Rect(0, 0, size.Width / scale, size.Height / scale);
+        if (_snapshotClip.Rect != clip) _snapshotClip.Rect = clip;
+    }
+
+    private Task<bool> EnsureBackgroundCommittedAsync()
+    {
+        if (_releasing || _backgroundClosing || !_shown) return Task.FromResult(true);
+        if (_backgroundCommitWork is not null) return _backgroundCommitWork;
+        _backgroundCommitRequest = new CancellationTokenSource();
+        _backgroundCommitWork = CommitBackgroundAsync(_backgroundCommitRequest.Token);
+        _backgroundWork.RemoveWhere(task => task.IsCompletedSuccessfully || task.IsCanceled);
+        _backgroundWork.Add(_backgroundCommitWork);
+        return _backgroundCommitWork;
+    }
+
+    private async Task<bool> CommitBackgroundAsync(CancellationToken token)
+    {
+        var frame = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        EventHandler<object>? rendering = null;
+        EventHandler<RenderedEventArgs>? rendered = null;
+        var renderingAttached = false; var renderedAttached = false;
+        void Unsubscribe()
+        {
+            if (renderingAttached) { CompositionTarget.Rendering -= rendering; renderingAttached = false; }
+            if (renderedAttached) { CompositionTarget.Rendered -= rendered; renderedAttached = false; }
+        }
+        rendered = (_, _) => { Unsubscribe(); frame.TrySetResult(); };
+        rendering = (_, _) =>
+        {
+            if (renderedAttached) return;
+            CompositionTarget.Rendered += rendered;
+            renderedAttached = true;
+        };
+        try
+        {
+            CompositionTarget.Rendering += rendering;
+            renderingAttached = true;
+            await frame.Task.WaitAsync(token);
+            token.ThrowIfCancellationRequested();
+            await CompositionTarget.GetCompositorForCurrentThread().RequestCommitAsync().AsTask(token);
+            token.ThrowIfCancellationRequested();
+            return true;
+        }
+        catch (OperationCanceledException) { return false; }
+        catch (Exception ex)
+        {
+            AppLog.Warn("DialogBackdrop", $"Commit unavailable: {ex.GetType().Name}");
+            return false;
+        }
+        finally { Unsubscribe(); }
+    }
+
+    private void CancelBackgroundCommit()
+    {
+        _backgroundCommitRequest?.Cancel();
+        _backgroundCommitRequest?.Dispose();
+        _backgroundCommitRequest = null;
+        _backgroundCommitWork = null;
     }
 
     private void ApplyTheme(ElementTheme theme)
@@ -309,12 +449,15 @@ internal sealed class OwnedDialogWindow : Window
     internal static Size ContentBudget(Window owner)
     {
         var scale = (owner.Content as FrameworkElement)?.XamlRoot?.RasterizationScale ?? 1;
-        var work = DisplayArea.GetFromWindowId(owner.AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+        var work = owner is OwnedDialogWindow host ? host.WorkArea :
+            DisplayArea.GetFromWindowId(owner.AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+        if (owner is MainWindow wall) work = wall.ConstrainDialogWorkArea(work);
         return new Size(Math.Max(400, work.Width / scale - 72), Math.Max(240, work.Height / scale - 180));
     }
 
     private async Task<ContentDialogResult> ShowDialogAsync(ContentDialog dialog)
     {
+        _backgroundClosing = false;
         // Dialogs and their controls have a fixed page geometry; only embedded
         // tile visuals consult the wall's Win10/Win11 preference.
         dialog.CornerRadius = new CornerRadius(0);
@@ -339,6 +482,13 @@ internal sealed class OwnedDialogWindow : Window
         }
         finally
         {
+            // Cancel superseded fences as well as the current one, and keep this
+            // HWND/XamlRoot alive until every accepted continuation has returned.
+            _backgroundClosing = true;
+            CancelBackgroundCommit();
+            try { await Task.WhenAll(_backgroundWork); }
+            catch (Exception ex) { AppLog.Warn("DialogBackdrop", $"Close drain: {ex.GetType().Name}"); }
+            finally { _backgroundWork.Clear(); }
             ReleaseTextFocus(dialog);
             dialog.Opened -= OnDialogOpened;
             dialog.Closing -= OnDialogClosing;
@@ -494,8 +644,13 @@ internal sealed class OwnedDialogWindow : Window
         Win32Api.DwmSetWindowAttribute(hwnd, 34, ref border, sizeof(uint));
     }
 
-    private RectInt32 WorkArea => DisplayArea.GetFromWindowId(
-        _shown ? AppWindow.Id : _owner.AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+    private RectInt32 WorkArea => ConstrainToOwnerTaskbar(DisplayArea.GetFromWindowId(
+        _shown ? AppWindow.Id : _owner.AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea);
+
+    private RectInt32 ConstrainToOwnerTaskbar(RectInt32 work) =>
+        _owner is MainWindow wall ? wall.ConstrainDialogWorkArea(work) : work;
+
+    internal void RefreshPlacementBounds() => QueueFit();
 
     private double Scale => _root.XamlRoot?.RasterizationScale ?? 1;
 
@@ -510,8 +665,9 @@ internal sealed class OwnedDialogWindow : Window
     {
         if (_releasing || _dialog is null || _fitting) return;
         if (_dragPointer is not null || _resizePointer is not null) return;
-        if (_userSized) { ApplyCardRegion(AppWindow.Size.Width, AppWindow.Size.Height); return; }
-        var desired = _dialog.DesiredSize;
+        if (_userSized && _owner is not MainWindow { HasTaskbarPresentationBounds: true })
+        { ApplyCardRegion(AppWindow.Size.Width, AppWindow.Size.Height); return; }
+        var desired = _userSized ? new Size(AppWindow.Size.Width / Scale, AppWindow.Size.Height / Scale) : _dialog.DesiredSize;
         if (desired.Width <= 0 || desired.Height <= 0) return;
         _fitting = true;
         try
@@ -731,11 +887,15 @@ internal sealed class OwnedDialogWindow : Window
             return;
         }
         if (_dragPointer is null) return;
-        var work = DisplayArea.GetFromPoint(new PointInt32(cursor.X, cursor.Y), DisplayAreaFallback.Nearest).WorkArea;
+        var originalWork = DisplayArea.GetFromPoint(new PointInt32(cursor.X, cursor.Y), DisplayAreaFallback.Nearest).WorkArea;
+        var work = ConstrainToOwnerTaskbar(originalWork);
         var size = AppWindow.Size;
-        var x = Math.Clamp(_dragOrigin.X + cursor.X - _dragStart.X, work.X, work.X + Math.Max(0, work.Width - size.Width));
-        var y = Math.Clamp(_dragOrigin.Y + cursor.Y - _dragStart.Y, work.Y, work.Y + Math.Max(0, work.Height - size.Height));
-        AppWindow.Move(new PointInt32(x, y));
+        var width = work.Equals(originalWork) ? size.Width : Math.Min(size.Width, work.Width);
+        var height = work.Equals(originalWork) ? size.Height : Math.Min(size.Height, work.Height);
+        var x = Math.Clamp(_dragOrigin.X + cursor.X - _dragStart.X, work.X, work.X + Math.Max(0, work.Width - width));
+        var y = Math.Clamp(_dragOrigin.Y + cursor.Y - _dragStart.Y, work.Y, work.Y + Math.Max(0, work.Height - height));
+        if (width == size.Width && height == size.Height) AppWindow.Move(new PointInt32(x, y));
+        else AppWindow.MoveAndResize(new RectInt32(x, y, width, height));
     }
 
     private void EndDrag(PointerRoutedEventArgs e, string reason, bool consumeFinal = false, bool releaseCapture = true)
@@ -818,6 +978,16 @@ internal sealed class OwnedDialogWindow : Window
     {
         if (_releasing) return;
         _releasing = true;
+        _backgroundClosing = true;
+        CancelBackgroundCommit();
+        _snapshotImage.Source = null;
+        _snapshotBounds = null;
+        _backgroundImage.Source = null;
+        if (_backdrop is not null)
+        {
+            _backdrop.WaitForFallbackCommit = null;
+            _backdrop.HasOpaqueSnapshotCover = null;
+        }
         _root.SetResizeCursor(0);
         DetachThemeWait();
         try

@@ -126,7 +126,8 @@ public sealed partial class MainWindow
             ReleaseBackdropSnapshot();
         InvalidateSnapshotIfGeometryChanged();
         _wallBackdrop.Configure(settings, _backdropActive, _themeDark, HasValidSnapshot);
-        if (_backdropActive) PrepareCachedBackdropIfNeeded();
+        if (_backdropActive || !HasValidSnapshot && _dialogHost?.IsMaterialActive == true)
+            PrepareCachedBackdropIfNeeded();
         var path = settings.BackgroundMode == WallBackgroundMode.Custom ? settings.BackgroundMedia?.Sha256 ?? settings.BackgroundImagePath : null;
         if (!string.Equals(_backgroundPath, path, StringComparison.OrdinalIgnoreCase))
         {
@@ -146,9 +147,20 @@ public sealed partial class MainWindow
         RefreshDialogAppearance(settings);
     }
 
-    private void RefreshDialogAppearance(WallSettings settings) => _dialogHost?.ApplyAppearance(
-        WallRoot.RequestedTheme, settings, _backgroundImage.Source,
-        _accessibilitySettings.HighContrast ? _appearanceSettings.GetColorValue(UIColorType.Background) : null);
+    private void RefreshDialogAppearance(WallSettings settings)
+    {
+        if (_dialogHost is not { } host) return;
+        ImageSource? snapshot = null;
+        Windows.Graphics.RectInt32? bounds = null;
+        if (!_appearanceStopping && HasValidSnapshot && _snapshotCaptureGeometry is { } captured)
+        {
+            snapshot = _snapshotImage.Source;
+            bounds = new(captured.X, captured.Y, captured.W, captured.H);
+        }
+        host.ApplyAppearance(WallRoot.RequestedTheme, settings, _backgroundImage.Source,
+            _accessibilitySettings.HighContrast ? _appearanceSettings.GetColorValue(UIColorType.Background) : null,
+            snapshot, bounds);
+    }
 
     private void OnMaterialFallbackChanged(bool fallback, bool reduced)
     {
@@ -379,6 +391,27 @@ public sealed partial class MainWindow
         UpdateBackgroundLayer();
         _snapshotImage.Source = null;
         _snapshotImage.Visibility = Visibility.Collapsed;
+        RefreshDialogAppearance(Settings);
+    }
+
+    private void PrepareBackdropBeforeModal()
+    {
+        if (_appearanceStopping || _windowClosing || AppWindow.IsVisible || _modal ||
+            Settings.BackgroundMode != WallBackgroundMode.Acrylic || _accessibilitySettings.HighContrast ||
+            !_appearanceSettings.AdvancedEffectsEnabled) return;
+        if (HasValidSnapshot) return;
+        try
+        {
+            var key = CurrentSnapshotKey;
+            if (_snapshotCapture is not null && _snapshotCaptureGeometry == (key.X, key.Y, key.W, key.H, key.Scale))
+                PrepareCachedBackdropIfNeeded();
+            else CaptureBackdropBeforeShow();
+        }
+        catch (Exception ex) when (ex is OutOfMemoryException or System.Runtime.InteropServices.COMException or
+            ArgumentException or InvalidOperationException)
+        {
+            AppLog.Warn("BackdropSnapshot", $"Hidden modal capture unavailable: {ex.GetType().Name}");
+        }
     }
 
     private void CaptureBackdropBeforeShow()

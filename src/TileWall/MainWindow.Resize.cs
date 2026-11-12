@@ -195,8 +195,8 @@ public sealed partial class MainWindow
         if (Math.Max(Math.Abs(dx), Math.Abs(dy)) < 7 * _resizeScale) return;
         var rawWidth = _resizeStartRect.Width + (_resizeWidth ? dx : 0);
         var rawHeight = _resizeStartRect.Height + (_resizeHeight ? dy : 0);
-        var maxWidth = MaximumWindowedWidthPixels;
-        var maxHeight = Math.Floor((_screenArea.Bottom - _screenArea.Top) * .9);
+        var maxWidth = MaximumPresentedWindowedWidthPixels;
+        var maxHeight = MaximumPresentedWindowedHeightPixels;
         if (!_resizeModeLocked && !source.Settings.FullScreen && (rawWidth > maxWidth || rawHeight > maxHeight))
         {
             _resizeModeLocked = true; _resizeModeTarget = true;
@@ -211,16 +211,16 @@ public sealed partial class MainWindow
         {
             var full = _resizeFullResult ??= ProposeMode(source, source.Settings with { FullScreen = true });
             _resizeProposal = full.Proposal; _resizeFailure = full.Proposal is null ? full : null;
+            var area = PresentationBounds;
+            var fullRectangle = new RectInt32(area.X, area.Y, area.Width, area.Height);
             if (_nativeSizingActive && full.Proposal is not null)
-                _nativeSizingTargetRect = new RectInt32(_screenArea.Left, _screenArea.Top,
-                    _screenArea.Right - _screenArea.Left, _screenArea.Bottom - _screenArea.Top);
+                _nativeSizingTargetRect = fullRectangle;
             if (preview && full.Proposal is { } fullscreen && !ReferenceEquals(_resizePreviewDocument, fullscreen.Document))
             {
                 var started = System.Diagnostics.Stopwatch.GetTimestamp();
                 Surface.Render(fullscreen.Document, fullscreen.Geometry);
                 _resizePreviewDocument = fullscreen.Document;
-                PresentViewport(new RectInt32(_screenArea.Left, _screenArea.Top,
-                    _screenArea.Right - _screenArea.Left, _screenArea.Bottom - _screenArea.Top), true, _resizeAnchor, animate: true,
+                PresentViewport(fullRectangle, true, _resizeAnchor, animate: true,
                     presentationSettings: fullscreen.Document.Settings);
                 _performance.View(System.Diagnostics.Stopwatch.GetTimestamp() - started);
             }
@@ -296,14 +296,16 @@ public sealed partial class MainWindow
         var clientWidthDip = (width - _frameWidth) / _resizeScale;
         proposal = proposal with { Document = proposal.Document with { Settings = proposal.Document.Settings with
         {
-            WindowedViewportWidthDip = clientWidthDip,
+            WindowedViewportWidthDip = _resizeWidth || PresentationBounds == ScreenPresentationBounds
+                ? clientWidthDip : source.Settings.WindowedViewportWidthDip,
             ManualWindowedViewportWidthDip = _resizeWidth ? clientWidthDip : source.Settings.ManualWindowedViewportWidthDip,
         } } };
         _resizeProposal = proposal;
         var w = (int)Math.Ceiling(width); var h = (int)Math.Ceiling(height);
         var x = right ? _resizeStartRect.X + _resizeStartRect.Width - w : _resizeStartRect.X;
         var y = bottom ? _resizeStartRect.Y + _resizeStartRect.Height - h : _resizeStartRect.Y;
-        if (_nativeSizingActive) _nativeSizingTargetRect = new RectInt32(x, y, w, h);
+        var rectangle = ConstrainPresentationRectangle(new RectInt32(x, y, w, h));
+        if (_nativeSizingActive) _nativeSizingTargetRect = rectangle;
         if (preview)
         {
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -313,7 +315,7 @@ public sealed partial class MainWindow
                 Surface.Render(proposal.Document, proposal.Geometry); Surface.RefreshClocks(_clock.UtcNow);
                 _resizePreviewDocument = proposal.Document;
             }
-            PresentViewport(new RectInt32(x, y, w, h), false, _resizeAnchor, animate: source.Settings.FullScreen,
+            PresentViewport(rectangle, false, _resizeAnchor, animate: source.Settings.FullScreen,
                 presentationSettings: proposal.Document.Settings);
             _performance.View(System.Diagnostics.Stopwatch.GetTimestamp() - started);
         }

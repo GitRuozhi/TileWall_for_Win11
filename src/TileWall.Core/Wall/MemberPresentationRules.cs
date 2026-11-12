@@ -5,6 +5,8 @@ namespace TileWall.Core.Wall;
 /// <summary>Model rules shared by persistence validation, editors and rendering.</summary>
 public static class MemberPresentationRules
 {
+    public const ImageRotationInterval NewRotationInterval = ImageRotationInterval.Seconds5;
+
     /// <summary>Retain a view across placement, bookkeeping and equivalent frozen icon series.</summary>
     internal static bool CanReuseVisualScene(WallMember original, WallMember replacement,
         bool retainsPreparedAutomaticFrame = false)

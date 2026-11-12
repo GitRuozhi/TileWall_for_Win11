@@ -78,6 +78,8 @@ internal static class UserDataSnapshotJson
             {
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "layoutLocked"));
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "redirectTaskbarStartButton"));
+                if (version < UserDataManifest.CurrentFormatVersion)
+                    typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "activateTaskbar"));
             }
             if (typeInfo.Type == typeof(StartGroup))
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "reservedRows"));
@@ -207,6 +209,7 @@ internal static class UserDataSnapshotJson
             if (manifest.SchemaVersion == 4 &&
                 (settings.Value.ExtensionData?.ContainsKey("layoutLocked") == true ||
                  settings.Value.ExtensionData?.ContainsKey("redirectTaskbarStartButton") == true ||
+                 settings.Value.ExtensionData?.ContainsKey("activateTaskbar") == true ||
                  wall.Lanes.Any(lane => lane?.Groups?.Any(group =>
                      group?.ExtensionData?.ContainsKey("reservedRows") == true) == true)))
                 throw new UnsupportedSnapshotStructureException("The snapshot contains settings or layout fields outside their supported format; its data remains untouched.");

@@ -226,15 +226,17 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             if (state.Flipping) FinishFlip(state);
     }
 
-    public void AdvanceAll()
+    public bool CanAdvance(string id) => !_disposed && !_stopping &&
+        _states.TryGetValue(id, out var state) &&
+        state.Member.Images.Kind == MemberImageSourceKind.Folder && state.Candidates is not { Count: <= 1 };
+
+    public void Advance(string id)
     {
-        if (_disposed || _stopping) return;
-        foreach (var state in _states.Values)
-            if (IsPresented(state.Member.Id) && state.Member is PuzzleMember && CouldAdvance(state)) state.PendingPages++;
+        if (!_preparationAllowed || _gate != MemberCarouselGate.Ready || !CanAdvance(id)) return;
+        // A background save delays this request in Check; it must not consume the click.
+        _states[id].PendingPages++;
         QueueCheck(false);
     }
-
-    private static bool CouldAdvance(State state) => state.Member.Images.Kind == MemberImageSourceKind.Folder;
 
     private static bool ReadableSource(WallMember member) => member.ResourceOrigin != MemberResourceOrigin.Package ||
         member.Images.Kind == MemberImageSourceKind.Automatic && member.Images.IconSeries is not null ||
@@ -442,7 +444,10 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         {
             // Native captures are adopted together when their fixed wave settles.
             if (state.PreparedAutomaticSeries is not null) continue;
-            if (!IsPresented(state.Member.Id)) continue;
+            // An explicit request from the menu list also applies when this
+            // member's wall region has scrolled away. Automatic work stays visible-only.
+            var presented = IsPresented(state.Member.Id);
+            if (!presented && state.PendingPages == 0) continue;
             if (state.PendingGallery is { } snapshot && state.Cancellation is null && !state.Flipping)
             { state.PendingGallery = null; ApplyGallerySnapshot(state, snapshot); }
             if (state.Flipping)
@@ -454,11 +459,14 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             if (state.Cancellation is not null) continue;
             if (state.PendingPages > 0)
             {
+                // A queued request may outlive an edit or a gallery refresh.
+                if (!CanAdvance(state.Member.Id)) { state.PendingPages = 0; continue; }
                 state.PendingPages--;
                 state.Runtime = new(false, 0, [], null);
                 TrackWork(LoadNextAsync(state, NextPageDecision(state), manual: true));
                 continue;
             }
+            if (!presented) continue;
             if (explicitCheck && state.Member.Images.Kind == MemberImageSourceKind.Folder &&
                 (state.Frame is null || state.FrameLoadUnavailable))
                 state.NeedsInitial = true;
@@ -909,7 +917,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
             }
 
             // A manual next-page request with no alternative must not suppress the initial
-            // frame load when the puzzle has not displayed any image yet.
+            // frame load when the member has not displayed any image yet.
             if (manual && state.NeedsInitial && decision.Kind != MemberCarouselDecisionKind.Prepare)
                 state.Runtime = state.Runtime with { Passive = false };
         }
@@ -992,7 +1000,9 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         if (!await PersistCaptureAsync(state) || !Current(state, generation)) return;
         state.NextFrame = frame;
         _animationsEnabled = ReadAnimationsEnabled();
-        if (state.PreviousFrame is null || !_animationsEnabled)
+        // Menu-only requests publish the committed frame immediately; invisible
+        // wall regions do not run an animation clock.
+        if (state.PreviousFrame is null || !_animationsEnabled || !IsPresented(state.Member.Id))
         {
             FinishFlip(state);
             return;
@@ -1075,7 +1085,7 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
     }
     private bool Current(State state, long generation) => !_disposed && !_stopping && _preparationAllowed &&
         (state.PreparingCurrent || _gate == MemberCarouselGate.Ready &&
-            (IsPresented(state.Member.Id) || state.PreparedAutomaticSeries is not null)) &&
+            (IsPresented(state.Member.Id) || state.ManualLoading || state.PreparedAutomaticSeries is not null)) &&
         state.Generation == generation && _states.TryGetValue(state.Member.Id, out var existing) &&
         ReferenceEquals(existing, state) && state.Cancellation?.IsCancellationRequested == false;
     private void EndRequest(State state, long generation)

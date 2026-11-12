@@ -109,7 +109,7 @@ public sealed class RecycleBinRulesTests
     {
         var puzzle = new PuzzleMember { Id = "puzzle", LocalBounds = new(5, 18, 2, 2),
             Partitions = [new(0, 0, 2, 2)], Visual = new() { TitleMode = MemberTitleMode.Manual, Title = "Album" },
-            Images = new() { Kind = MemberImageSourceKind.Folder, Path = Path.GetFullPath("gallery") }, RotationInterval = ImageRotationInterval.Seconds5 };
+            Images = new() { Kind = MemberImageSourceKind.Folder, Path = Path.GetFullPath("gallery") }, RotationInterval = ImageRotationInterval.Seconds15 };
         var current = Wall(true, 0, Tile("active")) with { InactiveMembers = [puzzle, Tile("tile", 3, 8)] };
         current = current with { Lanes = [new WallLane { Groups = [current.Lanes[0].Groups[0] with { Title = "Restored" }] }] };
         var result = Apply(current, new RestoreRecycledMembersAction(0, ["tile", "puzzle"], "restored", "Restored", new Dictionary<string, string>()));

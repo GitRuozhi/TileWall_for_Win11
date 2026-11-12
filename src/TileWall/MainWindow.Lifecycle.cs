@@ -27,6 +27,7 @@ public sealed partial class MainWindow
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _focusCheckRetry;
     private double _lastEnvironmentScale;
     private WorkAreaRect _lastEnvironmentWork;
+    private WorkAreaRect _lastEnvironmentScreen;
     private OwnedDialogWindow? _dialogHost;
     private TaskCompletionSource? _modalClosed;
     private Window DialogOwner => _dialogHost ?? throw new InvalidOperationException("No modal host is active.");
@@ -172,15 +173,23 @@ public sealed partial class MainWindow
 
     private void UpdateWindowZOrder(bool foregroundInSession, bool raise = false)
     {
-        if (AppWindow.Presenter is not OverlappedPresenter presenter) return;
-        // The active wall must cover the taskbar even without persistent topmost.
-        // On an outside focus change, restore the user's background preference.
-        var topmost = Settings.AlwaysOnTop || AppWindow.IsVisible && foregroundInSession;
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        TaskbarActivationBackend.PrepareWall(hwnd, Settings.ActivateTaskbar);
+        if (AppWindow.Presenter is not OverlappedPresenter presenter) return;
+        // Retain the wall's ordinary-app preference; taskbar activation changes only
+        // its relation to the verified Explorer taskbar, never Explorer's own band.
+        var topmost = Settings.AlwaysOnTop || AppWindow.IsVisible && foregroundInSession;
         if (BackdropTrace.Enabled)
             BackdropTrace.Write($"ZOrder before hwnd={hwnd} foreground={GetForegroundWindow()} inSession={foregroundInSession} preference={Settings.AlwaysOnTop} presenter={presenter.IsAlwaysOnTop} actualTopmost={(Shell.Interop.Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64() & 8) != 0} desired={topmost} raise={raise}");
         if (presenter.IsAlwaysOnTop != topmost) presenter.IsAlwaysOnTop = topmost;
-        if (topmost && raise)
+        if (Settings.ActivateTaskbar && topmost && AppWindow.IsVisible &&
+            _taskbarWindow != 0 && TaskbarActivationBackend.IsCurrentTaskbar(_taskbarWindow))
+        {
+            const uint flags = 0x0013; // SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+            if (!Win32Api.SetWindowPos(hwnd, _taskbarWindow, 0, 0, 0, 0, flags))
+                AppLog.Warn("WindowFocus", "Could not settle the wall behind the taskbar.");
+        }
+        else if (!Settings.ActivateTaskbar && topmost && raise)
         {
             const uint flags = 0x0013; // SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
             if (!Shell.Interop.Win32Api.SetWindowPos(WinRT.Interop.WindowNative.GetWindowHandle(this),
@@ -242,10 +251,18 @@ public sealed partial class MainWindow
     {
         if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (!_hasDocument || _viewBlocked) return ProductStrings.Get("Wall.SettingsBlocked");
+        if (settings.ActivateTaskbar != Settings.ActivateTaskbar &&
+            (settings with { ActivateTaskbar = Settings.ActivateTaskbar }) == Settings)
+        {
+            // A taskbar lease changes visible pixels, not the formal grid or the
+            // remembered manual width. Locked layouts accept the same geometry.
+            var unchangedLayout = Document with { Generation = checked(Document.Generation + 1), Settings = settings };
+            return CommitProposal(new(unchangedLayout, WallLayoutEngine.Measure(unchangedLayout, _metrics)));
+        }
         if (Settings.LayoutLocked && settings.LayoutLocked && settings.AnchorCorner != Settings.AnchorCorner)
             return ProductStrings.Get("Wall.LayoutLocked");
         if (settings.LayoutLocked && !Settings.LayoutLocked)
-            settings = settings with { WindowedViewportWidthDip = Math.Max(1, (AppWindow.Size.Width - _frameWidth) / Scale) };
+            settings = settings with { WindowedViewportWidthDip = CurrentWindowedViewportWidthDip(Document) };
         if (settings.FullScreen != Settings.FullScreen || settings.ExpandColumns != Settings.ExpandColumns || settings.MenuStart != Settings.MenuStart)
         {
             var mode = ProposeMode(Document, settings);
@@ -290,8 +307,13 @@ public sealed partial class MainWindow
 
     private async Task<bool> BeginModalAsync()
     {
+        if (_windowClosing || ShutdownStarted || _persistenceAdmissionClosed) return false;
         var titleError = Surface.FinishActiveTitleEdit(save: true);
         if (titleError is not null) { Status(titleError); return false; }
+        // A tray-opened page can be the first visible TileWall window. Reuse the
+        // hidden capture entry before creating/showing its host; F preparation
+        // remains asynchronous and never delays modal admission.
+        PrepareBackdropBeforeModal();
         _modalClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _modal = true;
         UpdateWallHitTesting();
@@ -363,11 +385,22 @@ public sealed partial class MainWindow
         RefreshNativeFrame();
         UpdateNativeSizingRegion();
         var scale = Scale;
-        if (!force && _lastEnvironmentScale == scale && _lastEnvironmentWork.Equals(area)) return;
+        ReadPrimaryScreen();
+        var physicalChanged = _lastEnvironmentScale != scale || !_lastEnvironmentScreen.Equals(_screenArea);
+        if (!force && !physicalChanged && _lastEnvironmentWork.Equals(area)) return;
+        if (!force && !physicalChanged)
+        {
+            // A taskbar/work-area notification cannot cancel an in-flight wall
+            // gesture or republish the document. The lifetime supplies stable
+            // taskbar placement separately after its read-only observation.
+            _workArea = _lastEnvironmentWork = area;
+            _dialogHost?.RefreshPlacementBounds();
+            return;
+        }
         if (_resizing) TraceInput($"ResizeEnvironment force={force} scale={_lastEnvironmentScale:F3}->{scale:F3} work={area.Left},{area.Top},{area.Right},{area.Bottom}");
         _workArea = area;
-        ReadPrimaryScreen();
         _lastEnvironmentWork = area;
+        _lastEnvironmentScreen = _screenArea;
         _lastEnvironmentScale = scale;
         CancelTransientState();
         if (!_hasDocument || _viewBlocked) return;
@@ -381,7 +414,9 @@ public sealed partial class MainWindow
         else _needsVisualRefresh = true;
         ApplyViewport();
         UpdatePuzzleGate();
-        QueueEnvironmentAdaptation();
+        // Explorer's work-area/auto-hide animation is only presentation. Logical
+        // capacity continues to use the complete physical screen and DPI.
+        if (physicalChanged) QueueEnvironmentAdaptation();
     }
 
     private void RefreshNativeFrame()
@@ -417,24 +452,22 @@ public sealed partial class MainWindow
             (document.Settings.ExpandColumns ? MaximumWindowedClientWidthDip : contentWidth);
         visibleWidth = fixedWidth + WallViewportPolicy.ResolveVisibleWidth(document.Settings, geometry,
             visibleWidth - fixedWidth, maximumTileWidth, _metrics);
-        var width = fullScreen ? _screenArea.Right - _screenArea.Left :
+        var area = PresentationBounds;
+        var width = fullScreen ? area.Width :
             (int)Math.Ceiling(visibleWidth * Scale) + _frameWidth;
-        var height = fullScreen ? _screenArea.Bottom - _screenArea.Top :
+        var height = fullScreen ? area.Height :
             (int)Math.Ceiling(geometry.WallHeight * Scale) + _frameHeight;
         if (!fullScreen)
         {
-            width = Math.Min(width, MaximumWindowedWidthPixels);
-            height = Math.Min(height, (int)Math.Floor((_screenArea.Bottom - _screenArea.Top) * .9));
+            width = Math.Min(width, MaximumPresentedWindowedWidthPixels);
+            height = Math.Min(height, MaximumPresentedWindowedHeightPixels);
         }
 
         Surface.Visibility = _viewBlocked ? Visibility.Collapsed : Visibility.Visible;
         Surface.IsHitTestVisible = !_viewBlocked && !PersistenceInteractionBlocked;
-        var right = document.Settings.AnchorCorner is AnchorCorner.BottomRight or AnchorCorner.TopRight;
-        var bottom = document.Settings.AnchorCorner is AnchorCorner.BottomLeft or AnchorCorner.BottomRight;
-        // Both modes use the complete primary rectangle, preserving the opposite corner when exiting fullscreen.
-        var x = right && !fullScreen ? _screenArea.Right - width : _screenArea.Left;
-        var y = bottom && !fullScreen ? _screenArea.Bottom - height : _screenArea.Top;
-        PresentViewport(new RectInt32(x, y, Math.Max(1, width), Math.Max(1, height)), fullScreen,
+        var placed = ApplicationModel.WallPresentationGeometry.Anchor(area, Math.Max(1, width), Math.Max(1, height),
+            document.Settings.AnchorCorner, fullScreen);
+        PresentViewport(new RectInt32(placed.X, placed.Y, placed.Width, placed.Height), fullScreen,
             document.Settings.AnchorCorner, animateMode, presentationSettings: document.Settings, animateHeight: animateHeight);
         UpdateWindowZOrder(IsForegroundWallSession());
         UpdateResizeZones();

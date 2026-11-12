@@ -749,6 +749,41 @@ public sealed partial class WallStoreTests
     }
 
     [Fact]
+    public void CopiedShortcutKeepsSourceTitleAndBytesSeparateFromExecutableThroughCommitAndReopen()
+    {
+        var (store, files, links, root) = Harness();
+        var initial = Wall();
+        store.InitializeFresh(initial);
+        var source = Path.Combine(Path.GetTempPath(), "source-" + Guid.NewGuid().ToString("N"), "游戏入口.lnk");
+        var target = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "game-launcher", "launcher.exe"));
+        links.Register(source, target, "--launch", Path.GetDirectoryName(target)!);
+        var bytes = files.ReadAllBytes(source).ToArray();
+        var member = Tile("a") with
+        {
+            TargetInput = target, SourceShortcutPath = source, TargetDisplayName = "游戏入口",
+            Visual = new() { TitleMode = MemberTitleMode.Automatic, Title = "launcher" },
+        };
+        var added = store.Commit(initial, Plan(store, initial, Wall(member) with { Generation = 1 },
+            new EntryChange.CopyShortcut(member.Id, source)));
+        Assert.Equal(WallCommitStatus.Committed, added.Status);
+        var saved = added.CommittedDocument!.Lanes[0].Groups[0].Members[0];
+        Assert.Equal("Objects/a/游戏入口.lnk", saved.Entry!.RelativePath);
+        Assert.Equal(bytes, files.ReadAllBytes(EntryPath(root, saved.Entry)));
+        Assert.Equal(bytes, files.ReadAllBytes(source));
+        var opened = store.Open();
+        Assert.Equal(WallOpenStatus.Loaded, opened.Status);
+        var restored = opened.Document!.Lanes[0].Groups[0].Members[0];
+        Assert.Equal(target, restored.TargetInput);
+        Assert.Equal(source, restored.SourceShortcutPath);
+        Assert.Equal("游戏入口", restored.TargetDisplayName);
+        Assert.Equal("游戏入口", MemberPresentationRules.ResolveTitle(restored));
+        var fields = links.Read(EntryPath(root, restored.Entry!));
+        Assert.Equal(target, fields.TargetPath);
+        Assert.Equal("--launch", fields.Arguments);
+        Assert.Equal(Path.GetDirectoryName(target), fields.WorkingDirectory);
+    }
+
+    [Fact]
     public void OpaqueCopiedShortcutsPreserveBytesWithoutInventingTargets()
     {
         var (store, files, links, root) = Harness();

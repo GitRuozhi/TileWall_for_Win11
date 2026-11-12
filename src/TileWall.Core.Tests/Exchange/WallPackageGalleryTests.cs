@@ -30,8 +30,8 @@ public sealed class WallPackageGalleryTests : IDisposable
         {
             Id = "group", Title = "Original group", Members =
             [new PuzzleMember { Id = "puzzle", LocalBounds = new(0, 0, 2, 2), Partitions = [new(0, 0, 1, 2), new(1, 0, 1, 2)],
-                Images = source, RotationInterval = ImageRotationInterval.Seconds5, Visual = new() { TitleMode = MemberTitleMode.Manual, Title = "Seasons" } },
-             new TileMember { Id = "shared", LocalBounds = new(2, 0, 2, 2), Images = source },
+                Images = source, RotationInterval = ImageRotationInterval.Seconds15, Visual = new() { TitleMode = MemberTitleMode.Manual, Title = "Seasons" } },
+             new TileMember { Id = "shared", LocalBounds = new(2, 0, 2, 2), Images = source, RotationInterval = ImageRotationInterval.Seconds30 },
              new TileMember { Id = "single", LocalBounds = new(4, 0, 1, 1), Images = new() { Kind = MemberImageSourceKind.Single, Media = first.Reference } },
              new TileMember { Id = "other", LocalBounds = new(5, 0, 2, 2), Images = new() { Kind = MemberImageSourceKind.Folder, ManagedGallery = other.Reference } },
              new TileMember { Id = "external", LocalBounds = new(7, 0, 1, 1), Images = new() { Kind = MemberImageSourceKind.Folder, Path = Path.Combine(_directory, "unscanned-external") } }],
@@ -63,6 +63,8 @@ public sealed class WallPackageGalleryTests : IDisposable
         Directory.Delete(sender, recursive: true);
         var read = await reader.ReadPreviewAsync(path); Assert.Equal(WallPackageReadStatus.Valid, read.Status);
         var preview = read.Preview!;
+        Assert.Equal(ImageRotationInterval.Seconds15, preview.Content.Members.Single(member => member.Id == "puzzle").RotationInterval);
+        Assert.Equal(ImageRotationInterval.Seconds30, preview.Content.Members.Single(member => member.Id == "shared").RotationInterval);
         Assert.Equal(WallPackageManifest.CurrentFormatVersion, preview.Manifest.FormatVersion); Assert.Single(preview.Galleries);
         Assert.Equal(2, preview.Manifest.Files.Count(file => file.Purpose == "media"));
         Assert.Single(preview.Manifest.Files, file => file.Purpose == "gallery");
@@ -78,14 +80,18 @@ public sealed class WallPackageGalleryTests : IDisposable
         Assert.True(result.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup, string.Join(";", result.Diagnostics));
         var restored = result.CommittedDocument!;
         var puzzle = Assert.IsType<PuzzleMember>(restored.EnumerateAllMembers().Single(member => member.Id == "puzzle"));
-        Assert.Equal(2, puzzle.Partitions.Count); Assert.Equal(ImageRotationInterval.Seconds5, puzzle.RotationInterval);
+        Assert.Equal(2, puzzle.Partitions.Count); Assert.Equal(ImageRotationInterval.Seconds15, puzzle.RotationInterval);
+        Assert.Equal(ImageRotationInterval.Seconds30, restored.EnumerateAllMembers().Single(member => member.Id == "shared").RotationInterval);
         Assert.Equal("Seasons", puzzle.Visual.Title); Assert.Equal(new TileWall.Core.Grid.GridRect(0, 0, 2, 2), puzzle.LocalBounds);
         Assert.StartsWith(root, puzzle.Images.Path); Assert.DoesNotContain(sender, puzzle.Images.Path!);
         foreach (var file in gallery.Files) Assert.Equal(file.Asset.CopyBytes(), File.ReadAllBytes(Path.Combine(puzzle.Images.Path!, file.RelativePath)));
         var reused = await batch.PrepareResourcesAsync([gallery.Files[0].Asset.Reference], [gallery.Reference],
             receiver.ReusablePackageMedia(restored), [gallery.Reference], new() { MaximumPreparedMediaBytes = 0 });
         Assert.Empty(reused.MediaAssets); Assert.Empty(reused.ManagedGalleries);
-        Assert.Equal(WallOpenStatus.Loaded, receiver.Open().Status);
+        var reopened = receiver.Open();
+        Assert.Equal(WallOpenStatus.Loaded, reopened.Status);
+        Assert.Equal(ImageRotationInterval.Seconds15, reopened.Document!.EnumerateAllMembers().Single(member => member.Id == "puzzle").RotationInterval);
+        Assert.Equal(ImageRotationInterval.Seconds30, reopened.Document.EnumerateAllMembers().Single(member => member.Id == "shared").RotationInterval);
     }
 
     [Fact]

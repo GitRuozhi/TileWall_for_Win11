@@ -102,6 +102,7 @@ public sealed record WallSettings
     public string SecondaryHotKey { get; init; } = "Win+Ctrl+Oem3";
     public bool ReplaceStartMenu { get; init; }
     public bool RedirectTaskbarStartButton { get; init; }
+    public bool ActivateTaskbar { get; init; } = true;
     public bool RunAtLogin { get; init; }
 }
 

@@ -72,6 +72,8 @@ public sealed partial class MainWindow
     // proposed mode change still goes through its ordinary screen-capacity proposal.
     private WallViewportBudget RecoverableViewportBudget(WallSettings settings)
     {
+        // Taskbar-only presentation overflow is deliberately excluded: its smaller
+        // HWND must never become a formal resize/adaptation capacity.
         var budget = ViewportBudget(settings);
         if (!_environmentOverflow || !_hasDocument || settings.FullScreen != Settings.FullScreen ||
             settings.ExpandColumns != Settings.ExpandColumns || settings.MenuStart != Settings.MenuStart) return budget;

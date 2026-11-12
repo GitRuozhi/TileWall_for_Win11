@@ -297,6 +297,7 @@ internal sealed partial class WallApplicationLifetime
     private SettingsDialogState CurrentSettingsState() => new(_window.Settings with
         { RunAtLogin = _loginEnabled ?? _window.Settings.RunAtLogin },
         _hotKey.CurrentGesture?.ToConfigString(), _loginEnabled,
+        TaskbarActivationError: TaskbarActivationError,
         StartReplacementActive: _startReplacement.IsActive,
         StartReplacementSuspended: _startReplacementSuspended,
         StartReplacementError: _startReplacementError ??
@@ -359,6 +360,8 @@ internal sealed partial class WallApplicationLifetime
         var replacementTouched = new bool[2];
         var replacementPrepared = new bool[2];
         var replacementStopAttempted = new bool[2];
+        var taskbarActivationChanged = old.ActivateTaskbar != proposed.ActivateTaskbar;
+        var taskbarActivationTouched = false;
         var commitAttempted = false;
         var committed = false;
         try
@@ -369,6 +372,12 @@ internal sealed partial class WallApplicationLifetime
             {
                 var duplicate = ProductStrings.Get("Settings.HotKeyDuplicate");
                 return CurrentSettingsState() with { Error = duplicate, SecondaryHotKeyError = duplicate };
+            }
+            if (taskbarActivationChanged)
+            {
+                taskbarActivationTouched = true;
+                var taskbarError = await PrepareTaskbarSettingsAsync(proposed.ActivateTaskbar);
+                if (taskbarError is not null) return await RejectAsync(taskbarError);
             }
             foreach (var taskbar in new[] { false, true })
             {
@@ -441,7 +450,10 @@ internal sealed partial class WallApplicationLifetime
             // The accepted snapshot remains authoritative even if view refresh or
             // post-commit UI work fails. Only known rejection permits rollback.
             if (_window.SettingsPersistenceBlocked)
+            {
                 await StopAllStartReplacementAsync(stopDeadline: replacementStopBudget?.Token ?? CancellationToken.None);
+                SuspendTaskbarForBlockedPersistence();
+            }
             else if (CanActivateStartReplacement)
             {
                 foreach (var taskbar in new[] { false, true })
@@ -457,6 +469,7 @@ internal sealed partial class WallApplicationLifetime
             }
             if (!proposed.ReplaceStartMenu) { _startReplacementError = null; _startReplacementSuspended = false; }
             if (!proposed.RedirectTaskbarStartButton) { _taskbarStartReplacementError = null; _taskbarStartReplacementSuspended = false; }
+            TaskbarSettingsCommitted(taskbarActivationChanged);
             ProductStrings.ApplyLanguage(proposed.LanguageMode);
             _window.RefreshAppearance();
             _window.RefreshProductStrings();
@@ -476,6 +489,7 @@ internal sealed partial class WallApplicationLifetime
             if (commitAttempted && _window.SettingsPersistenceBlocked)
             {
                 await StopAllStartReplacementAsync(stopDeadline: replacementStopBudget?.Token ?? CancellationToken.None);
+                SuspendTaskbarForBlockedPersistence();
                 return CurrentSettingsState() with { Error = failure };
             }
             using (var rollbackStopBudget = CancellationTokenSource.CreateLinkedTokenSource(replacementStopBudget?.Token ?? CancellationToken.None))
@@ -519,6 +533,7 @@ internal sealed partial class WallApplicationLifetime
                     if (replacementTouched[taskbar ? 1 : 0] && StartInputEnabled(old, taskbar) &&
                         !StartInput(taskbar).HasRetainedResources)
                         await ResumeStartReplacementAsync(taskbar);
+            if (taskbarActivationTouched) RestoreTaskbarAfterRejectedSettings();
             UpdateTray();
             return CurrentSettingsState() with { Error = failure };
         }

@@ -1,3 +1,6 @@
+using System.Text;
+using System.Text.Json.Nodes;
+using TileWall.Core.Exchange;
 using TileWall.Core.Grid;
 using TileWall.Core.Imaging;
 using TileWall.Core.Storage;
@@ -9,6 +12,34 @@ namespace TileWall.Core.Tests.Wall;
 public sealed class MemberPresentationTests
 {
     private static TileMember Tile() => new() { Id = "tile", LocalBounds = new GridRect(0, 0, 2, 2) };
+
+    [Theory]
+    [InlineData(null, ImageRotationInterval.Minute1)]
+    [InlineData(15, ImageRotationInterval.Seconds15)]
+    [InlineData(30, ImageRotationInterval.Seconds30)]
+    [InlineData(300, ImageRotationInterval.Minute5)]
+    public void SavedWallAndPackageIntervalsKeepExplicitValuesAndLegacyMissingFieldFallback(int? seconds, ImageRotationInterval expected)
+    {
+        var tile = Tile() with { RotationInterval = ImageRotationInterval.Seconds15 };
+        var document = WallDocument.Empty(1, 4) with
+        {
+            Lanes = [new() { Groups = [new() { Id = "group", Members = [tile] }] }],
+            RecycleBinEnabled = true, InactiveMembers = [tile with { Id = "retained" }],
+        };
+        var wall = JsonNode.Parse(WallJson.Serialize(document))!.AsObject();
+        var package = JsonNode.Parse(WallPackageJson.Serialize(WallPackageContent.FromSelection(document, [tile.Id])))!.AsObject();
+        foreach (var member in new[] { wall["lanes"]![0]!["groups"]![0]!["members"]![0]!.AsObject(),
+            wall["inactiveMembers"]![0]!.AsObject(), package["members"]![0]!.AsObject() })
+        {
+            if (seconds is { } value) member["rotationInterval"] = value;
+            else member.Remove("rotationInterval");
+        }
+        var restoredWall = WallJson.Deserialize(Encoding.UTF8.GetBytes(wall.ToJsonString()));
+        var restoredPackage = WallPackageJson.Deserialize<WallPackageContent>(Encoding.UTF8.GetBytes(package.ToJsonString())).ToDocument();
+        Assert.Equal(expected, restoredWall.EnumerateAllMembers().Single(member => member.Id == tile.Id).RotationInterval);
+        Assert.Equal(expected, Assert.Single(restoredWall.InactiveMembers).RotationInterval);
+        Assert.Equal(expected, Assert.Single(restoredPackage.EnumerateAllMembers()).RotationInterval);
+    }
 
     [Theory]
     [InlineData(MemberImageSourceKind.Automatic, MemberBackgroundMode.Default, 50)]
@@ -49,6 +80,30 @@ public sealed class MemberPresentationTests
         var member = Tile() with { TargetInput = "ms-settings:display", TargetDisplayName = "Display settings" };
         Assert.Equal(MemberTitleMode.Automatic, member.Visual.TitleMode);
         Assert.Equal("Display settings", MemberPresentationRules.ResolveTitle(member));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("Desktop shortcut")]
+    public void ShortcutTitleStaysDistinctFromResolvedExecutableAcrossImageRecognitionAndSerialization(string? observedName)
+    {
+        var member = Tile() with
+        {
+            TargetInput = @"D:\Programs\Game Launcher\launcher.exe",
+            SourceShortcutPath = @"C:\Start Menu\Programs\游戏入口.lnk",
+            TargetDisplayName = observedName,
+            Visual = new() { Title = "launcher", TitleMode = MemberTitleMode.Automatic },
+        };
+        var recognized = MemberPresentationRules.ApplyImageSource(member, new() { Kind = MemberImageSourceKind.Folder, Path = "covers" });
+        var document = WallDocument.Empty(1, 4) with
+        { Lanes = [new() { Groups = [new() { Id = "group", Members = [recognized] }] }] };
+        var restored = WallJson.Deserialize(WallJson.Serialize(document)).Lanes[0].Groups[0].Members[0];
+        Assert.Equal(member.SourceShortcutPath, restored.SourceShortcutPath);
+        Assert.Equal(member.TargetInput, restored.TargetInput);
+        Assert.Equal(observedName ?? "游戏入口", MemberPresentationRules.ResolveTitle(restored));
+        Assert.Equal("Mine", MemberPresentationRules.ResolveTitle(restored with
+            { Visual = restored.Visual with { TitleMode = MemberTitleMode.Manual, Title = "Mine" } }));
+        Assert.Equal("launcher", MemberPresentationRules.ResolveTitle(Tile() with { TargetInput = member.TargetInput }));
     }
 
     [Theory]

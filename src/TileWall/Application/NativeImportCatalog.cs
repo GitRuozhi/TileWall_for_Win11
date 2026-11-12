@@ -296,6 +296,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             return new ImportSourceCandidate(entry.Key, entry.Name, new TileMember
             {
                 Id = id, LocalBounds = new(0, 0, 1, 1),
+                RotationInterval = MemberPresentationRules.NewRotationInterval,
                 TargetInput = entry.Kind == NativeImportTarget.Shortcut && identity is not null &&
                     !identity.Key.StartsWith("opaque", StringComparison.Ordinal) ? identity.Target : entry.Target,
                 SourceShortcutPath = entry.Kind == NativeImportTarget.Shortcut ? entry.SourcePath ?? entry.Target : null,
