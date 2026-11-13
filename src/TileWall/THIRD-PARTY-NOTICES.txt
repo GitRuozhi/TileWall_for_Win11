@@ -19,9 +19,9 @@ MIT License. See Licenses\AsmResolverLicense.txt.
 Source: https://github.com/Washi1337/AsmResolver/blob/master/LICENSE.md
 Packages: AsmResolver, AsmResolver.PE, AsmResolver.PE.File, AsmResolver.PE.Win32Resources.
 
-Microsoft .NET Runtime 10.0.14
+Microsoft .NET Runtime 10.0.15
 MIT License and third-party notices: Licenses\DotNetRuntimeLicense.txt and Licenses\DotNetRuntimeThirdPartyNotices.txt.
-Source package: Microsoft.NETCore.App.Runtime.win-x64 10.0.14.
+Source package: Microsoft.NETCore.App.Runtime.win-x64 10.0.15.
 
 Microsoft Windows App SDK components
 Microsoft software license terms: Licenses\WindowsAppSdkLicense.txt.

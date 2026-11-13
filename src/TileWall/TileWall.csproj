@@ -93,6 +93,7 @@
 
   <!-- M2：核心逻辑类库（net10.0 纯类库，零 Windows/WinUI 依赖） -->
   <ItemGroup>
+    <FrameworkReference Update="Microsoft.NETCore.App" RuntimeFrameworkVersion="10.0.15" />
     <ProjectReference Include="..\TileWall.Core\TileWall.Core.csproj" />
   </ItemGroup>
 
