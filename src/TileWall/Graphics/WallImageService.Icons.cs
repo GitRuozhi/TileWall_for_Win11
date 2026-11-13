@@ -35,9 +35,12 @@ public sealed partial class WallImageService
         {
             if (_disk is null || FileContentHash(sourcePath) != sourceSha256) return null;
             var policy = await Task.Run(() => ShellItemCatalog.IconLocation(sourcePath, 96), ct).ConfigureAwait(false);
-            if (policy is { CanCache: false } or { CanReadResource: false }) return null;
-            if (string.IsNullOrWhiteSpace(iconPath) && policy is { CanReadResource: true, Path: not null })
-            { iconPath = policy.Path; iconIndex = policy.Index; }
+            if (string.IsNullOrWhiteSpace(iconPath))
+            {
+                if (policy is { CanCache: false } or { CanReadResource: false }) return null;
+                if (policy is { CanReadResource: true, Path: not null })
+                { iconPath = policy.Path; iconIndex = policy.Index; }
+            }
             var target = NormalizePath(targetPath) ?? NormalizePath(iconPath);
             if (target is null) return null;
             var dependency = NativeIconDependency(target, iconPath, iconIndex);

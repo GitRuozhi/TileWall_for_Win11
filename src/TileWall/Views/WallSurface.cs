@@ -670,9 +670,11 @@ public sealed class WallSurface : Canvas
         AddMenuItem(menu, WallMenuAction.NewTile, () => NewTileRequested?.Invoke(hit.GroupId, lane));
         var componentLabel = ProductStrings.Get("Menu.AddComponent");
         var addComponent = new MenuFlyoutSubItem { Text = componentLabel, Icon = ActionIcon.Glyph(ActionIcon.Add) };
+        AutomationProperties.SetAutomationId(addComponent, "wall-menu-AddComponent");
         AutomationProperties.SetName(addComponent, componentLabel); ToolTipService.SetToolTip(addComponent, componentLabel);
         var clockLabel = ProductStrings.Get("Wall.TimeAndDate");
         var newClock = new MenuFlyoutItem { Text = clockLabel, Icon = ActionIcon.Glyph(ActionIcon.Clock) };
+        AutomationProperties.SetAutomationId(newClock, "wall-menu-NewClock");
         AutomationProperties.SetName(newClock, clockLabel); ToolTipService.SetToolTip(newClock, clockLabel);
         newClock.Click += (_, _) => NewClockRequested?.Invoke(hit.GroupId, lane);
         addComponent.Items.Add(newClock);
@@ -867,6 +869,7 @@ public sealed class WallSurface : Canvas
         {
             var label = MenuLabel(id);
             var item = new MenuFlyoutItem { Text = label, Icon = ActionIcon.Glyph(MenuGlyph(id)) };
+            AutomationProperties.SetAutomationId(item, $"wall-menu-{id}");
             ToolTipService.SetToolTip(item, label); AutomationProperties.SetName(item, label);
             item.Click += (_, _) => action();
             menu.Items.Add(item);
@@ -898,6 +901,7 @@ public sealed class WallSurface : Canvas
     {
         var label = MenuLabel(id);
         var item = new MenuFlyoutItem { Text = label, Icon = ActionIcon.Glyph(MenuGlyph(id)) };
+        AutomationProperties.SetAutomationId(item, $"wall-menu-{id}");
         ToolTipService.SetToolTip(item, label); AutomationProperties.SetName(item, label);
         menu.Opening += (_, _) =>
         {
@@ -964,6 +968,7 @@ public sealed class WallSurface : Canvas
     {
         var label = ProductStrings.Get("Wall.Size");
         var sizes = new MenuFlyoutSubItem { Text = label, Icon = ActionIcon.Glyph(ActionIcon.PresetMedium) };
+        AutomationProperties.SetAutomationId(sizes, "wall-menu-Size");
         AutomationProperties.SetName(sizes, label); ToolTipService.SetToolTip(sizes, label);
         foreach (var (key, columns, rows, glyph) in new[] { ("Editor.PresetSmall", 1, 1, ActionIcon.PresetSmall),
             ("Editor.PresetMedium", 2, 2, ActionIcon.PresetMedium), ("Editor.PresetWide", 4, 2, ActionIcon.PresetWide),
@@ -971,6 +976,7 @@ public sealed class WallSurface : Canvas
         {
             var name = ProductStrings.Get(key);
             var item = new MenuFlyoutItem { Text = name, Icon = ActionIcon.Glyph(glyph) };
+            AutomationProperties.SetAutomationId(item, $"wall-menu-Size-{columns}x{rows}");
             AutomationProperties.SetName(item, name);
             ToolTipService.SetToolTip(item, $"{name} ({columns}×{rows})");
             item.Click += (_, _) => MemberSizeRequested?.Invoke(memberId, new(columns, rows));
