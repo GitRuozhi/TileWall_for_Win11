@@ -2,9 +2,9 @@
 
 本页记录对外版本状态、功能变化、兼容性、已知限制和必要验证范围。[GitHub Releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases)提供正式下载；源码与构建说明见[开发者指南](DeveloperGuide.md)。GitHub发行与Microsoft Store上架状态分别以对应页面为准。
 
-## V1.52（1.5.2，发行候选）——2026-11-14
+## [V1.52](https://github.com/GitRuozhi/TileWall_for_Win11/releases/tag/V1.52)（1.5.2）——2026-11-14
 
-GitHub发行草稿与Microsoft Store更新草稿已准备，等待正式发布／提交。
+GitHub已正式发布，提供x64和ARM64便携ZIP及EXE安装器。Microsoft Store更新草稿已准备，等待提交认证。
 
 - 保留x64并新增ARM64原生分发，两架构分别提供便携ZIP、EXE安装器和商店上传用未签名MSIX；商店为同一产品准备两份包，一览仍仅中英两种。
 - 应用及安装器支持英语、简中、繁中、日、韩、德、法、西语；设置保留跟随系统，支持语言族匹配和逐键英文回退。系统功能目录、菜单、通知及启动早期自有消息同步覆盖八语，用户标题、路径和已有组名不因切语改变。
