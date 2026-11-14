@@ -39,7 +39,7 @@ try {
     New-Item -ItemType Directory -Path $output -Force | Out-Null
     Push-Location -LiteralPath $source
     try {
-        $inputSource = if ($Tests) { Join-Path $repository 'tools/tests/UninstallBroker.Tests.cpp' } else { 'UninstallBroker.cpp' }
+        $inputSource = if ($Tests) { Join-Path $repository 'tests/packaging/UninstallBroker.Tests.cpp' } else { 'UninstallBroker.cpp' }
         $imageName = if ($Tests) { 'TileWall.UninstallBroker.Tests.exe' } else { 'TileWall.UninstallBroker.exe' }
         $subsystem = if ($Tests) { '/SUBSYSTEM:CONSOLE' } else { '/SUBSYSTEM:WINDOWS' }
         & $cl /nologo /TP /std:c++20 /EHsc /W4 /WX /O1 /GS /guard:cf /MT /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /c $inputSource "/Fo:$output/UninstallBroker.obj"

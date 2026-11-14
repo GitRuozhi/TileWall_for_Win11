@@ -1,11 +1,12 @@
 # 更新日志
 
-本页只保留重要版本变化、正式交付事实及对应验证范围，不代替现行产品规则或待办清单。旧版逐轮过程、原始测试记录及当时的候选状态可从 Git 提交追溯：运行 `git show 6656437:docs/CHANGELOG.md`。不另建历史归档。GitHub Release 状态仅指 GitHub，不表示商店状态；商店状态以明确核实记录为准。当前规则与未来事项见 [Product](Product.md)、[Development](Development.md)、[Roadmap](Roadmap.md) 和 [KnownIssues](KnownIssues.md)。
+本页只保留重要版本变化、正式交付事实及对应验证范围，不代替产品规则或待办清单。历史测试记录和逐轮过程从Git追溯，例如 `git show 6656437:docs/CHANGELOG.md`。私有开发规则、未来方向、发行准备和保留审查从私有仓库的文档入口查阅，不在本公开页链接私有目录。GitHub Release状态仅指GitHub，不表示商店状态；商店状态以明确核实记录为准。
 
-## V1.51（1.5.1.0）——2026-11-14 发行草稿
+## V1.51（1.5.1.0）——2026-11-14 发行候选
 
-- **发行准备：** 私有来源`dd03e96f622894a4ed984186c92311f364dae179`、公开镜像`f2fa7b2e268fcf2f4693cdb83557fba67468fc93`已推送；[CI 43546064866](https://github.com/GitRuozhi/TileWall_for_Win11-Dev/actions/runs/43546064866)成功，Core **1634通过、0失败、0跳过**，依赖审计、图标目录、公开同步、包规则及便携版／unsigned MSIX构建通过。本机从干净来源以SDK 10.0.404执行`tools/build.ps1 -Package`，包内来源戳匹配该私有提交，生成ZIP、EXE及1.5.1.0商店MSIX，静态包校验通过。
-- **草稿与商店材料：** [GitHub草稿](https://github.com/GitRuozhi/TileWall_for_Win11/releases/tag/untagged-2a6020b04065309a43cb)保持draft，目标为上述公开提交；仅附ZIP与EXE，平台摘要与本地一致。[提交材料](../Showcase/Store/drafts/V1.51/README.md)含商店包、双语更新区及来源／摘要；未正式发布Release，未提交Partner Center。本轮未新增完整GUI、安装升级、签名或WACK验收，既有定向验证范围如下。
+- **最终候选：** 干净私有构建来源`02988c628b92adeb11182a1abe2b6a1e9b00182e`，本机SDK 10.0.404执行`tools/build.ps1 -Package`，生成ZIP、EXE和1.5.1.0 unsigned MSIX；包内来源戳一致，便携ZIP的734个文件逐项摘要一致，包身份、依赖、运行时及许可检查通过。CI 43579743708在该来源提交上成功：Core **1634通过、0失败、0跳过**，依赖审计、目录／同步／包规则及便携版／MSIX构建通过。
+- **发行材料：** [V1.51](https://github.com/GitRuozhi/TileWall_for_Win11/releases/tag/V1.51)仍为草稿；保留开发者最新九条中文并对齐英文，Store更新区复用相应语言。发布前核对公开目标及ZIP／EXE的平台摘要；MSIX仅准备，未上传或提交Partner Center。当前候选未新增GUI、安装升级、签名或WACK验收，既有定向验证范围如下。
+- **开源与工程：** 补充[MIT许可证](../LICENSE)和[开发者指南](DeveloperGuide.md)，整理维护仓库的目录、文档与工具职责；公开白名单保持既定范围。
 
 - **墙面交互：** 手动缩放松手后以约180ms过渡到合法格子尺寸，按住时仍直接跟随，系统关闭动画时直接落定；有效缩放结束显示当前栏数、行数，实际变化等正式保存成功后提示。成员和分组移动成功后反馈，取消、拒绝和无实际移动不报成功；全屏、拓展栏位的开关反馈明确显示状态，缩放引起的模式变化与尺寸合并提示。
 - **本次功能验证：** V1.51便携开发构建通过；本机Windows 10 build 19045、96 DPI真实鼠标缩放的HWND矩形采样呈现连续中间尺寸并约180ms落定，横／纵缩放、实际尺寸保存、Esc取消、拖动进出全屏、成员／分组移动及恢复、无变化和拒绝分支、设置页四种模式开关提示及主窗口退出重开通过。新中英资源键完整且唯一，提示布局已目视核对。未执行全量测试、Win11矩阵、安装或发行验收；矩形采样不等于显示帧率或端到端呈现延迟。
@@ -18,8 +19,8 @@
 
 ## V1.50（1.5.0.0）——2026-11-14 正式发布
 
-- **正式来源：** 私有产品提交 `1c7c68a5f423dbf2f63f222145b1157b500af0bb`，CI [43465191258](https://github.com/GitRuozhi/TileWall_for_Win11-Dev/actions/runs/43465191258) 成功；Core 实际 **1630 通过、0 失败、0 跳过**，依赖审计、目录／同步／包规则及应用和 unsigned MSIX 构建通过。公开标签 `V1.50` 指向 `b6a35a8be402cb618c3db5e6491622db63b1053c`，与本次核实的公开 main 一致。
-- **GitHub Release：** [V1.50](https://github.com/GitRuozhi/TileWall_for_Win11/releases/tag/V1.50) 于 2026-11-14 01:03:22（北京时间）发布；不是 draft 或 prerelease。GitHub 附件为 ZIP 和 EXE；字节数、摘要及 MSIX 候选信息见[提交材料](../Showcase/Store/drafts/V1.50/README.md)。
+- **正式来源：** 私有产品提交 `1c7c68a5f423dbf2f63f222145b1157b500af0bb`，CI 43465191258 成功；Core 实际 **1630 通过、0 失败、0 跳过**，依赖审计、目录／同步／包规则及应用和 unsigned MSIX 构建通过。公开标签 `V1.50` 指向 `b6a35a8be402cb618c3db5e6491622db63b1053c`，与本次核实的公开 main 一致。
+- **GitHub Release：** [V1.50](https://github.com/GitRuozhi/TileWall_for_Win11/releases/tag/V1.50) 于 2026-11-14 01:03:22（北京时间）发布；不是 draft 或 prerelease。GitHub 附件为 ZIP 和 EXE；字节数、摘要及 MSIX 候选信息见提交材料。
 - **实现与候选：** 修复 WinAppSDK 运行时目录变量由 TileWall 子进程继承的问题；合并图片内存缓存重复的写入／淘汰循环并保留原准入、计费、命中和过期规则；开始菜单 URL 图标准备复用统一的区段／编码解析，并修正预热时对持久显式 ICO 过早应用 Shell 处理器限制的问题。更正包内实际为 .NET 10.0.15 的声明并固定运行时，未改 Windows SDK 引用。最终候选由该提交的干净 detached worktree、本机 SDK 10.0.404 以 `tools/build.ps1 -Rebuild -Package` 生成，版本为 1.5.0.0。Portable 734 个文件与干净输出逐项 SHA-256 一致；Setup、unsigned MSIX 的身份／架构、主程序集与 Core 引用、运行时依赖闭包、Explorer 扩展及许可／声明检查通过。
 - **复用 GUI 验证的依据：** 旧候选产品 DLL SHA-256 为 `D7940F32499AC82324761F1BE893FD6B498F95257295C2ECD4CFA39C0898C5A5`；最终候选 DLL 为 `AD3F86D3899E514C90F01A28FE7823EE01622D922DE74E4BE88C8C372086E5CD`，Core 为 `980EF1BC58C0DB72D570535699C663283ADF15682F98E7D1057A624D9361C6D0`。Cecil 比较确认便携版／MSIX 主程序集分别 7,744／7,746 个方法、Core 5,496 个方法等价；解析元数据引用编号、文件局部 Regex 生成名、等价 WinRT 接口代表类及查找顺序后，13 项类型绑定一致。原始 IL 不是逐字节相同：内联 XAML 的 CRLF／LF 及相关插值容量提示不同，经 XML 语义核对。247 个图像／XBF 文件摘要、501 项 PRI 逻辑资源、CLR 及运行配置／依赖清单一致。因此沿用下述旧候选 GUI 结果；**最终 DLL 未重新运行 GUI，未重跑安装升级或 WACK。**
 - **Win10 实机：** Windows 10 19045。固定脚本完整 Core G01–G14 全部通过（4.79 分钟），System 的两个热键显隐／失焦隐藏及四项设置恢复通过；Visual V02–V04 目视通过，覆盖自动图标、图库／拼图、明暗页面、提示、真实托盘单／双击、原生设置／退出和缩放边界。V01 使用修正后的真实录制开始事件判据做定向复验，动作及 120 个采样／71 张不同帧目视通过。较早一次 V01 判据有误；之后 Win10 V02 因指针未落在目标中心而中断，**未完成完整 Visual 重跑**。最终依据对应旧候选 DLL SHA 如上。

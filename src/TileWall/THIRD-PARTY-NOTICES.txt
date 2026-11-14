@@ -43,8 +43,8 @@ Assets\FallbackIcons\Generic\file.png, folder.png, website.png, and unknown.png 
 Per-file dimensions and SHA-256 provenance are recorded in Assets\FallbackIcons\Generic\assets.json.
 
 Bundled website icons
-The local images identify the websites linked from TileWall. File-level source URLs, pinned revisions, hashes, and source license records are listed in Assets\FallbackIcons\Websites\catalog.json. Attribution and license-file references are in Assets\FallbackIcons\Websites\NOTICE.txt; source originals and supporting records are retained in the private repository at Showcase\website-icons.
+The local images identify the websites linked from TileWall. File-level source URLs, pinned revisions, hashes, and source license records are listed in Assets\FallbackIcons\Websites\catalog.json. Attribution and license-file references are in Assets\FallbackIcons\Websites\NOTICE.txt; source originals and supporting records are retained in the private repository at assets\website-icons.
 
 TileWall system fallback artwork
 Assets\FallbackIcons\System contains original geometric system-function illustrations created for TileWall. They supplement unavailable native images and do not include Windows DLL exports, third-party logos, fonts, or traced artwork. No third-party asset license applies.
-Per-file dimensions and SHA-256 digests are recorded in Assets\FallbackIcons\System\assets.json. The source generator is tools\GenerateSystemFallbackIcons.py.
+Per-file dimensions and SHA-256 digests are recorded in Assets\FallbackIcons\System\assets.json. The source generator is tools\assets\GenerateSystemFallbackIcons.py.

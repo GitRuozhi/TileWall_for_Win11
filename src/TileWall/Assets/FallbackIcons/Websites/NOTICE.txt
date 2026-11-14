@@ -4,4 +4,4 @@ catalog.json records each bundled website icon's content hash, source URL or pin
 
 Official-site and official app-listing entries record their original URL and publisher/listing facts. The images identify the linked websites and their respective brands.
 
-Source originals and pinned license documents are retained in the private repository under Showcase/website-icons. The app uses the packaged local PNG catalog for these bundled icon bytes.
+Source originals and pinned license documents are retained in the private repository under assets/website-icons. The app uses the packaged local PNG catalog for these bundled icon bytes.
