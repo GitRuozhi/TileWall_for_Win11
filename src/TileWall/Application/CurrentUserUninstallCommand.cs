@@ -6,6 +6,7 @@ using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using TileWall.Shell.Interop;
+using TileWall.Core.Settings;
 
 namespace TileWall.ApplicationModel;
 
@@ -191,12 +192,18 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
     [SupportedOSPlatform("windows")]
     private static void ShowFailure(int result)
     {
-        var chinese = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "zh";
-        var message = result == ContextMenuUserCommand.ElevatedContext
-            ? chinese ? "无法切换到当前桌面用户，卸载尚未执行。程序文件已保留，请重试。" : "Could not switch to the desktop user. Uninstall did not run and program files were preserved. Please retry."
-            : result == ContextMenuUserCommand.RollbackIncomplete
-                ? chinese ? "卸载未完成，当前用户菜单恢复失败。请修复安装后重试。" : "Uninstall did not finish and current-user menu recovery failed. Repair the installation and retry."
-                : chinese ? "卸载未完成，程序文件已保留。请重试或修复安装。" : "Uninstall did not finish. Program files were preserved. Retry or repair the installation.";
+        var messages = WallLanguages.ResolveSystemTag(CultureInfo.CurrentUICulture.Name) switch
+        {
+            "zh-CN" => new[] { "无法切换到当前桌面用户，卸载尚未执行。程序文件已保留，请重试。", "卸载未完成，当前用户菜单恢复失败。请修复安装后重试。", "卸载未完成，程序文件已保留。请重试或修复安装。" },
+            "zh-TW" => new[] { "無法切換至目前桌面使用者，尚未執行解除安裝。程式檔案已保留，請重試。", "解除安裝未完成，目前使用者選單還原失敗。請修復安裝後重試。", "解除安裝未完成，程式檔案已保留。請重試或修復安裝。" },
+            "ja-JP" => new[] { "デスクトップのユーザーに切り替えられませんでした。アンインストールは実行されず、プログラムファイルは保持されました。再試行してください。", "アンインストールが完了せず、現在のユーザーのメニューを復元できませんでした。インストールを修復して再試行してください。", "アンインストールが完了しませんでした。プログラムファイルは保持されています。再試行するか、インストールを修復してください。" },
+            "ko-KR" => new[] { "데스크톱 사용자로 전환할 수 없어 제거하지 않았습니다. 프로그램 파일은 유지되었습니다. 다시 시도하세요.", "제거가 완료되지 않았으며 현재 사용자 메뉴를 복원하지 못했습니다. 설치를 복구한 후 다시 시도하세요.", "제거가 완료되지 않았습니다. 프로그램 파일은 유지되었습니다. 다시 시도하거나 설치를 복구하세요." },
+            "de-DE" => new[] { "Der Wechsel zum Desktopbenutzer ist fehlgeschlagen. Die Deinstallation wurde nicht ausgeführt und die Programmdateien wurden beibehalten. Bitte erneut versuchen.", "Die Deinstallation wurde nicht abgeschlossen und das Menü des aktuellen Benutzers konnte nicht wiederhergestellt werden. Reparieren Sie die Installation und versuchen Sie es erneut.", "Die Deinstallation wurde nicht abgeschlossen. Die Programmdateien wurden beibehalten. Versuchen Sie es erneut oder reparieren Sie die Installation." },
+            "fr-FR" => new[] { "Impossible de passer à l’utilisateur du bureau. La désinstallation n’a pas été exécutée et les fichiers du programme ont été conservés. Réessayez.", "La désinstallation n’a pas abouti et la restauration du menu de l’utilisateur actuel a échoué. Réparez l’installation et réessayez.", "La désinstallation n’a pas abouti. Les fichiers du programme ont été conservés. Réessayez ou réparez l’installation." },
+            "es-ES" => new[] { "No se pudo cambiar al usuario del escritorio. No se ejecutó la desinstalación y se conservaron los archivos del programa. Inténtelo de nuevo.", "La desinstalación no finalizó y no se pudo restaurar el menú del usuario actual. Repare la instalación e inténtelo de nuevo.", "La desinstalación no finalizó. Se conservaron los archivos del programa. Inténtelo de nuevo o repare la instalación." },
+            _ => new[] { "Could not switch to the desktop user. Uninstall did not run and program files were preserved. Please retry.", "Uninstall did not finish and current-user menu recovery failed. Repair the installation and retry.", "Uninstall did not finish. Program files were preserved. Retry or repair the installation." },
+        };
+        var message = messages[result == ContextMenuUserCommand.ElevatedContext ? 0 : result == ContextMenuUserCommand.RollbackIncomplete ? 1 : 2];
         _ = MessageBoxW(IntPtr.Zero, message, "TileWall", 0x00000010); // MB_OK | MB_ICONERROR.
     }
 

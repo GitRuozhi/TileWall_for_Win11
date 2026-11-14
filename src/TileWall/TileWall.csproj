@@ -5,7 +5,7 @@
     <TargetPlatformMinVersion>10.0.18362.0</TargetPlatformMinVersion>
     <RootNamespace>TileWall</RootNamespace>
     <DefaultLanguage>en-US</DefaultLanguage>
-    <Version>1.5.1</Version>
+    <Version>1.5.2</Version>
     <!-- exe 内嵌 Win32 图标：任务栏/资源管理器显示用（托盘走运行时加载 Assets/AppIcon.ico，两者同源） -->
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -40,7 +40,7 @@
   -->
   <PropertyGroup Condition="'$(WindowsPackageType)'=='MSIX'">
     <DefineConstants>$(DefineConstants);TILEWALL_PACKAGED</DefineConstants>
-    <ExplorerExtensionOutputDirectory Condition="'$(ExplorerExtensionOutputDirectory)'==''">$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\artifacts\.build\native-shell'))</ExplorerExtensionOutputDirectory>
+    <ExplorerExtensionOutputDirectory Condition="'$(ExplorerExtensionOutputDirectory)'==''">$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\artifacts\.build\native-shell\$(RuntimeIdentifier)'))</ExplorerExtensionOutputDirectory>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(WindowsPackageType)'=='MSIX'">
@@ -49,8 +49,8 @@
   </ItemGroup>
   <Target Name="BuildTileWallExplorerExtension" BeforeTargets="PrepareForBuild"
           Condition="'$(WindowsPackageType)'=='MSIX' and '$(DesignTimeBuild)'!='true'">
-    <Error Condition="'$(Platform)'!='x64' or '$(RuntimeIdentifier)'!='win-x64'" Text="The packaged Explorer extension requires Platform=x64 and RuntimeIdentifier=win-x64." />
-    <Exec Command="pwsh -NoProfile -File &quot;$(MSBuildProjectDirectory)\..\..\tools\BuildExplorerExtension.ps1&quot; -OutputDirectory &quot;$(ExplorerExtensionOutputDirectory)&quot;" />
+    <Error Condition="!('$(Platform)'=='x64' and '$(RuntimeIdentifier)'=='win-x64') and !('$(Platform)'=='ARM64' and '$(RuntimeIdentifier)'=='win-arm64')" Text="The packaged Explorer extension requires matching x64/win-x64 or ARM64/win-arm64." />
+    <Exec Command="pwsh -NoProfile -File &quot;$(MSBuildProjectDirectory)\..\..\tools\BuildExplorerExtension.ps1&quot; -OutputDirectory &quot;$(ExplorerExtensionOutputDirectory)&quot; -Architecture $(Platform)" />
   </Target>
 
   <ItemGroup>
@@ -94,7 +94,7 @@
   <!-- M2：核心逻辑类库（net10.0 纯类库，零 Windows/WinUI 依赖） -->
   <ItemGroup>
     <FrameworkReference Update="Microsoft.NETCore.App" RuntimeFrameworkVersion="10.0.15" />
-    <ProjectReference Include="..\TileWall.Core\TileWall.Core.csproj" />
+    <ProjectReference Include="..\TileWall.Core\TileWall.Core.csproj" AdditionalProperties="PlatformTarget=AnyCPU" />
   </ItemGroup>
 
   <!--

@@ -970,6 +970,13 @@ public sealed class WallSurface : Canvas
         var sizes = new MenuFlyoutSubItem { Text = label, Icon = ActionIcon.Glyph(ActionIcon.PresetMedium) };
         AutomationProperties.SetAutomationId(sizes, "wall-menu-Size");
         AutomationProperties.SetName(sizes, label); ToolTipService.SetToolTip(sizes, label);
+        menu.Opened += (_, _) =>
+        {
+            var currentLabel = ProductStrings.Get("Wall.Size");
+            sizes.Text = currentLabel;
+            AutomationProperties.SetName(sizes, currentLabel);
+            ToolTipService.SetToolTip(sizes, currentLabel);
+        };
         foreach (var (key, columns, rows, glyph) in new[] { ("Editor.PresetSmall", 1, 1, ActionIcon.PresetSmall),
             ("Editor.PresetMedium", 2, 2, ActionIcon.PresetMedium), ("Editor.PresetWide", 4, 2, ActionIcon.PresetWide),
             ("Editor.PresetLarge", 4, 4, ActionIcon.PresetLarge) })
@@ -979,6 +986,13 @@ public sealed class WallSurface : Canvas
             AutomationProperties.SetAutomationId(item, $"wall-menu-Size-{columns}x{rows}");
             AutomationProperties.SetName(item, name);
             ToolTipService.SetToolTip(item, $"{name} ({columns}×{rows})");
+            menu.Opened += (_, _) =>
+            {
+                var currentName = ProductStrings.Get(key);
+                item.Text = currentName;
+                AutomationProperties.SetName(item, currentName);
+                ToolTipService.SetToolTip(item, $"{currentName} ({columns}×{rows})");
+            };
             item.Click += (_, _) => MemberSizeRequested?.Invoke(memberId, new(columns, rows));
             sizes.Items.Add(item);
         }

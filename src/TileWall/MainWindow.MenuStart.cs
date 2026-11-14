@@ -29,6 +29,7 @@ public sealed partial class MainWindow
     private Task? _menuStateWrite;
     private readonly Dictionary<string, List<Image>> _menuIcons = new(StringComparer.Ordinal);
     private bool _menuImagesActive;
+    private readonly List<Action> _menuStringRefreshers = [];
     private sealed class MenuImageRequest(PuzzleFrame frame, int edge)
     {
         public PuzzleFrame Frame { get; } = frame;
@@ -57,6 +58,7 @@ public sealed partial class MainWindow
         _menuImageCancellation = new();
         _menuImageRequests.Clear();
         _menuIcons.Clear();
+        _menuStringRefreshers.Clear();
         if (_menuExpansion.Retain(document.Lanes.SelectMany(lane => lane.Groups).Select(group => group.Id))) SaveMenuExpansion();
         if (!document.Settings.MenuStart || !_menuImagesActive) { _menuStart.Content = null; return; }
         var panel = new StackPanel { Spacing = 0 };
@@ -66,9 +68,10 @@ public sealed partial class MainWindow
         {
             var entries = MemberLayoutOrder.Order(group.Members).Where(member => member.Entry is not null).ToArray();
             if (entries.Length == 0) continue;
-            var groupTitle = string.IsNullOrWhiteSpace(group.Title)
+            var unnamedNumber = string.IsNullOrWhiteSpace(group.Title) ? ++unnamedIndex : 0;
+            var groupTitle = unnamedNumber != 0
                 ? string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                    ProductStrings.Get("MenuStart.Unnamed"), ++unnamedIndex)
+                    ProductStrings.Get("MenuStart.Unnamed"), unnamedNumber)
                 : group.Title;
             var header = new Grid { Height = 32 };
             header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
@@ -106,15 +109,27 @@ public sealed partial class MainWindow
             var entryPanel = new StackPanel { Spacing = 0 };
             panel.Children.Add(entryPanel);
             bool? displayedExpanded = null;
+            void RefreshExpansionText()
+            {
+                var action = ProductStrings.Get(_menuExpansion.Contains(group.Id) ? "MenuStart.Collapse" : "MenuStart.Expand");
+                AutomationProperties.SetName(toggle, action + " " + groupTitle);
+                ToolTipService.SetToolTip(toggle, action);
+            }
+            _menuStringRefreshers.Add(() =>
+            {
+                // Only generated group names are translated; saved user titles stay intact.
+                if (unnamedNumber != 0)
+                    title.Text = groupTitle = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                        ProductStrings.Get("MenuStart.Unnamed"), unnamedNumber);
+                RefreshExpansionText();
+            });
             void UpdateExpansion()
             {
                 var expanded = _menuExpansion.Contains(group.Id);
                 if (displayedExpanded == expanded) return;
                 displayedExpanded = expanded;
                 chevron.Glyph = expanded ? "\uE70E" : "\uE70D";
-                var action = ProductStrings.Get(expanded ? "MenuStart.Collapse" : "MenuStart.Expand");
-                AutomationProperties.SetName(toggle, action + " " + groupTitle);
-                ToolTipService.SetToolTip(toggle, action);
+                RefreshExpansionText();
                 foreach (var member in entries) _menuIcons.Remove(member.Id);
                 entryPanel.Children.Clear();
                 if (!expanded) return;
@@ -150,6 +165,11 @@ public sealed partial class MainWindow
         }
         _menuStart.Content = panel;
         PositionMenuStart(_scrollRegion);
+    }
+
+    private void RefreshMenuStartStrings()
+    {
+        foreach (var refresh in _menuStringRefreshers) refresh();
     }
 
     private void UpdateMenuFrame(string memberId, PuzzleFrame? frame, double progress)
@@ -208,7 +228,7 @@ public sealed partial class MainWindow
         if (_menuStateWrite is { } write)
             try { await write; }
             catch (Exception ex) { AppLog.Warn("MenuStart", $"UI preference write did not finish: {ex.GetType().Name}"); }
-        _menuIcons.Clear(); _menuStart.Content = null;
+        _menuIcons.Clear(); _menuStringRefreshers.Clear(); _menuStart.Content = null;
     }
 
     private void SetMenuImagesActive(bool active)

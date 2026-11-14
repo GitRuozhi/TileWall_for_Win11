@@ -10,6 +10,14 @@ public sealed class ContextMenuUserCommandTests
     [InlineData("enable", "zh", "添加到 TileWall")]
     [InlineData("disable", "en", "Add to TileWall")]
     [InlineData("query", "en", "Add to TileWall")]
+    [InlineData("enable", "en-US", "Add to TileWall")]
+    [InlineData("enable", "zh-CN", "添加到 TileWall")]
+    [InlineData("enable", "zh-TW", "新增至 TileWall")]
+    [InlineData("enable", "ja-JP", "TileWall に追加")]
+    [InlineData("enable", "ko-KR", "TileWall에 추가")]
+    [InlineData("enable", "de-DE", "Zu TileWall hinzufügen")]
+    [InlineData("enable", "fr-FR", "Ajouter à TileWall")]
+    [InlineData("enable", "es-ES", "Añadir a TileWall")]
     public void StrictFixedCommandParsesWithoutXaml(string action, string language, string label)
     {
         string[] args = [ContextMenuUserCommand.Argument, action, language];

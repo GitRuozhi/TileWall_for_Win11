@@ -100,6 +100,8 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         Action? changed = null)
     {
         token.ThrowIfCancellationRequested();
+        var scope = CacheScope(kind);
+        var systemNames = kind == ImportPageSourceKind.SystemFeatures ? SystemFeatureCatalog.CaptureNames() : null;
         lock (_sync)
         {
             _refreshRequests[kind] = _refreshRequests.GetValueOrDefault(kind) + 1;
@@ -126,7 +128,6 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                 .GroupBy(entry => entry.Identity!.Target, StringComparer.OrdinalIgnoreCase)
                 .Where(group => group.Select(entry => (entry.Company, entry.CompanyStamp)).Distinct().Take(2).Count() == 1)
                 .ToDictionary(group => group.Key, group => (Company: group.First().Company, Stamp: group.First().CompanyStamp), StringComparer.OrdinalIgnoreCase);
-            var scope = CacheScope(kind);
             var observed = new Dictionary<string, NativeImportEntry>(StringComparer.Ordinal);
             var targets = new Dictionary<string, StartMenuImportProjection.TargetObservation>(StringComparer.OrdinalIgnoreCase);
             var companies = new Dictionary<string, (string? Company, string? Stamp)>(StringComparer.OrdinalIgnoreCase);
@@ -183,7 +184,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
                     complete = await ReadAppsAsync(Observe, previous, token, trace).ConfigureAwait(false);
                 else
                 {
-                    var entries = kind == ImportPageSourceKind.Desktop ? Desktop(token, out skipped) : SystemFeatureCatalog.Read(token);
+                    var entries = kind == ImportPageSourceKind.Desktop ? Desktop(token, out skipped) : SystemFeatureCatalog.Read(token, systemNames!);
                     foreach (var entry in entries) Observe(entry);
                     complete = skipped == 0 && !entries.Any(entry => entry.Key == Key("system|control-panel-unavailable"));
                 }

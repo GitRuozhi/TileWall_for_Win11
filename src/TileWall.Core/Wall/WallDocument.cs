@@ -66,7 +66,11 @@ public sealed record StartGroup
 }
 
 public enum AnchorCorner { BottomLeft, BottomRight, TopLeft, TopRight }
-public enum WallLanguageMode { System = 0, Chinese = 1, English = 2 }
+public enum WallLanguageMode
+{
+    System = 0, Chinese = 1, English = 2, TraditionalChinese = 3,
+    Japanese = 4, Korean = 5, German = 6, French = 7, Spanish = 8
+}
 public enum WallVisualStyle { Win10 = 0, Win11 = 1 }
 public enum WallThemeMode { System = 0, Light = 1, Dark = 2 }
 public enum WallBackgroundMode { Acrylic = 0, Mica = 1, Custom = 2 }

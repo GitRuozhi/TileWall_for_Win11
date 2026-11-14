@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using TileWall.Core.Configuration;
 using TileWall.Core.Shell;
+using TileWall.Core.Settings;
 
 namespace TileWall.Shell.Interop;
 
@@ -66,7 +67,7 @@ internal sealed class ExplorerContextMenuController
             return new(actual);
         }
 
-        if (language is not ("zh" or "en")) return new(before, "Settings.ContextMenuOperationFailed");
+        if (!WallLanguages.TryParseTag(language, out _)) return new(before, "Settings.ContextMenuOperationFailed");
         var result = await Task.Run(() => enable
             ? ExplorerContextMenuRegistration.RegisterCurrentUserForCurrentExecutable(
                 new ApplicationModel.ContextMenuUserCommand(ApplicationModel.ContextMenuUserAction.Enable, language).MenuText)

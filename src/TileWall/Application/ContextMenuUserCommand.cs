@@ -1,6 +1,7 @@
 using System.Runtime.Versioning;
 using System.Security.Principal;
 using TileWall.Shell.Interop;
+using TileWall.Core.Settings;
 
 namespace TileWall.ApplicationModel;
 
@@ -33,7 +34,7 @@ internal sealed record ContextMenuUserCommand(ContextMenuUserAction Action, stri
     internal static bool TryParse(string[] args, out ContextMenuUserCommand? command)
     {
         command = null;
-        if (args.Length != 3 || args[0] != Argument || args[1] is not ("enable" or "disable" or "query") || args[2] is not ("zh" or "en"))
+        if (args.Length != 3 || args[0] != Argument || args[1] is not ("enable" or "disable" or "query") || !WallLanguages.TryParseTag(args[2], out _))
             return false;
         command = new(args[1] switch
         {
@@ -45,7 +46,12 @@ internal sealed record ContextMenuUserCommand(ContextMenuUserAction Action, stri
     }
 
     // Menu text belongs here rather than ProductStrings: this branch has no Application.
-    internal string MenuText => Language == "zh" ? "添加到 TileWall" : "Add to TileWall";
+    internal string MenuText => WallLanguages.TryParseTag(Language, out var mode) ? WallLanguages.ResolveTag(mode) switch
+    {
+        "zh-CN" => "添加到 TileWall", "zh-TW" => "新增至 TileWall", "ja-JP" => "TileWall に追加",
+        "ko-KR" => "TileWall에 추가", "de-DE" => "Zu TileWall hinzufügen",
+        "fr-FR" => "Ajouter à TileWall", "es-ES" => "Añadir a TileWall", _ => "Add to TileWall",
+    } : "Add to TileWall";
 
     [SupportedOSPlatform("windows")]
     internal static int Run(string[] args)

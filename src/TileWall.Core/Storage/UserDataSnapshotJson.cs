@@ -20,7 +20,7 @@ public sealed record UserDataManifest(int SchemaVersion, long Generation, string
         ForwardDataCompatibility.FieldsEqual(Wall.ExtensionData, other.Wall.ExtensionData) &&
         ForwardDataCompatibility.FieldsEqual(RecycleBin.ExtensionData, other.RecycleBin.ExtensionData);
     public override int GetHashCode() => HashCode.Combine(SchemaVersion, Generation, SnapshotId, Settings, Wall, RecycleBin);
-    public const int CurrentFormatVersion = 5;
+    public const int CurrentFormatVersion = 6;
     internal static bool IsSupportedFormatVersion(int? version) => version is >= 1 and <= CurrentFormatVersion;
 }
 public sealed record UserDataFileDigest(long Length, string Sha256)
@@ -78,7 +78,7 @@ internal static class UserDataSnapshotJson
             {
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "layoutLocked"));
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "redirectTaskbarStartButton"));
-                if (version < UserDataManifest.CurrentFormatVersion)
+                if (version < 5)
                     typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "activateTaskbar"));
             }
             if (typeInfo.Type == typeof(StartGroup))

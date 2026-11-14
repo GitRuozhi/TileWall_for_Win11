@@ -17,6 +17,7 @@ public sealed partial class WallSessionTests
     [InlineData(2)]
     [InlineData(3)]
     [InlineData(4)]
+    [InlineData(5)]
     public void HistoricalInitialOpenUpgradesBeforePublishingAndAllowsRepeatedSaves(int version)
     {
         var (session, files, root) = Harness();
@@ -25,7 +26,7 @@ public sealed partial class WallSessionTests
         var expected = store.Open().Document!;
         var opened = session.Open(8, 8);
 
-        Assert.Equal(WallOpenStatus.Loaded, opened.Status);
+        Assert.True(opened.Status == WallOpenStatus.Loaded, string.Join("; ", opened.Diagnostics));
         Assert.False(opened.InitializedFresh);
         Assert.True(opened.WasUpgraded);
         Assert.Equal(1, session.Current.Generation);
@@ -33,6 +34,17 @@ public sealed partial class WallSessionTests
         Assert.Equal(UserDataManifest.CurrentFormatVersion, session.Current.StorageMetadata.SettingsVersion);
         Assert.Equal(WallJson.Serialize(expected.ActiveView() with { Generation = 1 }), WallJson.Serialize(session.Current));
         Assert.Equal(original, files.ReadAllBytes(Path.Combine(root, "Recovery", "state.prev.json")));
+        if (version == 5)
+        {
+            Assert.True(session.Current.Settings.LayoutLocked);
+            Assert.True(session.Current.Settings.RedirectTaskbarStartButton);
+            Assert.False(session.Current.Settings.ActivateTaskbar);
+            Assert.Equal("Win+F9", session.Current.Settings.HotKey);
+            Assert.Equal("Win+Ctrl+F9", session.Current.Settings.SecondaryHotKey);
+            Assert.Equal(4, session.Current.Lanes[0].Groups[0].ReservedRows);
+            Assert.Equal("user title", session.Current.Lanes[0].Groups[0].Title);
+            Assert.True(session.Current.Settings.ExtensionData!["futureSetting"].GetBoolean());
+        }
         Assert.Equal(expected.InactiveMembers, store.Open().Document!.InactiveMembers);
 
         for (var save = 0; save < 2; save++)
@@ -109,6 +121,15 @@ public sealed partial class WallSessionTests
             RecycleBinEnabled = recycleEnabled,
             InactiveMembers = recycleEnabled ? [Member("retained")] : [],
         };
+        if (version == 5)
+            document = document with
+            {
+                Rows = 8,
+                Settings = document.Settings with { LayoutLocked = true, RedirectTaskbarStartButton = true,
+                    ActivateTaskbar = false, HotKey = "Win+F9", SecondaryHotKey = "Win+Ctrl+F9",
+                    ExtensionData = new Dictionary<string, JsonElement> { ["futureSetting"] = JsonSerializer.SerializeToElement(true) } },
+                Lanes = [new() { Groups = [document.Lanes[0].Groups[0] with { Title = "user title", ReservedRows = 4 }] }],
+            };
         var prepared = UserDataSnapshotJson.Prepare(document);
         var bytes = prepared.Files.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
         var settings = JsonNode.Parse(bytes["settings.json"])!;

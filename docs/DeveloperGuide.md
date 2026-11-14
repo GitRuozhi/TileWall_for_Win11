@@ -6,7 +6,7 @@ TileWall 是一款可编辑的图片磁贴启动墙：把程序、文件夹、�
 
 ## 支持系统与分发方式
 
-正式支持 Windows 10 22H2（build 19045）和 Windows 11，当前发行架构为 x64。工程保留更低的技术安装门槛，允许较旧 Windows 10 尝试运行，但不承诺兼容。项目中的其他平台配置也不代表已有对应架构的发行和实机验证。
+正式支持Windows 10 22H2（build 19045）和Windows 11，提供x64与ARM64原生构建。工程保留更低的技术安装门槛，允许较旧Windows 10尝试运行，但不承诺兼容。构建与包检查不代表所有系统和架构均已实机验证；ARM64原生运行及安装实测尚未覆盖。
 
 用户可从 [Microsoft Store](https://apps.microsoft.com/store/detail/9NZZN35FDB0C) 安装，或从 Releases 取得便携 ZIP、EXE 安装器。ZIP 和 EXE 包含所需的 .NET 与 Windows App SDK 运行时；EXE 安装、更新和卸载需要管理员权限，应用日常以普通权限运行。商店交付的 MSIX 由商店签名，本地生成的未签名 MSIX 不能直接作为普通安装包使用。
 
@@ -16,7 +16,7 @@ TileWall 是一款可编辑的图片磁贴启动墙：把程序、文件夹、�
 
 ### 环境和依赖
 
-在 Windows x64 上准备 .NET 10 SDK。使用 Visual Studio 时需要支持该 SDK 的 .NET 桌面／WinUI 构建工具；命令行也可直接调用 `dotnet`。原生组件另需 Visual Studio 或 Build Tools 中的 C++ x64 工具，以及含 x64 工具和库的 Windows SDK；下面的原生脚本使用 PowerShell 7（`pwsh`）。
+在Windows x64上准备.NET 10 SDK。使用Visual Studio时需要支持该SDK的.NET桌面／WinUI构建工具；命令行也可直接调用`dotnet`。原生组件另需Visual Studio或Build Tools中的C++ x64工具及对应Windows SDK。交叉构建ARM64时另装 `Microsoft.VisualStudio.Component.VC.Tools.ARM64` 和SDK的ARM64库；下面的原生脚本使用PowerShell 7（`pwsh`）。
 
 建议检出到较短的本地路径，例如 `D:\TileWall`。真实 Shell 集成夹具会在测试输出下再创建多层目录，过深的检出／输出路径可能触及原生快捷方式 IO 的路径限制，即使托管编译已经成功。遇到这类失败先保留错误信息并在短路径复验，不通过跳过用例来宣告通过。
 
@@ -37,6 +37,10 @@ dotnet publish src/TileWall/TileWall.csproj -c Release -r win-x64 --self-contain
 ```
 
 这是普通开发构建，不生成官方 ZIP、EXE 安装器或商店提交包。公开仓不包含维护者的完整发行包装脚本和安装器配置；运行、编译与安装／签名是不同步骤。不要用 `dotnet run` 的自动包身份流程代替这里的直接 EXE 启动来核验非打包行为。
+
+ARM64交叉构建将上面的RID改为 `win-arm64`、Platform改为 `ARM64`，输出改到 `artifacts/.build/arm64-publish`，保留x64日常运行目录；不要在x64主机启动交叉输出。原生脚本的 `-Architecture arm64` 选择相同目标，默认仍为x64。两架构共用正式身份、数据根和单实例。
+
+应用支持英语、简中、繁中、日、韩、德、法、西语及跟随系统。语言规则在 `WallLanguages`，自有文案在 `Resources/ProductStrings*.xaml`，逐键英文回退；用户内容不自动翻译。设置语言枚举保留旧值，新增六语需要根清单及settings格式6，可信旧数据打开后联合升级；分享包和运行墙schema保持6，不提供新版数据降级写回。
 
 ### 运行 Core 测试
 

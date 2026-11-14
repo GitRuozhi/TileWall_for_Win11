@@ -20,7 +20,7 @@
   <Identity
     Name="Ruozhi.TileWall"
     Publisher="CN=E85F876C-CE51-47F1-A1F6-9007A3C15A22"
-    Version="1.5.1.0" />
+    Version="1.5.2.0" />
 
   <mp:PhoneIdentity PhoneProductId="1A027D37-1D32-492F-ACD2-E456FB4E670C" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
@@ -46,6 +46,12 @@
   <Resources>
     <Resource Language="en-US" />
     <Resource Language="zh-CN" />
+    <Resource Language="zh-TW" />
+    <Resource Language="ja-JP" />
+    <Resource Language="ko-KR" />
+    <Resource Language="de-DE" />
+    <Resource Language="fr-FR" />
+    <Resource Language="es-ES" />
   </Resources>
 
   <Applications>

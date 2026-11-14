@@ -25,7 +25,7 @@ public sealed class ReservedLayoutPersistenceTests
         var original = ReservedWall();
         var snapshot = UserDataSnapshotJson.Prepare(original);
         var restored = UserDataSnapshotJson.Read(snapshot.Manifest, name => snapshot.Files[name], _ => throw new InvalidOperationException());
-        Assert.Equal(5, snapshot.Manifest.SchemaVersion);
+        Assert.Equal(UserDataManifest.CurrentFormatVersion, snapshot.Manifest.SchemaVersion);
         Assert.True(restored.Settings.LayoutLocked);
         Assert.Empty(restored.Lanes[0].Groups[0].Members);
         Assert.Equal(3, restored.Lanes[0].Groups[0].ReservedRows);

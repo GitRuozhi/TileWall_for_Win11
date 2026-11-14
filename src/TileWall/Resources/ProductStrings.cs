@@ -1,4 +1,4 @@
-using System.Globalization;
+using TileWall.Core.Settings;
 using Microsoft.UI.Xaml;
 using TileWall.Core.Wall;
 
@@ -7,12 +7,12 @@ namespace TileWall.Resources;
 /// <summary>Product text selected explicitly or from the current Windows UI language.</summary>
 internal static class ProductStrings
 {
-    private static ResourceDictionary? _chinese, _english;
+    private static readonly Dictionary<string, ResourceDictionary> Dictionaries = new(StringComparer.Ordinal);
     private static string? _nativeLanguage;
     public static WallLanguageMode Language { get; private set; }
     public static void ApplyLanguage(WallLanguageMode mode)
     {
-        var nativeLanguage = UsesChinese(mode) ? "zh-CN" : "en-US";
+        var nativeLanguage = WallLanguages.ResolveTag(mode);
         if (_nativeLanguage != nativeLanguage)
         {
             Microsoft.Windows.Globalization.ApplicationLanguages.PrimaryLanguageOverride = nativeLanguage;
@@ -25,10 +25,30 @@ internal static class ProductStrings
 
     public static string Get(string key, WallLanguageMode mode)
     {
-        var dictionary = UsesChinese(mode)
-            ? (_chinese ??= new ResourceDictionary { Source = new Uri("ms-appx:///Resources/ProductStrings.xaml") })
-            : (_english ??= new ResourceDictionary { Source = new Uri("ms-appx:///Resources/ProductStrings.en.xaml") });
-        return dictionary.TryGetValue(key, out var value) && value is string text ? text : key;
+        var dictionary = DictionaryFor(WallLanguages.ResolveTag(mode));
+        if (dictionary.TryGetValue(key, out var value) && value is string text) return text;
+        return DictionaryFor("en-US").TryGetValue(key, out value) && value is string fallback ? fallback : key;
+    }
+
+    private static ResourceDictionary DictionaryFor(string tag)
+    {
+        if (Dictionaries.TryGetValue(tag, out var dictionary)) return dictionary;
+        // These dictionaries are selected explicitly. Keep their file names neutral:
+        // MRT interprets dot-separated file-name segments as resource qualifiers.
+        var fileName = tag switch
+        {
+            "zh-CN" => "ProductStrings.xaml",
+            "zh-TW" => "ProductStringsTraditionalChinese.xaml",
+            "ja-JP" => "ProductStringsJapanese.xaml",
+            "ko-KR" => "ProductStringsKorean.xaml",
+            "de-DE" => "ProductStringsGerman.xaml",
+            "fr-FR" => "ProductStringsFrench.xaml",
+            "es-ES" => "ProductStringsSpanish.xaml",
+            _ => "ProductStrings.en.xaml",
+        };
+        dictionary = new ResourceDictionary { Source = new Uri($"ms-appx:///Resources/{fileName}") };
+        Dictionaries.Add(tag, dictionary);
+        return dictionary;
     }
 
     public static string SettingUpdatedMessage(string key, WallSettings settings) => key switch
@@ -37,10 +57,6 @@ internal static class ProductStrings
         "Settings.ExpandColumns" => Get(settings.ExpandColumns ? "Settings.ExpandColumnsEnabled" : "Settings.ExpandColumnsDisabled"),
         _ => string.Format(Get("Settings.Updated"), Get(key)),
     };
-
-    private static bool UsesChinese(WallLanguageMode mode) => mode == WallLanguageMode.Chinese
-        || mode == WallLanguageMode.System
-        && CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase);
 
     public static string WallRejectionReason(WallRejection rejection) => Get(rejection switch
     {

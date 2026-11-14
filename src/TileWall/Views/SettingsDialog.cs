@@ -64,6 +64,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly ToggleButton[] _anchorButtons = Enumerable.Range(0, 4).Select(_ => new ToggleButton { Width = 32, Height = 32 }).ToArray();
     private readonly ToggleSwitch _fullScreen = new();
     private readonly ToggleSwitch _expandColumns = new(), _menuStart = new();
+    private static readonly WallLanguageMode[] LanguageModes = [WallLanguageMode.System, .. WallLanguages.Supported];
     private readonly ComboBox _language = new(), _visualStyle = new(), _theme = new(), _background = new();
     private readonly ToggleSwitch _topmost = new(), _stayVisible = new(), _layoutLocked = new(), _activateTaskbar = new(), _runAtLogin = new(), _showGrid = new();
     private readonly HotKeyRecorder _hotKey = new(), _secondaryHotKey = new();
@@ -353,7 +354,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         }
         RefreshStrings(); RestoreState();
         _theme.SelectionChanged += (_, _) => BeginChoiceApply(_theme, s => s with { ThemeMode = (WallThemeMode)_theme.SelectedIndex });
-        _language.SelectionChanged += (_, _) => BeginChoiceApply(_language, s => s with { LanguageMode = (WallLanguageMode)_language.SelectedIndex });
+        _language.SelectionChanged += (_, _) => BeginChoiceApply(_language, s => s with { LanguageMode = LanguageModes[_language.SelectedIndex] });
         _visualStyle.SelectionChanged += (_, _) => BeginChoiceApply(_visualStyle, s => s with { VisualStyle = (WallVisualStyle)_visualStyle.SelectedIndex });
         _background.SelectionChanged += (_, _) =>
         {
@@ -512,7 +513,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         }
         Id(_fullScreen, "full-screen");
         SetChoices(_theme, "Settings.Theme", ["Settings.SystemLanguage", "Settings.Light", "Settings.Dark"]);
-        SetChoices(_language, "Settings.Language", ["Settings.SystemLanguage", "Settings.Chinese", "Settings.English"]);
+        SetChoices(_language, "Settings.Language", LanguageModes.Select(mode => mode == WallLanguageMode.System
+            ? ProductStrings.Get("Settings.SystemLanguage") : WallLanguages.NativeName(mode)).ToArray(), localized: false);
         SetChoices(_visualStyle, "Settings.VisualStyle", ["Settings.Win10Style", "Settings.Win11Style"]);
         SetChoices(_background, "Settings.Background", ["Settings.Acrylic", "Settings.Mica", "Settings.Custom"]);
         foreach (var (key, label) in _labels) label.Text = ProductStrings.Get(key);
@@ -587,7 +589,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         _menuStart.IsOn = _state.Settings.MenuStart;
         Id(_expandColumns, "expand-columns"); Id(_menuStart, "menu-start");
         ToolTipService.SetToolTip(_labels["Settings.Anchor"], ProductStrings.Get("Settings.Anchor"));
-        _language.SelectedIndex = (int)_state.Settings.LanguageMode;
+        _language.SelectedIndex = Array.IndexOf(LanguageModes, _state.Settings.LanguageMode);
         _theme.SelectedIndex = (int)_state.Settings.ThemeMode; _visualStyle.SelectedIndex = (int)_state.Settings.VisualStyle;
         _background.SelectedIndex = (int)_state.Settings.BackgroundMode;
         _backgroundPath.Text = _state.Settings.BackgroundMode == WallBackgroundMode.Custom ? _state.Settings.BackgroundImagePath ?? string.Empty : string.Empty;
@@ -934,10 +936,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         {
             await CancelAndWaitForHotKeysAsync();
             RefreshContextMenuPresentation();
-            var language = ProductStrings.Language == WallLanguageMode.Chinese ||
-                ProductStrings.Language == WallLanguageMode.System &&
-                System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase)
-                ? "zh" : "en";
+            var language = WallLanguages.ResolveTag(ProductStrings.Language);
             var result = await _contextMenuController.ApplyAsync(enable, language, confirmedTargets);
             _contextState = result.State;
             _contextRefreshRequested = false;
@@ -1548,14 +1547,14 @@ internal sealed class SettingsDialog : IWallDialogSession
     {
         ShowFeedback(string.Format(ProductStrings.Get(messageKey), detail));
     }
-    private static void SetChoices(ComboBox box, string header, string[] keys)
+    private static void SetChoices(ComboBox box, string header, string[] keys, bool localized = true)
     {
         box.Header = null; AutomationProperties.SetName(box, ProductStrings.Get(header));
         var selected = box.SelectedIndex;
         var refreshSelection = false;
         for (var index = 0; index < keys.Length; index++)
         {
-            var text = ProductStrings.Get(keys[index]);
+            var text = localized ? ProductStrings.Get(keys[index]) : keys[index];
             if (index == box.Items.Count) box.Items.Add(new ComboBoxItem { Content = text });
             else if (box.Items[index] is ComboBoxItem item && !Equals(item.Content, text))
             {

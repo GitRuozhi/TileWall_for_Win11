@@ -232,6 +232,10 @@ public sealed partial class MainWindow
 
     internal void RefreshProductStrings()
     {
+        // Settings commit configures the rail before the selected language is applied.
+        // Refresh its text explicitly, including while the settings dialog is open.
+        _windowsSidebar?.RefreshStrings();
+        RefreshMenuStartStrings();
         ActionIcon.Set(RetryViewButton, ProductStrings.Get("Wall.Retry"), ActionIcon.Refresh);
         foreach (var zone in new[] { ResizeGrip, ResizeHorizontalEdge, ResizeVerticalEdge, ResizeTopLeft, ResizeTopRight, ResizeBottomLeft, ResizeBottomRight })
         {

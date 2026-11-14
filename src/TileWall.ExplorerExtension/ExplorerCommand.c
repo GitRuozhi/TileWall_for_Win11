@@ -10,8 +10,8 @@
 #include "Resource.h"
 #include "ExplorerMenuPreference.h"
 
-#if !defined(_M_X64)
-#error This package ships an x64 Explorer extension; build with an x64 Windows target.
+#if defined(_M_ARM64EC) || (!defined(_M_X64) && !defined(_M_ARM64))
+#error This package requires a native x64 or ARM64 Windows target.
 #endif
 
 static const CLSID CommandClsid = {0xcb391e98, 0x9cf2, 0x4a54, {0xab, 0xea, 0xfb, 0xc5, 0x29, 0xca, 0x2d, 0x44}};

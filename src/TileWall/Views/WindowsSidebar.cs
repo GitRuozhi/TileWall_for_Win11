@@ -197,6 +197,11 @@ internal sealed class WindowsSidebar : Panel
                 if (row.Button.Flyout is { } flyout) flyout.Hide();
             }
         }
+        RefreshStrings();
+    }
+
+    internal void RefreshStrings()
+    {
         if (_language != ProductStrings.Language)
         {
             _language = ProductStrings.Language;
