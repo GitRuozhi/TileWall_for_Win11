@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/src/TileWall/Assets/Square150x150Logo.scale-200.png" width="112" height="112" alt="TileWall-Symbol">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/tilewall-logo.png" width="112" height="112" alt="TileWall-Symbol">
 </p>
 
 <h1 align="center">TileWall</h1>
@@ -16,13 +16,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.46-0078D4?style=flat-square" alt="Version V1.46">
+  <img src="https://img.shields.io/badge/Version-V1.51-0078D4?style=flat-square" alt="Version V1.51">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Für Windows 10 und 11">
   <img src="https://img.shields.io/badge/Architecture-x64-0078D4?style=flat-square" alt="x64">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="Kostenlos">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-Portable-009688?style=flat-square" alt="Portables Paket"></a>
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
+  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square" alt="MIT License"></a>
 </p>
 
 <p align="center">
@@ -34,11 +35,11 @@
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif" width="1280" alt="Einblenden, Größe ändern und Vollbild">
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="Einblenden, Größe ändern und Vollbild">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/hero-zh.gif">GIF</a> einzeln.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif">GIF</a> einzeln.</sub></p>
 
 ## **Erhebt euch wieder, meine Kacheln!**
 
@@ -65,11 +66,11 @@ Im Puzzlemodus kannst du auf den inneren Gitterlinien der Vorschau links oder re
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif" width="476" alt="Ein Puzzle-Bild teilen, zusammenfügen und vergrößern">
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif" width="476" alt="Ein Puzzle-Bild teilen, zusammenfügen und vergrößern">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/puzzle-edit-zh.gif">GIF</a> einzeln.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif">GIF</a> einzeln.</sub></p>
 
 ## Das Startmenü-Erlebnis von Windows 10 nachbilden
 
@@ -89,11 +90,11 @@ Mit **Systemstartmenü ersetzen (Experiment)** in den Einstellungen kannst du Ti
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif" width="1012" alt="Kacheln und Gruppen verschieben">
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif" width="1012" alt="Kacheln und Gruppen verschieben">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/wall-drag-zh.gif">GIF</a> einzeln.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif">GIF</a> einzeln.</sub></p>
 
 ## Noch mehr Funktionen
 
@@ -115,11 +116,11 @@ Wenn du auch das Startmenü vermisst, aktiviere in den Einstellungen **Startmen�
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif" width="1012" alt="Mehrere Einträge auswählen und das Importergebnis ansehen">
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif" width="1012" alt="Mehrere Einträge auswählen und das Importergebnis ansehen">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/images/readme/start-import-zh.gif">GIF</a> einzeln.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a> einzeln.</sub></p>
 
 
 ## Demnächst
