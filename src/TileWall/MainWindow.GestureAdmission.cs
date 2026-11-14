@@ -35,7 +35,7 @@ public sealed partial class MainWindow
             _windowClosing || ShutdownStarted || _resizing || _gesture.Phase != GesturePhase.Idle ||
             e.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse ||
             !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed || !GetCursorPos(out var cursor)) return false;
-        if (_viewportTransition is { AutomaticHeight: true }) StopViewportTransition();
+        if (_viewportTransition is { AutomaticHeight: true } or { ResizeSettlement: true }) StopViewportTransition();
         var pressed = e.GetCurrentPoint(Surface);
         var point = pressed.Position;
         var hit = Surface.Hit(point);

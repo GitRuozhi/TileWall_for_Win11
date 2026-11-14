@@ -31,6 +31,13 @@ internal static class ProductStrings
         return dictionary.TryGetValue(key, out var value) && value is string text ? text : key;
     }
 
+    public static string SettingUpdatedMessage(string key, WallSettings settings) => key switch
+    {
+        "Settings.FullScreen" => Get(settings.FullScreen ? "Settings.FullScreenEnabled" : "Settings.FullScreenDisabled"),
+        "Settings.ExpandColumns" => Get(settings.ExpandColumns ? "Settings.ExpandColumnsEnabled" : "Settings.ExpandColumnsDisabled"),
+        _ => string.Format(Get("Settings.Updated"), Get(key)),
+    };
+
     private static bool UsesChinese(WallLanguageMode mode) => mode == WallLanguageMode.Chinese
         || mode == WallLanguageMode.System
         && CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase);

@@ -362,18 +362,27 @@ public sealed partial class MainWindow
             TraceInput($"ResizeCompleted canceled={canceled} pressScreen={_resizeStart.X:F2},{_resizeStart.Y:F2} endScreen={endPoint} startRect={_resizeStartRect.X},{_resizeStartRect.Y},{_resizeStartRect.Width},{_resizeStartRect.Height}");
             var proposal = canceled ? null : _resizeProposal;
             var failure = _resizeFailure;
+            var beforeSettings = Settings;
+            if (proposal is not null)
+            {
+                // Keep the gesture's display subscription through release. Storage
+                // adopts this endpoint without restarting the presentation transition.
+                Surface.Render(proposal.Document, proposal.Geometry);
+                ApplyViewport(proposal.Document, proposal.Geometry, animateResize: true);
+            }
             CancelResize(canceled ? "ThumbCanceled" : "ThumbCompleted", restoreView: proposal is null);
             if (!canceled && failure is not null) Status(ViewportFailure(failure));
             if (proposal is null) return;
             if (proposal.Document.Columns == Document.Columns && proposal.Document.Rows == Document.Rows && proposal.Document.Settings == Settings)
             {
-                Surface.Render(Document); ApplyViewport(animateMode: false);
+                ShowResizeFeedback(beforeSettings);
                 _performance.End("release-no-change", Surface.VisualCreationCount, Surface.GridCreationCount); return;
             }
             var originalOffset = _resizeScrollOffset;
             _ = CommitProposalAsync(proposal, settle: error =>
             {
                 SettleReleasePersistence(error);
+                if (error is null) ShowResizeFeedback(beforeSettings);
                 if (error is not null && !_viewBlocked && !_windowClosing)
                 {
                     WallScroll.UpdateLayout();

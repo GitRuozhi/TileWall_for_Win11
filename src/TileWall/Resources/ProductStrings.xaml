@@ -203,6 +203,7 @@
     <x:String x:Key="Wall.PendingAdd">已收到外部添加请求，等待导入处理。</x:String>
     <x:String x:Key="Wall.QueueFull">待处理添加请求已满，请稍后分批重试。</x:String>
     <x:String x:Key="Wall.Resize">拖动调整墙面整栏与整行</x:String>
+    <x:String x:Key="Wall.ResizeSettled">当前墙面：{0} 栏，{1} 行。</x:String>
     <x:String x:Key="Wall.HotKeyUnavailable">快捷键未注册，请使用托盘显示墙面。</x:String>
     <x:String x:Key="Entry.PickerFailed">文件选择失败：{0}</x:String>
     <x:String x:Key="Puzzle.Count">{0} 张图片</x:String>
@@ -625,6 +626,7 @@
     <x:String x:Key="Settings.LayoutLocked">布局锁</x:String>
     <x:String x:Key="Settings.LayoutLockedHelp">固定墙的大小，单个磁贴只能移到空位，不挤动其他内容。</x:String>
     <x:String x:Key="Wall.LayoutLocked">布局已锁定。请在设置中解锁后调整墙面或移动分组。</x:String>
+    <x:String x:Key="Wall.LayoutMoveCompleted">已移动到新位置。</x:String>
     <x:String x:Key="Wall.LayoutMovedGroupEnd">原位置空间不足，已移至组尾。</x:String>
     <x:String x:Key="Wall.LayoutMovedWallEnd">原组空间不足，已移至墙尾新组。</x:String>
     <x:String x:Key="Wall.UpgradingUserData">正在升级用户数据版本…</x:String>
@@ -654,6 +656,10 @@
     <x:String x:Key="Import.OptionEnabled">已启用：{0}</x:String>
     <x:String x:Key="Import.OptionDisabled">已关闭：{0}</x:String>
     <x:String x:Key="Settings.Updated">{0}已更新。</x:String>
+    <x:String x:Key="Settings.FullScreenEnabled">已开启全屏模式。</x:String>
+    <x:String x:Key="Settings.FullScreenDisabled">已关闭全屏模式。</x:String>
+    <x:String x:Key="Settings.ExpandColumnsEnabled">已开启拓展栏位。</x:String>
+    <x:String x:Key="Settings.ExpandColumnsDisabled">已关闭拓展栏位。</x:String>
     <x:String x:Key="Settings.DefaultsRestored">默认设置已恢复。</x:String>
     <x:String x:Key="Common.Opened">已打开{0}。</x:String>
     <x:String x:Key="Settings.ControlsBusy">正在处理当前操作，请稍候。</x:String>

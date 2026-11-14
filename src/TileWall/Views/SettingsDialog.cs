@@ -951,7 +951,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         catch (Exception ex)
         {
             failed = true;
-            _contextOutcomeKey = "Settings.ContextMenuLaunchFailed";
+            _contextOutcomeKey = "Settings.ContextMenuOperationFailed";
             _contextOutcomeArgument = ex.Message;
             _contextState = await _contextMenuController.ReadAsync();
         }
@@ -1242,7 +1242,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     }
 
     private void ShowSettingUpdated(string key) =>
-        ShowFeedback(string.Format(ProductStrings.Get("Settings.Updated"), ProductStrings.Get(key)));
+        ShowFeedback(ProductStrings.SettingUpdatedMessage(key, _state.Settings));
 
     private static string SettingsFlags(WallSettings settings) =>
         $"grid={settings.ShowGrid} login={settings.RunAtLogin} topmost={settings.AlwaysOnTop}";

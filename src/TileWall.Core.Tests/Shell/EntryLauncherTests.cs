@@ -140,6 +140,27 @@ public sealed class EntryLauncherTests
         Assert.Null(request);
     }
 
+    [Theory]
+    [InlineData(".lnk")]
+    [InlineData(".url")]
+    public void RevealDirectoryWithShortcutSuffixUsesTheDirectoryTarget(string extension)
+    {
+        using var entry = new EntryFixture(".lnk");
+        var folder = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(entry.Path)!, "photos" + extension);
+        Directory.CreateDirectory(folder);
+        var links = new ShellLinkFileService();
+        links.Create(entry.Path, folder, "", "");
+        ProcessStartInfo? request = null;
+        var launcher = new EntryLauncher(info => { request = info; return null; });
+
+        Assert.Equal(folder, EntryLauncher.ResolveLocalTarget(entry.Path, links));
+        Assert.Equal(LaunchOutcome.Launched, launcher.RevealInExplorer(entry.Path, links).Outcome);
+        Assert.NotNull(request);
+        Assert.Equal("explorer.exe", request.FileName);
+        Assert.Equal($"\"{folder}\"", request.Arguments);
+        Assert.True(request.UseShellExecute);
+    }
+
     private sealed class EntryFixture : IDisposable
     {
         private readonly string _root = System.IO.Path.Combine(System.IO.Path.GetTempPath(),

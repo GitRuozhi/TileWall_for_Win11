@@ -223,7 +223,7 @@ public sealed partial class MainWindow
     {
         TerminateGesture();
         CancelResize(reason);
-        if (_viewportTransition is { AutomaticHeight: true }) StopViewportTransition();
+        if (_viewportTransition is { AutomaticHeight: true } or { ResizeSettlement: true }) StopViewportTransition();
         _windowsSidebar?.Collapse();
     }
 
@@ -430,7 +430,7 @@ public sealed partial class MainWindow
     }
 
     private void ApplyViewport(WallDocument? previewDocument = null, WallGeometry? previewGeometry = null,
-        bool animateMode = true, bool animateHeight = false)
+        bool animateMode = true, bool animateHeight = false, bool animateResize = false)
     {
         if (!_hasDocument && previewDocument is null) return;
         RefreshNativeFrame();
@@ -468,7 +468,8 @@ public sealed partial class MainWindow
         var placed = ApplicationModel.WallPresentationGeometry.Anchor(area, Math.Max(1, width), Math.Max(1, height),
             document.Settings.AnchorCorner, fullScreen);
         PresentViewport(new RectInt32(placed.X, placed.Y, placed.Width, placed.Height), fullScreen,
-            document.Settings.AnchorCorner, animateMode, presentationSettings: document.Settings, animateHeight: animateHeight);
+            document.Settings.AnchorCorner, animateMode, presentationSettings: document.Settings,
+            animateHeight: animateHeight, animateResize: animateResize);
         UpdateWindowZOrder(IsForegroundWallSession());
         UpdateResizeZones();
     }

@@ -12,7 +12,9 @@ public sealed partial class WallStore
         var activeView = current.InactiveMembers.Count == 0;
         if (!CurrentMatchesDisk(current, current.Generation, out _, out var stored, activeView, expectedManifestSha256)) throw new IOException("Committed wall changed before original reuse observation.");
         CheckMediaReferences(stored!);
-        var references = MediaById(stored!).Values.Concat(GalleryReferences(stored!).SelectMany(reference => CheckGallery(reference).Files.Select(file => file.Media)));
+        // Single images and automatic frames require a formal Media original. A
+        // matching digest in Sources alone cannot satisfy that installation path.
+        var references = MediaById(stored!).Values;
         var result = new List<ManagedMediaReference>();
         foreach (var group in references.GroupBy(reference => reference.Sha256, StringComparer.Ordinal))
         {

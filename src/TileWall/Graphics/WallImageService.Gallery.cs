@@ -26,9 +26,12 @@ public sealed partial class WallImageService
     private sealed record GalleryEntry(string Name, long Length, long ModifiedTicks, string? Hash, string? Extension);
     private sealed record GalleryIndex(int Format, string Source, string Version, IReadOnlyList<GalleryEntry> Entries);
 
+    private static string? NormalizeGalleryPath(string? path) =>
+        NormalizeImageFilePath(path) is { } full ? Path.TrimEndingDirectorySeparator(full) : null;
+
     public DateTimeOffset GalleryCheckDue(MemberImageSource source)
     {
-        var folder = NormalizeImageFilePath(source.Path);
+        var folder = NormalizeGalleryPath(source.Path);
         lock (_workGate) return _cacheStopping || _disposed ? DateTimeOffset.UtcNow + GalleryCheckInterval :
             folder is not null && _gallerySources.TryGetValue(folder, out var state) ? state.Due : DateTimeOffset.MinValue;
     }
@@ -39,7 +42,7 @@ public sealed partial class WallImageService
 
     private async Task<PuzzleCandidateResult> RefreshGalleryRequestAsync(MemberImageSource source, CancellationToken ct)
     {
-        var folder = NormalizeImageFilePath(source.Path);
+        var folder = NormalizeGalleryPath(source.Path);
         if (source.Kind != MemberImageSourceKind.Folder || folder is null) return new([], WallImageStatus.Invalid, "InvalidGallerySource");
         Task<PuzzleCandidateResult> task;
         lock (_workGate)
@@ -174,7 +177,7 @@ public sealed partial class WallImageService
     /// <summary>Only a readable parent can confirm absence; permission and IO failures stay unknown.</summary>
     internal static bool IsGalleryDirectoryMissing(string? path, CancellationToken ct = default)
     {
-        var full = NormalizeImageFilePath(path);
+        var full = NormalizeGalleryPath(path);
         if (full is null) return false;
         try
         {
@@ -208,7 +211,7 @@ public sealed partial class WallImageService
     private async Task EnsureGalleryOriginalAsync(MemberImageSource source, string? identity, CancellationToken ct)
     {
         if (_disk is not { } disk || identity is null || _cacheStopping) return;
-        var folder = NormalizeImageFilePath(source.Path); if (folder is null) return;
+        var folder = NormalizeGalleryPath(source.Path); if (folder is null) return;
         GallerySourceState? state; lock (_workGate) state = _gallerySources.GetValueOrDefault(folder);
         var entry = state?.Index?.Entries.FirstOrDefault(entry => StringComparer.OrdinalIgnoreCase.Equals(entry.Name, Path.GetFileName(identity)));
         if (entry?.Hash is not { } hash) return;
@@ -272,7 +275,7 @@ public sealed partial class WallImageService
     private (string? Path, string? Hash) GalleryReadPath(MemberImageSource source, string? identity)
     {
         if (identity is null || _disk is null) return (identity, null);
-        var folder = NormalizeImageFilePath(source.Path);
+        var folder = NormalizeGalleryPath(source.Path);
         if (folder is null) return (null, null);
         GalleryIndex? index;
         lock (_workGate) index = _gallerySources.GetValueOrDefault(folder)?.Index;

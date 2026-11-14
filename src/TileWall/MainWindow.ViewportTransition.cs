@@ -10,7 +10,7 @@ public sealed partial class MainWindow
 {
     private sealed record ViewportTransition(RectInt32 From, RectInt32 To, Rect FromClip, Rect ToClip,
         bool FullScreen, WallSettings Settings, long Started, long SegmentStarted, double Scale,
-        bool AutomaticHeight = false);
+        bool AutomaticHeight = false, bool ResizeSettlement = false);
     private ViewportTransition? _viewportTransition;
     private bool? _lastPresentedFullScreen;
     private bool _processingFrame;
@@ -72,7 +72,7 @@ public sealed partial class MainWindow
     }
 
     private void PresentViewport(RectInt32 rectangle, bool fullScreen, AnchorCorner anchor, bool animate,
-        WallSettings? presentationSettings = null, bool animateHeight = false)
+        WallSettings? presentationSettings = null, bool animateHeight = false, bool animateResize = false)
     {
         rectangle = ConstrainPresentationRectangle(rectangle);
         var settings = presentationSettings ?? Settings;
@@ -106,10 +106,9 @@ public sealed partial class MainWindow
             return; // A release adopting this exact endpoint keeps the in-flight transition.
         var changedMode = _lastPresentedFullScreen is { } previous && previous != fullScreen;
         _lastPresentedFullScreen = fullScreen;
-        // Ordinary edge resizing is direct. Query the system animation setting only
-        // when a mode transition can actually be created or continued.
+        // Held edge resizing is direct; only release settles the final grid size.
         var animationsEnabled = false;
-        if (_viewportTransition is not null || animate && changedMode || animateHeight)
+        if (_viewportTransition is not null || animate && changedMode || animateHeight || animateResize)
         {
             try { animationsEnabled = _appearanceSettings.AnimationsEnabled; }
             catch { animationsEnabled = true; }
@@ -131,6 +130,17 @@ public sealed partial class MainWindow
         {
             _viewportTransition = null;
             Surface.EndAutomaticHeightPresentation();
+        }
+        if (!fullScreen && !changedMode && animateResize && !_modal && !_windowClosing && !ShutdownStarted &&
+            animationsEnabled && from.Width > 0 && fromClip.Width > 0 &&
+            (from.Width != rectangle.Width || from.Height != rectangle.Height))
+        {
+            _viewportTransition = new(from, rectangle, fromClip, toClip, fullScreen, settings, now, now, Scale,
+                ResizeSettlement: true);
+            Surface.SetViewportMinimum(Math.Max(fromClip.Width, toClip.Width), 0);
+            SetScrollRegion(fullScreen, fromClip, updateSurface: false);
+            EnsureFrameSubscription();
+            return;
         }
         if (_viewportTransition is { } active && active.FullScreen == fullScreen && active.Scale == Scale &&
             animationsEnabled && (now - active.Started) * 1000d / Stopwatch.Frequency < 200)
@@ -168,7 +178,7 @@ public sealed partial class MainWindow
         {
             StopViewportTransition(); return;
         }
-        if (transition.AutomaticHeight)
+        if (transition.AutomaticHeight || transition.ResizeSettlement)
         {
             bool animationsEnabled;
             try { animationsEnabled = _appearanceSettings.AnimationsEnabled; }
@@ -176,7 +186,7 @@ public sealed partial class MainWindow
             if (!animationsEnabled) { StopViewportTransition(); return; }
         }
         var elapsed = (Stopwatch.GetTimestamp() - transition.SegmentStarted) * 1000d / Stopwatch.Frequency;
-        var duration = transition.AutomaticHeight ? 180d : 200d;
+        var duration = transition.AutomaticHeight || transition.ResizeSettlement ? 180d : 200d;
         var remaining = Math.Max(0, duration - (transition.SegmentStarted - transition.Started) * 1000d / Stopwatch.Frequency);
         var t = remaining <= 0 ? 1 : Math.Clamp(elapsed / remaining, 0, 1);
         var p = t * t * (3 - 2 * t);

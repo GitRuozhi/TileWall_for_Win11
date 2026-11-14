@@ -200,6 +200,7 @@
   <x:String x:Key="Wall.PendingAdd">An external add request is waiting for import.</x:String>
   <x:String x:Key="Wall.QueueFull">The add queue is full. Try smaller batches later.</x:String>
   <x:String x:Key="Wall.Resize">Drag to resize the wall by whole lanes and rows</x:String>
+  <x:String x:Key="Wall.ResizeSettled">Wall: {0} columns, {1} rows.</x:String>
   <x:String x:Key="Wall.HotKeyUnavailable">Hotkey not registered. Use the tray to show the wall.</x:String>
   <x:String x:Key="Entry.PickerFailed">File selection failed: {0}</x:String>
   <x:String x:Key="Puzzle.Count">{0} images</x:String>
@@ -622,6 +623,7 @@
     <x:String x:Key="Settings.LayoutLocked">Lock layout</x:String>
     <x:String x:Key="Settings.LayoutLockedHelp">Keep the wall size and other items fixed. Individual tiles can move into empty space.</x:String>
     <x:String x:Key="Wall.LayoutLocked">The layout is locked. Unlock it in Settings to change the wall or move a group.</x:String>
+    <x:String x:Key="Wall.LayoutMoveCompleted">Moved to a new position.</x:String>
     <x:String x:Key="Wall.LayoutMovedGroupEnd">Not enough space at the original position. Moved to the end of this group.</x:String>
     <x:String x:Key="Wall.LayoutMovedWallEnd">Not enough space in this group. Moved to a new group at the end of the wall.</x:String>
     <x:String x:Key="Wall.UpgradingUserData">Upgrading user data…</x:String>
@@ -653,6 +655,10 @@
     <x:String x:Key="Import.OptionEnabled">Enabled: {0}</x:String>
     <x:String x:Key="Import.OptionDisabled">Disabled: {0}</x:String>
     <x:String x:Key="Settings.Updated">{0} updated.</x:String>
+    <x:String x:Key="Settings.FullScreenEnabled">Full-screen mode enabled.</x:String>
+    <x:String x:Key="Settings.FullScreenDisabled">Full-screen mode disabled.</x:String>
+    <x:String x:Key="Settings.ExpandColumnsEnabled">Extended columns enabled.</x:String>
+    <x:String x:Key="Settings.ExpandColumnsDisabled">Extended columns disabled.</x:String>
     <x:String x:Key="Settings.DefaultsRestored">Default settings restored.</x:String>
     <x:String x:Key="Common.Opened">Opened {0}.</x:String>
     <x:String x:Key="Settings.ControlsBusy">An operation is in progress. Please wait.</x:String>

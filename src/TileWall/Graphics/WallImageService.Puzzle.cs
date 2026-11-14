@@ -70,7 +70,7 @@ public sealed partial class WallImageService
             {
                 // A confirmation checks this source now. Share any in-flight producer,
                 // but do not accept an old fallback or wait for the periodic deadline.
-                var folder = NormalizeImageFilePath(target);
+                var folder = NormalizeGalleryPath(target);
                 lock (_workGate)
                     if (folder is not null && _gallerySources.TryGetValue(folder, out var state)) state.Due = DateTimeOffset.MinValue;
             }
@@ -192,7 +192,7 @@ public sealed partial class WallImageService
                 paths = single is not null ? [single] : [];
                 break;
             case MemberImageSourceKind.Folder:
-                var folder = NormalizeImageFilePath(source.Path);
+                var folder = NormalizeGalleryPath(source.Path);
                 if (folder is null || !Directory.Exists(folder))
                     return new([], WallImageStatus.Missing);
                 paths = Directory.EnumerateFiles(folder, "*", SearchOption.TopDirectoryOnly)
@@ -274,7 +274,7 @@ public sealed partial class WallImageService
                 // A committed current frame can be prepared without enumerating its
                 // gallery (and without selecting or saving a different image).
                 if (selected is not null && !StringComparer.OrdinalIgnoreCase.Equals(
-                    NormalizeImageFilePath(Path.GetDirectoryName(selected)), NormalizeImageFilePath(member.Images.Path)))
+                    NormalizeGalleryPath(Path.GetDirectoryName(selected)), NormalizeGalleryPath(member.Images.Path)))
                     return new(null, WallImageStatus.Invalid, "ImageOutsideGallery");
                 var selectedPath = selected;
                 sourceRead = await Task.Run(() => OpenManagedGalleryRead(member.Images, selectedPath), ct);

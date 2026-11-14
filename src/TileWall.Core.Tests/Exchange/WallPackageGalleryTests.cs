@@ -95,6 +95,52 @@ public sealed class WallPackageGalleryTests : IDisposable
     }
 
     [Fact]
+    public async Task GalleryOnlyOriginalDoesNotSkipSinglePreparationBeforeCommit()
+    {
+        var (path, reader, gallery, _) = await Export("single");
+        var preview = (await reader.ReadPreviewAsync(path)).Preview!;
+        var files = new LocalFileStore();
+        var root = Path.Combine(_directory, "receiver");
+        var receiver = new WallStore(files, new FakeLinkFileService(files), root);
+        var initial = WallDocument.Empty(1, 12);
+        receiver.InitializeFresh(initial);
+        var galleryOnly = initial with { Generation = 1, Lanes = [new WallLane { Groups = [new StartGroup
+        {
+            Id = "receiver-group", Members = [new TileMember
+            {
+                Id = "gallery-only", LocalBounds = new(0, 0, 1, 1),
+                Images = new() { Kind = MemberImageSourceKind.Folder, ManagedGallery = gallery.Reference },
+            }],
+        }] }] };
+        var seeded = receiver.Commit(initial, new(0, galleryOnly, [], ManagedGalleries: [gallery]));
+        Assert.True(seeded.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup,
+            string.Join(";", seeded.Diagnostics));
+        var current = seeded.CommittedDocument!;
+        var single = Assert.Single(preview.Content.Members).ToMember();
+        var reference = single.Images.Media!;
+        Assert.False(File.Exists(receiver.ManagedMediaPath(reference)));
+        using var batch = await reader.OpenImportAsync(preview);
+        var resources = await batch.PrepareResourcesAsync([reference], [], receiver.ReusablePackageMedia(current),
+            receiver.ReusablePackageGalleries(current));
+        var group = current.Lanes[0].Groups[0];
+        var proposed = current with { Generation = current.Generation + 1, Lanes = [new WallLane
+        {
+            Groups = [group with { Members = group.Members.Append(single).ToArray() }],
+        }] };
+        var imported = receiver.Commit(current, new(current.Generation, proposed, [], resources.MediaAssets,
+            ManagedGalleries: resources.ManagedGalleries));
+
+        Assert.True(imported.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup,
+            string.Join(";", imported.Diagnostics));
+        Assert.Single(resources.MediaAssets);
+        Assert.Empty(resources.ManagedGalleries);
+        Assert.Equal(gallery.Files[0].Asset.CopyBytes(), File.ReadAllBytes(receiver.ManagedMediaPath(reference)));
+        foreach (var file in gallery.Files)
+            Assert.Equal(file.Asset.CopyBytes(), File.ReadAllBytes(Path.Combine(receiver.ManagedGalleryPath(gallery.Reference), file.RelativePath)));
+        Assert.Equal(WallOpenStatus.Loaded, receiver.Open().Status);
+    }
+
+    [Fact]
     public async Task DifferentAndSharedGalleriesDeduplicatePayloadsAndExternalFolderRemainsOnlyAPath()
     {
         var (path, reader, _, _) = await Export("puzzle", "shared", "other", "single", "external");

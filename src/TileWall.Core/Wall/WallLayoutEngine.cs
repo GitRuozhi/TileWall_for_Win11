@@ -657,7 +657,8 @@ public static partial class WallLayoutEngine
         var source = lanes[sourceLane][sourceGroup];
         var remaining = source.Members.Where(m =>
             !string.Equals(m.Id, action.MemberId, StringComparison.OrdinalIgnoreCase)).ToArray();
-        if (remaining.Length == 0 && !string.Equals(source.Id, action.TargetGroupId, StringComparison.OrdinalIgnoreCase))
+        if (remaining.Length == 0 && source.ReservedRows is null &&
+            !string.Equals(source.Id, action.TargetGroupId, StringComparison.OrdinalIgnoreCase))
             lanes[sourceLane].RemoveAt(sourceGroup);
         else lanes[sourceLane][sourceGroup] = source with { Members = remaining };
         var sameGroup = string.Equals(source.Id, action.TargetGroupId, StringComparison.OrdinalIgnoreCase);

@@ -619,9 +619,9 @@ internal static class ShellItemCatalog
             packedSize = 0;
             return false;
         }
-        // IExtractIcon::Extract places the desired pixel edge in the low word
-        // and the requested 32bpp depth in the high word.
-        packedSize = (uint)physicalPixels | (32u << 16);
+        // Both returned icons can be used, so request the desired pixel edge
+        // for the large icon (low word) and the small icon (high word).
+        packedSize = (uint)physicalPixels | ((uint)physicalPixels << 16);
         return true;
     }
 

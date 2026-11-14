@@ -48,6 +48,28 @@ public sealed class WallLayoutLockTests
     }
 
     [Fact]
+    public void MovingLastMemberAfterUnlockKeepsThePreviouslyReservedSourceGroup()
+    {
+        var source = Locked(9, new WallLane { Groups = [Group("source", Tile("stays"), Tile("moving", row: 4)),
+            Group("target", Tile("target-tile"))] });
+        var lockedMove = Apply(source, new MoveMemberAction(0, "moving", new(2, 0, 1, 1), "target"));
+        Assert.True(lockedMove.Success, lockedMove.Detail);
+        var reserved = WallJson.Deserialize(WallJson.Serialize(lockedMove.Proposal!.Document));
+        Assert.Equal(5, reserved.Lanes[0].Groups[0].ReservedRows);
+        var unlocked = reserved with { Settings = reserved.Settings with { LayoutLocked = false } };
+
+        var result = Apply(unlocked, new MoveMemberAction(unlocked.Generation, "stays", new(3, 0, 1, 1), "target"));
+
+        Assert.True(result.Success, result.Detail);
+        var next = result.Proposal!.Document;
+        var sourceGroup = next.Lanes[0].Groups.Single(group => group.Id == "source");
+        Assert.Empty(sourceGroup.Members);
+        Assert.Equal(5, sourceGroup.ReservedRows);
+        Assert.Equal(Position(unlocked, "target-tile"), Position(next, "target-tile"));
+        Assert.Equal(Position(unlocked, "moving"), Position(next, "moving"));
+    }
+
+    [Fact]
     public void OccupiedDropAndGroupOrWallDragRejectWithoutChangingTheSource()
     {
         var source = Locked(4, new WallLane() { Groups = [Group("group", Tile("moving"), Tile("stays", 2))] });

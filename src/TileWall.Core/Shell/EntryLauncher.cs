@@ -111,9 +111,10 @@ public sealed class EntryLauncher
             for (var depth = 0; depth < 16; depth++)
             {
                 if (!seen.Add(path)) return null;
+                if (Directory.Exists(path)) return path;
                 if (Path.GetExtension(path).Equals(".url", StringComparison.OrdinalIgnoreCase)) return null;
                 if (!Path.GetExtension(path).Equals(".lnk", StringComparison.OrdinalIgnoreCase))
-                    return File.Exists(path) || Directory.Exists(path) ? path : null;
+                    return File.Exists(path) ? path : null;
                 var target = links.Read(path).TargetPath;
                 if (string.IsNullOrWhiteSpace(target)) return null;
                 target = Environment.ExpandEnvironmentVariables(target);

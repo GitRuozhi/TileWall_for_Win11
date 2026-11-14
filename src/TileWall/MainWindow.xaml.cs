@@ -956,7 +956,7 @@ public sealed partial class MainWindow : Window
         if (LayoutMutationBlocked || _modal || _viewBlocked || !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return;
         try
         {
-            if (_viewportTransition is { AutomaticHeight: true }) StopViewportTransition();
+            if (_viewportTransition is { AutomaticHeight: true } or { ResizeSettlement: true }) StopViewportTransition();
             var point = e.GetCurrentPoint(Surface).Position;
             Point? screenStart = e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse &&
                 TryGetResizeScreenPoint(e.GetCurrentPoint(WallRoot).Position, Scale, out var screenPoint)
@@ -1054,6 +1054,8 @@ public sealed partial class MainWindow : Window
             var dragged = _gesture.Phase == GesturePhase.Dragging;
             var proposal = dragged ? _gesture.Preview : null;
             var id = _gesture.MemberId;
+            var groupId = _gesture.GroupId;
+            var before = _gestureDocument ?? Document;
             TraceInput($"ReleaseDecision dragged={dragged} member={id} proposal={proposal?.Proposal is not null}");
             TerminateGesture(restoreScroll: false, restoreView: proposal?.Proposal is null);
             if (!dragged)
@@ -1065,13 +1067,18 @@ public sealed partial class MainWindow : Window
             }
             _suppressClickMember = id;
             DispatcherQueue.TryEnqueue(() => _suppressClickMember = null);
-            if (proposal?.Proposal is null)
+            var dropResult = proposal;
+            if (dropResult is not { Proposal: { } acceptedProposal })
             {
-                AppLog.Warn("WallDrop", $"rejection={proposal?.Rejection} detail={proposal?.Detail}");
-                Status(DescribeDropFailure(proposal));
+                AppLog.Warn("WallDrop", $"rejection={dropResult?.Rejection} detail={dropResult?.Detail}");
+                Status(DescribeDropFailure(dropResult));
                 return;
             }
-            _ = CommitProposalAsync(proposal.Proposal, settle: error => SettleReleasePersistence(error, automaticHeight: true));
+            _ = CommitProposalAsync(acceptedProposal, settle: error =>
+            {
+                SettleReleasePersistence(error, automaticHeight: true);
+                if (error is null) ShowCommittedDropFeedback(dropResult, before, id, groupId);
+            });
         }
         catch (Exception ex) { RecoverGestureError(ex); }
     }
