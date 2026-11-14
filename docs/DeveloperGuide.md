@@ -2,7 +2,7 @@
 
 TileWall 是一款可编辑的图片磁贴启动墙：把程序、文件夹、文件、网页与应用协议入口放在同一面墙上，用普通磁贴、连续图片拼图和图集表达自己的布置。它使用 C#、.NET 10 与 WinUI 3，独立于 Windows Shell；可选的键盘 Win 键与任务栏开始按钮接管仍是实验功能。
 
-本文面向第一次取得公开源码的开发者，介绍怎样构建、怎样沿一次操作找到实现，以及修改时需要保留的行为。产品使用说明见[中文 README](../README.zh-CN.md)或[英文 README](../README.md)，版本变化见[更新日志](CHANGELOG.md)。已发布版本和附件以 [GitHub Releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases) 为准。
+本文面向第一次取得公开源码的开发者，介绍怎样构建、怎样沿一次操作找到实现，以及修改时需要保留的行为。产品使用说明见[中文 README](../README.zh-CN.md)或[英文 README](../README.md)，版本变化见[更新日志](CHANGELOG.md)，数据处理说明见[隐私说明](store/privacy.md)。已发布版本和附件以 [GitHub Releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases) 为准。
 
 ## 支持系统与分发方式
 
