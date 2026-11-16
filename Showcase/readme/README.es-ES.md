@@ -34,13 +34,12 @@
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">Chat</a>
 </p>
 
+
+
 <p align="center">
-  <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="Mostrar el panel, cambiar su tamaño y pasar a pantalla completa">
-  </picture>
+  <a href="../../assets/videos/showcase-01/es-ES/TileWall-showcase-01-es-ES-preview-av1-720P.mp4">Ver la vista previa del vídeo de TileWall (local)</a>
 </p>
-<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif">GIF</a>.</sub></p>
+<p align="center"><sub>Vista previa local de la versión de desarrollo V1.53. El desarrollador aprobó los materiales locales de presentación el 2026-11-17; no se han subido y la versión oficial actual sigue siendo V1.52.</sub></p>
 
 ## **¡Volved a la vida, mis mosaicos!**
 
@@ -51,6 +50,14 @@ TileWall es compatible con Windows 10 y 11 en equipos x64 y ARM64. La interfaz e
 **TileWall** está desarrollado con WinUI 3, el framework de interfaz nativo de Windows. Recupera el menú Inicio y el panel de mosaicos. De forma predeterminada, el atajo **Win + la tecla de acento grave** muestra el panel, independientemente del menú Inicio del sistema. No tienes que sustituir Windows Shell ni cambiar tus costumbres.
 
 Puedes instalarlo desde [Microsoft Store](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS), descargar el [paquete comprimido portátil](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) o el [instalador EXE sin conexión](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest). Basta con descomprimir la versión portátil para ejecutarla. Las tres formas de distribución comparten los datos del panel de mosaicos del usuario actual, ubicados en `%LOCALAPPDATA%\TileWall`.
+
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="images/hero-es-ES.webp">
+    <img src="images/hero-es-ES.gif" width="1280" alt="Mostrar el panel, cambiar su tamaño y pasar a pantalla completa">
+  </picture>
+</p>
+<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="images/hero-es-ES.webp">WebP</a> y el <a href="images/hero-es-ES.gif">GIF</a>.</sub></p>
 
 ## Puzles, imágenes y álbumes
 
@@ -66,11 +73,11 @@ En el modo puzle, haz clic con el botón izquierdo o derecho en las líneas inte
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif" width="476" alt="Dividir, unir y ampliar un puzle de imágenes">
+    <source type="image/webp" srcset="images/puzzle-edit-es-ES.webp">
+    <img src="images/puzzle-edit-es-ES.gif" width="476" alt="Dividir, unir y ampliar un puzle de imágenes">
   </picture>
 </p>
-<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif">GIF</a>.</sub></p>
+<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="images/puzzle-edit-es-ES.webp">WebP</a> y el <a href="images/puzzle-edit-es-ES.gif">GIF</a>.</sub></p>
 
 ## Recupera la experiencia del menú Inicio de Windows 10
 
@@ -90,11 +97,11 @@ También puedes activar **Reemplazar el menú Inicio del sistema (experimental)*
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif" width="1012" alt="Mover mosaicos y grupos">
+    <source type="image/webp" srcset="images/wall-drag-es-ES.webp">
+    <img src="images/wall-drag-es-ES.gif" width="1012" alt="Mover mosaicos y grupos">
   </picture>
 </p>
-<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif">GIF</a>.</sub></p>
+<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="images/wall-drag-es-ES.webp">WebP</a> y el <a href="images/wall-drag-es-ES.gif">GIF</a>.</sub></p>
 
 ## Más funciones
 
@@ -116,21 +123,21 @@ Si también echas de menos el menú Inicio, activa el **menú Inicio en lista** 
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif" width="1012" alt="Seleccionar varios mosaicos y ver el resultado de la importación">
+    <source type="image/webp" srcset="images/start-import-es-ES.webp">
+    <img src="images/start-import-es-ES.gif" width="1012" alt="Seleccionar varios mosaicos y ver el resultado de la importación">
   </picture>
 </p>
-<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a>.</sub></p>
+<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="images/start-import-es-ES.webp">WebP</a> y el <a href="images/start-import-es-ES.gif">GIF</a>.</sub></p>
 
 Haz clic derecho en cualquier archivo del Explorador de archivos y elige «Añadir a TileWall» para crear un mosaico.
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="Añadir un mosaico desde el menú contextual del Explorador de archivos">
+    <source type="image/webp" srcset="images/desktop-add-es-ES.webp">
+    <img src="images/desktop-add-es-ES.gif" width="1280" alt="Añadir un mosaico desde el menú contextual del Explorador de archivos">
   </picture>
 </p>
-<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a>.</sub></p>
+<p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="images/desktop-add-es-ES.webp">WebP</a> y el <a href="images/desktop-add-es-ES.gif">GIF</a>.</sub></p>
 
 ## Próximamente
 

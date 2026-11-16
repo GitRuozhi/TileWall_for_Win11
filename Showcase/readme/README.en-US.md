@@ -34,13 +34,9 @@
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">Chat</a>
 </p>
 
-<p align="center">
-  <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="Showing, resizing, and switching to full screen">
-  </picture>
-</p>
-<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif">GIF</a> separately.</sub></p>
+
+
+<p align="center"><strong>V1.53 development build preview</strong> · Developer-approved local V1.53 showcase media (2026-11-17); not uploaded. The official release remains V1.52. <a href="../../assets/videos/showcase-01/en-US/TileWall-showcase-01-en-US-preview-av1-720P.mp4">Local 720p AV1 video</a></p>
 
 ## **Come back to life, my tiles!**
 
@@ -52,6 +48,14 @@ Built with the native Windows UI framework WinUI 3, **TileWall** recreates the S
 
 Install from the [**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS), or download the [portable archive](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) or [offline EXE installer](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest). Extract the portable version and run it directly. All three editions share the current user's tile wall data at `%LOCALAPPDATA%\TileWall`.
 
+
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="images/hero-en-US.webp">
+    <img src="images/hero-en-US.gif" width="1280" alt="Showing, resizing, and switching to full screen">
+  </picture>
+</p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="images/hero-en-US.webp">WebP</a> or <a href="images/hero-en-US.gif">GIF</a> separately.</sub></p>
 
 ## Puzzles, pictures, and albums
 
@@ -67,11 +71,11 @@ In puzzle mode, left- or right-click the internal grid lines in the preview to s
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif" width="476" alt="Splitting, merging, and zooming a puzzle">
+    <source type="image/webp" srcset="images/puzzle-edit-en-US.webp">
+    <img src="images/puzzle-edit-en-US.gif" width="476" alt="Splitting, merging, and zooming a puzzle">
   </picture>
 </p>
-<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif">GIF</a> separately.</sub></p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="images/puzzle-edit-en-US.webp">WebP</a> or <a href="images/puzzle-edit-en-US.gif">GIF</a> separately.</sub></p>
 
 ## Recreate the Windows 10 Start menu experience
 
@@ -91,11 +95,11 @@ You can also enable **Replace system Start (experimental)** in Settings to open 
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif" width="1012" alt="Moving tiles and groups">
+    <source type="image/webp" srcset="images/wall-drag-en-US.webp">
+    <img src="images/wall-drag-en-US.gif" width="1012" alt="Moving tiles and groups">
   </picture>
 </p>
-<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif">GIF</a> separately.</sub></p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="images/wall-drag-en-US.webp">WebP</a> or <a href="images/wall-drag-en-US.gif">GIF</a> separately.</sub></p>
 
 ## More features
 
@@ -117,21 +121,21 @@ If you miss the Start menu too, turn on **Start menu list** in Settings. The lis
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif" width="1012" alt="Selecting items in a batch and viewing the import result">
+    <source type="image/webp" srcset="images/start-import-en-US.webp">
+    <img src="images/start-import-en-US.gif" width="1012" alt="Selecting items in a batch and viewing the import result">
   </picture>
 </p>
-<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a> separately.</sub></p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="images/start-import-en-US.webp">WebP</a> or <a href="images/start-import-en-US.gif">GIF</a> separately.</sub></p>
 
-Right-click any file in File Explorer and choose “Add to TileWall” to create a tile.
+In File Explorer, right-click any file and choose “Add to TileWall” to create a tile.
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="Add a tile from the File Explorer context menu">
+    <source type="image/webp" srcset="images/desktop-add-en-US.webp">
+    <img src="images/desktop-add-en-US.gif" width="1280" alt="Add a tile from the File Explorer context menu">
   </picture>
 </p>
-<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> or <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a> separately.</sub></p>
+<p align="center"><sub>This is an animated image. If it doesn't play, view the <a href="images/desktop-add-en-US.webp">WebP</a> or <a href="images/desktop-add-en-US.gif">GIF</a> separately.</sub></p>
 
 
 ## Coming soon

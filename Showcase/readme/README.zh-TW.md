@@ -34,24 +34,28 @@
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">聊天</a>
 </p>
 
-<p align="center">
-  <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="呼叫、縮放與全螢幕">
-  </picture>
-</p>
-<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif">GIF</a>。</sub></p>
+
+
+<p align="center"><strong>V1.53 開發版預覽</strong> · 開發者已於 2026-11-17 核可本機展示成品；尚未上傳。正式版仍為 V1.52。<a href="../../assets/videos/showcase-01/zh-TW/TileWall-showcase-01-zh-TW-preview-av1-720P.mp4">本機 720p AV1 影片</a></p>
 
 ## **復活吧！我的動態磚！**
 
 **TileWall** 是一款獨立的動態磚啟動牆，提供個人化的圖片、相簿與拼圖玩法，在 Windows 11 上重現 Windows 10 熟悉的動態磚與開始功能表體驗。
 
-支援 Windows 10／11、x64 與 ARM64，提供簡體中文、繁體中文、英文、日文、韓文、德文、法文與西班牙文八種介面語言，並可選擇跟隨系統語言。
+支援 Windows 10 與 Windows 11，適用於 x64 和 ARM64 電腦。介面提供簡體中文、繁體中文、英文、日文、韓文、德文、法文與西班牙文八種語言，可跟隨系統語言，也能在設定中手動選擇。
 
 **TileWall** 使用 Windows 原生介面框架 WinUI 3 開發，重現開始功能表與動態磚牆；預設按下 **Win + 反引號鍵** 即可呼叫，並與系統開始功能表各自獨立。不必取代 Windows Shell，也不必改變原有的使用習慣。
 
 可以透過[**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)安裝，也可以下載[可攜壓縮包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)或 [EXE 離線安裝包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)。可攜版解壓後即可執行，三種發佈方式共用目前使用者的動態磚牆資料，資料位置為 `%LOCALAPPDATA%\TileWall`。
 
+
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="images/hero-zh-TW.webp">
+    <img src="images/hero-zh-TW.gif" width="1280" alt="呼出、調整大小與全螢幕">
+  </picture>
+</p>
+<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="images/hero-zh-TW.webp">WebP</a> 與 <a href="images/hero-zh-TW.gif">GIF</a>。</sub></p>
 
 ## 拼圖、圖片與圖集
 
@@ -67,11 +71,11 @@
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif" width="476" alt="拼圖分割、合併與縮放">
+    <source type="image/webp" srcset="images/puzzle-edit-zh-TW.webp">
+    <img src="images/puzzle-edit-zh-TW.gif" width="476" alt="拼圖分割、合併與縮放">
   </picture>
 </p>
-<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif">GIF</a>。</sub></p>
+<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="images/puzzle-edit-zh-TW.webp">WebP</a> 與 <a href="images/puzzle-edit-zh-TW.gif">GIF</a>。</sub></p>
 
 ## 重現 Windows 10 開始功能表體驗
 
@@ -91,11 +95,11 @@
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif" width="1012" alt="動態磚與群組拖動">
+    <source type="image/webp" srcset="images/wall-drag-zh-TW.webp">
+    <img src="images/wall-drag-zh-TW.gif" width="1012" alt="動態磚與群組拖動">
   </picture>
 </p>
-<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif">GIF</a>。</sub></p>
+<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="images/wall-drag-zh-TW.webp">WebP</a> 與 <a href="images/wall-drag-zh-TW.gif">GIF</a>。</sub></p>
 
 ## 更強大的功能
 
@@ -117,21 +121,21 @@
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif" width="1012" alt="批次選取與匯入結果">
+    <source type="image/webp" srcset="images/start-import-zh-TW.webp">
+    <img src="images/start-import-zh-TW.gif" width="1012" alt="批次選取與匯入結果">
   </picture>
 </p>
-<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a>。</sub></p>
+<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="images/start-import-zh-TW.webp">WebP</a> 與 <a href="images/start-import-zh-TW.gif">GIF</a>。</sub></p>
 
 在檔案總管中以滑鼠右鍵按一下任意檔案，選擇「新增至 TileWall」，即可建立動態磚。
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="從檔案總管右鍵新增動態磚">
+    <source type="image/webp" srcset="images/desktop-add-zh-TW.webp">
+    <img src="images/desktop-add-zh-TW.gif" width="1280" alt="從檔案總管右鍵新增動態磚">
   </picture>
 </p>
-<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a>。</sub></p>
+<p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="images/desktop-add-zh-TW.webp">WebP</a> 與 <a href="images/desktop-add-zh-TW.gif">GIF</a>。</sub></p>
 
 
 ## 即將推出

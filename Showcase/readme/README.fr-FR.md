@@ -34,13 +34,12 @@
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">Discuter</a>
 </p>
 
+
+
 <p align="center">
-  <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="Afficher le mur, le redimensionner et passer en plein écran">
-  </picture>
+  <a href="../../assets/videos/showcase-01/fr-FR/TileWall-showcase-01-fr-FR-preview-av1-720P.mp4">Voir l’aperçu vidéo de TileWall (local)</a>
 </p>
-<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif">GIF</a>.</sub></p>
+<p align="center"><sub>Aperçu vidéo local de la version de développement V1.53. Les médias locaux de présentation ont été approuvés par le développeur le 2026-11-17 ; ils n’ont pas été téléversés. La version officielle actuelle reste V1.52.</sub></p>
 
 ## **Reprenez vie, mes vignettes !**
 
@@ -51,6 +50,14 @@ TileWall prend en charge Windows 10 et 11 sur les PC x64 et ARM64. L’interface
 **TileWall** est développé avec WinUI 3, le framework d’interface natif de Windows. Il recrée le menu Démarrer et le mur de vignettes. Par défaut, le raccourci **Win + la touche accent grave** affiche le mur, indépendamment du menu Démarrer du système. Tu n’as pas besoin de remplacer le shell Windows ni de changer tes habitudes.
 
 Tu peux l’installer depuis le [**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS), télécharger l’[archive portable](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) ou le [programme d’installation EXE hors ligne](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest). Il suffit d’extraire la version portable pour la lancer. Les trois modes de distribution utilisent les mêmes données du mur de vignettes pour l’utilisateur actuel, stockées dans `%LOCALAPPDATA%\TileWall`.
+
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="images/hero-fr-FR.webp">
+    <img src="images/hero-fr-FR.gif" width="1280" alt="Afficher le mur, le redimensionner et passer en plein écran">
+  </picture>
+</p>
+<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="images/hero-fr-FR.webp">WebP</a> et le <a href="images/hero-fr-FR.gif">GIF</a>.</sub></p>
 
 ## Puzzles, images et albums
 
@@ -66,11 +73,11 @@ En mode puzzle, clique avec le bouton gauche ou droit sur les lignes intérieure
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif" width="476" alt="Découper, fusionner et zoomer un puzzle d’image">
+    <source type="image/webp" srcset="images/puzzle-edit-fr-FR.webp">
+    <img src="images/puzzle-edit-fr-FR.gif" width="476" alt="Découper, fusionner et zoomer un puzzle d’image">
   </picture>
 </p>
-<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif">GIF</a>.</sub></p>
+<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="images/puzzle-edit-fr-FR.webp">WebP</a> et le <a href="images/puzzle-edit-fr-FR.gif">GIF</a>.</sub></p>
 
 ## Retrouvez l’expérience du menu Démarrer de Windows 10
 
@@ -90,11 +97,11 @@ Tu peux aussi activer **Remplacer le menu Démarrer du système (expérimental)*
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif" width="1012" alt="Déplacer des vignettes et des groupes">
+    <source type="image/webp" srcset="images/wall-drag-fr-FR.webp">
+    <img src="images/wall-drag-fr-FR.gif" width="1012" alt="Déplacer des vignettes et des groupes">
   </picture>
 </p>
-<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif">GIF</a>.</sub></p>
+<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="images/wall-drag-fr-FR.webp">WebP</a> et le <a href="images/wall-drag-fr-FR.gif">GIF</a>.</sub></p>
 
 ## Plus de fonctionnalités
 
@@ -116,21 +123,21 @@ Si le menu Démarrer te manque aussi, active le **menu Démarrer en liste** dans
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif" width="1012" alt="Sélectionner plusieurs vignettes et consulter le résultat de l’importation">
+    <source type="image/webp" srcset="images/start-import-fr-FR.webp">
+    <img src="images/start-import-fr-FR.gif" width="1012" alt="Sélectionner plusieurs vignettes et consulter le résultat de l’importation">
   </picture>
 </p>
-<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a>.</sub></p>
+<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="images/start-import-fr-FR.webp">WebP</a> et le <a href="images/start-import-fr-FR.gif">GIF</a>.</sub></p>
 
 Dans l’Explorateur de fichiers, faites un clic droit sur n’importe quel fichier et choisissez « Ajouter à TileWall » pour créer une tuile.
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="Ajouter une tuile depuis le menu contextuel de l’Explorateur de fichiers">
+    <source type="image/webp" srcset="images/desktop-add-fr-FR.webp">
+    <img src="images/desktop-add-fr-FR.gif" width="1280" alt="Ajouter une tuile depuis le menu contextuel de l’Explorateur de fichiers">
   </picture>
 </p>
-<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a>.</sub></p>
+<p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="images/desktop-add-fr-FR.webp">WebP</a> et le <a href="images/desktop-add-fr-FR.gif">GIF</a>.</sub></p>
 
 ## À venir
 

@@ -35,12 +35,9 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="호출, 크기 조절 및 전체 화면">
-  </picture>
+  <a href="../../assets/videos/showcase-01/ko-KR/TileWall-showcase-01-ko-KR-preview-av1-720P.mp4"><strong>소개 영상(로컬 미리보기)</strong></a>
 </p>
-<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
+<p align="center"><sub>현재 정식 버전은 V1.52입니다. 이 영상을 포함한 V1.53 소개 자료는 2026-11-17 개발자가 로컬 완성본으로 승인했습니다. 아직 업로드하지 않았습니다.</sub></p>
 
 ## **부활하라! 나의 타일이여!**
 
@@ -51,6 +48,14 @@ Windows 10/11과 x64 및 ARM64를 지원합니다. 앱 UI는 중국어(간체), 
 **TileWall**은 Windows 네이티브 UI 프레임워크 WinUI 3로 개발되어 시작 메뉴와 타일 벽을 재현합니다. 기본적으로 **Win + 백틱 키**로 호출하며, Windows 시작 메뉴와 독립적으로 작동합니다. Windows Shell을 교체하거나 기존 사용 습관을 바꿀 필요가 없습니다.
 
 [**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)에서 설치하거나 [포터블 압축 파일](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) 또는 [EXE 오프라인 설치 패키지](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)를 다운로드할 수 있습니다. 포터블 버전은 압축을 풀면 바로 실행할 수 있으며, 세 가지 배포 방식 모두 현재 사용자 계정의 타일 벽 데이터를 함께 사용합니다. 데이터 위치는 `%LOCALAPPDATA%\TileWall`입니다.
+
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="images/hero-ko-KR.webp">
+    <img src="images/hero-ko-KR.gif" width="1280" alt="호출, 크기 조절 및 전체 화면">
+  </picture>
+</p>
+<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="images/hero-ko-KR.webp">WebP</a>와 <a href="images/hero-ko-KR.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
 
 ## 퍼즐, 이미지와 앨범
@@ -67,11 +72,11 @@ Windows 10/11과 x64 및 ARM64를 지원합니다. 앱 UI는 중국어(간체), 
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif" width="476" alt="퍼즐 이미지 나누기, 합치기 및 확대">
+    <source type="image/webp" srcset="images/puzzle-edit-ko-KR.webp">
+    <img src="images/puzzle-edit-ko-KR.gif" width="476" alt="퍼즐 이미지 나누기, 합치기 및 확대">
   </picture>
 </p>
-<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
+<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="images/puzzle-edit-ko-KR.webp">WebP</a>와 <a href="images/puzzle-edit-ko-KR.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
 ## Windows 10 시작 메뉴 경험 재현
 
@@ -91,11 +96,11 @@ Windows 10/11과 x64 및 ARM64를 지원합니다. 앱 UI는 중국어(간체), 
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif" width="1012" alt="타일과 그룹 이동">
+    <source type="image/webp" srcset="images/wall-drag-ko-KR.webp">
+    <img src="images/wall-drag-ko-KR.gif" width="1012" alt="타일과 그룹 이동">
   </picture>
 </p>
-<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
+<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="images/wall-drag-ko-KR.webp">WebP</a>와 <a href="images/wall-drag-ko-KR.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
 ## 더 강력한 기능
 
@@ -117,21 +122,21 @@ Windows 10/11과 x64 및 ARM64를 지원합니다. 앱 UI는 중국어(간체), 
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif" width="1012" alt="여러 항목 선택 및 가져오기 결과">
+    <source type="image/webp" srcset="images/start-import-ko-KR.webp">
+    <img src="images/start-import-ko-KR.gif" width="1012" alt="여러 항목 선택 및 가져오기 결과">
   </picture>
 </p>
-<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
+<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="images/start-import-ko-KR.webp">WebP</a>와 <a href="images/start-import-ko-KR.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
-파일 탐색기에서 원하는 파일을 마우스 오른쪽 버튼으로 클릭하고 “TileWall에 추가”를 선택하면 타일을 만들 수 있습니다.
+파일 탐색기에서 임의의 파일을 마우스 오른쪽 버튼으로 클릭하고 “TileWall에 추가”를 선택하면 타일을 만들 수 있습니다.
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="파일 탐색기의 오른쪽 클릭 메뉴에서 타일 추가">
+    <source type="image/webp" srcset="images/desktop-add-ko-KR.webp">
+    <img src="images/desktop-add-ko-KR.gif" width="1280" alt="파일 탐색기의 오른쪽 클릭 메뉴에서 타일 추가">
   </picture>
 </p>
-<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
+<p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="images/desktop-add-ko-KR.webp">WebP</a>와 <a href="images/desktop-add-ko-KR.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
 
 ## 출시 예정

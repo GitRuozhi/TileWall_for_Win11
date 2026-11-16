@@ -35,12 +35,9 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="呼び出し、拡大縮小、全画面表示">
-  </picture>
+  <a href="../../assets/videos/showcase-01/ja-JP/TileWall-showcase-01-ja-JP-preview-av1-720P.mp4"><strong>展示動画（ローカルプレビュー）</strong></a>
 </p>
-<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">WebP</a> と <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
+<p align="center"><sub>現在の正式版は V1.52 です。この動画を含む V1.53 展示素材は、2026-11-17 に開発者がローカル完成版として承認しました。未アップロードです。</sub></p>
 
 ## **よみがえれ！わがタイルよ！**
 
@@ -51,6 +48,14 @@ Windows 10/11 と x64・ARM64 に対応しています。アプリの UI は、�
 **TileWall** は Windows 標準の UI フレームワーク WinUI 3 で開発されています。スタートメニューとタイルウォールを再現し、既定では **Win + バッククォートキー** で表示できます。システムのスタートメニューとは独立して動作します。Windows Shell を置き換える必要はなく、これまでの使い方を変える必要もありません。
 
 [**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)からインストールするか、[ポータブル圧縮ファイル](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)または [EXE オフラインインストーラー](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)をダウンロードできます。ポータブル版は展開後すぐに実行でき、3種類の配布方法で現在のユーザーのタイルウォールデータを共有します。データの保存先は `%LOCALAPPDATA%\TileWall` です。
+
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="images/hero-ja-JP.webp">
+    <img src="images/hero-ja-JP.gif" width="1280" alt="呼び出し、拡大縮小、全画面表示">
+  </picture>
+</p>
+<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="images/hero-ja-JP.webp">WebP</a> と <a href="images/hero-ja-JP.gif">GIF</a> を個別にご覧ください。</sub></p>
 
 
 ## パズル、画像、アルバム
@@ -67,11 +72,11 @@ Windows 10/11 と x64・ARM64 に対応しています。アプリの UI は、�
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif" width="476" alt="画像パズルの分割、結合、拡大縮小">
+    <source type="image/webp" srcset="images/puzzle-edit-ja-JP.webp">
+    <img src="images/puzzle-edit-ja-JP.gif" width="476" alt="画像パズルの分割、結合、拡大縮小">
   </picture>
 </p>
-<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">WebP</a> と <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
+<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="images/puzzle-edit-ja-JP.webp">WebP</a> と <a href="images/puzzle-edit-ja-JP.gif">GIF</a> を個別にご覧ください。</sub></p>
 
 ## Windows 10 のスタートメニューを再現
 
@@ -91,11 +96,11 @@ Windows 10/11 と x64・ARM64 に対応しています。アプリの UI は、�
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif" width="1012" alt="タイルとグループの移動">
+    <source type="image/webp" srcset="images/wall-drag-ja-JP.webp">
+    <img src="images/wall-drag-ja-JP.gif" width="1012" alt="タイルとグループの移動">
   </picture>
 </p>
-<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">WebP</a> と <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
+<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="images/wall-drag-ja-JP.webp">WebP</a> と <a href="images/wall-drag-ja-JP.gif">GIF</a> を個別にご覧ください。</sub></p>
 
 ## さらに便利な機能
 
@@ -117,21 +122,21 @@ Windows 10/11 と x64・ARM64 に対応しています。アプリの UI は、�
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif" width="1012" alt="タイルの一括選択とインポート結果">
+    <source type="image/webp" srcset="images/start-import-ja-JP.webp">
+    <img src="images/start-import-ja-JP.gif" width="1012" alt="タイルの一括選択とインポート結果">
   </picture>
 </p>
-<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> と <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
+<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="images/start-import-ja-JP.webp">WebP</a> と <a href="images/start-import-ja-JP.gif">GIF</a> を個別にご覧ください。</sub></p>
 
 エクスプローラーで任意のファイルを右クリックし、「TileWall に追加」を選ぶと、タイルを作成できます。
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="エクスプローラーの右クリックメニューからタイルを追加">
+    <source type="image/webp" srcset="images/desktop-add-ja-JP.webp">
+    <img src="images/desktop-add-ja-JP.gif" width="1280" alt="エクスプローラーの右クリックメニューからタイルを追加">
   </picture>
 </p>
-<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> と <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
+<p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="images/desktop-add-ja-JP.webp">WebP</a> と <a href="images/desktop-add-ja-JP.gif">GIF</a> を個別にご覧ください。</sub></p>
 
 
 ## 今後の予定

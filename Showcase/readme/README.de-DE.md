@@ -34,13 +34,12 @@
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">Chat</a>
 </p>
 
+
+
 <p align="center">
-  <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="Einblenden, Größe ändern und Vollbild">
-  </picture>
+  <a href="../../assets/videos/showcase-01/de-DE/TileWall-showcase-01-de-DE-preview-av1-720P.mp4">TileWall-Showcase-Video ansehen (lokale Vorschau)</a>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif">GIF</a> einzeln.</sub></p>
+<p align="center"><sub>Lokale Videovorschau der Entwicklungsversion V1.53. Der Entwickler hat die lokalen Showcase-Medien am 2026-11-17 freigegeben; sie wurden nicht hochgeladen. Die offizielle Version bleibt V1.52.</sub></p>
 
 ## **Erhebt euch wieder, meine Kacheln!**
 
@@ -52,6 +51,14 @@ TileWall unterstützt Windows 10 und 11 auf x64- und ARM64-PCs. Die App-Oberflä
 
 Du kannst TileWall über den [**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS) installieren oder das [portable Archiv](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) beziehungsweise das [EXE-Offline-Installationspaket](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) herunterladen. Die portable Version lässt sich direkt nach dem Entpacken starten. Alle drei Vertriebswege verwenden dieselben Daten der Kachelwand für den aktuellen Benutzer. Sie liegen unter `%LOCALAPPDATA%\TileWall`.
 
+
+<p align="center">
+  <picture>
+    <source type="image/webp" srcset="images/hero-de-DE.webp">
+    <img src="images/hero-de-DE.gif" width="1280" alt="Einblenden, Größe ändern und Vollbild">
+  </picture>
+</p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="images/hero-de-DE.webp">WebP</a> und <a href="images/hero-de-DE.gif">GIF</a> einzeln.</sub></p>
 
 ## Puzzles, Bilder und Bilderalben
 
@@ -67,11 +74,11 @@ Im Puzzlemodus kannst du auf den inneren Gitterlinien der Vorschau links oder re
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif" width="476" alt="Ein Puzzle-Bild teilen, zusammenfügen und vergrößern">
+    <source type="image/webp" srcset="images/puzzle-edit-de-DE.webp">
+    <img src="images/puzzle-edit-de-DE.gif" width="476" alt="Ein Puzzle-Bild teilen, zusammenfügen und vergrößern">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif">GIF</a> einzeln.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="images/puzzle-edit-de-DE.webp">WebP</a> und <a href="images/puzzle-edit-de-DE.gif">GIF</a> einzeln.</sub></p>
 
 ## Das Startmenü-Erlebnis von Windows 10 nachbilden
 
@@ -91,11 +98,11 @@ Mit **Systemstartmenü ersetzen (Experiment)** in den Einstellungen kannst du Ti
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif" width="1012" alt="Kacheln und Gruppen verschieben">
+    <source type="image/webp" srcset="images/wall-drag-de-DE.webp">
+    <img src="images/wall-drag-de-DE.gif" width="1012" alt="Kacheln und Gruppen verschieben">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif">GIF</a> einzeln.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="images/wall-drag-de-DE.webp">WebP</a> und <a href="images/wall-drag-de-DE.gif">GIF</a> einzeln.</sub></p>
 
 ## Noch mehr Funktionen
 
@@ -117,21 +124,21 @@ Wenn du auch das Startmenü vermisst, aktiviere in den Einstellungen **Startmen�
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif" width="1012" alt="Mehrere Einträge auswählen und das Importergebnis ansehen">
+    <source type="image/webp" srcset="images/start-import-de-DE.webp">
+    <img src="images/start-import-de-DE.gif" width="1012" alt="Mehrere Einträge auswählen und das Importergebnis ansehen">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a> einzeln.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="images/start-import-de-DE.webp">WebP</a> und <a href="images/start-import-de-DE.gif">GIF</a> einzeln.</sub></p>
 
 Klicke im Datei-Explorer mit der rechten Maustaste auf eine beliebige Datei und wähle „Zu TileWall hinzufügen“, um eine Kachel zu erstellen.
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="Eine Kachel über das Kontextmenü im Datei-Explorer hinzufügen">
+    <source type="image/webp" srcset="images/desktop-add-de-DE.webp">
+    <img src="images/desktop-add-de-DE.gif" width="1280" alt="Eine Kachel über das Kontextmenü im Datei-Explorer hinzufügen">
   </picture>
 </p>
-<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a> einzeln.</sub></p>
+<p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="images/desktop-add-de-DE.webp">WebP</a> und <a href="images/desktop-add-de-DE.gif">GIF</a> einzeln.</sub></p>
 
 
 ## Demnächst
