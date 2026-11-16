@@ -9,9 +9,11 @@ internal static class TargetItemPicker
     private const uint FolderButton = 0x5001;
     internal static string? Pick(IntPtr owner, string folderAction, string? initialFolder)
     {
+        var timing = Environment.GetEnvironmentVariable("TILEWALL_PERF") == "1" ? System.Diagnostics.Stopwatch.StartNew() : null;
+        void Trace(string stage) { if (timing is not null) Core.Shell.AppLog.Info("TargetPickerTiming", $"stage={stage} elapsedMs={timing.Elapsed.TotalMilliseconds:F3}"); }
         var dialog = (IFileDialog)new FileOpenDialog();
         uint cookie = 0;
-        var sink = new Events(dialog);
+        var sink = new Events(dialog, Trace);
         try
         {
             dialog.GetOptions(out var options);
@@ -20,18 +22,24 @@ internal static class TargetItemPicker
             SetFolder(dialog, initialFolder);
             ((IFileDialogCustomize)dialog).AddPushButton(FolderButton, folderAction);
             dialog.Advise(sink, out cookie);
+            Trace("show");
             var hr = dialog.Show(owner);
+            Trace("show-returned");
             if (sink.Folder is not null) return sink.Folder;
             if (hr == unchecked((int)0x800704C7)) return null;
             Marshal.ThrowExceptionForHR(hr);
             dialog.GetResult(out var item);
+            Trace("result");
             try { return PathOf(item); }
             finally { Marshal.ReleaseComObject(item); }
         }
         finally
         {
+            Trace("unadvise-start");
             if (cookie != 0) dialog.Unadvise(cookie);
+            Trace("release-start");
             Marshal.ReleaseComObject(dialog);
+            Trace("released");
         }
     }
 
@@ -98,10 +106,10 @@ internal static class TargetItemPicker
         finally { Marshal.FreeCoTaskMem(name); }
     }
     [ComVisible(true), ClassInterface(ClassInterfaceType.None)]
-    private sealed class Events(IFileDialog dialog) : IFileDialogEvents, IFileDialogControlEvents
+    private sealed class Events(IFileDialog dialog, Action<string> trace) : IFileDialogEvents, IFileDialogControlEvents
     {
         internal string? Folder { get; private set; }
-        public int OnFileOk(IFileDialog value) => 0;
+        public int OnFileOk(IFileDialog value) { trace("file-ok"); return 0; }
         public int OnFolderChanging(IFileDialog value, IShellItem folder) => 0;
         public int OnFolderChange(IFileDialog value) => 0;
         public int OnSelectionChange(IFileDialog value) => 0;
@@ -117,7 +125,9 @@ internal static class TargetItemPicker
                 dialog.GetFolder(out var item);
                 try { Folder = PathOf(item); }
                 finally { Marshal.ReleaseComObject(item); }
+                trace("folder-close-start");
                 dialog.Close(0);
+                trace("folder-close-returned");
                 return 0;
             }
             catch (COMException ex) { return ex.HResult; }

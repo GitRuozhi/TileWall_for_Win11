@@ -17,13 +17,13 @@ public sealed partial class MainWindow
     private bool _shutdownStarted;
     private bool ShutdownStarted => _shutdownStarted;
     private bool _persistencePending, _persistenceAdmissionClosed, _pendingCarouselCommit;
-    private bool _backgroundPersistencePending;
+    private bool _backgroundPersistencePending, _interactivePersistencePending;
     private int _userMutationReservations;
     private Task _pendingUserMutations = Task.CompletedTask;
     private bool _environmentAfterPersistence;
     private readonly ExitDraftSavePermission _exitDraftSave = new();
     private bool PersistenceInteractionBlocked => _persistenceAdmissionClosed || _openingWall ||
-        _persistencePending && !_backgroundPersistencePending;
+        _persistencePending && !_backgroundPersistencePending && !_interactivePersistencePending;
     private bool PersistenceWriteBlocked => _persistencePending || _persistenceAdmissionClosed || _openingWall;
     private bool LayoutMutationBlocked => PersistenceWriteBlocked || _userMutationReservations != 0;
     private bool CanAcceptBackgroundWrite => !PersistenceWriteBlocked && _userMutationReservations == 0 &&
@@ -78,7 +78,7 @@ public sealed partial class MainWindow
         Action<string?>? settle = null, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
         IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
         IReadOnlyList<PreparedManagedGallery>? managedGalleries = null, bool background = false,
-        bool useWelcomeIconDefaults = false)
+        bool useWelcomeIconDefaults = false, bool allowInteraction = false)
     {
         Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
         if (PersistenceWriteBlocked || background && !CanAcceptBackgroundWrite) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
@@ -89,6 +89,7 @@ public sealed partial class MainWindow
             return Reject(ProductStrings.Get("Wall.LayoutLocked"));
         _persistencePending = true;
         _backgroundPersistencePending = background;
+        _interactivePersistencePending = allowInteraction;
         _pendingCarouselCommit = carousel;
         _puzzles.SetPersistenceBusy(true);
         UpdateWallHitTesting();
@@ -138,6 +139,7 @@ public sealed partial class MainWindow
             finally
             {
                 _persistencePending = false;
+                _interactivePersistencePending = false;
                 _backgroundPersistencePending = false;
                 _pendingCarouselCommit = false;
                 _pendingPersistence = null;
@@ -217,6 +219,7 @@ public sealed partial class MainWindow
             {
                 _userMutationReservations--;
                 _puzzles.SetPersistenceBusy(PersistenceWriteBlocked || _userMutationReservations != 0);
+                if (!_windowClosing) UpdateResizeZones();
             }
         }
         return _pendingUserMutations = RunAsync();

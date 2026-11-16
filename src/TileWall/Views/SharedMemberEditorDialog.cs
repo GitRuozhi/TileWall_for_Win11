@@ -873,6 +873,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private async Task PickTargetAsync()
     {
         if (_closed || _previewClosing || _pickerBusy || _confirmingTarget) return;
+        var timing = Environment.GetEnvironmentVariable("TILEWALL_PERF") == "1" ? System.Diagnostics.Stopwatch.StartNew() : null;
+        void Trace(string stage) { if (timing is not null) AppLog.Info("TargetEditorTiming", $"stage={stage} elapsedMs={timing.Elapsed.TotalMilliseconds:F3}"); }
         _pickerBusy = true;
         _preparingTargetPicker = true;
         _targetConfirm.IsEnabled = _targetBrowse.IsEnabled = false;
@@ -885,9 +887,20 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             // operation to _pending before that loop can receive an exit request.
             await PresentTargetFeedbackAsync();
             if (_closed || _previewClosing) return;
+            Trace("native-pick-start");
             var path = TargetItemPicker.Pick(WinRT.Interop.WindowNative.GetWindowHandle(_owner), T("Editor.SelectCurrentFolder"), GetTargetPickerInitialFolder());
+            Trace("native-pick-returned");
             if (!_closed && !_previewClosing && path is not null)
-            { _target.Text = path; if (await ConfirmTargetWithFeedbackAsync(selectedNewSource: true)) await DrainPendingAsync(); }
+            {
+                _target.Text = path;
+                Trace("target-assigned");
+                if (await ConfirmTargetWithFeedbackAsync(selectedNewSource: true))
+                {
+                    Trace("target-confirmed");
+                    await DrainPendingAsync();
+                    Trace("preview-drained");
+                }
+            }
         }
         catch (Exception ex) { if (!_closed && !_previewClosing) ShowOperationReminder(string.Format(T("Entry.PickerFailed"), ex.Message)); }
         finally
@@ -895,6 +908,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             _pickerBusy = false; _preparingTargetPicker = false;
             if (!_closed && !_previewClosing) _targetConfirm.IsEnabled = _targetBrowse.IsEnabled = !_confirmingTarget;
             RefreshStatus(); completion.TrySetResult();
+            Trace("finished");
         }
     }
 

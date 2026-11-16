@@ -251,17 +251,21 @@ public sealed partial class MainWindow
         else _needsVisualRefresh = true;
     }
 
-    internal string? CommitSettings(WallSettings settings)
+    internal string? CommitSettings(WallSettings settings, PreparedMediaAsset? preparedBackground = null)
     {
         if (PersistenceMutationBlocked) return ProductStrings.Get("Wall.SettingsSaving");
         if (!_hasDocument || _viewBlocked) return ProductStrings.Get("Wall.SettingsBlocked");
+        if (preparedBackground is not null && (settings.BackgroundMode != WallBackgroundMode.Custom ||
+            settings.BackgroundMedia != preparedBackground.Reference))
+            return ProductStrings.Get("Wall.SettingsBlocked");
+        IReadOnlyList<PreparedMediaAsset>? preparedMedia = preparedBackground is null ? null : [preparedBackground];
         if (settings.ActivateTaskbar != Settings.ActivateTaskbar &&
             (settings with { ActivateTaskbar = Settings.ActivateTaskbar }) == Settings)
         {
             // A taskbar lease changes visible pixels, not the formal grid or the
             // remembered manual width. Locked layouts accept the same geometry.
             var unchangedLayout = Document with { Generation = checked(Document.Generation + 1), Settings = settings };
-            return CommitProposal(new(unchangedLayout, WallLayoutEngine.Measure(unchangedLayout, _metrics)));
+            return CommitProposal(new(unchangedLayout, WallLayoutEngine.Measure(unchangedLayout, _metrics)), preparedMedia: preparedMedia);
         }
         if (Settings.LayoutLocked && settings.LayoutLocked && settings.AnchorCorner != Settings.AnchorCorner)
             return ProductStrings.Get("Wall.LayoutLocked");
@@ -271,16 +275,16 @@ public sealed partial class MainWindow
         {
             var mode = ProposeMode(Document, settings);
             if (mode.Proposal is null) return ViewportFailure(mode);
-            return CommitProposal(mode.Proposal);
+            return CommitProposal(mode.Proposal, preparedMedia: preparedMedia);
         }
         var next = Document with { Generation = checked(Document.Generation + 1), Settings = settings };
         var fit = WallViewportPolicy.Validate(next, ViewportBudget(settings), _metrics);
         if (fit.Proposal is null) return ViewportFailure(fit);
-        return CommitProposal(fit.Proposal);
+        return CommitProposal(fit.Proposal, preparedMedia: preparedMedia);
     }
 
     internal async Task OpenSettingsAsync(Func<SettingsDialogState> read,
-        Func<WallSettings, bool, Task<SettingsDialogState>> apply,
+        Func<WallSettings, bool, PreparedMediaAsset?, Task<SettingsDialogState>> apply,
         Func<int, bool, Task>? hotKeyRecordingChanged = null,
         Func<bool, Task<SettingsDialogState>>? retryStartReplacement = null)
     {
@@ -288,7 +292,7 @@ public sealed partial class MainWindow
         try
         {
             if (!await BeginModalAsync()) return;
-            var dialog = new SettingsDialog(DialogOwner, ExplorerContextMenuController.Create(_session.DataRoot), read, apply, hotKeyRecordingChanged, retryStartReplacement,
+            var dialog = new SettingsDialog(DialogOwner, _images, ExplorerContextMenuController.Create(_session.DataRoot), read, apply, hotKeyRecordingChanged, retryStartReplacement,
                 token => InitializeWelcomeWallAsync(fresh: false, token));
             ActiveDialog = dialog;
             await dialog.ShowAsync();

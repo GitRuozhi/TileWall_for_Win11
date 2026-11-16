@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using TileWall.Core.Settings;
 using TileWall.Core.Shell;
+using TileWall.Core.Storage;
 using TileWall.Core.Wall;
 using TileWall.Graphics;
 using TileWall.Resources;
@@ -28,9 +29,10 @@ internal sealed class SettingsDialog : IWallDialogSession
     private const string CommunityGroupUrl =
         "https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT";
     private readonly Window _owner;
+    private readonly WallImageService _images;
     private readonly ExplorerContextMenuController _contextMenuController;
     private readonly Func<SettingsDialogState> _readState;
-    private readonly Func<WallSettings, bool, Task<SettingsDialogState>> _apply;
+    private readonly Func<WallSettings, bool, PreparedMediaAsset?, Task<SettingsDialogState>> _apply;
     private readonly Func<int, bool, Task>? _hotKeyRecordingChanged;
     private readonly Func<bool, Task<SettingsDialogState>>? _retryStartReplacement;
     private readonly Func<CancellationToken, Task<string?>> _initializeWall;
@@ -115,13 +117,13 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly HashSet<Thumb> _tracedThumbs = [];
     private int _inputSequence;
 
-    public SettingsDialog(Window owner, ExplorerContextMenuController contextMenuController, Func<SettingsDialogState> readState,
-        Func<WallSettings, bool, Task<SettingsDialogState>> applyAsync, Func<int, bool, Task>? hotKeyRecordingChanged = null,
+    public SettingsDialog(Window owner, WallImageService images, ExplorerContextMenuController contextMenuController, Func<SettingsDialogState> readState,
+        Func<WallSettings, bool, PreparedMediaAsset?, Task<SettingsDialogState>> applyAsync, Func<int, bool, Task>? hotKeyRecordingChanged = null,
         Func<bool, Task<SettingsDialogState>>? retryStartReplacement = null,
         Func<CancellationToken, Task<string?>>? initializeWall = null)
     {
         _contextMenuController = contextMenuController;
-        _owner = owner; _readState = readState; _apply = applyAsync; _state = readState();
+        _owner = owner; _images = images; _readState = readState; _apply = applyAsync; _state = readState();
         _hotKeyRecordingChanged = hotKeyRecordingChanged;
         _retryStartReplacement = retryStartReplacement;
         _initializeWall = initializeWall ?? (_ => Task.FromResult<string?>(ProductStrings.Get("Wall.SettingsBlocked")));
@@ -1037,6 +1039,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     {
         _busy = true; SetFormEnabled(false);
         string? path = null;
+        PreparedMediaAsset? asset = null;
         try
         {
             token.ThrowIfCancellationRequested();
@@ -1050,19 +1053,18 @@ internal sealed class SettingsDialog : IWallDialogSession
             token.ThrowIfCancellationRequested();
             if (file is not null)
             {
-                var decoded = await new ImageFrameDecoder().DecodeAsync(file.Path, 512, 512, token);
+                var prepared = await _images.PrepareMediaAsync(file.Path, token);
                 token.ThrowIfCancellationRequested();
-                if (decoded.Status != ImageDecodeStatus.Cancelled)
-                {
-                    if (decoded.Status != ImageDecodeStatus.Success) throw new InvalidDataException();
-                    path = file.Path;
-                }
+                asset = prepared;
+                path = file.Path;
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch { _state = _readState() with { Error = ProductStrings.Get("Settings.BackgroundFailed") }; }
         finally { _busy = false; SetFormEnabled(true); RestoreState(); }
-        if (path is not null) await ApplyAsync(_state.Settings with { BackgroundMode = WallBackgroundMode.Custom, BackgroundImagePath = path, BackgroundMedia = null });
+        if (path is not null && asset is not null && !token.IsCancellationRequested)
+            await ApplyAsync(_state.Settings with { BackgroundMode = WallBackgroundMode.Custom, BackgroundImagePath = path,
+                BackgroundMedia = asset.Reference }, preparedBackground: asset, candidateToken: token);
         else FinishPending();
     }
 
@@ -1178,7 +1180,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         _pending = ApplyAsync(candidate);
     }
 
-    private async Task ApplyAsync(WallSettings candidate, bool restoreDefaults = false)
+    private async Task ApplyAsync(WallSettings candidate, bool restoreDefaults = false,
+        PreparedMediaAsset? preparedBackground = null, CancellationToken candidateToken = default)
     {
         TraceSettings("ApplyStart", SettingsFlags(candidate));
         var settingKey = ChangedSettingKey(_state.Settings, candidate);
@@ -1190,7 +1193,14 @@ internal sealed class SettingsDialog : IWallDialogSession
         try
         {
             await CancelAndWaitForHotKeysAsync();
-            _state = await _apply(candidate, restoreDefaults);
+            if (candidateToken.IsCancellationRequested)
+            {
+                _state = _readState();
+                return;
+            }
+            // Cancellation owns only the uncommitted candidate. Once accepted by
+            // the host, settings and their frozen original drain as one save.
+            _state = await _apply(candidate, restoreDefaults, preparedBackground);
             completed = _state.Error is null;
             TraceSettings("ApplyReturned", _state.Error ?? "success");
         }

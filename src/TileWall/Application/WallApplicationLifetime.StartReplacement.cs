@@ -1,4 +1,5 @@
 using TileWall.Core.Settings;
+using TileWall.Core.Storage;
 using TileWall.Core.Wall;
 using TileWall.Resources;
 using TileWall.Shell.Interop;
@@ -311,10 +312,14 @@ internal sealed partial class WallApplicationLifetime
         RegisteredSecondaryHotKey: _secondaryHotKey.CurrentGesture?.ToConfigString(),
         HotKeyError: _hotKeyError, SecondaryHotKeyError: _secondaryHotKeyError);
 
-    private async Task<SettingsDialogState> ApplySettingsAsync(WallSettings proposed, bool restoreDefaults)
+    private async Task<SettingsDialogState> ApplySettingsAsync(WallSettings proposed, bool restoreDefaults,
+        PreparedMediaAsset? preparedBackground)
     {
         if (_window.PersistenceMutationBlocked || _settingsBusy || _hotKeyRecording || _exitPending || _tearingDown)
             return CurrentSettingsState() with { Error = ProductStrings.Get("Wall.SettingsSaving") };
+        if (preparedBackground is not null && (proposed.BackgroundMode != WallBackgroundMode.Custom ||
+            proposed.BackgroundMedia != preparedBackground.Reference))
+            return CurrentSettingsState() with { Error = ProductStrings.Get("Wall.SettingsBlocked") };
         if (!HotKeyGesture.TryParse(proposed.HotKey, out var nextKey, out var error))
             return CurrentSettingsState() with { Error = error, HotKeyError = error };
         if (!HotKeyGesture.TryParse(proposed.SecondaryHotKey, out var nextSecondaryKey, out error))
@@ -443,7 +448,7 @@ internal sealed partial class WallApplicationLifetime
                 return await RejectAsync(ProductStrings.Get("Wall.SettingsSaving"));
             commitAttempted = true;
             try { error = _window.CommitSettings(proposed with
-                { HotKey = nextKey!.ToConfigString(), SecondaryHotKey = nextSecondaryKey!.ToConfigString() }); }
+                { HotKey = nextKey!.ToConfigString(), SecondaryHotKey = nextSecondaryKey!.ToConfigString() }, preparedBackground); }
             catch (Exception ex) { error = string.Format(ProductStrings.Get("Wall.OperationFailed"), ex.Message); }
             committed = _window.SettingsGeneration != oldGeneration;
             if (!committed) return await RejectAsync(error ?? ProductStrings.Get("Wall.SettingsBlocked"));

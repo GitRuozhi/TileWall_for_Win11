@@ -19,7 +19,7 @@ internal sealed partial class MemberEditorPreview : Grid
     private readonly Canvas _viewport = new();
     private readonly Canvas _scene = new();
     private readonly PuzzleCanvasView _formal = new() { PreviewHover = true };
-    private readonly Microsoft.UI.Xaml.Shapes.Path _underlay = new() { IsHitTestVisible = false, Opacity = 0.75 };
+    private readonly Microsoft.UI.Xaml.Shapes.Path _underlay = new() { IsHitTestVisible = false, Opacity = 0.4 };
     private readonly Canvas _guides = new() { IsHitTestVisible = false }, _hint = new() { IsHitTestVisible = false };
     private readonly TextBlock _pointerText = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, MaxWidth = 300 };
     private readonly Border _pointerTip;
@@ -50,7 +50,7 @@ internal sealed partial class MemberEditorPreview : Grid
     internal EditTool? Tool
     {
         get => _tool;
-        set { if (_tool == value) return; _tool = value; RefreshGuides(); RefreshHover("tool"); }
+        set { if (_tool == value) return; _tool = value; RefreshUnderlay(); RefreshGuides(); RefreshHover("tool"); }
     }
     internal event Action<MemberImageDisplay>? DisplayChanged;
     internal event Action? GestureCompleted;
@@ -187,7 +187,7 @@ internal sealed partial class MemberEditorPreview : Grid
         _underlay.Width = image.Width; _underlay.Height = image.Height;
         _underlay.Data = mask;
         _underlay.Fill = new ImageBrush { ImageSource = frame.Sharp, Stretch = Stretch.Fill };
-        _underlay.Visibility = Visibility.Visible;
+        _underlay.Visibility = Tool is null ? Visibility.Visible : Visibility.Collapsed;
         Canvas.SetLeft(_underlay, image.X - _unionX); Canvas.SetTop(_underlay, image.Y - _unionY);
 
         void AddRectangle(double left, double top, double right, double bottom)

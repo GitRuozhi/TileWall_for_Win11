@@ -25,12 +25,14 @@ public sealed partial class MainWindow
 
     private DeferredGesturePress? _deferredGesturePress;
 
-    // Only a real mouse press during a background transaction can reserve this path.
-    // Foreground saves and closed admission retain their existing interaction gate.
+    // A real mouse press during a background or interactive unpin transaction
+    // can reserve this path. Existing queued mutations keep their order.
+    // Other foreground saves and closed admission keep their interaction gate.
     private bool TryDeferGesturePress(PointerRoutedEventArgs e)
     {
         if (_deferredGesturePress is not null) return true;
-        if (!_persistencePending || !_backgroundPersistencePending || _userMutationReservations != 0 ||
+        if (!_persistencePending || !(_backgroundPersistencePending || _interactivePersistencePending) ||
+            (_userMutationReservations != 0 && !_interactivePersistencePending) ||
             _persistenceAdmissionClosed || _openingWall || _modal || _viewBlocked || !_hasDocument ||
             _windowClosing || ShutdownStarted || _resizing || _gesture.Phase != GesturePhase.Idle ||
             e.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse ||

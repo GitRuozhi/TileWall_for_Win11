@@ -389,8 +389,13 @@ internal sealed class ImportDialog : IWallDialogSession
             if (resetPreview) { request.Token.ThrowIfCancellationRequested(); ClosePreviewSource(); }
             request.Token.ThrowIfCancellationRequested();
             if (kind == ImportPageSourceKind.WallPackage && _packagePath is null) return;
+            var readTiming = Environment.GetEnvironmentVariable("TILEWALL_PERF") == "1" ? Stopwatch.StartNew() : null;
             var context = _context is { } cached && _contextCurrent(cached) ? cached : await _readContext(request.Token);
+            var contextMs = readTiming?.Elapsed.TotalMilliseconds ?? 0;
+            readTiming?.Restart();
             var source = await _readSource(kind, _packagePath, request.Token);
+            if (readTiming is not null)
+                _images.TraceImageWork(FormattableString.Invariant($"source-read:{kind}:contextMs={contextMs:F3}:sourceMs={readTiming.Elapsed.TotalMilliseconds:F3}"));
             if (!IsCurrent(epoch, request.Token)) return;
             var previousSource = _sourceData;
             var keepPreparation = _prepared && previousSource is not null &&
@@ -473,7 +478,7 @@ internal sealed class ImportDialog : IWallDialogSession
             {
                 var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(owner);
                 picker.FileTypeFilter.Add(".zip"); picker.FileTypeFilter.Add(".twpack");
-                TargetItemPicker.SetSuggestedFolder(picker, _packagePath);
+                TargetItemPicker.SetSuggestedFolder(picker, _packagePath ?? _initialExportDirectory);
                 operation = picker.PickSingleFileAsync();
             }
             _pickerOperation = operation;
