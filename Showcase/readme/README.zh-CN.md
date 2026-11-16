@@ -16,10 +16,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.51-0078D4?style=flat-square" alt="版本 V1.51">
+  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="版本 V1.52">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="面向 Windows 10 和 11">
-  <img src="https://img.shields.io/badge/Architecture-x64-0078D4?style=flat-square" alt="x64">
+  <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="x64 / ARM64">
+  <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8 种界面语言">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="免费">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="微软商店"></a>
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
@@ -34,23 +35,27 @@
 </p>
 
 <p align="center">
+  <a href="../../assets/videos/showcase-01/zh-CN/TileWall-showcase-01-zh-CN-burned-2K.mp4">▶ 观看完整展示视频（2K，烧录字幕）</a>
+</p>
+
+## **复活吧！我的磁贴！**
+
+**TileWall** 是一款独立磁贴启动墙，提供个性化的图片、相册与拼图玩法，在 Windows 11 上重现 Windows 10 熟悉的磁贴和开始菜单体验。
+
+支持 Windows 10 和 Windows 11，适用于 x64 和 ARM64 电脑。界面支持简体中文、繁体中文、英语、日语、韩语、德语、法语和西班牙语，可跟随系统或在设置中手动选择。
+
+**TileWall** 使用 Windows 原生界面框架 WinUI 3 开发，重现了开始菜单和磁贴墙，默认按 **Win + 反引号键** 呼出，与系统开始菜单互相独立。不用替换 Windows Shell，也不用改变原来的使用习惯。
+
+可以通过[**微软商店**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)安装，也可以下载[便携压缩包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)或 [EXE 离线安装包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)。便携版解压后即可运行，三种分发方式共用当前用户的磁贴墙数据，数据位置为 `%LOCALAPPDATA%\TileWall`。
+
+
+<p align="center">
   <picture>
     <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">
     <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="呼出、缩放与全屏">
   </picture>
 </p>
 <p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif">GIF</a>。</sub></p>
-
-## **复活吧！我的磁贴！**
-
-**TileWall** 是一款独立磁贴启动墙，提供个性化的图片、相册与拼图玩法，在 Windows 11 上重现 Windows 10 熟悉的磁贴和开始菜单体验。
-
-支持 Windows 10 和 Windows 11，适用于 x64 电脑，提供简体中文和英文。
-
-**TileWall** 使用 Windows 原生界面框架 WinUI 3 开发，重现了开始菜单和磁贴墙，默认按 **Win + 反引号键** 呼出，与系统开始菜单互相独立。不用替换 Windows Shell，也不用改变原来的使用习惯。
-
-可以通过[**微软商店**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)安装，也可以下载[便携压缩包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)或 [EXE 离线安装包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)。便携版解压后即可运行，三种分发方式共用当前用户的磁贴墙数据，数据位置为 `%LOCALAPPDATA%\TileWall`。
-
 
 ## 拼图、图片与图集
 
@@ -135,23 +140,21 @@
 
 ## 即将
 
-以下需求正在排期中，敬请期待：
+以下方向仍在规划或探索中，敬请期待：
 
 - 批量编辑
 
 - 多显示器支持
 
-- 自主磁贴高清化
+- 原生组件-时间
 
-- 更多原生小组件
+- 原生组件-月历
+
+- 原生组件-最近常用
+
+- 其他更多原生组件
 
 - 完整键盘操作与无障碍支持
-
-- 更多语言
-
-- Windows 原生高级覆盖（探索中）
-
-- Arm 支持
 
 
 ## 已兑现
@@ -173,6 +176,10 @@
 - 常用网站高清图标
 
 - 微软商店上架
+
+- ARM64 原生支持
+
+- 八种界面语言，可跟随系统或手动选择
 
 ## 交流和反馈
 

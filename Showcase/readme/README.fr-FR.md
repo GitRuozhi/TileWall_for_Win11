@@ -16,10 +16,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.51-0078D4?style=flat-square" alt="Version V1.51">
+  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="Version V1.52">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Pour Windows 10 et 11">
-  <img src="https://img.shields.io/badge/Architecture-x64-0078D4?style=flat-square" alt="Architecture x64">
+  <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="Architecture x64 / ARM64">
+  <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8 langues d’interface">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="Gratuit">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
@@ -45,7 +46,7 @@
 
 **TileWall** est un lanceur indépendant de vignettes qui recrée sous Windows 11 l’expérience familière des vignettes et du menu Démarrer de Windows 10, avec des images, des albums et des puzzles à personnaliser.
 
-TileWall prend en charge Windows 10 et Windows 11 sur les PC x64. L’interface de l’application est disponible en chinois simplifié et en anglais.
+TileWall prend en charge Windows 10 et 11 sur les PC x64 et ARM64. L’interface est disponible en huit langues : chinois simplifié, chinois traditionnel, anglais, japonais, coréen, allemand, français et espagnol, avec une option pour suivre la langue du système.
 
 **TileWall** est développé avec WinUI 3, le framework d’interface natif de Windows. Il recrée le menu Démarrer et le mur de vignettes. Par défaut, le raccourci **Win + la touche accent grave** affiche le mur, indépendamment du menu Démarrer du système. Tu n’as pas besoin de remplacer le shell Windows ni de changer tes habitudes.
 
@@ -133,23 +134,21 @@ Dans l’Explorateur de fichiers, faites un clic droit sur n’importe quel fich
 
 ## À venir
 
-Les fonctionnalités suivantes sont prévues. Reste à l’écoute :
+Les pistes suivantes sont encore en cours de planification ou d’exploration. À suivre :
 
 - Modification en lot
 
 - Prise en charge de plusieurs écrans
 
-- Amélioration de la résolution des vignettes à la demande
+- Widget natif – Horloge
 
-- Plus de widgets natifs
+- Widget natif – Calendrier mensuel
+
+- Widget natif – Éléments récents et fréquents
+
+- Autres widgets natifs
 
 - Prise en charge complète du clavier et de l’accessibilité
-
-- Plus de langues
-
-- Superposition Windows native avancée (à l’étude)
-
-- Prise en charge d’Arm
 
 
 ## Déjà réalisé
@@ -171,6 +170,10 @@ Les fonctionnalités suivantes sont terminées :
 - Icônes haute résolution de sites Web courants
 
 - Publication sur le Microsoft Store
+
+- Prise en charge native d’ARM64
+
+- Interface en huit langues (suivre la langue du système ou choisir manuellement)
 
 ## Discussion et commentaires
 

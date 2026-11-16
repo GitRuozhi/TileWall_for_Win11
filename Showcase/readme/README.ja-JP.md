@@ -16,10 +16,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.51-0078D4?style=flat-square" alt="バージョン V1.51">
+  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="バージョン V1.52">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Windows 10 と 11 に対応">
-  <img src="https://img.shields.io/badge/Architecture-x64-0078D4?style=flat-square" alt="x64">
+  <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="x64 / ARM64 アーキテクチャ">
+  <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8言語のUI">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="無料">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
@@ -45,7 +46,7 @@
 
 **TileWall** は、画像、アルバム、パズルを自分好みに楽しめる独立型タイルランチャーです。Windows 11 で、Windows 10 でおなじみのタイルとスタートメニューの使い心地を再現します。
 
-Windows 10 と Windows 11 に対応し、x64 PC 向けです。アプリの UI は簡体字中国語と英語に対応しています。
+Windows 10/11 と x64・ARM64 に対応しています。アプリの UI は、簡体字中国語、繁体字中国語、英語、日本語、韓国語、ドイツ語、フランス語、スペイン語の8言語に対応し、システム言語に合わせる設定も選べます。
 
 **TileWall** は Windows 標準の UI フレームワーク WinUI 3 で開発されています。スタートメニューとタイルウォールを再現し、既定では **Win + バッククォートキー** で表示できます。システムのスタートメニューとは独立して動作します。Windows Shell を置き換える必要はなく、これまでの使い方を変える必要もありません。
 
@@ -135,23 +136,21 @@ Windows 10 と Windows 11 に対応し、x64 PC 向けです。アプリの UI �
 
 ## 今後の予定
 
-以下の要望を予定しています。続報をお待ちください：
+以下の項目は現在、計画または検討中です。続報をお待ちください：
 
 - 一括編集
 
 - マルチモニター対応
 
-- タイルのオンデマンド高解像度化
+- ネイティブウィジェット - 時計
 
-- ネイティブウィジェットの追加
+- ネイティブウィジェット - 月間カレンダー
+
+- ネイティブウィジェット - 最近・よく使う項目
+
+- その他のネイティブウィジェット
 
 - 完全なキーボード操作とアクセシビリティ対応
-
-- 対応言語の追加
-
-- Windows ネイティブの高度なオーバーレイ（探索中）
-
-- Arm 対応
 
 
 ## 実現済み
@@ -173,6 +172,10 @@ Windows 10 と Windows 11 に対応し、x64 PC 向けです。アプリの UI �
 - よく使われる Web サイトの高解像度アイコン
 
 - Microsoft Store での公開
+
+- ARM64 ネイティブ対応
+
+- 8言語の UI（システム言語に合わせる／手動選択）
 
 ## 交流とフィードバック
 

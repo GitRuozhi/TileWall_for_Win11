@@ -16,10 +16,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.51-0078D4?style=flat-square" alt="Versión V1.51">
+  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="Versión V1.52">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Para Windows 10 y 11">
-  <img src="https://img.shields.io/badge/Architecture-x64-0078D4?style=flat-square" alt="Arquitectura x64">
+  <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="Arquitectura x64 / ARM64">
+  <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8 idiomas de interfaz">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="Gratis">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
@@ -45,7 +46,7 @@
 
 **TileWall** es un lanzador independiente de mosaicos que recupera en Windows 11 la familiar experiencia de los mosaicos y del menú Inicio de Windows 10, con imágenes, álbumes y puzles para personalizarla.
 
-TileWall es compatible con Windows 10 y Windows 11 en equipos x64. La interfaz de la aplicación está disponible en chino simplificado e inglés.
+TileWall es compatible con Windows 10 y 11 en equipos x64 y ARM64. La interfaz está disponible en ocho idiomas: chino simplificado, chino tradicional, inglés, japonés, coreano, alemán, francés y español, con la opción de seguir el idioma del sistema.
 
 **TileWall** está desarrollado con WinUI 3, el framework de interfaz nativo de Windows. Recupera el menú Inicio y el panel de mosaicos. De forma predeterminada, el atajo **Win + la tecla de acento grave** muestra el panel, independientemente del menú Inicio del sistema. No tienes que sustituir Windows Shell ni cambiar tus costumbres.
 
@@ -133,23 +134,21 @@ Haz clic derecho en cualquier archivo del Explorador de archivos y elige «Añad
 
 ## Próximamente
 
-Estas funciones están previstas. ¡Estate atento!
+Estas líneas siguen en planificación o exploración. ¡Estate atento!
 
 - Edición en lote
 
 - Compatibilidad con varios monitores
 
-- Mejora de la resolución de los mosaicos bajo demanda
+- Widget nativo - Reloj
 
-- Más widgets nativos
+- Widget nativo - Calendario mensual
+
+- Widget nativo - Elementos recientes y frecuentes
+
+- Otros widgets nativos
 
 - Compatibilidad completa con el teclado y la accesibilidad
-
-- Más idiomas
-
-- Superposición avanzada nativa de Windows (en fase de exploración)
-
-- Compatibilidad con Arm
 
 
 ## Ya realizado
@@ -171,6 +170,10 @@ Estas funciones ya están completadas:
 - Iconos de alta resolución para sitios web habituales
 
 - Publicación en Microsoft Store
+
+- Compatibilidad nativa con ARM64
+
+- Ocho idiomas de interfaz (seguir el idioma del sistema o elegir manualmente)
 
 ## Charla y comentarios
 

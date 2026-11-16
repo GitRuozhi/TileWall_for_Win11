@@ -16,10 +16,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.51-0078D4?style=flat-square" alt="버전 V1.51">
+  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="버전 V1.52">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Windows 10 및 11용">
-  <img src="https://img.shields.io/badge/Architecture-x64-0078D4?style=flat-square" alt="x64">
+  <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="x64 / ARM64 아키텍처">
+  <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8개 UI 언어">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="무료">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
@@ -45,7 +46,7 @@
 
 **TileWall**은 이미지, 앨범, 퍼즐 기능을 원하는 대로 꾸밀 수 있는 독립형 타일 런처입니다. Windows 11에서 익숙한 Windows 10 타일과 시작 메뉴 경험을 되살립니다.
 
-Windows 10과 Windows 11을 지원하며 x64 PC에서 사용할 수 있습니다. 앱 UI는 중국어(간체)와 영어만 지원합니다.
+Windows 10/11과 x64 및 ARM64를 지원합니다. 앱 UI는 중국어(간체), 중국어(번체), 영어, 일본어, 한국어, 독일어, 프랑스어, 스페인어의 8개 언어로 제공되며, 시스템 언어를 따르도록 설정할 수도 있습니다.
 
 **TileWall**은 Windows 네이티브 UI 프레임워크 WinUI 3로 개발되어 시작 메뉴와 타일 벽을 재현합니다. 기본적으로 **Win + 백틱 키**로 호출하며, Windows 시작 메뉴와 독립적으로 작동합니다. Windows Shell을 교체하거나 기존 사용 습관을 바꿀 필요가 없습니다.
 
@@ -135,23 +136,21 @@ Windows 10과 Windows 11을 지원하며 x64 PC에서 사용할 수 있습니다
 
 ## 출시 예정
 
-다음 요청이 개발 일정에 올라와 있습니다. 기대해 주세요!
+다음 항목은 현재 계획 중이거나 검토 중입니다. 기대해 주세요!
 
 - 일괄 편집
 
 - 다중 모니터 지원
 
-- 타일 고해상도 보정 직접 적용
+- 네이티브 위젯 - 시계
 
-- 더 많은 네이티브 위젯
+- 네이티브 위젯 - 월간 달력
+
+- 네이티브 위젯 - 최근 및 자주 사용한 항목
+
+- 그 밖의 네이티브 위젯
 
 - 완전한 키보드 조작 및 접근성 지원
-
-- 더 많은 언어
-
-- Windows 네이티브 고급 오버레이 (탐색 중)
-
-- Arm 지원
 
 
 ## 제공 완료
@@ -173,6 +172,10 @@ Windows 10과 Windows 11을 지원하며 x64 PC에서 사용할 수 있습니다
 - 자주 쓰는 웹 사이트의 고해상도 아이콘
 
 - Microsoft Store 등록
+
+- ARM64 네이티브 지원
+
+- 8개 UI 언어 (시스템 언어 따르기 또는 수동 선택)
 
 ## 소통과 피드백
 

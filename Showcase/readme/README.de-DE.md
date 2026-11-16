@@ -16,10 +16,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.51-0078D4?style=flat-square" alt="Version V1.51">
+  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="Version V1.52">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Für Windows 10 und 11">
-  <img src="https://img.shields.io/badge/Architecture-x64-0078D4?style=flat-square" alt="x64">
+  <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="x64 / ARM64 Architektur">
+  <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8 UI-Sprachen">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="Kostenlos">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
@@ -45,7 +46,7 @@
 
 **TileWall** ist ein eigenständiger Kachel-Launcher mit personalisierbaren Bildern, Alben und Puzzles. Er bringt das vertraute Kachel- und Startmenü-Erlebnis von Windows 10 unter Windows 11 zurück.
 
-TileWall unterstützt Windows 10 und Windows 11 auf x64-PCs. Die App-Oberfläche ist nur auf vereinfachtem Chinesisch und Englisch verfügbar.
+TileWall unterstützt Windows 10 und 11 auf x64- und ARM64-PCs. Die App-Oberfläche ist in acht Sprachen verfügbar: vereinfachtes und traditionelles Chinesisch, Englisch, Japanisch, Koreanisch, Deutsch, Französisch und Spanisch. Außerdem kannst du die Systemsprache übernehmen lassen.
 
 **TileWall** basiert auf WinUI 3, dem nativen Windows-UI-Framework. Es bildet das Startmenü und die Kachelwand nach. Standardmäßig rufst du sie mit **Win + der Backtick-Taste** auf; sie funktioniert unabhängig vom Windows-Startmenü. Du musst weder die Windows-Shell ersetzen noch deine gewohnten Abläufe ändern.
 
@@ -135,23 +136,21 @@ Klicke im Datei-Explorer mit der rechten Maustaste auf eine beliebige Datei und 
 
 ## Demnächst
 
-Diese Wünsche stehen auf dem Entwicklungsplan. Bleib gespannt:
+Diese Punkte sind in Planung oder werden noch geprüft. Bleib gespannt:
 
 - Mehrere Einträge auf einmal bearbeiten
 
 - Unterstützung für mehrere Monitore
 
-- Kacheln bei Bedarf selbst hochauflösend verbessern
+- Natives Widget – Uhr
 
-- Mehr native Widgets
+- Natives Widget – Monatskalender
+
+- Natives Widget – zuletzt und häufig verwendete Elemente
+
+- Weitere native Widgets
 
 - Vollständige Tastaturbedienung und Barrierefreiheit
-
-- Weitere Sprachen
-
-- Erweiterte native Windows-Überlagerung (wird noch erkundet)
-
-- Arm-Unterstützung
 
 
 ## Bereits umgesetzt
@@ -173,6 +172,10 @@ Diese Wünsche sind bereits erfüllt:
 - Hochauflösende Symbole für häufig genutzte Websites
 
 - Im Microsoft Store veröffentlicht
+
+- Native ARM64-Unterstützung
+
+- Acht UI-Sprachen (der Systemsprache folgen oder manuell auswählen)
 
 ## Austausch und Feedback
 

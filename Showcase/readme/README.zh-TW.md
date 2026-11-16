@@ -16,10 +16,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.51-0078D4?style=flat-square" alt="版本 V1.51">
+  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="版本 V1.52">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="適用於 Windows 10 與 11">
-  <img src="https://img.shields.io/badge/Architecture-x64-0078D4?style=flat-square" alt="x64">
+  <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="x64 / ARM64 架構">
+  <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8 種介面語言">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="免費">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
@@ -45,7 +46,7 @@
 
 **TileWall** 是一款獨立的動態磚啟動牆，提供個人化的圖片、相簿與拼圖玩法，在 Windows 11 上重現 Windows 10 熟悉的動態磚與開始功能表體驗。
 
-支援 Windows 10 與 Windows 11，適用於 x64 電腦，提供簡體中文與英文介面。
+支援 Windows 10／11、x64 與 ARM64，提供簡體中文、繁體中文、英文、日文、韓文、德文、法文與西班牙文八種介面語言，並可選擇跟隨系統語言。
 
 **TileWall** 使用 Windows 原生介面框架 WinUI 3 開發，重現開始功能表與動態磚牆；預設按下 **Win + 反引號鍵** 即可呼叫，並與系統開始功能表各自獨立。不必取代 Windows Shell，也不必改變原有的使用習慣。
 
@@ -135,23 +136,21 @@
 
 ## 即將推出
 
-以下需求正在排程中，敬請期待：
+以下方向仍在規劃或探索中，敬請期待：
 
 - 批次編輯
 
 - 多螢幕支援
 
-- 動態磚按需高解析度增強
+- 原生小工具－時鐘
 
-- 更多原生小工具
+- 原生小工具－月曆
+
+- 原生小工具－最近與常用項目
+
+- 其他更多原生小工具
 
 - 完整鍵盤操作與無障礙支援
-
-- 更多語言
-
-- Windows 原生進階覆蓋效果（探索中）
-
-- Arm 支援
 
 
 ## 已完成
@@ -173,6 +172,10 @@
 - 常用網站高解析度圖示
 
 - 上架 Microsoft Store
+
+- ARM64 原生支援
+
+- 八種介面語言（跟隨系統或手動選擇）
 
 ## 交流與回饋
 

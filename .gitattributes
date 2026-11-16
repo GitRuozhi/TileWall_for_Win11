@@ -1,0 +1,2 @@
+assets/videos/**/*.mp4 filter=lfs diff=lfs merge=lfs -text
+assets/videos/**/*.mkv filter=lfs diff=lfs merge=lfs -text

@@ -16,10 +16,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.51-0078D4?style=flat-square" alt="Version V1.51">
+  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="Version V1.52">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Windows 10 and 11">
-  <img src="https://img.shields.io/badge/Architecture-x64-0078D4?style=flat-square" alt="x64">
+  <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="x64 / ARM64">
+  <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8 interface languages">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="Free">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
   <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
@@ -45,7 +46,7 @@
 
 **TileWall** is a standalone tile launcher with customizable pictures, albums, and puzzles, bringing the familiar Windows 10 tiles and Start menu experience back to Windows 11.
 
-Supports Windows 10 and Windows 11 on x64 PCs. The app interface is available in Simplified Chinese and English.
+Supports Windows 10 and Windows 11 on x64 and ARM64 PCs. The app interface supports eight languages: English, Simplified Chinese, Traditional Chinese, Japanese, Korean, German, French, and Spanish. Follow the system language or choose one in Settings.
 
 Built with the native Windows UI framework WinUI 3, **TileWall** recreates the Start menu and tile wall. Open it with **Win + the grave-accent key** by default. It works independently of the system Start menu, so you can keep Windows Shell and your usual habits.
 
@@ -135,23 +136,21 @@ Right-click any file in File Explorer and choose “Add to TileWall” to create
 
 ## Coming soon
 
-These requests are on the roadmap. Stay tuned:
+These features are being planned or explored. Stay tuned:
 
 - Bulk editing
 
 - Multi-monitor support
 
-- On-demand tile upscaling
+- Native widget - Clock
 
-- More native widgets
+- Native widget - Monthly calendar
+
+- Native widget - Recent and frequent items
+
+- Other native widgets
 
 - Full keyboard navigation and accessibility support
-
-- More languages
-
-- Advanced native Windows overlays (exploring)
-
-- Arm support
 
 
 ## Delivered
@@ -173,6 +172,10 @@ These requests have been delivered:
 - High-resolution icons for popular websites
 
 - Available on the Microsoft Store
+
+- Native ARM64 support
+
+- Eight interface languages, with system-language detection or manual selection
 
 ## Chat and feedback
 
