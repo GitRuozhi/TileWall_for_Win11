@@ -1,6 +1,6 @@
 # 更新日志
 
-本页记录对外版本状态、功能变化、兼容性、已知限制和必要验证范围。[GitHub Releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases)提供正式下载；源码与构建说明见[开发者指南](DeveloperGuide.md)。GitHub发行与Microsoft Store上架状态分别以对应页面为准。
+本页记录对外版本状态、功能变化、兼容性、已知限制和必要验证范围。[GitHub Releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases)提供正式下载；源码与构建说明见[开发者指南](DeveloperGuide.zh-CN.md)。GitHub发行与Microsoft Store上架状态分别以对应页面为准。
 
 ## V1.53（1.5.3）——开发中
 
