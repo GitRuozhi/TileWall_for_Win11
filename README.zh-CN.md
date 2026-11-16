@@ -34,6 +34,8 @@
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">聊天</a>
 </p>
 
+https://github.com/user-attachments/assets/0b544816-0753-48cb-a88a-ce454d780772
+
 ## **复活吧！我的磁贴！**
 
 **TileWall** 是一款独立磁贴启动墙，提供个性化的图片、相册与拼图玩法，在 Windows 11 上重现 Windows 10 熟悉的磁贴和开始菜单体验。
