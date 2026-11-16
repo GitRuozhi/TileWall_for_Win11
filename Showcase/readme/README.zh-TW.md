@@ -122,12 +122,12 @@
 </p>
 <p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a>。</sub></p>
 
-在桌面或檔案總管中以滑鼠右鍵按一下圖片，選擇「新增至 TileWall」，即可建立圖片動態磚。
+在檔案總管中以滑鼠右鍵按一下任意檔案，選擇「新增至 TileWall」，即可建立動態磚。
 
 <p align="center">
   <picture>
     <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="從桌面圖片右鍵新增動態磚">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="從檔案總管右鍵新增動態磚">
   </picture>
 </p>
 <p align="center"><sub>這是一張動態圖片；如果沒有播放，請分別查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> 與 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a>。</sub></p>

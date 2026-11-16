@@ -122,12 +122,12 @@ Wenn du auch das Startmenü vermisst, aktiviere in den Einstellungen **Startmen�
 </p>
 <p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a> einzeln.</sub></p>
 
-Klicke auf dem Desktop oder im Datei-Explorer mit der rechten Maustaste auf ein Bild und wähle „Zu TileWall hinzufügen“, um eine Bildkachel zu erstellen.
+Klicke im Datei-Explorer mit der rechten Maustaste auf eine beliebige Datei und wähle „Zu TileWall hinzufügen“, um eine Kachel zu erstellen.
 
 <p align="center">
   <picture>
     <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="Eine Bildkachel über das Desktop-Kontextmenü hinzufügen">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="Eine Kachel über das Kontextmenü im Datei-Explorer hinzufügen">
   </picture>
 </p>
 <p align="center"><sub>Dies ist ein animiertes Bild. Wenn es sich nicht bewegt, öffne <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> und <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a> einzeln.</sub></p>

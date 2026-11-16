@@ -121,12 +121,12 @@ Si también echas de menos el menú Inicio, activa el **menú Inicio en lista** 
 </p>
 <p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a>.</sub></p>
 
-Haz clic derecho en una imagen del escritorio o del Explorador de archivos y elige «Añadir a TileWall» para crear un mosaico con esa imagen.
+Haz clic derecho en cualquier archivo del Explorador de archivos y elige «Añadir a TileWall» para crear un mosaico.
 
 <p align="center">
   <picture>
     <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="Añadir un mosaico desde el menú contextual de una imagen del escritorio">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="Añadir un mosaico desde el menú contextual del Explorador de archivos">
   </picture>
 </p>
 <p align="center"><sub>Esta es una imagen animada. Si no se anima, abre por separado la <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> y el <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a>.</sub></p>

@@ -121,12 +121,12 @@ Si le menu Démarrer te manque aussi, active le **menu Démarrer en liste** dans
 </p>
 <p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a>.</sub></p>
 
-Faites un clic droit sur une image du bureau ou de l’Explorateur de fichiers, puis choisissez « Ajouter à TileWall » pour créer une tuile avec cette image.
+Dans l’Explorateur de fichiers, faites un clic droit sur n’importe quel fichier et choisissez « Ajouter à TileWall » pour créer une tuile.
 
 <p align="center">
   <picture>
     <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="Ajouter une tuile depuis le menu contextuel d’une image du bureau">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="Ajouter une tuile depuis le menu contextuel de l’Explorateur de fichiers">
   </picture>
 </p>
 <p align="center"><sub>Ceci est une image animée. Si elle ne s’anime pas, consulte séparément le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> et le <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a>.</sub></p>

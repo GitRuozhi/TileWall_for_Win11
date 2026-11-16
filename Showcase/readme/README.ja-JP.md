@@ -122,12 +122,12 @@ Windows 10 と Windows 11 に対応し、x64 PC 向けです。アプリの UI �
 </p>
 <p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> と <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a> を個別にご覧ください。</sub></p>
 
-デスクトップまたはエクスプローラーで画像を右クリックし、「TileWall に追加」を選ぶと、画像タイルを作成できます。
+エクスプローラーで任意のファイルを右クリックし、「TileWall に追加」を選ぶと、タイルを作成できます。
 
 <p align="center">
   <picture>
     <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="デスクトップ画像の右クリックからタイルを追加">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="エクスプローラーの右クリックメニューからタイルを追加">
   </picture>
 </p>
 <p align="center"><sub>これはアニメーション画像です。動かない場合は、<a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> と <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a> を個別にご覧ください。</sub></p>

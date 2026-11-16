@@ -122,12 +122,12 @@ Windows 10과 Windows 11을 지원하며 x64 PC에서 사용할 수 있습니다
 </p>
 <p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
 
-바탕 화면이나 파일 탐색기에서 이미지를 마우스 오른쪽 버튼으로 클릭하고 “TileWall에 추가”를 선택하면 이미지 타일을 만들 수 있습니다.
+파일 탐색기에서 원하는 파일을 마우스 오른쪽 버튼으로 클릭하고 “TileWall에 추가”를 선택하면 타일을 만들 수 있습니다.
 
 <p align="center">
   <picture>
     <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="바탕 화면 이미지의 오른쪽 클릭 메뉴에서 타일 추가">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="파일 탐색기의 오른쪽 클릭 메뉴에서 타일 추가">
   </picture>
 </p>
 <p align="center"><sub>움직이는 이미지입니다. 재생되지 않으면 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a>와 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a>를 따로 확인해 보세요.</sub></p>
