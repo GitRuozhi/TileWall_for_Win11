@@ -34,9 +34,7 @@
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">チャット</a>
 </p>
 
-<p align="center">
-  <a href="../../assets/videos/showcase-01/ja-JP/TileWall-showcase-01-ja-JP-preview-av1-720P.mp4"><strong>展示動画（ローカルプレビュー）</strong></a>
-</p>
+https://github.com/user-attachments/assets/d99ccc0a-8e58-4ec0-b0c1-d60ef339d341
 <p align="center"><sub>現在の正式版は V1.52 です。この動画を含む V1.53 展示素材は、2026-11-17 に開発者がローカル完成版として承認しました。未アップロードです。</sub></p>
 
 ## **よみがえれ！わがタイルよ！**

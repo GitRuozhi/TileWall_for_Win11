@@ -36,9 +36,7 @@
 
 
 
-<p align="center">
-  <a href="../../assets/videos/showcase-01/de-DE/TileWall-showcase-01-de-DE-preview-av1-720P.mp4">TileWall-Showcase-Video ansehen (lokale Vorschau)</a>
-</p>
+https://github.com/user-attachments/assets/1ea64b8a-82db-4d76-9d7e-e8d279c6b613
 <p align="center"><sub>Lokale Videovorschau der Entwicklungsversion V1.53. Der Entwickler hat die lokalen Showcase-Medien am 2026-11-17 freigegeben; sie wurden nicht hochgeladen. Die offizielle Version bleibt V1.52.</sub></p>
 
 ## **Erhebt euch wieder, meine Kacheln!**

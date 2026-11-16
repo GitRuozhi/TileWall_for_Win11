@@ -36,7 +36,7 @@
 
 
 
-<p align="center"><strong>V1.53 development build preview</strong> · Developer-approved local V1.53 showcase media (2026-11-17); not uploaded. The official release remains V1.52. <a href="../../assets/videos/showcase-01/en-US/TileWall-showcase-01-en-US-preview-av1-720P.mp4">Local 720p AV1 video</a></p>
+https://github.com/user-attachments/assets/bab65f40-d8f2-4264-85ab-ded99de349f0
 
 ## **Come back to life, my tiles!**
 

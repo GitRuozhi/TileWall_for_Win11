@@ -34,9 +34,7 @@
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">대화하기</a>
 </p>
 
-<p align="center">
-  <a href="../../assets/videos/showcase-01/ko-KR/TileWall-showcase-01-ko-KR-preview-av1-720P.mp4"><strong>소개 영상(로컬 미리보기)</strong></a>
-</p>
+https://github.com/user-attachments/assets/038fa1cd-2f04-4475-9ab2-fd45a4b84c9f
 <p align="center"><sub>현재 정식 버전은 V1.52입니다. 이 영상을 포함한 V1.53 소개 자료는 2026-11-17 개발자가 로컬 완성본으로 승인했습니다. 아직 업로드하지 않았습니다.</sub></p>
 
 ## **부활하라! 나의 타일이여!**

@@ -36,9 +36,7 @@
 
 
 
-<p align="center">
-  <a href="../../assets/videos/showcase-01/es-ES/TileWall-showcase-01-es-ES-preview-av1-720P.mp4">Ver la vista previa del vídeo de TileWall (local)</a>
-</p>
+https://github.com/user-attachments/assets/da1f8259-6876-4211-ba44-313864f5116e
 <p align="center"><sub>Vista previa local de la versión de desarrollo V1.53. El desarrollador aprobó los materiales locales de presentación el 2026-11-17; no se han subido y la versión oficial actual sigue siendo V1.52.</sub></p>
 
 ## **¡Volved a la vida, mis mosaicos!**

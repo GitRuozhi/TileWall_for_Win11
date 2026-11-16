@@ -36,7 +36,7 @@
 
 
 
-<p align="center"><strong>V1.53 開發版預覽</strong> · 開發者已於 2026-11-17 核可本機展示成品；尚未上傳。正式版仍為 V1.52。<a href="../../assets/videos/showcase-01/zh-TW/TileWall-showcase-01-zh-TW-preview-av1-720P.mp4">本機 720p AV1 影片</a></p>
+https://github.com/user-attachments/assets/712a30b3-e72e-48dc-b7fc-1673b6aeab42
 
 ## **復活吧！我的動態磚！**
 

@@ -36,9 +36,7 @@
 
 
 
-<p align="center">
-  <a href="../../assets/videos/showcase-01/fr-FR/TileWall-showcase-01-fr-FR-preview-av1-720P.mp4">Voir l’aperçu vidéo de TileWall (local)</a>
-</p>
+https://github.com/user-attachments/assets/179e51ce-5066-47ad-a813-e9809004cce9
 <p align="center"><sub>Aperçu vidéo local de la version de développement V1.53. Les médias locaux de présentation ont été approuvés par le développeur le 2026-11-17 ; ils n’ont pas été téléversés. La version officielle actuelle reste V1.52.</sub></p>
 
 ## **Reprenez vie, mes vignettes !**
