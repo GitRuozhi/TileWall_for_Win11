@@ -318,7 +318,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         // A switch has no separate double-tap action. Treat two quick clicks as
         // two taps rather than letting the second click disappear into DoubleTapped.
         var toggles = new[] { _showGrid, _runAtLogin, _topmost, _stayVisible, _layoutLocked, _activateTaskbar, _menuStart,
-            _fullScreen, _expandColumns, _replaceStartMenu, _contextMenu };
+            _fullScreen, _expandColumns, _replaceStartMenu, _redirectTaskbarStartButton, _contextMenu };
         foreach (var toggle in toggles)
         {
             toggle.IsDoubleTapEnabled = false;

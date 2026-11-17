@@ -1236,7 +1236,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                 {
                     if (!Path.IsPathFullyQualified(target) || !File.Exists(target) && !Directory.Exists(target)) return ShowError(T("Editor.InvalidTarget"));
                     target = LaunchIdentityService.NormalizePath(target);
-                    var shortcut = new[] { ".lnk", ".url" }.Contains(Path.GetExtension(target), StringComparer.OrdinalIgnoreCase);
+                    var shortcut = !Directory.Exists(target) &&
+                        new[] { ".lnk", ".url" }.Contains(Path.GetExtension(target), StringComparer.OrdinalIgnoreCase);
                     if (shortcut)
                     {
                         if (Path.GetExtension(target).Equals(".url", StringComparison.OrdinalIgnoreCase))
@@ -1575,7 +1576,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 { ShowError(ex.Message); _target.Focus(FocusState.Programmatic); return false; }
             }
-            if (local && Path.GetExtension(target).Equals(".url", StringComparison.OrdinalIgnoreCase))
+            if (local && !Directory.Exists(target) && Path.GetExtension(target).Equals(".url", StringComparison.OrdinalIgnoreCase))
             {
                 try { if (!RegisteredUrlProtocols.IsSupported(UrlShortcut.ReadUrlLine(File.ReadAllBytes(target)))) { ShowError(T("Entry.InvalidUrl")); _target.Focus(FocusState.Programmatic); return false; } }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ShowError(ex.Message); _target.Focus(FocusState.Programmatic); return false; }
