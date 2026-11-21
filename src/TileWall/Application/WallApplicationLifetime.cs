@@ -72,7 +72,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _animation.ShowCompleted += () =>
         {
             _show.ShowAnimationCompleted();
-            if (_show.State == WallShowState.Visible) _window.CompleteBackdropAnimation(visible: true);
+            CompleteWallShow();
         };
         _animation.HideCompleted += _show.HideAnimationCompleted;
         _exit = new ExitCoordinator(this);
@@ -87,8 +87,11 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             if (_started) _ = QueueExplorerMenuSynchronization();
         };
         _window.DialogClosed += QueueAddDrain;
+        _window.DialogClosed += QueueWindowsStartInvitation;
+        _window.WindowsStartInvitationReady += QueueWindowsStartInvitation;
         _window.ImportReadinessChanged += () =>
         {
+            QueueWindowsStartInvitation();
             if (_window.CanProcessExternalImport) QueueAddDrain();
             if (_started && _window.SettingsPersistenceBlocked)
             {
@@ -187,6 +190,24 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         Request(WallShowTrigger.Show);
         _ = _window.OpenSettingsAsync(CurrentSettingsState, ApplySettingsAsync,
             SetHotKeyRecordingAsync, RetryStartReplacementAsync);
+    }
+
+    private void QueueWindowsStartInvitation()
+    {
+        bool CanOffer() => _started && !_exitPending && !_tearingDown && _show.State == WallShowState.Visible &&
+            _window.HasPendingWindowsStartInvitation && !_window.ModalActive;
+        if (!CanOffer()) return;
+        _window.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (CanOffer()) _ = _window.OfferWindowsStartImportAsync();
+        });
+    }
+
+    private void CompleteWallShow()
+    {
+        if (_show.State != WallShowState.Visible) return;
+        _window.CompleteBackdropAnimation(visible: true);
+        QueueWindowsStartInvitation();
     }
 
     private bool ReceiveAdd(ExplorerAddMessage message)
@@ -406,7 +427,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             {
                 _animation.ResetVisual();
                 _show.ShowAnimationCompleted();
-                _window.CompleteBackdropAnimation(visible: true);
+                CompleteWallShow();
             }
             else _show.HideAnimationCompleted();
         }
@@ -433,7 +454,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         PrepareTaskbarPlacement();
         _window.ShowWall();
         TaskbarWallShown();
-        if (_show.State == WallShowState.Visible) _window.CompleteBackdropAnimation(visible: true);
+        CompleteWallShow();
     }
     public void SnapHide()
     {
@@ -444,7 +465,11 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         TaskbarWallHidden();
         _window.CompleteBackdropAnimation(visible: false);
     }
-    public void FocusWall() => _window.FocusTopSession();
+    public void FocusWall()
+    {
+        _window.FocusTopSession();
+        QueueWindowsStartInvitation();
+    }
     public IExitParticipant? TopParticipant => _window.ActiveDialog;
     public void CloseTopSession() => _window.ActiveDialog?.Close();
     public void CancelTransientState() => _window.CancelTransientState();

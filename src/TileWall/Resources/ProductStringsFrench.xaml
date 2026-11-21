@@ -867,4 +867,16 @@
   <x:String x:Key="Catalog.Tool.windows-version">Version de Windows</x:String>
   <x:String x:Key="Catalog.Location.run">Exécuter</x:String>
   <x:String x:Key="Catalog.Tool.taskbar-search">Recherche Windows</x:String>
+  <x:String x:Key="WindowsStartImport.Setting">Importer les éléments épinglés au menu Démarrer</x:String>
+  <x:String x:Key="WindowsStartImport.Import">Importer</x:String>
+  <x:String x:Key="WindowsStartImport.Later">Plus tard</x:String>
+  <x:String x:Key="WindowsStartImport.Invitation">Bienvenue dans TileWall ! Voulez-vous importer les éléments épinglés au menu Démarrer de Windows ?</x:String>
+  <x:String x:Key="WindowsStartImport.Progress">Importation des éléments épinglés au menu Démarrer de Windows…</x:String>
+  <x:String x:Key="WindowsStartImport.Group">Menu Démarrer de Windows</x:String>
+  <x:String x:Key="WindowsStartImport.Empty">Le menu Démarrer de Windows ne contient aucun élément épinglé à importer.</x:String>
+  <x:String x:Key="WindowsStartImport.AllDuplicates">Tous les éléments épinglés sont déjà sur le mur de tuiles.</x:String>
+  <x:String x:Key="WindowsStartImport.Result">{0} éléments ajoutés. {1} doublons et {2} éléments dont la cible est introuvable ont été ignorés.</x:String>
+  <x:String x:Key="WindowsStartImport.Invalid">La disposition exportée du menu Démarrer de Windows a un format non valide.</x:String>
+  <x:String x:Key="WindowsStartImport.Failed">Impossible d’importer les éléments épinglés au menu Démarrer de Windows.</x:String>
+  <x:String x:Key="WindowsStartImport.Capacity">Le mur de tuiles ne peut pas contenir tous les éléments épinglés. {0}</x:String>
 </ResourceDictionary>

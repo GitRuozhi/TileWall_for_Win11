@@ -589,12 +589,9 @@ public sealed partial class MainWindow
                             if (identities.ResolveMember(member, null) is { } identity) keys[member.Id] = identity.Key;
                             continue;
                         }
-                        var path = _session.ManagedEntryPath(member) ?? throw new IOException("Invalid formal entry path.");
-                        using var stream = guarded.OpenReadProtected(path);
-                        var bytes = ReadExternalEntryBytes(stream);
-                        var fields = entry.Kind == ManagedEntryKind.Lnk ? _session.LinkFiles.Read(path) : null;
-                        keys[member.Id] = EntryObservation.Observe(identities, entry.Kind, path, bytes, fields).Key;
-                        hashes[member.Id] = Convert.ToHexString(SHA256.HashData(bytes));
+                        var observedEntry = ObserveManagedImportEntry(member, entry, guarded, identities);
+                        keys[member.Id] = observedEntry.Identity.Key;
+                        hashes[member.Id] = observedEntry.Hash;
                     }
                 return (Items: incoming, Keys: keys, Hashes: hashes);
             });
@@ -792,6 +789,20 @@ public sealed partial class MainWindow
             },
             ExpectedIdentityKey = identity.Key, ExpectedSourceSha256 = hash, ExpectedSourceStamp = stamp,
         };
+    }
+
+    private (LaunchIdentity Identity, string Hash, LinkFields? Fields, ReadOnlyMemory<byte> IdList) ObserveManagedImportEntry(
+        WallMember member, ManagedEntryReference entry, GuardedWallFiles guarded, LaunchIdentityService identities,
+        bool includeIdList = false)
+    {
+        var path = _session.ManagedEntryPath(member) ?? throw new IOException("Invalid formal entry path.");
+        using var stream = guarded.OpenReadProtected(path);
+        var bytes = ReadExternalEntryBytes(stream);
+        ReadOnlyMemory<byte> idList = default;
+        var fields = entry.Kind != ManagedEntryKind.Lnk ? null :
+            includeIdList ? _session.LinkFiles.ReadWithIdList(path, out idList) : _session.LinkFiles.Read(path);
+        return (EntryObservation.Observe(identities, entry.Kind, path, bytes, fields),
+            Convert.ToHexString(SHA256.HashData(bytes)), fields, idList);
     }
 
     private static byte[] ReadExternalEntryBytes(Stream stream)

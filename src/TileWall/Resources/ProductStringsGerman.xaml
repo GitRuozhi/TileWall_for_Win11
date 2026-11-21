@@ -871,4 +871,16 @@ Fortfahren?</x:String>
   <x:String x:Key="Catalog.Tool.windows-version">Windows-Version</x:String>
   <x:String x:Key="Catalog.Location.run">Ausführen</x:String>
   <x:String x:Key="Catalog.Tool.taskbar-search">Windows-Suche</x:String>
+  <x:String x:Key="WindowsStartImport.Setting">Angeheftete Windows-Startmenüeinträge importieren</x:String>
+  <x:String x:Key="WindowsStartImport.Import">Importieren</x:String>
+  <x:String x:Key="WindowsStartImport.Later">Später</x:String>
+  <x:String x:Key="WindowsStartImport.Invitation">Willkommen bei TileWall! Möchten Sie die angehefteten Einträge aus dem Windows-Startmenü importieren?</x:String>
+  <x:String x:Key="WindowsStartImport.Progress">Angeheftete Einträge werden aus dem Windows-Startmenü importiert…</x:String>
+  <x:String x:Key="WindowsStartImport.Group">Windows-Startmenü</x:String>
+  <x:String x:Key="WindowsStartImport.Empty">Das Windows-Startmenü enthält keine angehefteten Einträge zum Importieren.</x:String>
+  <x:String x:Key="WindowsStartImport.AllDuplicates">Alle angehefteten Einträge sind bereits auf der Kachelwand vorhanden.</x:String>
+  <x:String x:Key="WindowsStartImport.Result">Hinzugefügt: {0}. Übersprungen: {1} Duplikate und {2} Einträge mit unbekanntem Ziel.</x:String>
+  <x:String x:Key="WindowsStartImport.Invalid">Das exportierte Windows-Startlayout hat ein ungültiges Format.</x:String>
+  <x:String x:Key="WindowsStartImport.Failed">Die angehefteten Einträge aus dem Windows-Startmenü konnten nicht importiert werden.</x:String>
+  <x:String x:Key="WindowsStartImport.Capacity">Auf der Kachelwand ist nicht genügend Platz für alle Einträge. {0}</x:String>
 </ResourceDictionary>

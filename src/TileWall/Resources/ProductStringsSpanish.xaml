@@ -871,4 +871,16 @@ Nuevo destino:
   <x:String x:Key="Catalog.Tool.windows-version">Versión de Windows</x:String>
   <x:String x:Key="Catalog.Location.run">Ejecutar</x:String>
   <x:String x:Key="Catalog.Tool.taskbar-search">Búsqueda de Windows</x:String>
+  <x:String x:Key="WindowsStartImport.Setting">Importar elementos anclados a Inicio</x:String>
+  <x:String x:Key="WindowsStartImport.Import">Importar</x:String>
+  <x:String x:Key="WindowsStartImport.Later">Más tarde</x:String>
+  <x:String x:Key="WindowsStartImport.Invitation">¡Te damos la bienvenida a TileWall! ¿Quieres importar los elementos anclados al menú Inicio de Windows?</x:String>
+  <x:String x:Key="WindowsStartImport.Progress">Importando los elementos anclados al menú Inicio de Windows…</x:String>
+  <x:String x:Key="WindowsStartImport.Group">Menú Inicio de Windows</x:String>
+  <x:String x:Key="WindowsStartImport.Empty">No hay elementos anclados en Inicio para importar.</x:String>
+  <x:String x:Key="WindowsStartImport.AllDuplicates">Todos los elementos anclados ya están en el muro de mosaicos.</x:String>
+  <x:String x:Key="WindowsStartImport.Result">Se añadieron {0} elementos. Se omitieron {1} duplicados y {2} elementos cuyo destino no se pudo identificar.</x:String>
+  <x:String x:Key="WindowsStartImport.Invalid">El diseño exportado de Inicio de Windows tiene un formato no válido.</x:String>
+  <x:String x:Key="WindowsStartImport.Failed">No se pudieron importar los elementos anclados a Inicio de Windows.</x:String>
+  <x:String x:Key="WindowsStartImport.Capacity">No hay espacio en el muro de mosaicos para todos los elementos anclados. {0}</x:String>
 </ResourceDictionary>

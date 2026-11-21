@@ -871,4 +871,16 @@
   <x:String x:Key="Catalog.Tool.windows-version">Windows のバージョン</x:String>
   <x:String x:Key="Catalog.Location.run">ファイル名を指定して実行</x:String>
   <x:String x:Key="Catalog.Tool.taskbar-search">Windows Search</x:String>
+  <x:String x:Key="WindowsStartImport.Setting">Windows のスタート画面からインポート</x:String>
+  <x:String x:Key="WindowsStartImport.Import">インポート</x:String>
+  <x:String x:Key="WindowsStartImport.Later">後で</x:String>
+  <x:String x:Key="WindowsStartImport.Invitation">TileWall へようこそ！Windows のスタートにピン留めされている項目をインポートしますか？</x:String>
+  <x:String x:Key="WindowsStartImport.Progress">Windows のスタートにピン留めされた項目をインポートしています…</x:String>
+  <x:String x:Key="WindowsStartImport.Group">Windows スタート メニュー</x:String>
+  <x:String x:Key="WindowsStartImport.Empty">Windows のスタートにインポートできるピン留め項目はありません。</x:String>
+  <x:String x:Key="WindowsStartImport.AllDuplicates">ピン留めされた項目はすべてタイルウォールにあります。</x:String>
+  <x:String x:Key="WindowsStartImport.Result">{0} 件追加しました。重複 {1} 件と、リンク先を確認できない {2} 件をスキップしました。</x:String>
+  <x:String x:Key="WindowsStartImport.Invalid">エクスポートされた Windows のスタート レイアウトの形式が無効です。</x:String>
+  <x:String x:Key="WindowsStartImport.Failed">Windows のスタートにピン留めされた項目をインポートできませんでした。</x:String>
+  <x:String x:Key="WindowsStartImport.Capacity">ピン留めされた項目をすべて配置できません。{0}</x:String>
 </ResourceDictionary>

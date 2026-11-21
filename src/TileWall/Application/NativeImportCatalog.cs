@@ -521,6 +521,59 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
     private NativeImportEntry AppEntry(ShellItemCatalog.Item item, CancellationToken token, NativeImportEntry? prior = null) =>
         AppEntryTraced(item, token, prior, null);
 
+    internal NativeImportEntry ObservePinnedApplication(ShellItemCatalog.Item item, CancellationToken token) =>
+        ObservePinnedTarget(AppEntry(item, token), token);
+
+    internal NativeImportEntry ObservePinnedPath(string exportedPath, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        var pathIdentity = LaunchIdentityService.ForPath(exportedPath);
+        var path = pathIdentity.Target;
+        if (!Path.IsPathFullyQualified(path) || path[Path.GetPathRoot(path)!.Length..].Contains(':'))
+            throw new IOException("The exported Start shortcut path is unavailable.");
+        ValidateDirectoryRoot(Path.GetDirectoryName(path) ?? path);
+        var attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReparsePoint) != 0) throw new IOException("Reparse source is unavailable.");
+        var directory = (attributes & FileAttributes.Directory) != 0;
+        var title = MemberPresentationRules.AutomaticTitle(path, directory);
+        var stamp = Stamp(path);
+        var shortcut = !directory && EntryNames.KindOfRelativePath(path) != EntryKind.None;
+        var entry = new NativeImportEntry(Key("pin|" + path), title, path,
+            shortcut ? NativeImportTarget.Shortcut : NativeImportTarget.Path, "", false, directory, Stamp: stamp);
+        if (shortcut)
+        {
+            var observed = ObserveShortcut(path, token, validatePath: ValidateFilePath);
+            entry = entry with { SourcePath = path, Sha256 = observed.Hash, Identity = observed.Identity };
+        }
+        else entry = entry with { Identity = pathIdentity };
+        if (directory) ValidateDirectoryRoot(path);
+        else ValidateFilePath(path);
+        if (Stamp(path) != stamp) throw new IOException("The pinned path changed while reading.");
+        return ObservePinnedTarget(entry, token);
+    }
+
+    private static NativeImportEntry ObservePinnedTarget(NativeImportEntry entry, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (entry.Error is not null) return entry;
+        var identity = entry.Identity;
+        if (identity is null || identity.Key.StartsWith("opaque", StringComparison.Ordinal) ||
+            identity.Key.StartsWith("path:", StringComparison.Ordinal) && !Path.IsPathFullyQualified(identity.Target))
+            return entry with { Error = "InvalidTarget" };
+        if (identity.IsUrl && !RegisteredUrlProtocols.IsSupported(identity.Target))
+            return entry with { Error = "UnsupportedProtocol" };
+
+        var path = entry.LinkedTargetPath ?? (!identity.IsUrl && Path.IsPathFullyQualified(identity.Target) ? identity.Target : null);
+        var target = path is not null ? ObserveLinkedTarget(path) : default;
+        token.ThrowIfCancellationRequested();
+        return entry with
+        {
+            Availability = target.Availability,
+            TargetIsDirectory = entry.Directory || target.IsDirectory == true,
+            Error = target.Availability == ImportTargetAvailability.Missing ? "TargetMissing" : null,
+        };
+    }
+
     private NativeImportEntry AppEntryTraced(ShellItemCatalog.Item item, CancellationToken token, NativeImportEntry? prior,
         ShellItemCatalog.SourceReadTrace? trace)
     {
@@ -810,7 +863,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new IOException("Reparse source is unavailable.");
     }
 
-    private static void ValidateFilePath(string path)
+    internal static void ValidateFilePath(string path)
     {
         if (!Path.IsPathFullyQualified(path)) throw new IOException("The file path is unavailable.");
         ValidateDirectoryRoot(Path.GetDirectoryName(Path.GetFullPath(path))!);
@@ -830,7 +883,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
     private static bool SameParent(string path, string root) => Path.IsPathFullyQualified(path) &&
         string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)), StringComparison.OrdinalIgnoreCase);
 
-    private static void ValidateDirectoryRoot(string root)
+    internal static void ValidateDirectoryRoot(string root)
     {
         for (var current = Path.GetFullPath(root); current is not null; current = Path.GetDirectoryName(current))
             if ((File.GetAttributes(current) & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != FileAttributes.Directory)

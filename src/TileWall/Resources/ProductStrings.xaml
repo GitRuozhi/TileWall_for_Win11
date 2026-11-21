@@ -868,4 +868,16 @@
   <x:String x:Key="Catalog.Tool.windows-version">Windows 版本</x:String>
   <x:String x:Key="Catalog.Location.run">运行</x:String>
   <x:String x:Key="Catalog.Tool.taskbar-search">Windows 搜索</x:String>
+  <x:String x:Key="WindowsStartImport.Setting">导入 Windows 开始屏幕</x:String>
+  <x:String x:Key="WindowsStartImport.Import">导入</x:String>
+  <x:String x:Key="WindowsStartImport.Later">以后再说</x:String>
+  <x:String x:Key="WindowsStartImport.Invitation">欢迎使用 TileWall！要导入当前 Windows 开始屏幕上的固定项吗？</x:String>
+  <x:String x:Key="WindowsStartImport.Progress">正在导入 Windows 开始屏幕上的固定项…</x:String>
+  <x:String x:Key="WindowsStartImport.Group">Windows 开始菜单</x:String>
+  <x:String x:Key="WindowsStartImport.Empty">Windows 开始屏幕没有可导入的固定项。</x:String>
+  <x:String x:Key="WindowsStartImport.AllDuplicates">所有固定项均已在磁贴墙上。</x:String>
+  <x:String x:Key="WindowsStartImport.Result">新增 {0} 项，跳过 {1} 个重复项和 {2} 个无法解析的项。</x:String>
+  <x:String x:Key="WindowsStartImport.Invalid">Windows 开始屏幕的导出布局格式无效。</x:String>
+  <x:String x:Key="WindowsStartImport.Failed">无法导入 Windows 开始屏幕上的固定项。</x:String>
+  <x:String x:Key="WindowsStartImport.Capacity">固定项无法全部放入磁贴墙。{0}</x:String>
 </ResourceDictionary>

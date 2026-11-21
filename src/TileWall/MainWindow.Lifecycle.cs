@@ -298,7 +298,7 @@ public sealed partial class MainWindow
         {
             if (!await BeginModalAsync()) return;
             var dialog = new SettingsDialog(DialogOwner, _images, ExplorerContextMenu, read, apply, hotKeyRecordingChanged, retryStartReplacement,
-                token => InitializeWelcomeWallAsync(fresh: false, token));
+                token => InitializeWelcomeWallAsync(fresh: false, token), ImportWindowsStartAsync);
             ActiveDialog = dialog;
             await dialog.ShowAsync();
         }

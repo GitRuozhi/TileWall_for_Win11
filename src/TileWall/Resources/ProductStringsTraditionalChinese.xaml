@@ -868,4 +868,16 @@
   <x:String x:Key="Catalog.Tool.windows-version">Windows 版本</x:String>
   <x:String x:Key="Catalog.Location.run">執行</x:String>
   <x:String x:Key="Catalog.Tool.taskbar-search">Windows 搜尋</x:String>
+  <x:String x:Key="WindowsStartImport.Setting">匯入 Windows 開始畫面</x:String>
+  <x:String x:Key="WindowsStartImport.Import">匯入</x:String>
+  <x:String x:Key="WindowsStartImport.Later">稍後再說</x:String>
+  <x:String x:Key="WindowsStartImport.Invitation">歡迎使用 TileWall！要匯入目前 Windows 開始畫面上已釘選的項目嗎？</x:String>
+  <x:String x:Key="WindowsStartImport.Progress">正在匯入 Windows 開始畫面上已釘選的項目…</x:String>
+  <x:String x:Key="WindowsStartImport.Group">Windows 開始功能表</x:String>
+  <x:String x:Key="WindowsStartImport.Empty">Windows 開始畫面沒有可匯入的釘選項目。</x:String>
+  <x:String x:Key="WindowsStartImport.AllDuplicates">所有釘選項目都已在磚牆上。</x:String>
+  <x:String x:Key="WindowsStartImport.Result">已新增 {0} 項，略過 {1} 個重複項目和 {2} 個無法解析的項目。</x:String>
+  <x:String x:Key="WindowsStartImport.Invalid">Windows 開始畫面的匯出版面配置格式無效。</x:String>
+  <x:String x:Key="WindowsStartImport.Failed">無法匯入 Windows 開始畫面上已釘選的項目。</x:String>
+  <x:String x:Key="WindowsStartImport.Capacity">釘選項目無法全部放入磚牆。{0}</x:String>
 </ResourceDictionary>

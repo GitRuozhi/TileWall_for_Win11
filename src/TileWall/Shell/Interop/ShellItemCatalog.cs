@@ -23,6 +23,7 @@ internal static class ShellItemCatalog
     private const int NoInterface = unchecked((int)0x80004002);
     private static readonly SemaphoreSlim IconStaSlots = new(2, 2);
     private static readonly PropertyKey LinkTargetParsingPath = new(new Guid("B9B4B3FC-2B51-4A42-B5D8-324146AFCF25"), 2);
+    private static readonly PropertyKey AppUserModelId = new(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
 
     internal static Item Read(string parsingName) => InApartment(() =>
     {
@@ -373,9 +374,92 @@ internal static class ShellItemCatalog
         CancellationToken token) => EnumerateBatchesTraced(parsingName, publishBatch, token, null);
 
     internal static bool EnumerateBatchesTraced(string parsingName, Action<IReadOnlyList<Item>> publishBatch,
-        CancellationToken token, SourceReadTrace? trace) => InApartment(() =>
+        CancellationToken token, SourceReadTrace? trace)
     {
         ArgumentNullException.ThrowIfNull(publishBatch);
+        var batch = new List<Item>(64);
+        var progress = Stopwatch.StartNew();
+        var complete = EnumerateItems(parsingName, item =>
+        {
+            using (trace?.Measure("enumeration.describe", untilFirstBatch: true)) batch.Add(Describe(item, trace));
+        }, token, trace, () =>
+        {
+            if (batch.Count >= 64 || progress.ElapsedMilliseconds >= 150) Publish();
+        });
+        Publish();
+        return complete;
+
+        void Publish()
+        {
+            if (batch.Count == 0) return;
+            token.ThrowIfCancellationRequested();
+            trace?.BatchReady(batch.Count);
+            publishBatch(Array.AsReadOnly(batch.ToArray()));
+            batch.Clear(); progress.Restart();
+        }
+    }
+
+    /// <summary>Match requested Windows IDs against current AppsFolder members in their owning apartment.</summary>
+    internal static IReadOnlyDictionary<string, Item> FindApplicationsById(IReadOnlySet<string> requestedIds,
+        CancellationToken token)
+    {
+        var matches = new Dictionary<string, Item>(StringComparer.OrdinalIgnoreCase);
+        if (requestedIds.Count == 0) return matches;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var complete = EnumerateItems("shell:AppsFolder", item =>
+        {
+            // Read Windows' app-ID property and AppsFolder's own child parsing ID.
+            // A requested ID never becomes a free-form Shell parsing name.
+            var propertyId = ReadAppUserModelId(item);
+            var parsingId = Name(item, 0x80018001); // SIGDN_PARENTRELATIVEPARSING
+            Item? description = null;
+            Add(propertyId);
+            if (!string.Equals(propertyId, parsingId, StringComparison.OrdinalIgnoreCase)) Add(parsingId);
+
+            void Add(string? id)
+            {
+                if (id is null || !requestedIds.Contains(id)) return;
+                if (!seen.Add(id))
+                {
+                    matches.Remove(id);
+                    return;
+                }
+                try { matches.Add(id, description ??= Describe(item)); }
+                catch (Exception error) when (error is IOException or COMException or ArgumentException) { }
+            }
+        }, token, null);
+        if (!complete) throw new IOException("The current Windows application catalog is incomplete.");
+        return matches;
+    }
+
+    private static string? ReadAppUserModelId(IShellItem item)
+    {
+        IPropertyStore? store = null;
+        var value = new PropertyVariant();
+        try
+        {
+            store = BindPropertyStore(item);
+            if (store.GetValue(in AppUserModelId, out value) != 0 || value.Pointer == IntPtr.Zero) return null;
+            var id = value.Type switch
+            {
+                31 => Marshal.PtrToStringUni(value.Pointer),
+                8 => Marshal.PtrToStringBSTR(value.Pointer),
+                _ => null,
+            };
+            return id is { Length: > 0 and <= 32768 } && !id.Contains('\0') ? id : null;
+        }
+        catch (Exception ex) when (ex is COMException or InvalidCastException or IOException)
+        { return null; }
+        finally
+        {
+            _ = PropVariantClear(ref value);
+            if (store is not null) Marshal.ReleaseComObject(store);
+        }
+    }
+
+    private static bool EnumerateItems(string parsingName, Action<IShellItem> observe, CancellationToken token,
+        SourceReadTrace? trace, Action? afterObservation = null) => InApartment(() =>
+    {
         IShellItem root;
         using (trace?.Measure("enumeration.open", untilFirstBatch: true)) root = Open(parsingName);
         object? raw = null;
@@ -384,8 +468,6 @@ internal static class ShellItemCatalog
             var handler = EnumHandler; var iid = EnumId;
             using (trace?.Measure("enumeration.bind", untilFirstBatch: true)) root.BindToHandler(IntPtr.Zero, ref handler, ref iid, out raw);
             var enumerator = (IEnumShellItems)raw;
-            var batch = new List<Item>(64);
-            var progress = Stopwatch.StartNew();
             var count = 0;
             while (true)
             {
@@ -398,31 +480,20 @@ internal static class ShellItemCatalog
                 if (hr != 0 || fetched == 0 || item is null)
                 {
                     if (item is not null) Marshal.ReleaseComObject(item);
-                    Publish();
                     return true;
                 }
                 if (count == 50000)
                 {
                     Marshal.ReleaseComObject(item);
-                    Publish();
                     return false;
                 }
                 try
                 {
-                    using (trace?.Measure("enumeration.describe", untilFirstBatch: true)) batch.Add(Describe(item, trace));
+                    observe(item);
                     count++;
                 }
                 finally { Marshal.ReleaseComObject(item); }
-                if (batch.Count >= 64 || progress.ElapsedMilliseconds >= 150) Publish();
-            }
-
-            void Publish()
-            {
-                if (batch.Count == 0) return;
-                token.ThrowIfCancellationRequested();
-                trace?.BatchReady(batch.Count);
-                publishBatch(Array.AsReadOnly(batch.ToArray()));
-                batch.Clear(); progress.Restart();
+                afterObservation?.Invoke();
             }
         }
         finally

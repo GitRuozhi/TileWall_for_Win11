@@ -36,6 +36,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly Func<int, bool, Task>? _hotKeyRecordingChanged;
     private readonly Func<bool, Task<SettingsDialogState>>? _retryStartReplacement;
     private readonly Func<CancellationToken, Task<string?>> _initializeWall;
+    private readonly Func<CancellationToken, Task<WindowsStartImportResult>> _importWindowsStart;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _startReplacementWatch;
     private readonly ContentDialog _dialog;
     private readonly Grid _settingsBody;
@@ -90,6 +91,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly TextBlock _backgroundPath = new() { TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     private readonly Button _reset = new();
     private readonly Button _initialize = new();
+    private readonly Button _importStart = new();
     private readonly ToggleSwitch _contextMenu = new();
     private readonly List<(Button Button, string LabelKey)> _linkButtons = [];
     private readonly TextBlock _version = new();
@@ -99,6 +101,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private Task _contextPending = Task.CompletedTask;
     private CancellationTokenSource? _backgroundProbe;
     private CancellationTokenSource? _initialization;
+    private CancellationTokenSource? _startImport;
     private TaskCompletionSource<bool>? _initializationConfirmation;
     private bool _refreshing, _busy, _closeRequested, _forceClose, _showFailureBeforeClose;
     private bool _contextPageOpen;
@@ -116,13 +119,16 @@ internal sealed class SettingsDialog : IWallDialogSession
     public SettingsDialog(Window owner, WallImageService images, ExplorerContextMenuController contextMenuController, Func<SettingsDialogState> readState,
         Func<WallSettings, bool, PreparedMediaAsset?, Task<SettingsDialogState>> applyAsync, Func<int, bool, Task>? hotKeyRecordingChanged = null,
         Func<bool, Task<SettingsDialogState>>? retryStartReplacement = null,
-        Func<CancellationToken, Task<string?>>? initializeWall = null)
+        Func<CancellationToken, Task<string?>>? initializeWall = null,
+        Func<CancellationToken, Task<WindowsStartImportResult>>? importWindowsStart = null)
     {
         _contextMenuController = contextMenuController;
         _owner = owner; _images = images; _readState = readState; _apply = applyAsync; _state = readState();
         _hotKeyRecordingChanged = hotKeyRecordingChanged;
         _retryStartReplacement = retryStartReplacement;
         _initializeWall = initializeWall ?? (_ => Task.FromResult<string?>(ProductStrings.Get("Wall.SettingsBlocked")));
+        _importWindowsStart = importWindowsStart ?? (_ => Task.FromResult(
+            new WindowsStartImportResult(ProductStrings.Get("Wall.SettingsBlocked"), Failed: true)));
         _startReplacementWatch = _form.DispatcherQueue.CreateTimer();
         _startReplacementWatch.Interval = TimeSpan.FromMilliseconds(500);
         _startReplacementWatch.IsRepeating = true;
@@ -230,6 +236,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         var initializationActions = new StackPanel { Orientation = actionsOrientation, Spacing = 8 };
         initializationActions.Children.Add(_reset); initializationActions.Children.Add(_initialize);
         AddRow(integration, "Settings.Initialization", initializationActions);
+        AddRow(integration, "WindowsStartImport.Setting", _importStart);
         var about = AddGroup("Settings.About", "about", compact);
         AddRow(about, "Settings.Product", new TextBlock { Text = "TileWall", VerticalAlignment = VerticalAlignment.Center });
         AddRow(about, "Settings.VersionLabel", _version);
@@ -298,6 +305,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         Id(_groupNavigation, "group-navigation");
         Id(_initialize, "initialize-wall");
         _initialize.Click += (_, _) => BeginInitializeWall();
+        Id(_importStart, "import-windows-start");
+        _importStart.Click += (_, _) => BeginWindowsStartImport();
         Id(_replaceStartMenu, "replace-start-menu"); Id(_startReplacementStatus, "start-replacement-state");
         Id(_retryStart, "start-replacement-retry");
         Id(_redirectTaskbarStartButton, "redirect-taskbar-start-button");
@@ -412,7 +421,7 @@ internal sealed class SettingsDialog : IWallDialogSession
             {
                 e.Cancel = true; confirmation.TrySetResult(false); return;
             }
-            _initialization?.Cancel();
+            CancelPagePreparation();
             // Explicitly settle NumberBox's inner text before moving focus, so
             // its apply enters _pending before deciding whether this page closes.
             OwnedDialogWindow.ReleaseTextFocus(_dialog);
@@ -448,7 +457,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     public async Task WaitForPendingAsync()
     {
         _backgroundProbe?.Cancel();
-        CancelInitialization();
+        CancelPagePreparation();
         OwnedDialogWindow.ReleaseTextFocus(_dialog);
         await CancelAndWaitForHotKeysAsync();
         await AwaitPendingAsync();
@@ -461,7 +470,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     public void Close()
     {
         _backgroundProbe?.Cancel();
-        CancelInitialization();
+        CancelPagePreparation();
         if (_busy) _closeRequested = true;
         else { _forceClose = true; _dialog.Hide(); }
     }
@@ -514,6 +523,9 @@ internal sealed class SettingsDialog : IWallDialogSession
         }
         ActionIcon.Set(_reset, ProductStrings.Get("Settings.Reset"), ActionIcon.Reset);
         ActionIcon.Set(_initialize, ProductStrings.Get("Settings.InitializeWall"), ActionIcon.Reset);
+        ActionIcon.Set(_importStart, ProductStrings.Get("WindowsStartImport.Import"), ActionIcon.Import);
+        AutomationProperties.SetName(_importStart, ProductStrings.Get("WindowsStartImport.Setting"));
+        ActionIcon.SetTip(_importStart, ProductStrings.Get("WindowsStartImport.Setting"));
         ActionIcon.SetIcon(_resetHotKey, ProductStrings.Get("Settings.ResetHotKey"), ActionIcon.Reset);
         ActionIcon.SetIcon(_resetSecondaryHotKey, ProductStrings.Get("Settings.ResetSecondaryHotKey"), ActionIcon.Reset);
         foreach (var (key, control, helpKey) in new (string, FrameworkElement, string)[]
@@ -1048,10 +1060,61 @@ internal sealed class SettingsDialog : IWallDialogSession
         _pending = InitializeWallCoreAsync(cancellation);
     }
 
-    private void CancelInitialization()
+    private void CancelPagePreparation()
     {
         _initialization?.Cancel();
         _initializationConfirmation?.TrySetResult(false);
+        _startImport?.Cancel();
+    }
+
+    private void BeginWindowsStartImport()
+    {
+        if (_refreshing || _busy || !_contextPageOpen || _closeRequested) return;
+        OwnedDialogWindow.ReleaseTextFocus(_dialog);
+        if (_busy || !_pending.IsCompleted || _closeRequested) return;
+        var cancellation = new CancellationTokenSource();
+        _startImport = cancellation;
+        _busy = true;
+        SetFormEnabled(false);
+        _pending = RunWindowsStartImportAsync(cancellation);
+    }
+
+    private async Task RunWindowsStartImportAsync(CancellationTokenSource cancellation)
+    {
+        WindowsStartImportResult? result = null;
+        try
+        {
+            await CancelAndWaitForHotKeysAsync();
+            await _contextPending;
+            cancellation.Token.ThrowIfCancellationRequested();
+            _progressKey = "WindowsStartImport.Progress";
+            RefreshStatus();
+            result = await _importWindowsStart(cancellation.Token);
+            _state = _readState() with { Error = result.Failed ? result.Message : null };
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            AppLog.Warn("WindowsStartImport", ex.Message);
+            _state = _readState() with { Error = ProductStrings.Get("WindowsStartImport.Failed") };
+        }
+        finally
+        {
+            try
+            {
+                _progressKey = null;
+                RestoreState();
+                SetFormEnabled(true);
+            }
+            finally
+            {
+                _busy = false;
+                _startImport = null;
+                cancellation.Dispose();
+            }
+            if (result is { Failed: false }) ShowFeedback(result.Message);
+            FinishPending();
+        }
     }
 
     private async Task InitializeWallCoreAsync(CancellationTokenSource cancellation)
@@ -1452,7 +1515,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         foreach (var control in _anchorButtons.Cast<FrameworkElement>().Concat([_expandColumns, _fullScreen, _menuStart]))
             DialogActionFeedback.SetReason(control, () => SettingsBlockReason() ??
                 (_state.Settings.LayoutLocked ? ProductStrings.Get("Settings.LayoutLockReason") : null));
-        foreach (var control in new FrameworkElement[] { _reset, _initialize, _resetHotKey, _resetSecondaryHotKey })
+        foreach (var control in new FrameworkElement[] { _reset, _initialize, _importStart, _resetHotKey, _resetSecondaryHotKey })
             DialogActionFeedback.SetReason(control, SettingsBlockReason);
         foreach (var control in new FrameworkElement[] { _retryStart, _retryTaskbarStart })
             DialogActionFeedback.SetReason(control, () => SettingsBlockReason() ??
@@ -1464,6 +1527,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private string? SettingsBlockReason()
     {
         if (_initialization is not null) return ProductStrings.Get("Settings.InitializingWall");
+        if (_startImport is not null) return ProductStrings.Get("WindowsStartImport.Progress");
         if (_busy || !_pending.IsCompleted) return ProductStrings.Get("Settings.ControlsBusy");
         if (HasPendingHotKeyTransition) return ProductStrings.Get("Settings.RecordingInProgress");
         return null;

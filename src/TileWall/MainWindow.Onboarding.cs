@@ -1,5 +1,6 @@
 using TileWall.Core.Application;
 using TileWall.Core.Configuration;
+using TileWall.Core.Entries;
 using TileWall.Core.Shell;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
@@ -65,7 +66,7 @@ public sealed partial class MainWindow
         var token = request.Token;
         try
         {
-            var targets = await Task.Run(() => ReadWelcomeTargets(token), token);
+            var (targets, applicationLinks) = await Task.Run(() => ReadWelcomeTargets(token), token);
             RequireCurrentWelcomeSource(before, token);
             var originals = new List<PreparedMediaAsset>();
             foreach (var name in WelcomeWallBuilder.SeasonFileNames)
@@ -83,7 +84,7 @@ public sealed partial class MainWindow
             var showcaseImage = await _images.PrepareMediaAsync(Path.Combine(AppContext.BaseDirectory,
                 "Assets", "WelcomeWall", "Links", WelcomeWallBuilder.ShowcaseImageFileName), token);
             RequireCurrentWelcomeSource(before, token);
-            var currentTargets = await Task.Run(() => ReadWelcomeTargets(token), token);
+            var (currentTargets, _) = await Task.Run(() => ReadWelcomeTargets(token, applicationLinks), token);
             RequireCurrentWelcomeSource(before, token);
             if (!targets.Items.OrderBy(item => item.Key, StringComparer.Ordinal)
                     .SequenceEqual(currentTargets.Items.OrderBy(item => item.Key, StringComparer.Ordinal)))
@@ -94,11 +95,20 @@ public sealed partial class MainWindow
             var prepared = WelcomeWallBuilder.Prepare(before, targets, text, _session.DataRoot, _session.ManagedGalleryPath(gallery.Reference),
                 ViewportBudget(before.Settings), _metrics, gallery.Reference, guideImage.Reference, showcaseImage.Reference);
             if (prepared.Layout.Proposal is not { } proposal) return ViewportFailure(prepared.Layout);
+            var nativeTargets = applicationLinks.Values.Select(link => link.Target).OfType<NativeShellTargetSnapshot>()
+                .ToDictionary(target => target.ParsingName, StringComparer.Ordinal);
+            var changes = prepared.EntryChanges.Select(change => change is EntryChange.CreateShellLink shell &&
+                nativeTargets.TryGetValue(shell.ParsingName, out var target) ? shell with { NativeTarget = target } : change).ToArray();
             RequireCurrentWelcomeSource(before, token);
             // This is the acceptance boundary. Cancellation after it cannot abandon the joint transaction.
-            var error = await CommitProposalAsync(proposal, prepared.EntryChanges,
+            var error = await CommitProposalAsync(proposal, changes,
                 preparedMedia: [guideImage, showcaseImage], managedGalleries: [gallery], useWelcomeIconDefaults: true);
             if (error is not null) AppLog.Warn("WelcomeWall", (fresh ? "First initialization: " : "Manual initialization: ") + error);
+            else if (fresh && !_viewBlocked)
+            {
+                HasPendingWindowsStartInvitation = true;
+                WindowsStartInvitationReady?.Invoke();
+            }
             return error;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
@@ -125,10 +135,13 @@ public sealed partial class MainWindow
             throw new InvalidOperationException(ProductStrings.Get("Wall.SettingsBlocked"));
     }
 
-    private static WelcomeWallTargets ReadWelcomeTargets(CancellationToken token)
+    private static (WelcomeWallTargets Targets, IReadOnlyDictionary<string, ShellItemCatalog.NativeLinkObservation> ApplicationLinks)
+        ReadWelcomeTargets(CancellationToken token,
+            IReadOnlyDictionary<string, ShellItemCatalog.NativeLinkObservation>? expectedApplications = null)
     {
         token.ThrowIfCancellationRequested();
         var targets = new Dictionary<string, WelcomeWallTarget>(StringComparer.Ordinal);
+        var applicationLinks = new Dictionary<string, ShellItemCatalog.NativeLinkObservation>(StringComparer.Ordinal);
         // The same native Shell names as SystemFeatureCatalog preserve redirected Known Folders.
         foreach (var (key, parsingName) in new[]
         {
@@ -173,7 +186,7 @@ public sealed partial class MainWindow
             if (!RegisteredUrlProtocols.IsSupported(url)) throw new IOException("A required URL protocol is unavailable: " + url);
         }
         token.ThrowIfCancellationRequested();
-        return new(targets);
+        return (new(targets), applicationLinks);
 
         static string AppId(ShellItemCatalog.Item item) => item.ParsingName.StartsWith("shell:AppsFolder\\", StringComparison.OrdinalIgnoreCase)
             ? item.ParsingName["shell:AppsFolder\\".Length..] : item.ParsingName;
@@ -184,8 +197,23 @@ public sealed partial class MainWindow
             var parsingName = item.ParsingName.StartsWith("::", StringComparison.Ordinal) ||
                 item.ParsingName.StartsWith("shell:", StringComparison.OrdinalIgnoreCase)
                     ? item.ParsingName : "shell:AppsFolder\\" + item.ParsingName;
-            var (_, identity) = ShellItemCatalog.ReadForLink(parsingName);
-            targets[key] = new(parsingName, identity.Key);
+            var observed = ShellItemCatalog.ReadNativeLink(parsingName);
+            if (expectedApplications is not null)
+            {
+                if (!expectedApplications.TryGetValue(key, out var expected) ||
+                    expected.PackageFullName != observed.PackageFullName || expected.PackageInstallPath != observed.PackageInstallPath ||
+                    !SameApplicationTarget(expected, observed))
+                    throw new IOException("A welcome application changed during preparation.");
+                // Keep the bytes whose raw identity was admitted, even if Windows changed the tile's presentation.
+                observed = expected;
+            }
+            targets[key] = new(parsingName, observed.Identity.Key);
+            applicationLinks.Add(key, observed);
         }
+
+        static bool SameApplicationTarget(ShellItemCatalog.NativeLinkObservation expected, ShellItemCatalog.NativeLinkObservation current) =>
+            expected.Target is { } native
+                ? current.Target is { } latest && ShellItemCatalog.SameNativeTarget(native, latest)
+                : current.Target is null && expected.Identity.Key == current.Identity.Key;
     }
 }

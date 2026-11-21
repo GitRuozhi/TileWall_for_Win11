@@ -867,4 +867,16 @@
   <x:String x:Key="Catalog.Tool.windows-version">Windows version</x:String>
   <x:String x:Key="Catalog.Location.run">Run</x:String>
   <x:String x:Key="Catalog.Tool.taskbar-search">Windows Search</x:String>
+  <x:String x:Key="WindowsStartImport.Setting">Import Windows Start pins</x:String>
+  <x:String x:Key="WindowsStartImport.Import">Import</x:String>
+  <x:String x:Key="WindowsStartImport.Later">Maybe later</x:String>
+  <x:String x:Key="WindowsStartImport.Invitation">Welcome to TileWall! Would you like to import the items pinned to Windows Start?</x:String>
+  <x:String x:Key="WindowsStartImport.Progress">Importing pinned items from Windows Start…</x:String>
+  <x:String x:Key="WindowsStartImport.Group">Windows Start menu</x:String>
+  <x:String x:Key="WindowsStartImport.Empty">Windows Start has no pinned items to import.</x:String>
+  <x:String x:Key="WindowsStartImport.AllDuplicates">All pinned items are already on the wall.</x:String>
+  <x:String x:Key="WindowsStartImport.Result">Added {0}. Skipped {1} duplicates and {2} items whose targets could not be resolved.</x:String>
+  <x:String x:Key="WindowsStartImport.Invalid">The exported Windows Start layout has an invalid format.</x:String>
+  <x:String x:Key="WindowsStartImport.Failed">Could not import the pinned items from Windows Start.</x:String>
+  <x:String x:Key="WindowsStartImport.Capacity">The pinned items cannot fit on the wall. {0}</x:String>
 </ResourceDictionary>
