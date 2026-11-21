@@ -88,8 +88,17 @@ public sealed partial class MainWindow
             (rectangle.Height - _frameHeight) / Scale, anchor, settings);
         // Temporary taskbar occupancy enables access to clipped committed content.
         // It never changes the document budget used by resize/save/adaptation.
-        _presentationOverflow = PresentationBounds != ScreenPresentationBounds && Surface.Geometry is { } geometry &&
-            (!settings.ExpandColumns && geometry.WallWidth > toClip.Width + .01 || geometry.WallHeight > toClip.Height + .01);
+        var clippedByTaskbar = PresentationBounds != ScreenPresentationBounds;
+        _presentationHorizontalOverflow = clippedByTaskbar && !settings.ExpandColumns &&
+            Surface.Geometry is { } horizontal && horizontal.WallWidth > toClip.Width + .01;
+        // Wall height also includes unused rows, and locked groups can reserve empty rows.
+        // Allow scrolling only if a group title or member extends beyond the viewport.
+        var clipBottom = toClip.Height + .01;
+        _presentationVerticalOverflow = clippedByTaskbar &&
+            Surface.Geometry is { } vertical && vertical.Groups.Any(group =>
+                group.Bounds.Y + group.Bounds.Height > clipBottom &&
+                (group.TitleBounds.Y + group.TitleBounds.Height > clipBottom ||
+                    group.Members.Any(member => member.Bounds.Y + member.Bounds.Height > clipBottom)));
         if (_nativeSizingActive)
         {
             // The OS applies the WM_SIZING rectangle. Never race it with application

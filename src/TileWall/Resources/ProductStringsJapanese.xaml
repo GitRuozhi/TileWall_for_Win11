@@ -432,6 +432,7 @@
   <x:String x:Key="Editor.NoUndo">元に戻す編集がありません</x:String>
   <x:String x:Key="Editor.NoRedo">やり直す編集がありません</x:String>
   <x:String x:Key="Import.Source">取得元</x:String>
+  <x:String x:Key="Import.Source.WindowsStart">Windows のスタート画面</x:String>
   <x:String x:Key="Import.Source.StartMenu">スタートメニュー</x:String>
   <x:String x:Key="Import.Source.Tooltip">ユーザー用と共通のスタートメニューからショートカットを読み取ります</x:String>
   <x:String x:Key="Import.AutoTrim">自動フィルター</x:String>

@@ -272,6 +272,63 @@ public sealed partial class WallImageService
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { }
     }
 
+    // The Shell can usually draw an entry before the full native icon series is
+    // collected. This frame belongs only to the current import preview.
+    internal Task<PuzzleFrameResult> LoadImportPreviewShellFrameAsync(WallMember member, string? entryPath,
+        int width, int height, CancellationToken ct) => StartImageRequest(async token =>
+    {
+        using var trace = ImageCandidateTrace.Start("import-preview-shell", entryPath, width, height);
+        try
+        {
+            if (entryPath is null || !Path.IsPathFullyQualified(entryPath)) return new(null, WallImageStatus.None);
+            var path = Path.GetFullPath(entryPath);
+            if (Path.GetPathRoot(path) is not { Length: 3 } drive || drive[1] != ':' ||
+                member.TargetInput?.StartsWith(@"\\", StringComparison.Ordinal) == true)
+                return new(null, WallImageStatus.None);
+            var source = await Task.Run<DecodedImageFrame?>(() =>
+            {
+                if (new DriveInfo(drive).DriveType == DriveType.Network ||
+                    (File.GetAttributes(path) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+                    return null;
+                var before = Fingerprint(path, "import-preview-shell");
+                if (before is null) return null;
+                var edge = Math.Max(width, height);
+                (byte[] Pixels, int Width, int Height)? icon;
+                using (trace?.Measure("shell.factory"))
+                {
+                    try { icon = ShellItemCatalog.Icon(path, edge); }
+                    catch (Exception ex) when (ex is COMException or InvalidCastException)
+                    { icon = null; trace?.Mark("shell.factory-error", ex.GetType().Name); }
+                }
+                token.ThrowIfCancellationRequested();
+                if (icon is null)
+                    using (trace?.Measure("shell.extract")) icon = ShellItemCatalog.ExtractIcon(path, edge, ShellIconPixels.ReadIcon);
+                token.ThrowIfCancellationRequested();
+                if (icon is null)
+                    using (trace?.Measure("shell.list")) icon = ShellIconPixels.Read(path, physicalPixels: edge);
+                token.ThrowIfCancellationRequested();
+                return icon is { } pixels && before == Fingerprint(path, "import-preview-shell")
+                    ? new(path, 0, DateTime.MinValue, pixels.Width, pixels.Height, pixels.Width, pixels.Height, pixels.Pixels)
+                    : null;
+            }, token);
+            if (source is null)
+            { trace?.Mark("frame", "unavailable"); return new(null, WallImageStatus.None); }
+            DecodedImageFrame sharp;
+            using (trace?.Measure("display"))
+                sharp = await PrepareAutomaticDisplayPlaneAsync(source, width, height, member.ImageDisplay,
+                    cacheAllowed: false, token);
+            token.ThrowIfCancellationRequested();
+            var frame = new PuzzleFrame(path, 0, DateTime.MinValue, new(source.Width, source.Height),
+                new(sharp.Width, sharp.Height), default, MakeBitmap(sharp), null) { MemoryCacheAllowed = false };
+            trace?.Mark("frame", "ready");
+            return new(frame, WallImageStatus.Fallback) { CacheAllowed = false, MemoryCacheAllowed = false };
+        }
+        catch (OperationCanceledException) { return new(null, WallImageStatus.Cancelled); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or ArgumentException or
+            InvalidOperationException or InvalidCastException or OverflowException or NotSupportedException)
+        { trace?.Mark("frame", ex.GetType().Name); return new(null, WallImageStatus.None); }
+    }, ct, new PuzzleFrameResult(null, WallImageStatus.Cancelled));
+
     private async Task<PuzzleFrameResult> LoadAutomaticFrameCoreAsync(string? source, int width, int height, bool blur,
         CancellationToken token, WallMember? member = null, bool nativePlane = false,
         MemberImagePurpose purpose = MemberImagePurpose.Content)

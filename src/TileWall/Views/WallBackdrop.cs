@@ -358,11 +358,13 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
                     TraceDiagnostic($"Recipe theme={material.Configuration.Theme} state={acrylic.State} kind={acrylic.Kind} " +
                         $"tint={acrylic.TintColor} tintOpacity={acrylic.TintOpacity:R} luminosity={acrylic.LuminosityOpacity:R} " +
                         $"fallback={acrylic.FallbackColor} active={effectiveActive} snapshot={_snapshotAvailable} transparency={_transparency}");
-                // A brush replacement on an already visible native graph needs no
-                // new overlay. Only finish a handoff after the new native commit.
-                if (material.Proxy.IsReady && _focusCommitRequired && _pendingCommit is null && BackdropTrace.Enabled)
+                // A solid fallback brush can be ready and committed too. Keep the
+                // cover until Windows actually supplies active Acrylic and it commits.
+                var nativeReady = material.Proxy.IsReady && (material.Mode != WallBackgroundMode.Acrylic ||
+                    material.Controller.State == SystemBackdropState.Active);
+                if (nativeReady && _focusCommitRequired && _pendingCommit is null && BackdropTrace.Enabled)
                     TraceDiagnostic("Focus fresh native fence requested");
-                if (material.Proxy.IsReady && (!_focusCommitRequired && _lastNotifiedState is { Fallback: false, Reduced: false } ||
+                if (nativeReady && (!_focusCommitRequired && _lastNotifiedState is { Fallback: false, Reduced: false } ||
                     HasCommitted(material.Proxy.WaitForCommitAsync())))
                 {
                     if (_focusCommitRequired && BackdropTrace.Enabled)
@@ -406,12 +408,15 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
 
     private void OnControllerStateChanged(ISystemBackdropControllerWithTargets sender, object args)
     {
-        if (sender.State != SystemBackdropState.Fallback) return;
         queue.TryEnqueue(() =>
         {
-            if (_selectedMaterial is not { Mode: WallBackgroundMode.Acrylic } current || !ReferenceEquals(sender, current.Controller)) return;
-            if (sender.State != SystemBackdropState.Fallback) return;
-            _acrylicFailed = true;
+            if (_disconnecting || _selectedMaterial is not { Mode: WallBackgroundMode.Acrylic } current ||
+                !ReferenceEquals(sender, current.Controller)) return;
+            // Windows can change the live controller's policy in either direction.
+            _intentGeneration++;
+            _pendingCommit = null;
+            _focusCommitRequired = true;
+            current.Proxy.InvalidateCommit();
             UpdateMaterial();
         });
     }

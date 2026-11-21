@@ -431,6 +431,7 @@
     <x:String x:Key="Editor.NoUndo">没有可撤销的编辑</x:String>
     <x:String x:Key="Editor.NoRedo">没有可重做的编辑</x:String>
     <x:String x:Key="Import.Source">来源</x:String>
+    <x:String x:Key="Import.Source.WindowsStart">Windows 开始屏幕</x:String>
     <x:String x:Key="Import.Source.StartMenu">开始菜单</x:String>
     <x:String x:Key="Import.Source.Tooltip">扫描用户和公共开始菜单的快捷方式</x:String>
     <x:String x:Key="Import.AutoTrim">自动精简</x:String>

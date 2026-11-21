@@ -27,6 +27,7 @@ internal sealed record NativeImportEntry(string Key, string Name, string Target,
 {
     /// <summary>Localized resource key for a catalog-provided group; never used as its identity.</summary>
     public string? GroupTitleKey { get; init; }
+    public string? GroupKey { get; init; }
     /// <summary>Stable display order within the source catalog.</summary>
     public int GroupOrder { get; init; }
     /// <summary>Actual AppsFolder membership facts, independent of the resolved launch identity.</summary>
@@ -40,6 +41,16 @@ internal sealed record NativeImportEntry(string Key, string Name, string Target,
     public string? PackageInstallPath { get; init; }
     [JsonIgnore]
     public NativeShellTargetSnapshot? NativeTarget { get; init; }
+
+    internal EntryChange CreateEntryChange(string memberId) => Kind switch
+    {
+        NativeImportTarget.Shortcut => new EntryChange.CopyShortcut(memberId, SourcePath!, Sha256),
+        NativeImportTarget.Path => new EntryChange.CreateLink(memberId, Target),
+        NativeImportTarget.Shell => new EntryChange.CreateShellLink(memberId, Target,
+            (Identity ?? LaunchIdentityService.ForShell(Target)).Key) { NativeTarget = NativeTarget },
+        NativeImportTarget.Uri => new EntryChange.CreateUrl(memberId, Target),
+        _ => throw new IOException("Unsupported native source."),
+    };
 }
 
 /// <summary>Disposable source facts. Cache contents never authorize an import or contain user selection.</summary>
@@ -266,15 +277,15 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         return complete;
     }
 
-    internal ImportPageSource Project(ImportPageSourceKind kind, IReadOnlyList<NativeImportEntry> entries)
+    internal ImportPageSource Project(ImportPageSourceKind kind, IReadOnlyList<NativeImportEntry> entries, bool? refreshing = null)
     {
         lock (_sync)
         {
-        var refreshing = _refreshing.GetValueOrDefault(kind) || !ReferenceEquals(_snapshots.GetValueOrDefault(kind), entries);
+        var isRefreshing = refreshing ?? (_refreshing.GetValueOrDefault(kind) || !ReferenceEquals(_snapshots.GetValueOrDefault(kind), entries));
         var skipped = _skipped.GetValueOrDefault(kind); var error = _errors.GetValueOrDefault(kind);
         _projections.TryGetValue(kind, out var priorProjection);
         if (ReferenceEquals(priorProjection.Entries, entries))
-            return priorProjection.Source with { Refreshing = refreshing, Skipped = skipped, ErrorCode = error };
+            return priorProjection.Source with { Refreshing = isRefreshing, Skipped = skipped, ErrorCode = error };
         var previousRows = priorProjection.Source?.Candidates.ToDictionary(row => row.SourceKey, StringComparer.Ordinal);
         var rows = entries.Select((entry, index) =>
         {
@@ -282,7 +293,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             var urlEntry = entry.Kind == NativeImportTarget.Uri || entry.Kind == NativeImportTarget.Shortcut &&
                 EntryNames.KindOfRelativePath(entry.SourcePath ?? entry.Target) == EntryKind.Url;
             var id = "source-" + entry.Key;
-            var policy = entry.SystemFeature ? ImportSourcePolicy.SystemFeature : kind == ImportPageSourceKind.InstalledApplications
+            var policy = entry.SystemFeature ? ImportSourcePolicy.SystemFeature : kind == ImportPageSourceKind.InstalledApplications || entry.AppSource is not null
                 ? ImportSourcePolicy.Application : entry.Kind == NativeImportTarget.Shortcut
                 ? ImportSourcePolicy.Shortcut : ImportSourcePolicy.DirectTarget;
             var targetKind = entry.SystemFeature || entry.Exclusion == StartMenuExclusion.WindowsBuiltIn ? ImportTargetKind.SystemFeature :
@@ -324,31 +335,32 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         IReadOnlyList<ImportSourceCandidate> candidates = priorProjection.Source is { } priorSource && priorSource.Candidates.Count == rows.Length &&
             rows.Select((row, index) => ReferenceEquals(row, priorSource.Candidates[index])).All(same => same) ? priorSource.Candidates : rows;
         var result = new ImportPageSource(candidates, new Dictionary<string, TileWall.Core.Application.StartMenuImportCandidate>(), Scanned: entries.Count, Skipped: skipped,
-            ReadErrors: entries.Count(entry => entry.Error is not null and not "SourceNotApplicable"), Refreshing: refreshing, ErrorCode: error)
+            ReadErrors: entries.Count(entry => entry.Error is not null and not "SourceNotApplicable"), Refreshing: isRefreshing, ErrorCode: error)
         { AvailabilityPrepared = true, AvailabilityFacts = entries.ToDictionary(entry => entry.Key, Facts, StringComparer.Ordinal) };
         _projections[kind] = (entries, result);
         return result;
         }
     }
 
-    private static ImportSourceGroup? SourceGroup(NativeImportEntry entry) => entry.Group.Length == 0 ? null :
-        new(entry.Group, entry.GroupTitleKey is { Length: > 0 } titleKey ? ProductStrings.Get(titleKey) : entry.Group,
-            entry.SystemFeature ? entry.GroupOrder : 100);
+    private static ImportSourceGroup? SourceGroup(NativeImportEntry entry) => entry.GroupKey is null && entry.Group.Length == 0 ? null :
+        new(entry.GroupKey ?? entry.Group, entry.GroupTitleKey is { Length: > 0 } titleKey ? ProductStrings.Get(titleKey) : entry.Group,
+            entry.SystemFeature || entry.GroupKey is not null ? entry.GroupOrder : 100);
 
     internal static string Facts(NativeImportEntry entry) => JsonSerializer.Serialize(entry);
 
     internal IReadOnlyDictionary<string, string> MatchStoredBackgroundVariants(ImportPageSource source,
         IReadOnlyDictionary<string, string> rawIdentities,
-        IReadOnlyDictionary<string, (LinkFields Fields, ReadOnlyMemory<byte> IdList)> storedLinks)
+        IReadOnlyDictionary<string, (LinkFields Fields, ReadOnlyMemory<byte> IdList)> storedLinks,
+        IReadOnlyList<NativeImportEntry>? observedEntries = null)
     {
-        // This overlay belongs only to the current local AppsFolder projection.
+        // This overlay belongs only to a projection of native observations of the current AppsFolder.
         // No persisted identity, source hint or parsing property supplies trust.
         if (source.Refreshing || !source.AvailabilityPrepared || source.Candidates.Count == 0 ||
-            source.Candidates.Any(candidate => candidate.SourceKind != ImportPageSourceKind.InstalledApplications))
+            observedEntries is null && source.Candidates.Any(candidate => candidate.SourceKind != ImportPageSourceKind.InstalledApplications))
             return rawIdentities;
         var selected = source.Candidates.Where(candidate => candidate.ErrorCode is null)
             .Select(candidate => candidate.SourceKey).ToHashSet(StringComparer.Ordinal);
-        var targets = Snapshot(ImportPageSourceKind.InstalledApplications)
+        var targets = (observedEntries ?? Snapshot(ImportPageSourceKind.InstalledApplications))
             .Where(entry => selected.Contains(entry.Key) && !entry.Stale && entry.Error is null && entry.NativeTarget is not null &&
                 source.AvailabilityFacts.GetValueOrDefault(entry.Key) == Facts(entry)).ToArray();
         Dictionary<string, string>? overlay = null;
@@ -571,6 +583,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
             Availability = target.Availability,
             TargetIsDirectory = entry.Directory || target.IsDirectory == true,
             Error = target.Availability == ImportTargetAvailability.Missing ? "TargetMissing" : null,
+            Exclusion = ClassifyShortcut(entry, identity, target.IsDirectory == true, entry.AppSource is not null),
         };
     }
 
@@ -753,12 +766,15 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         var error = entry.Error ?? (EntryNames.Validate(entry.Name).Count != 0 ? "InvalidTarget" : null);
         if (error is null && identity is { IsUrl: true } url && !url.Key.StartsWith("opaque", StringComparison.Ordinal) &&
             !RegisteredUrlProtocols.IsSupported(url.Target)) error = "UnsupportedProtocol";
-        var exclusion = identity is not null && (entry.Kind == NativeImportTarget.Shortcut || kind == ImportPageSourceKind.InstalledApplications)
-            ? StartMenuSelectionRules.Classify(entry.Name, identity, entry.Directory || directory) : StartMenuExclusion.None;
+        var exclusion = ClassifyShortcut(entry, identity, directory, kind == ImportPageSourceKind.InstalledApplications);
         token.ThrowIfCancellationRequested();
         return entry with { Identity = identity, Availability = availability, TargetIsDirectory = directory,
             Error = error, Exclusion = exclusion };
     }
+
+    private static StartMenuExclusion ClassifyShortcut(NativeImportEntry entry, LaunchIdentity? identity,
+        bool targetIsDirectory, bool application) => identity is not null && (entry.Kind == NativeImportTarget.Shortcut || application)
+        ? StartMenuSelectionRules.Classify(entry.Name, identity, entry.Directory || targetIsDirectory) : StartMenuExclusion.None;
 
     private static StartMenuImportProjection.TargetObservation ObserveLinkedTarget(string path)
     {
@@ -798,7 +814,7 @@ internal sealed class NativeImportCatalog(string dataRoot, ILnkFileService links
         return unknown;
     }
 
-    private static NativeImportEntry ObserveCompany(NativeImportEntry entry, CancellationToken token,
+    internal static NativeImportEntry ObserveCompany(NativeImportEntry entry, CancellationToken token,
         IDictionary<string, (string? Company, string? Stamp)> observations) =>
         ObserveCompanyPreview(entry, token, observations, null, null);
 

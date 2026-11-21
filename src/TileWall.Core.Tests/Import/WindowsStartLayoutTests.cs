@@ -47,7 +47,7 @@ public sealed class WindowsStartLayoutTests
     }
 
     [Fact]
-    public void JsonRetainsTheEntireFlatOrderAndDetectsAChangedPin()
+    public void JsonRetainsTheEntireFlatOrder()
     {
         const string original = """
             {"pinnedList":[{"desktopAppLink":"%APPDATA%\\One.lnk"},
@@ -58,10 +58,6 @@ public sealed class WindowsStartLayoutTests
         var group = Assert.Single(layout.Groups);
         Assert.Equal("Windows Start", group.Title);
         Assert.Equal([@"%APPDATA%\One.lnk", "Packaged.One!App", "Vendor.Editor"], group.Pins.Select(pin => pin.Value));
-
-        Assert.True(layout.SamePins(WindowsStartLayout.Parse(Encoding.UTF8.GetBytes(original), true, "Windows Start", default)));
-        var updated = original.Replace("Vendor.Editor", "Vendor.Reader", StringComparison.Ordinal);
-        Assert.False(layout.SamePins(WindowsStartLayout.Parse(Encoding.UTF8.GetBytes(updated), true, "Windows Start", default)));
     }
 
     [Fact]

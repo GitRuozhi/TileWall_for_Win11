@@ -428,6 +428,7 @@
     <x:String x:Key="Editor.NoUndo">No edit to undo</x:String>
     <x:String x:Key="Editor.NoRedo">No edit to redo</x:String>
     <x:String x:Key="Import.Source">Source</x:String>
+    <x:String x:Key="Import.Source.WindowsStart">Windows Start</x:String>
     <x:String x:Key="Import.Source.StartMenu">Start menu</x:String>
     <x:String x:Key="Import.Source.Tooltip">Read shortcuts from the user and common Start menus</x:String>
     <x:String x:Key="Import.AutoTrim">Automatic filtering</x:String>

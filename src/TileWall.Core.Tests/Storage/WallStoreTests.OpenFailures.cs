@@ -22,6 +22,67 @@ public sealed partial class WallStoreTests
     }
 
     [Fact]
+    public void EmptyTaskbarRecoveryLocksAllowFreshWallInitialization()
+    {
+        var (store, files, _, root) = Harness();
+        var runtime = Path.Combine(root, "Runtime");
+        var firstLock = Path.Combine(runtime, "Taskbar-2", "taskbar-recovery.lock");
+        var secondLock = Path.Combine(runtime, "Taskbar-12", "taskbar-recovery.lock");
+        files.CreateDirectory(runtime);
+        files.CreateDirectory(Path.GetDirectoryName(firstLock)!);
+        files.CreateDirectory(Path.GetDirectoryName(secondLock)!);
+        files.CreateDirectory(Path.Combine(runtime, "Taskbar-3"));
+        files.WriteAllBytes(firstLock, []);
+        files.WriteAllBytes(secondLock, []);
+
+        Assert.Equal(WallOpenStatus.Fresh, store.Open().Status);
+        Assert.Equal(WallOpenStatus.Loaded, store.InitializeFresh(Wall()).Status);
+        Assert.Equal(WallOpenStatus.Loaded, store.Open().Status);
+        Assert.Empty(files.ReadAllBytes(firstLock));
+        Assert.Empty(files.ReadAllBytes(secondLock));
+    }
+
+    [Theory]
+    [InlineData("Taskbar-2/taskbar-recovery.json")]
+    [InlineData("Taskbar-2/taskbar-recovery.lock", true)]
+    [InlineData("Taskbar-2/unknown/taskbar-recovery.lock")]
+    [InlineData("Taskbar-02/taskbar-recovery.lock")]
+    [InlineData("unrecognized.bin")]
+    public void OtherTaskbarRuntimeResidueBlocksInitialization(string relativePath, bool nonempty = false)
+    {
+        var (store, files, _, root) = Harness();
+        var runtime = Path.Combine(root, "Runtime");
+        var lockPath = Path.Combine(runtime, "Taskbar-2", "taskbar-recovery.lock");
+        files.CreateDirectory(runtime);
+        files.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+        files.WriteAllBytes(lockPath, []);
+        var residue = Path.Combine(runtime, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        files.CreateDirectory(Path.GetDirectoryName(residue)!);
+        files.WriteAllBytes(residue, nonempty ? [1] : []);
+        var before = files.SnapshotFiles();
+
+        Assert.Equal(WallOpenBlockReason.UnattributedFiles, store.Open().BlockReason);
+        Assert.Equal(WallOpenStatus.RecoveryBlocked, store.InitializeFresh(Wall()).Status);
+        AssertSameFileBytes(before, files.SnapshotFiles());
+    }
+
+    [Fact]
+    public void ReparseTaskbarRecoveryLockBlocksInitialization()
+    {
+        var (store, files, _, root) = Harness();
+        var runtime = Path.Combine(root, "Runtime");
+        var lockPath = Path.Combine(runtime, "Taskbar-2", "taskbar-recovery.lock");
+        files.CreateDirectory(runtime);
+        files.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+        files.WriteAllBytes(lockPath, []);
+        files.ReparsePaths.Add(lockPath);
+
+        Assert.Equal(WallOpenBlockReason.UnsafePath, store.Open().BlockReason);
+        Assert.Equal(WallOpenStatus.RecoveryBlocked, store.InitializeFresh(Wall()).Status);
+        Assert.False(files.Exists(Path.Combine(root, "state.json")));
+    }
+
+    [Fact]
     public void InvalidSnapshotReportsStructuredReasonAndPreservesFiles()
     {
         var (store, files, _, root) = Harness();

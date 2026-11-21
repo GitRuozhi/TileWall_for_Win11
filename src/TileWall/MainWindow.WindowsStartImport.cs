@@ -51,7 +51,6 @@ public sealed partial class MainWindow
 
         var current = Document;
         var budget = ViewportBudget(current.Settings with { ExpandColumns = false });
-        var source = new WindowsStartImportSource(NativeImports);
         void RequireCurrent()
         {
             token.ThrowIfCancellationRequested();
@@ -62,35 +61,39 @@ public sealed partial class MainWindow
 
         try
         {
-            var snapshot = await source.ReadAsync(ProductStrings.Get("WindowsStartImport.Group"), token);
+            RequireCurrent();
+            var reader = new WindowsStartImportSource(NativeImports);
+            var snapshot = await reader.ReadAsync(ProductStrings.Get("WindowsStartImport.Group"), token);
             RequireCurrent();
             if (snapshot.TotalCount == 0) return new(ProductStrings.Get("WindowsStartImport.Empty"));
 
-            var nativePins = snapshot.Groups.SelectMany(group => group.Entries)
-                .Select(entry => entry.Observation.NativeTarget).OfType<NativeShellTargetSnapshot>().Distinct().ToArray();
+            var nativePins = snapshot.ToNativeEntries().Where(entry => entry.Error is null)
+                .Select(entry => entry.NativeTarget).OfType<NativeShellTargetSnapshot>().Distinct().ToArray();
+            var timing = WindowsStartImportSource.StartTiming();
             var existing = await ObserveWindowsStartDestinationAsync(current, nativePins, token);
+            WindowsStartImportSource.TraceTiming(timing, "observe-wall");
             RequireCurrent();
             var duplicates = 0;
-            var accepted = new Dictionary<string, WindowsStartImportEntry>(StringComparer.Ordinal);
+            var accepted = new Dictionary<string, NativeImportEntry>(StringComparer.Ordinal);
             var groups = new List<WindowsStartImportGroup>();
             foreach (var group in snapshot.Groups)
             {
                 var tiles = new List<TileMember>();
                 foreach (var entry in group.Entries)
                 {
-                    if (!existing.Identities.Add(entry.Identity.Key))
-                    {
-                        duplicates++;
-                        continue;
-                    }
+                    if (entry.Observation is not { Error: null, Identity: { } identity } observed) continue;
+                    if (!existing.Identities.Add(identity.Key)) { duplicates++; continue; }
                     var id = Guid.NewGuid().ToString("N");
                     tiles.Add(new TileMember
                     {
-                        Id = id, LocalBounds = new(0, 0, 2, 2), TargetInput = entry.TargetInput,
-                        SourceShortcutPath = entry.SourceShortcutPath, TargetDisplayName = entry.Title,
+                        Id = id,
+                        LocalBounds = new(0, 0, 2, 2),
+                        TargetInput = observed.Kind == NativeImportTarget.Shortcut ? identity.Target : observed.Target,
+                        SourceShortcutPath = observed.SourcePath,
+                        TargetDisplayName = observed.Name,
                         RotationInterval = MemberPresentationRules.NewRotationInterval,
                     });
-                    accepted.Add(id, entry);
+                    accepted.Add(id, observed);
                 }
                 if (tiles.Count != 0) groups.Add(new(group.Title, tiles));
             }
@@ -101,18 +104,24 @@ public sealed partial class MainWindow
                 if (plan.Proposal is not { } proposal)
                     return new(string.Format(ProductStrings.Get("WindowsStartImport.Capacity"),
                         ProductStrings.WallRejectionReason(plan.Rejection)), Failed: true);
+                timing = WindowsStartImportSource.StartTiming();
                 var prepared = await PrepareAcceptedTargetImagesAsync(proposal.Document.EnumerateAllMembers()
                     .Where(member => accepted.ContainsKey(member.Id))
-                    .Select(member => (Member: member, Input: accepted[member.Id].SourceShortcutPath, Inference: (TargetImageSourceResult?)null))
+                    .Select(member => (Member: member, Input: accepted[member.Id].SourcePath, Inference: (TargetImageSourceResult?)null))
                     .ToArray(), current.Generation, RequireCurrent, token);
-                await source.ConfirmAsync(snapshot, accepted.Values.Select(entry => entry.SourceIndex).ToArray(), token);
+                WindowsStartImportSource.TraceTiming(timing, "prepare-images");
+                var confirmed = await reader.ConfirmAsync(snapshot, accepted.Values.Select(entry => entry.Key).ToArray(), token);
                 RequireCurrent();
+                timing = WindowsStartImportSource.StartTiming();
                 await RequireTargetSourcesCurrentAsync(prepared.Sources, RequireCurrent, token);
+                WindowsStartImportSource.TraceTiming(timing, "confirm-images");
                 RequireCurrent();
 
-                var changes = accepted.Select(pair => pair.Value.CreateEntryChange(pair.Key)).ToArray();
+                var changes = accepted.Select(pair => confirmed[pair.Value.Key].CreateEntryChange(pair.Key)).ToArray();
+                timing = WindowsStartImportSource.StartTiming();
                 var error = await CommitProposalAsync(WithPreparedTargetImages(proposal, prepared.Members), changes,
                     preparedMedia: prepared.Assets, expectedEntrySha256: existing.Hashes);
+                WindowsStartImportSource.TraceTiming(timing, "commit");
                 if (error is not null) return new(error, Failed: true);
             }
 

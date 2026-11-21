@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Security.Cryptography;
 using TileWall.ApplicationModel;
@@ -136,8 +137,7 @@ public sealed partial class MainWindow
             restored[memberId] = key;
         }
         if (restored is not null) context = context with { ExistingIdentities = restored };
-        projection = ImportSourcePlanner.Project(context.Document, source.Candidates, projection.RecognizeGroups,
-            projection.AutoFilter, context.ExistingIdentities);
+        projection = context.Project(source.Candidates, projection.RecognizeGroups, projection.AutoFilter);
         var current = context.Document;
         var destinationIds = projection.Groups.Select(group => group.DestinationGroupId).OfType<string>()
             .ToHashSet(StringComparer.Ordinal);
@@ -162,6 +162,7 @@ public sealed partial class MainWindow
                 var result = new Dictionary<string, string>(context.ExistingIdentities, StringComparer.Ordinal);
                 var hashes = new Dictionary<string, string>(context.ExistingEntrySha256, StringComparer.Ordinal);
                 var nativeLinks = new Dictionary<string, (LinkFields Fields, ReadOnlyMemory<byte> IdList)>(context.ObservedNativeLinks, StringComparer.Ordinal);
+                var entries = new Dictionary<string, LaunchIdentity>(context.ObservedEntries, StringComparer.Ordinal);
                 foreach (var member in current.Lanes.SelectMany(lane => lane.Groups)
                              .Where(group => destinationIds.Contains(group.Id)).SelectMany(group => group.Members))
                 {
@@ -173,20 +174,28 @@ public sealed partial class MainWindow
                     var bytes = new byte[checked((int)stream.Length)]; stream.ReadExactly(bytes);
                     ReadOnlyMemory<byte> idList = default;
                     var fields = entry.Kind == ManagedEntryKind.Lnk ? _session.LinkFiles.ReadWithIdList(path, out idList) : null;
-                    result[member.Id] = EntryObservation.Observe(identities, entry.Kind, path, bytes, fields).Key;
+                    var identity = EntryObservation.Observe(identities, entry.Kind, path, bytes, fields, idList);
+                    result[member.Id] = identity.Key;
+                    entries[member.Id] = identity;
                     hashes[member.Id] = Convert.ToHexString(SHA256.HashData(bytes));
                     if (member.ResourceOrigin != MemberResourceOrigin.Package && fields is { HasIdList: true, ShellIdListHash: not null } && !idList.IsEmpty)
                         nativeLinks[member.Id] = (fields, idList);
                 }
-                return (Identities: result, Hashes: hashes, NativeLinks: nativeLinks);
+                return (Identities: result, Hashes: hashes, NativeLinks: nativeLinks, Entries: entries);
             });
             token.ThrowIfCancellationRequested();
             var observedGroups = context.ObservedDestinationGroups.Concat(destinationIds).ToHashSet(StringComparer.Ordinal);
             context = context with { ExistingIdentities = observations.Identities, ExistingEntrySha256 = observations.Hashes,
-                ObservedDestinationGroups = observedGroups, ObservedNativeLinks = observations.NativeLinks };
+                ObservedDestinationGroups = observedGroups, ObservedNativeLinks = observations.NativeLinks, ObservedEntries = observations.Entries };
         }
-        var matched = source.Candidates.FirstOrDefault()?.SourceKind == ImportPageSourceKind.InstalledApplications
-            ? NativeImports.MatchStoredBackgroundVariants(source, context.ExistingIdentities, context.ObservedNativeLinks)
+        if (source.Package is not null)
+        {
+            var registered = await ConfirmWallPackageApplicationsAsync(source.Candidates, context.ObservedEntries.Values, token);
+            context = context with { RegisteredPackageApplications = registered };
+        }
+        var matched = source.Candidates.FirstOrDefault()?.SourceKind is ImportPageSourceKind.InstalledApplications or ImportPageSourceKind.WindowsStart
+            ? NativeImports.MatchStoredBackgroundVariants(source, context.ExistingIdentities, context.ObservedNativeLinks,
+                source.WindowsStart?.ToNativeEntries())
             : context.ExistingIdentities;
         if (!ReferenceEquals(matched, context.ExistingIdentities)) context = context with { ExistingIdentities = matched };
         token.ThrowIfCancellationRequested();
@@ -194,10 +203,20 @@ public sealed partial class MainWindow
         return new(context, source);
     }
 
-    private async Task<ImportPageSource> ReadImportSourceAsync(StartMenuImportProjection projection, ImportPageSourceKind source, string? path, CancellationToken token)
+    private async Task<ImportPageSource> ReadImportSourceAsync(StartMenuImportProjection projection, ImportPageSourceKind source,
+        string? path, CancellationToken token)
     {
         var switched = _lastImportSource != source;
         _lastImportSource = source;
+        if (source == ImportPageSourceKind.WindowsStart)
+        {
+            var catalog = NativeImports;
+            WindowsStartImportSnapshot snapshot;
+            try { snapshot = await new WindowsStartImportSource(catalog).ReadAsync(ProductStrings.Get("WindowsStartImport.Group"), token); }
+            catch (InvalidDataException ex) { throw new IOException(ProductStrings.Get("WindowsStartImport.Invalid"), ex); }
+            catch (IOException ex) { throw new IOException(ProductStrings.Get("WindowsStartImport.Failed"), ex); }
+            return catalog.Project(source, snapshot.ToNativeEntries(), refreshing: false) with { WindowsStart = snapshot };
+        }
         if (source == ImportPageSourceKind.StartMenu)
         {
             var clock = Stopwatch.StartNew();
@@ -380,6 +399,29 @@ public sealed partial class MainWindow
         catch (Exception ex) { return new(string.Format(ProductStrings.Get("Import.ExportFailed"), ex.Message)); }
     }
 
+    private async Task<IReadOnlyDictionary<string, NativeImportEntry>> ConfirmNativeImportAsync(ImportPageSource source,
+        ImportPageSourceKind kind, IReadOnlyCollection<string> keys, bool refresh)
+    {
+        IReadOnlyDictionary<string, NativeImportEntry> confirmed;
+        if (source.WindowsStart is { } pinned)
+        {
+            confirmed = await new WindowsStartImportSource(NativeImports).ConfirmAsync(pinned, keys, CancellationToken.None);
+        }
+        else
+        {
+            if (refresh)
+                try { await NativeImports.ReadAsync(kind, CancellationToken.None); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or COMException)
+                { throw new ImportSourceChangedException("The native source changed.", error); }
+            confirmed = await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() => NativeImports.ConfirmMany(kind, keys));
+        }
+        foreach (var key in keys)
+            if (!confirmed.TryGetValue(key, out var entry) ||
+                source.AvailabilityFacts.GetValueOrDefault(key) != NativeImportCatalog.Facts(entry))
+                throw new ImportSourceChangedException("The import source changed.");
+        return confirmed;
+    }
+
     private async Task<ImportPageResult> SaveImportAsync(ImportPageRequest request)
     {
         var plan = request.Plan;
@@ -388,6 +430,10 @@ public sealed partial class MainWindow
             return new(ProductStrings.Get("Import.SourceChanged"), true);
         if (plan.Status == ImportPlanStatus.NoChange) return new();
         if (plan.Status != ImportPlanStatus.Ready || plan.Proposal is null) return new(ProductStrings.Get("Import.LayoutRejected"));
+        var kind = request.Source.Candidates[0].SourceKind;
+        var native = kind is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or
+            ImportPageSourceKind.SystemFeatures or ImportPageSourceKind.WindowsStart;
+        var keys = plan.Accepted.Select(accepted => accepted.SourceKey).ToArray();
         var changes = new List<EntryChange>();
         var destinationIds = plan.Accepted.Select(accepted => accepted.GroupId).ToHashSet(StringComparer.Ordinal);
         var expectedEntrySha256 = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -429,34 +475,11 @@ public sealed partial class MainWindow
                 media = resources.MediaAssets;
                 galleries = resources.ManagedGalleries;
             }
-            else if (request.Source.Candidates.FirstOrDefault()?.SourceKind is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or ImportPageSourceKind.SystemFeatures)
+            else if (native)
             {
-                var kind = request.Source.Candidates[0].SourceKind;
-                try { await NativeImports.ReadAsync(kind, CancellationToken.None); }
-                catch (Exception sourceError) when (sourceError is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
-                { throw new ImportSourceChangedException("The native source changed.", sourceError); }
-                var prepared = await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
-                {
-                    var result = new List<EntryChange>();
-                    var confirmed = NativeImports.ConfirmMany(kind, plan.Accepted.Select(item => item.SourceKey).ToArray());
-                    foreach (var accepted in plan.Accepted)
-                    {
-                        var source = confirmed[accepted.SourceKey];
-                        if (request.Source.AvailabilityFacts.GetValueOrDefault(source.Key) != NativeImportCatalog.Facts(source))
-                            throw new ImportSourceChangedException("The import source changed.");
-                        result.Add(source.Kind switch
-                        {
-                            NativeImportTarget.Shortcut => new EntryChange.CopyShortcut(accepted.MemberId, source.SourcePath!, source.Sha256),
-                            NativeImportTarget.Path => new EntryChange.CreateLink(accepted.MemberId, source.Target),
-                            NativeImportTarget.Shell => new EntryChange.CreateShellLink(accepted.MemberId, source.Target,
-                                (source.Identity ?? LaunchIdentityService.ForShell(source.Target)).Key) { NativeTarget = source.NativeTarget },
-                            NativeImportTarget.Uri => new EntryChange.CreateUrl(accepted.MemberId, source.Target),
-                            _ => throw new IOException("Unsupported native source."),
-                        });
-                    }
-                    return result;
-                });
-                changes.AddRange(prepared);
+                var confirmed = await ConfirmNativeImportAsync(request.Source, kind, keys, refresh: true);
+                foreach (var accepted in plan.Accepted)
+                    changes.Add(confirmed[accepted.SourceKey].CreateEntryChange(accepted.MemberId));
             }
             else
             {
@@ -504,19 +527,7 @@ public sealed partial class MainWindow
                 media = prepared.Assets;
                 // Native direct paths have no copied shortcut bytes for Store to compare.
                 // Reconfirm their source stamp after image preparation as well as before it.
-                if (request.Source.Candidates.FirstOrDefault()?.SourceKind is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or ImportPageSourceKind.SystemFeatures)
-                    await (_storageExecutor ?? throw new InvalidOperationException()).ExecuteAsync(() =>
-                    {
-                        var kind = request.Source.Candidates[0].SourceKind;
-                        var confirmed = NativeImports.ConfirmMany(kind, plan.Accepted.Select(item => item.SourceKey).ToArray());
-                        foreach (var accepted in plan.Accepted)
-                        {
-                            var source = confirmed[accepted.SourceKey];
-                            if (request.Source.AvailabilityFacts.GetValueOrDefault(source.Key) != NativeImportCatalog.Facts(source))
-                                throw new ImportSourceChangedException("The import source changed.");
-                        }
-                        return true;
-                    });
+                if (native) await ConfirmNativeImportAsync(request.Source, kind, keys, refresh: false);
                 await RequireTargetSourcesCurrentAsync(prepared.Sources, RequireCurrent, CancellationToken.None);
             }
             if (!Current()) return new(ProductStrings.Get("Import.SourceChanged"), true);

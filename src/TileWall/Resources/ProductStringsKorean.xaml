@@ -432,6 +432,7 @@
   <x:String x:Key="Editor.NoUndo">실행 취소할 편집 없음</x:String>
   <x:String x:Key="Editor.NoRedo">다시 실행할 편집 없음</x:String>
   <x:String x:Key="Import.Source">원본</x:String>
+  <x:String x:Key="Import.Source.WindowsStart">Windows 시작 화면</x:String>
   <x:String x:Key="Import.Source.StartMenu">시작 메뉴</x:String>
   <x:String x:Key="Import.Source.Tooltip">사용자 및 공용 시작 메뉴에서 바로 가기 읽기</x:String>
   <x:String x:Key="Import.AutoTrim">자동 필터링</x:String>

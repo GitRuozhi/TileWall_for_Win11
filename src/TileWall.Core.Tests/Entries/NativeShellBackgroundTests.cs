@@ -1,7 +1,9 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
+using TileWall.Core.Wall;
 using Xunit;
 
 namespace TileWall.Core.Tests.Entries;
@@ -35,6 +37,34 @@ public sealed class NativeShellBackgroundTests
     public void CapturedPackageUpgradeRemainsDifferentDespiteCanonicalAppIdentity()
     {
         Assert.False(Matches(Fixture("store-after"), Fixture("store-before")));
+    }
+
+    [Fact]
+    public void PackageTargetMatchesAcrossTheCapturedStoreUpgradeOnlyWhenItsApplicationIsRegistered()
+    {
+        const string appId = "Microsoft.WindowsStore_8wekyb3d8bbwe!App";
+        var applications = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { appId };
+        var before = Observe(Fixture("store-before"));
+        var after = Observe(Fixture("store-after"));
+        Assert.Equal(appId, before.AppsFolderApplicationId);
+        Assert.Equal(appId, after.AppsFolderApplicationId);
+        Assert.NotEqual(before.Key, after.Key);
+        Assert.NotEqual(before.ComparisonTarget(null), after.ComparisonTarget(null));
+        Assert.Equal(before.ComparisonTarget(applications), after.ComparisonTarget(applications));
+        Assert.NotEqual(before.ComparisonTarget(applications),
+            Observe(Fixture("store-after"), "--different").ComparisonTarget(applications));
+
+        var malformed = Fixture("store-before");
+        malformed[Find(malformed, "APPS"u8.ToArray())] ^= 1;
+        Assert.Null(Observe(malformed).AppsFolderApplicationId);
+
+        static LaunchIdentity Observe(byte[] persistedIdList, string arguments = "")
+        {
+            var fields = new LinkFields(null, arguments, "", null, 0, 1, true)
+            { ShellIdListHash = Convert.ToHexString(SHA256.HashData(persistedIdList)) };
+            return EntryObservation.Observe(new LaunchIdentityService(new LocalFileStore(), new ShellLinkFileService()),
+                ManagedEntryKind.Lnk, "test.lnk", [1], fields, persistedIdList);
+        }
     }
 
     [Theory]

@@ -22,10 +22,6 @@ internal sealed class WindowsStartLayout(IReadOnlyList<WindowsStartPinnedGroup> 
     internal IReadOnlyList<WindowsStartPinnedGroup> Groups { get; } = groups;
     internal int TotalCount { get; } = groups.Sum(group => group.Pins.Count);
 
-    internal bool SamePins(WindowsStartLayout other) => Groups.Count == other.Groups.Count &&
-        Groups.Zip(other.Groups).All(pair => pair.First.Title == pair.Second.Title &&
-            pair.First.Pins.SequenceEqual(pair.Second.Pins));
-
     internal static WindowsStartLayout Parse(byte[] bytes, bool json, string defaultGroupName, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();

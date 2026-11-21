@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using TileWall.ApplicationModel;
@@ -16,7 +17,7 @@ public sealed partial class MainWindow
     private RectInt32? _taskbarPlacementArea;
     private WallPresentationBounds _taskbarPlacementScreen;
     private nint _taskbarWindow;
-    private bool _presentationOverflow;
+    private bool _presentationHorizontalOverflow, _presentationVerticalOverflow;
     private WallPresentationBounds ScreenPresentationBounds => new(_screenArea.Left, _screenArea.Top,
         Math.Max(1, _screenArea.Right - _screenArea.Left), Math.Max(1, _screenArea.Bottom - _screenArea.Top));
     private WallPresentationBounds PresentationBounds => WallPresentationGeometry.ResolveArea(ScreenPresentationBounds,
@@ -210,18 +211,21 @@ public sealed partial class MainWindow
         WallSettings? presentationSettings = null)
     {
         if (presentationSettings is not null) _presentedViewportSettings = presentationSettings;
-        var overflow = _environmentOverflow || _presentationOverflow;
-        var scrolling = PresentedViewportSettings.ExpandColumns || overflow;
-        if (_scrollMode != scrolling || _verticalScrollMode != overflow)
+        var expanded = PresentedViewportSettings.ExpandColumns;
+        var scrolling = expanded || _environmentOverflow || _presentationHorizontalOverflow;
+        var vertical = _environmentOverflow || _presentationVerticalOverflow;
+        if (_scrollMode != scrolling || _verticalScrollMode != vertical)
         {
             _scrollMode = scrolling;
-            _verticalScrollMode = overflow;
+            _verticalScrollMode = vertical;
             WallScroll.HorizontalScrollMode = scrolling ? ScrollMode.Enabled : ScrollMode.Disabled;
-            WallScroll.HorizontalScrollBarVisibility = scrolling ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
-            WallScroll.VerticalScrollMode = overflow ? ScrollMode.Enabled : ScrollMode.Disabled;
-            WallScroll.VerticalScrollBarVisibility = overflow ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
-            if (!scrolling || !overflow) WallScroll.ChangeView(scrolling ? null : 0, overflow ? null : 0, null, disableAnimation: true);
+            WallScroll.VerticalScrollMode = vertical ? ScrollMode.Enabled : ScrollMode.Disabled;
+            WallScroll.VerticalScrollBarVisibility = vertical ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+            if (!scrolling || !vertical) WallScroll.ChangeView(scrolling ? null : 0, vertical ? null : 0, null, disableAnimation: true);
         }
+        WallScroll.HorizontalScrollBarVisibility = expanded ? ScrollBarVisibility.Hidden :
+            scrolling ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
+        WallHorizontalScrollBar.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
         if (_scrollRegion != region)
         {
             _scrollRegion = region;
@@ -229,12 +233,49 @@ public sealed partial class MainWindow
             WallScroll.VerticalAlignment = Microsoft.UI.Xaml.VerticalAlignment.Top;
             WallScroll.Width = region.Width; WallScroll.Height = region.Height;
             WallScroll.Margin = new Microsoft.UI.Xaml.Thickness(region.X, region.Y, 0, 0);
+            WallHorizontalScrollBar.Width = region.Width;
+            WallHorizontalScrollBar.Margin = new Thickness(region.X,
+                region.Y + Math.Max(0, region.Height - WallHorizontalScrollBar.Height), 0, 0);
             PositionStatusViewport();
         }
         // The document owns its complete row budget. A larger clip must not create phantom rows.
         if (updateSurface) Surface.SetViewportMinimum(fullScreen || scrolling ? region.Width : 0, 0);
         UpdateWindowsSidebar();
         UpdateVisibleWallFrames();
+        QueueExpansionReveal();
+    }
+
+    private bool _syncingWallScrollBar;
+
+    private void InitializeWallScrollRail()
+    {
+        AutomationProperties.SetName(WallHorizontalScrollBar, ProductStrings.Get("Settings.ExpandColumns"));
+        WallScroll.RegisterPropertyChangedCallback(ScrollViewer.ScrollableWidthProperty, (_, _) => SyncWallScrollRail());
+        WallScroll.RegisterPropertyChangedCallback(ScrollViewer.ViewportWidthProperty, (_, _) => SyncWallScrollRail());
+        WallScroll.ViewChanged += (_, _) => SyncWallScrollRail();
+        WallHorizontalScrollBar.ValueChanged += (_, args) =>
+        {
+            if (_syncingWallScrollBar) return;
+            _pendingExpansionLane = null;
+            _pendingCommittedScrollAnchor = null;
+            WallScroll.ChangeView(Math.Clamp(args.NewValue, 0, WallScroll.ScrollableWidth), null, null, disableAnimation: true);
+        };
+    }
+
+    private void SyncWallScrollRail()
+    {
+        _syncingWallScrollBar = true;
+        try
+        {
+            var width = WallScroll.ScrollableWidth;
+            WallHorizontalScrollBar.Maximum = width;
+            WallHorizontalScrollBar.ViewportSize = WallScroll.ViewportWidth;
+            WallHorizontalScrollBar.SmallChange = _metrics.Pitch;
+            WallHorizontalScrollBar.LargeChange = Math.Max(_metrics.Pitch, WallScroll.ViewportWidth - _metrics.ColumnGap);
+            WallHorizontalScrollBar.Value = Math.Clamp(WallScroll.HorizontalOffset, 0, width);
+            WallHorizontalScrollBar.IsEnabled = width > ScrollAnchorEpsilon;
+        }
+        finally { _syncingWallScrollBar = false; }
     }
 
     private bool? _scrollMode;
@@ -250,10 +291,50 @@ public sealed partial class MainWindow
     private long _scrollAnchorRevision;
     private CommittedScrollAnchor? _pendingCommittedScrollAnchor;
     private const double ScrollAnchorEpsilon = .01;
+    private int? _pendingExpansionLane;
+    private bool _expansionRevealQueued;
+
+    private void CaptureExpansionReveal(WallDocument next)
+    {
+        if (!next.Settings.ExpandColumns || _pendingExpansionLane >= next.Columns)
+            _pendingExpansionLane = null;
+        if (!next.Settings.ExpandColumns || !_hasDocument || _viewBlocked || _committedScrollExpanded ||
+            _committedScrollGeometry is null || _scrollRegion.Width <= 0)
+            return;
+
+        var oldRight = WallScroll.HorizontalOffset + _scrollRegion.Width;
+        var firstHidden = WallViewportPolicy.CompleteColumns(oldRight, _metrics);
+        if (firstHidden < next.Columns) _pendingExpansionLane = firstHidden;
+    }
+
+    private bool CanRevealExpansion => !_windowClosing && !ShutdownStarted && _hasDocument && !_viewBlocked &&
+        Settings.ExpandColumns && !_modal && !_resizing && _viewportTransition is null && AppWindow.IsVisible;
+
+    private void QueueExpansionReveal()
+    {
+        if (_pendingExpansionLane is null || _expansionRevealQueued || !CanRevealExpansion) return;
+        _expansionRevealQueued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            _expansionRevealQueued = false;
+            if (!CanRevealExpansion || _pendingExpansionLane is not { } lane) return;
+            WallScroll.UpdateLayout();
+            if (!CanRevealExpansion || _pendingExpansionLane != lane || WallScroll.ViewportWidth <= 0) return;
+            _pendingExpansionLane = null;
+            var left = _metrics.Margin + lane * (_metrics.LaneWidth + _metrics.ColumnGap);
+            var offset = WallScroll.HorizontalOffset;
+            var width = WallScroll.ViewportWidth;
+            var target = width < _metrics.LaneWidth ? left :
+                Math.Clamp(offset, left + _metrics.LaneWidth - width, left);
+            target = Math.Clamp(target, 0, WallScroll.ScrollableWidth);
+            if (Math.Abs(offset - target) > ScrollAnchorEpsilon)
+                WallScroll.ChangeView(target, null, null, disableAnimation: true);
+        });
+    }
 
     private CommittedScrollAnchor? CaptureCommittedScrollAnchor(WallDocument next)
     {
         EnsureCommittedScrollTracking();
+        CaptureExpansionReveal(next);
         var revision = ++_scrollAnchorRevision;
         _pendingCommittedScrollAnchor = null;
         if (_windowClosing || !_hasDocument || _viewBlocked || !_committedScrollExpanded ||
@@ -327,6 +408,7 @@ public sealed partial class MainWindow
         {
             ++_scrollAnchorRevision;
             _pendingCommittedScrollAnchor = null;
+            _pendingExpansionLane = null;
         }
         WallScroll.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => Invalidate()), true);
         WallScroll.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler((_, _) => Invalidate()), true);

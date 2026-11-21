@@ -432,6 +432,7 @@ Fortfahren?</x:String>
   <x:String x:Key="Editor.NoUndo">Keine Bearbeitung zum Rückgängigmachen</x:String>
   <x:String x:Key="Editor.NoRedo">Keine Bearbeitung zum Wiederholen</x:String>
   <x:String x:Key="Import.Source">Quelle</x:String>
+  <x:String x:Key="Import.Source.WindowsStart">Angeheftete Windows-Starteinträge</x:String>
   <x:String x:Key="Import.Source.StartMenu">Startmenü</x:String>
   <x:String x:Key="Import.Source.Tooltip">Verknüpfungen aus dem persönlichen und dem gemeinsamen Startmenü lesen</x:String>
   <x:String x:Key="Import.AutoTrim">Automatische Filterung</x:String>

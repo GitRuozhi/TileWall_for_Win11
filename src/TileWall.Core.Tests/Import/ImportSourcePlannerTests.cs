@@ -708,6 +708,36 @@ public sealed class ImportSourcePlannerTests
     }
 
     [Fact]
+    public void WallPackageMatchesAProgramTargetAcrossWorkingDirectoriesAndKeepsDifferentCommands()
+    {
+        const string path = @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+        var existing = Tile("known") with { Entry = new("known", "Objects/known/entry.lnk", ManagedEntryKind.Lnk) };
+        var world = WallDocument.Empty(2, 8) with
+        {
+            Lanes = [new() { Groups = [Group("tools", "Tools", existing)] }, new() { Groups = [] }],
+        };
+        var target = LaunchIdentityService.ForPath(path);
+        var packageGroup = new ImportSourceGroup("old-tools", "Tools", 0);
+        var same = PackageItem("same", LaunchIdentityService.ForPath(path, workingDirectory: @"C:\Users\Default"));
+        var different = PackageItem("different", LaunchIdentityService.ForPath(path, "-File backup.ps1", @"C:\Users\Default"));
+        var source = ImportSourcePlanner.Project(world, [same, different], autoFilter: false,
+            existingIdentityKeys: new Dictionary<string, string> { [existing.Id] = target.Key },
+            observedEntries: new Dictionary<string, LaunchIdentity> { [existing.Id] = target });
+
+        Assert.NotEqual(target.Key, same.Identity!.Key);
+        Assert.Equal(ImportFilterReason.DuplicateTarget, source.Candidates.Single(row => row.SelectionKey == "same").FilterReason);
+        Assert.True(source.Candidates.Single(row => row.SelectionKey == "different").CanAdd);
+
+        ImportSourceCandidate PackageItem(string id, LaunchIdentity identity) =>
+            Item(id, id, packageGroup) with
+            {
+                SourceKind = ImportPageSourceKind.WallPackage, Policy = ImportSourcePolicy.Attributed,
+                Identity = identity, HasLaunchTarget = true, HasRecordedPosition = true, HasRecordedSize = true,
+                Member = Tile(id) with { Entry = new(id, $"Objects/{id}/entry.lnk", ManagedEntryKind.Lnk) },
+            };
+    }
+
+    [Fact]
     public void ExportProjectionKeepsTheCurrentWallSelectableWithObservedIdentities()
     {
         var member = Tile("known");

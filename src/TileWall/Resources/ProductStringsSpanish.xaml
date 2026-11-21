@@ -432,6 +432,7 @@ Nuevo destino:
   <x:String x:Key="Editor.NoUndo">No hay ninguna edición que deshacer</x:String>
   <x:String x:Key="Editor.NoRedo">No hay ninguna edición que rehacer</x:String>
   <x:String x:Key="Import.Source">Origen</x:String>
+  <x:String x:Key="Import.Source.WindowsStart">Pantalla de Inicio de Windows</x:String>
   <x:String x:Key="Import.Source.StartMenu">Menú Inicio</x:String>
   <x:String x:Key="Import.Source.Tooltip">Leer accesos directos de los menús Inicio del usuario y común</x:String>
   <x:String x:Key="Import.AutoTrim">Filtrado automático</x:String>

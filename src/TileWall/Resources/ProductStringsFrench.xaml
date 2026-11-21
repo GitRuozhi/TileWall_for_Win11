@@ -428,6 +428,7 @@
   <x:String x:Key="Editor.NoUndo">Aucune modification à annuler</x:String>
   <x:String x:Key="Editor.NoRedo">Aucune modification à rétablir</x:String>
   <x:String x:Key="Import.Source">Source</x:String>
+  <x:String x:Key="Import.Source.WindowsStart">Éléments épinglés du menu Démarrer</x:String>
   <x:String x:Key="Import.Source.StartMenu">Menu Démarrer</x:String>
   <x:String x:Key="Import.Source.Tooltip">Lire les raccourcis des menus Démarrer de l’utilisateur et communs</x:String>
   <x:String x:Key="Import.AutoTrim">Filtrage automatique</x:String>

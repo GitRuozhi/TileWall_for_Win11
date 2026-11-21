@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -1422,11 +1423,39 @@ public sealed partial class WallStore
         foreach (var directory in _files.ListDirectories(_paths.Root))
         {
             _paths.GuardTree(directory);
+            if (directory.Equals(_paths.Under("Runtime"), StringComparison.Ordinal))
+            {
+                if (!ContainsOnlyIdleTaskbarLocks(directory)) return true;
+                continue;
+            }
             if (!new[] { _paths.Objects, _paths.Staging, _paths.MediaRoot, _paths.Snapshots, _paths.Sources, _paths.Under("Recovery"),
                 _paths.Under("Cache"), _paths.Under("logs") }.Contains(directory, StringComparer.OrdinalIgnoreCase))
                 return true;
         }
         return _files.ListFiles(_paths.Root).Count > 0;
+    }
+
+    private bool ContainsOnlyIdleTaskbarLocks(string runtimeDirectory)
+    {
+        const string sessionPrefix = "Taskbar-";
+        if (_files.ListFiles(runtimeDirectory).Count > 0) return false;
+        foreach (var sessionDirectory in _files.ListDirectories(runtimeDirectory))
+        {
+            var name = Path.GetFileName(sessionDirectory);
+            if (!name.StartsWith(sessionPrefix, StringComparison.Ordinal) ||
+                !int.TryParse(name.AsSpan(sessionPrefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out var sessionId) ||
+                name != sessionPrefix + sessionId.ToString(CultureInfo.InvariantCulture))
+                return false;
+
+            // Recovery uses an exclusive read/write handle on this file before accessing its records.
+            var lockPath = Path.Combine(sessionDirectory, "taskbar-recovery.lock");
+            using var idleLock = _files.Exists(lockPath) ? _files.OpenReadProtected(lockPath) : null;
+            if (idleLock is not null && idleLock.Length != 0) return false;
+            if (_files.ListDirectories(sessionDirectory).Count > 0) return false;
+            var files = _files.ListFiles(sessionDirectory);
+            if (idleLock is null ? files.Count != 0 : files.Count != 1 || files[0] != lockPath) return false;
+        }
+        return true;
     }
 
     private static FileClass ParseClass(byte[] bytes)

@@ -12,7 +12,9 @@ public static class ImportSourcePlanner
 {
     public static ImportSourceProjection Project(WallDocument current, IReadOnlyList<ImportSourceCandidate> candidates,
         bool recognizeGroups = true, bool autoFilter = true,
-        IReadOnlyDictionary<string, string>? existingIdentityKeys = null)
+        IReadOnlyDictionary<string, string>? existingIdentityKeys = null,
+        IReadOnlyDictionary<string, LaunchIdentity>? observedEntries = null,
+        IReadOnlySet<string>? registeredPackageApplications = null)
     {
         ArgumentNullException.ThrowIfNull(current);
         ArgumentNullException.ThrowIfNull(candidates);
@@ -86,7 +88,7 @@ public static class ImportSourcePlanner
                 var members = packageDestination.Members.ToDictionary(member => member.Id, StringComparer.Ordinal);
                 if (merged.Any(item => item.Row.Error is null &&
                     members.TryGetValue(item.Row.Source.Member.Id, out var existing) &&
-                    SamePackageMember(item.Row.Source, existing, existingIdentityKeys)))
+                    SamePackageMember(item.Row.Source, existing, SameTarget)))
                 {
                     destination = packageDestination;
                     packageMembers = members;
@@ -94,9 +96,15 @@ public static class ImportSourcePlanner
             }
             var destinationIdentities = new HashSet<string>(StringComparer.Ordinal);
             if (destination is not null)
+            {
                 foreach (var member in destination.Members)
+                {
                     if (existingIdentityKeys.TryGetValue(member.Id, out var identity))
                         destinationIdentities.Add(identity);
+                    if (package && observedEntries?.GetValueOrDefault(member.Id) is { } observed)
+                        destinationIdentities.Add(observed.ComparisonTarget(registeredPackageApplications));
+                }
+            }
             var groupKey = first.PreserveStableKey ? first.Key : merged.Key;
             var projected = merged.GroupBy(item => item.Row.Error is null
                     ? item.Row.Source.SelectionIdentity : "invalid:" + item.Row.Source.SourceKey, StringComparer.Ordinal)
@@ -105,9 +113,10 @@ public static class ImportSourcePlanner
                     var representative = group.First().Row;
                     var source = representative.Source;
                     var duplicate = representative.Error is null && source.SourceKind != ImportPageSourceKind.CurrentWall &&
-                        (source.Identity is { } identity && destinationIdentities.Contains(identity.Key) ||
+                        (source.Identity is { } identity && (destinationIdentities.Contains(identity.Key) ||
+                            package && destinationIdentities.Contains(identity.ComparisonTarget(registeredPackageApplications))) ||
                         packageMembers?.GetValueOrDefault(source.Member.Id) is { } existing &&
-                        SamePackageMember(source, existing, existingIdentityKeys));
+                        SamePackageMember(source, existing, SameTarget));
                     return new ImportProjectedCandidate(source, groupKey, group.SelectMany(item => item.Row.Keys).ToArray(),
                         representative.Error, duplicate ? ImportFilterReason.DuplicateTarget : ImportFilterReason.None, true);
                 });
@@ -141,14 +150,19 @@ public static class ImportSourcePlanner
             Statistics = new(candidates.Count, filters.Values.Sum(), visible.Count(candidate => candidate.FilterReason == ImportFilterReason.None),
                 contentCounts, filters),
         };
+
+        bool SameTarget(string existingId, LaunchIdentity identity) =>
+            existingIdentityKeys.GetValueOrDefault(existingId) == identity.Key ||
+            observedEntries?.GetValueOrDefault(existingId) is { } observed &&
+            observed.ComparisonTarget(registeredPackageApplications) == identity.ComparisonTarget(registeredPackageApplications);
     }
 
     private static bool SamePackageMember(ImportSourceCandidate source, WallMember existing,
-        IReadOnlyDictionary<string, string> existingIdentityKeys)
+        Func<string, LaunchIdentity, bool> sameTarget)
     {
         if (source.Member.Entry is not null)
             return existing.Entry is not null && source.Identity is { } identity &&
-                existingIdentityKeys.GetValueOrDefault(existing.Id) == identity.Key;
+                sameTarget(existing.Id, identity);
         if (existing.Entry is not null || source.HasLaunchTarget != false) return false;
         return WallPackageJson.Serialize(Appearance(source.Member)).AsSpan()
             .SequenceEqual(WallPackageJson.Serialize(Appearance(existing)));

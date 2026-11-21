@@ -51,6 +51,13 @@ internal sealed record ImportPageContext(WallDocument Document, WallViewportBudg
     public IReadOnlySet<string> ObservedDestinationGroups { get; init; } = new HashSet<string>(StringComparer.Ordinal);
     public IReadOnlyDictionary<string, (LinkFields Fields, ReadOnlyMemory<byte> IdList)> ObservedNativeLinks { get; init; } =
         new Dictionary<string, (LinkFields, ReadOnlyMemory<byte>)>(StringComparer.Ordinal);
+    public IReadOnlyDictionary<string, LaunchIdentity> ObservedEntries { get; init; } =
+        new Dictionary<string, LaunchIdentity>(StringComparer.Ordinal);
+    public IReadOnlySet<string>? RegisteredPackageApplications { get; init; }
+
+    public ImportSourceProjection Project(IReadOnlyList<ImportSourceCandidate> candidates, bool recognize, bool filter) =>
+        ImportSourcePlanner.Project(Document, candidates, recognize, filter, ExistingIdentities, ObservedEntries,
+            RegisteredPackageApplications);
 
     public bool Covers(ImportSourceProjection projection) => projection.Generation == Document.Generation &&
         projection.Groups.All(group => group.DestinationGroupId is null || ObservedDestinationGroups.Contains(group.DestinationGroupId));
@@ -65,6 +72,7 @@ internal sealed record ImportPageSource(IReadOnlyList<ImportSourceCandidate> Can
     public IReadOnlyDictionary<string, string> AvailabilityFacts { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public bool AvailabilityPrepared { get; init; }
     public bool IconPreparing { get; init; }
+    public WindowsStartImportSnapshot? WindowsStart { get; init; }
 }
 
 internal sealed record ImportPagePreparation(ImportPageContext Context, ImportPageSource Source);

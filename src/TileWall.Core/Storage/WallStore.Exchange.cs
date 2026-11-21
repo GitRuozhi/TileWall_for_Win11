@@ -169,11 +169,11 @@ public sealed partial class WallStore
             _files.CreateDirectory(directory);
             _files.WriteAllBytes(temporary, bytes);
             token.ThrowIfCancellationRequested();
-            var fields = _links.Read(temporary);
+            var fields = _links.ReadWithIdList(temporary, out var idList);
             token.ThrowIfCancellationRequested();
             // The parser saw a protected file containing exactly the observed bytes.
             if (Hash(_files.ReadAllBytes(temporary)) != Hash(bytes)) throw new IOException("Temporary shortcut changed.");
-            return EntryObservation.Observe(_identities, kind, temporary, bytes, fields);
+            return EntryObservation.Observe(_identities, kind, temporary, bytes, fields, idList);
         }
         finally { _files.Delete(temporary); }
     }

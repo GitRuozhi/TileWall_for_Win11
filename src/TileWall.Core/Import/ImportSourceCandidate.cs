@@ -6,7 +6,7 @@ namespace TileWall.Core.Import;
 
 public enum ImportTargetAvailability { Unknown, Available, Missing }
 public enum ImportInsertionPosition { Head, Tail }
-public enum ImportPageSourceKind { StartMenu, Desktop, InstalledApplications, SystemFeatures, WallPackage, CurrentWall, RecycleBin }
+public enum ImportPageSourceKind { StartMenu, Desktop, InstalledApplications, SystemFeatures, WallPackage, CurrentWall, RecycleBin, WindowsStart }
 public enum ImportSourcePolicy { Shortcut, DirectTarget, SystemFeature, Attributed, Application }
 public enum ImportTargetKind { Unknown, SystemFeature, Program, File, Folder, WebLink, ProtocolLink, Component }
 public enum ImportFilterReason { None, DuplicateTarget, MissingTarget, NonPrimaryEntry }

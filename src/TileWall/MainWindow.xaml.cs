@@ -88,6 +88,7 @@ public sealed partial class MainWindow : Window
         _puzzles.PersistAutomaticSeries = PersistAutomaticIconSeries;
         _puzzles.FrameChanged += Surface.UpdatePuzzleFrame;
         WallScroll.ViewChanged += (_, _) => UpdateVisibleWallFrames();
+        InitializeWallScrollRail();
         InitializeMenuStart();
         _session.SetViewRefresh(RenderCommitted);
         InitializePersistence();

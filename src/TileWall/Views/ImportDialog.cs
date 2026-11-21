@@ -25,10 +25,10 @@ namespace TileWall.Views;
 /// <summary>One source selection session; shared Core owns all grouping and source geometry.</summary>
 internal sealed class ImportDialog : IWallDialogSession
 {
-    private static readonly ImportPageSourceKind[] SourceKinds = [ImportPageSourceKind.StartMenu, ImportPageSourceKind.Desktop,
+    private static readonly ImportPageSourceKind[] SourceKinds = [ImportPageSourceKind.WindowsStart, ImportPageSourceKind.StartMenu, ImportPageSourceKind.Desktop,
         ImportPageSourceKind.InstalledApplications, ImportPageSourceKind.SystemFeatures, ImportPageSourceKind.WallPackage,
         ImportPageSourceKind.CurrentWall, ImportPageSourceKind.RecycleBin];
-    private static readonly string[] SourceLabels = ["Import.Source.StartMenu", "Import.SourceDesktop", "Import.Source.InstalledApplications",
+    private static readonly string[] SourceLabels = ["Import.Source.WindowsStart", "Import.Source.StartMenu", "Import.SourceDesktop", "Import.Source.InstalledApplications",
         "Import.Source.SystemFeatures", "Import.Source.CustomSettings", "Import.Source.CurrentWall", "Import.Source.RecycleBin"];
     private static readonly string[] StatisticLabels = ["Import.Stats.Acquired", "Import.Stats.Filtered", "Import.Stats.Candidates", "Import.Stats.Selected",
         "Import.Stats.SystemFeature", "Import.Stats.Program", "Import.Stats.File", "Import.Stats.Folder", "Import.Stats.WebLink", "Import.Stats.ProtocolLink",
@@ -72,9 +72,10 @@ internal sealed class ImportDialog : IWallDialogSession
     private IReadOnlyDictionary<string, string>? _recognitionFacts;
     private bool _recognitionReady;
     private readonly SemaphoreSlim _packageMediaSlots = new(2, 2);
+    private readonly SemaphoreSlim _previewShellSlots = new(2, 2);
     private PackagePreviewSource? _packageSource;
     private IReadOnlyList<ImportSourceCandidate>? _projectedCandidates;
-    private IReadOnlyDictionary<string, string>? _projectedIdentities;
+    private ImportPageContext? _projectedContext;
     private readonly ComboBox _source = new();
     private readonly IconSelector _mode = new(ActionIcon.ImportAllMirrored, ActionIcon.Share),
         _position = new(ActionIcon.PreviousItem, ActionIcon.NextItem);
@@ -107,6 +108,15 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly ObservableCollection<string> _previewKeys = [];
     private readonly Dictionary<string, PreviewItem> _previewMemberItems = new(StringComparer.Ordinal);
     private readonly ScrollViewer _preview;
+    private readonly Canvas _previewTips = new() { IsHitTestVisible = false };
+    private readonly Border _previewTip;
+    private readonly TextBlock _previewTipText;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _previewTipTimer;
+    private readonly bool _tracePreviewHover = Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1";
+    private CandidateRow? _tipRow;
+    private Windows.Foundation.Point _tipPoint;
+    private (double Horizontal, double Vertical) _tipScrollOffset;
+    private long _tipDueAt;
     private IReadOnlyList<PreviewItem> _previewItems = [];
     private readonly Action _catalogChanged;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _clockTimer;
@@ -214,10 +224,32 @@ internal sealed class ImportDialog : IWallDialogSession
         _preview = new ScrollViewer { Content = _repeater, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Disabled, VerticalScrollMode = ScrollMode.Enabled };
         _preview.SizeChanged += (_, _) => RefreshPreview();
+        _previewTip = (Border)XamlReader.Load("""
+            <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Visibility="Collapsed"
+                Padding="8,5" Background="{ThemeResource TileWallNoticeBackgroundBrush}">
+                <TextBlock Foreground="{ThemeResource TileWallNoticeTextBrush}" TextWrapping="Wrap" />
+            </Border>
+            """);
+        _previewTipText = (TextBlock)_previewTip.Child;
+        Id(_previewTipText, "preview-tooltip");
+        _previewTips.Children.Add(_previewTip);
+        _previewTipTimer = _preview.DispatcherQueue.CreateTimer();
+        _previewTipTimer.IsRepeating = false;
+        _previewTipTimer.Tick += (_, _) => ShowPreviewTip();
+        _preview.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => ClosePreviewTip()), true);
+        _preview.PointerExited += (_, _) =>
+        {
+            if (!OwnedDialogWindow.IsPointerWithin(_preview)) ClosePreviewTip();
+        };
+        _preview.ViewChanged += (_, _) =>
+        {
+            if ((_preview.HorizontalOffset, _preview.VerticalOffset) != _tipScrollOffset) ClosePreviewTip();
+        };
         var previewPane = new Grid();
         previewPane.Children.Add(_preview);
         previewPane.Children.Add(_status);
         previewPane.Children.Add(_feedback);
+        previewPane.Children.Add(_previewTips);
         var page = VisualStyles.PreviewPage(previewPane, rightBody, budget, preferredWidth: 860,
             preferredRightWidth: 400, preferredLeftWidth: previewWidth);
         page.Height = Math.Min(560, budget.Height);
@@ -251,7 +283,7 @@ internal sealed class ImportDialog : IWallDialogSession
         {
             if (_refreshingStrings || !_shown || _adding) return;
             _refreshingStrings = true;
-            _source.SelectedIndex = Mode == ImportPageMode.Export ? 5 : _lastImportSource;
+            _source.SelectedIndex = Mode == ImportPageMode.Export ? Array.IndexOf(SourceKinds, ImportPageSourceKind.CurrentWall) : _lastImportSource;
             _refreshingStrings = false; ResetSource();
             ShowApplied(ProductStrings.Get(Mode == ImportPageMode.Export ? "Import.Mode.Export" : "Import.Mode.Import"));
         };
@@ -316,7 +348,7 @@ internal sealed class ImportDialog : IWallDialogSession
         {
             StopRequests(); await DrainOperationsAsync(); ClosePreviewSource();
             _pendingOperations.Clear(); _previewOperations.Clear(); _previewLoad = Task.CompletedTask;
-            _packageMediaSlots.Dispose(); _lifetime.Dispose();
+            _previewShellSlots.Dispose(); _packageMediaSlots.Dispose(); _lifetime.Dispose();
         }
     }
 
@@ -352,7 +384,7 @@ internal sealed class ImportDialog : IWallDialogSession
         _recognizedTargets.Clear();
         _previewTargetInferences.Clear(); _previewImageCompletions.Clear();
         _selected.Clear(); _error = null; _feedback.Clear(); _context = null; _sourceData = null; _projection = null; _plan = null;
-        _projectedCandidates = null; _projectedIdentities = null; _previewProjection = null;
+        _projectedCandidates = null; _projectedContext = null; _previewProjection = null;
         _recognitionProjection = null; _recognitionContext = null; _recognitionFacts = null;
         _candidateByKey.Clear(); ClearFrameCache();
         ClearPreview(); BeginRead(resetSelection: true);
@@ -529,10 +561,10 @@ internal sealed class ImportDialog : IWallDialogSession
         var filter = !Attributed && _autoFilter.IsOn; var recognize = !Attributed && _recognizeGroups.IsOn;
         if (_projection is null || _projection.Generation != _context.Document.Generation || _projection.AutoFilter != filter ||
             _projection.RecognizeGroups != recognize || !ReferenceEquals(_projectedCandidates, _sourceData.Candidates) ||
-            !ReferenceEquals(_projectedIdentities, _context.ExistingIdentities))
+            !ReferenceEquals(_projectedContext, _context))
         {
-            _projection = ImportSourcePlanner.Project(_context.Document, _sourceData.Candidates, recognize, filter, _context.ExistingIdentities);
-            _projectedCandidates = _sourceData.Candidates; _projectedIdentities = _context.ExistingIdentities;
+            _projection = _context.Project(_sourceData.Candidates, recognize, filter);
+            _projectedCandidates = _sourceData.Candidates; _projectedContext = _context;
             var migration = ImportSourcePlanner.MigrateSelection(_selected, _projection);
             _selected.Clear(); foreach (var pair in migration.Selected) _selected.Add(pair.Key, pair.Value);
             RemoveFilteredSelections();
@@ -803,6 +835,12 @@ internal sealed class ImportDialog : IWallDialogSession
             { existing.Candidate = currentCandidate; existing.Member = currentMember; }
             return;
         }
+        var restoreTip = host.Tag is CandidateRow hovered && ReferenceEquals(_tipRow, hovered) &&
+            binding.Item?.Bounds == item.Bounds && hovered.Candidate.SelectionKey == item.Candidate?.SelectionKey;
+        var tipDueAt = _tipDueAt;
+        // Image and availability refresh can replace the row while the pointer
+        // stays still. Preserve the original hover deadline for the same cell.
+        if (restoreTip) _tipRow = null;
         ClearElement(host);
         _preparedElements[host] = (_renderEpoch, index, item);
         if (item.Group is { } group)
@@ -836,12 +874,21 @@ internal sealed class ImportDialog : IWallDialogSession
             Padding = new Thickness(0), BorderThickness = new Thickness(0), MinWidth = 0, MinHeight = 0,
             CornerRadius = WallCornerStyle.Corners(_style), HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Stretch };
+        CandidateRow? row = null;
         var reset = WallMemberVisualFactory.ConfigureInteraction(toggle, card, toggle.CornerRadius,
             hover =>
             {
                 if (!isPuzzle) view?.SetExternalHover(hover);
                 else if (!hover) view?.SetHoveredPartition(null);
                 clock?.SetExternalHover(hover);
+                if (!isPuzzle && row is { } current)
+                {
+                    if (hover)
+                    {
+                        var anchor = host.TransformToVisual(_previewTips).TransformPoint(new(host.ActualWidth / 2, host.ActualHeight / 2));
+                        BeginPreviewTip(current, anchor);
+                    }
+                }
             }, deferHoverExit: true, partitionFocus: partition);
         if (isPuzzle && view is { } puzzleView)
         {
@@ -850,7 +897,6 @@ internal sealed class ImportDialog : IWallDialogSession
             void UpdatePartitionHover(object sender, PointerRoutedEventArgs e) =>
                 puzzleView.SetHoveredPartition(toggle.IsEnabled ? puzzleView.PartitionAt(e.GetCurrentPoint(puzzleView).Position) : null);
         }
-        CandidateRow? row = null;
         RoutedEventHandler changed = (_, _) =>
         {
             if (_synchronizingSelection) return;
@@ -859,10 +905,35 @@ internal sealed class ImportDialog : IWallDialogSession
             Select(row.Candidate, toggle.IsChecked == true); _error = null; _feedback.Clear(); SelectionChanged();
         };
         row = new(candidate, member, view, clock, host, toggle, changed, reset, selection) { IconStamp = IconStamp(candidate) };
+        var tipRow = row;
+        PointerEventHandler pointerInside = (_, args) => TrackPreviewPointer(tipRow, args);
+        PointerEventHandler pointerOutside = (_, _) =>
+        {
+            if (ReferenceEquals(_tipRow, tipRow) && !OwnedDialogWindow.IsPointerWithin(host)) ClosePreviewTip();
+        };
+        host.AddHandler(UIElement.PointerEnteredEvent, pointerInside, true);
+        host.AddHandler(UIElement.PointerMovedEvent, pointerInside, true);
+        host.AddHandler(UIElement.PointerExitedEvent, pointerOutside, true);
+        toggle.PointerEntered += pointerInside;
+        toggle.PointerExited += pointerOutside;
+        row.RemoveTipHandlers = () =>
+        {
+            host.RemoveHandler(UIElement.PointerEnteredEvent, pointerInside);
+            host.RemoveHandler(UIElement.PointerMovedEvent, pointerInside);
+            host.RemoveHandler(UIElement.PointerExitedEvent, pointerOutside);
+            toggle.PointerEntered -= pointerInside;
+            toggle.PointerExited -= pointerOutside;
+        };
         DialogActionFeedback.SetReason(toggle, () => PreviewBlockedReason(row!));
         toggle.Checked += changed; toggle.Unchecked += changed;
         Id(toggle, "candidate-" + candidate.SelectionKey); _rows.Add(row); host.Tag = row; host.Children.Add(toggle);
         UpdateRowTooltip(row); UpdateSelectionFeedback(); UpdateAvailability(); StartRowImage(row);
+        if (restoreTip)
+        {
+            _tipRow = row;
+            _tipDueAt = tipDueAt;
+            SchedulePreviewTip();
+        }
     }
 
     private void ClearElement(UIElement element)
@@ -870,7 +941,6 @@ internal sealed class ImportDialog : IWallDialogSession
         _preparedElements.Remove(element);
         if (element is not Grid host) return;
         if (host.Tag is CandidateRow row) ReleaseRow(row); else if (host.Tag is Action reset) reset();
-        ToolTipService.SetToolTip(host, null);
         host.Background = null; host.Tag = null; host.Children.Clear();
     }
     private void ClearPreview()
@@ -919,12 +989,11 @@ internal sealed class ImportDialog : IWallDialogSession
         AutomationProperties.SetName(row.Toggle, displayName);
     }
 
-    private static void ApplyRowTooltip(CandidateRow row, string text, string? missingPath = null)
+    private void ApplyRowTooltip(CandidateRow row, string text, string? missingPath = null)
     {
         var tip = string.IsNullOrWhiteSpace(text) ? null : text;
-        var enabled = row.Toggle.IsEnabled;
-        if (row.TooltipText == tip && row.TooltipMissingPath == missingPath && row.TooltipEnabled == enabled) return;
-        row.TooltipText = tip; row.TooltipMissingPath = missingPath; row.TooltipEnabled = enabled;
+        if (row.TooltipText == tip && row.TooltipMissingPath == missingPath) return;
+        row.TooltipText = tip; row.TooltipMissingPath = missingPath;
         if (missingPath is not null)
         {
             if (row.MissingPathText is null)
@@ -938,25 +1007,68 @@ internal sealed class ImportDialog : IWallDialogSession
             row.MissingPathText.Visibility = Visibility.Visible;
         }
         else if (row.MissingPathText is { } warning) { warning.Text = string.Empty; warning.Visibility = Visibility.Collapsed; }
-        var isPuzzle = row.Member is PuzzleMember;
-        // The host remains hit-testable when the candidate is disabled. Give the
-        // native tooltip service a single owner instead of manually opening a popup.
-        SetNativeTip(row.Host, enabled ? null : tip, missingPath);
-        SetNativeTip(row.Toggle, enabled && !isPuzzle ? tip : null, missingPath);
-        if (isPuzzle)
-        {
-            row.View?.SetPreviewTargetTooltips(missingPath is null && enabled ? tip : null);
-            if (missingPath is not null && row.View?.PreviewPartitions is { } partitions)
-                foreach (var partition in partitions) SetNativeTip(partition, enabled ? tip : null, missingPath);
-        }
+        if (ReferenceEquals(_tipRow, row) && _previewTip.Visibility == Visibility.Visible) ShowPreviewTip();
+    }
 
-        static void SetNativeTip(FrameworkElement owner, string? value, string? missing)
+    private void TrackPreviewPointer(CandidateRow candidate, PointerRoutedEventArgs args)
+    {
+        var pointer = args.GetCurrentPoint(_previewTips);
+        if (args.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse ||
+            pointer.Properties.IsLeftButtonPressed || pointer.Properties.IsRightButtonPressed ||
+            candidate.Member is PuzzleMember && candidate.Toggle.IsEnabled &&
+            (candidate.View is not { } view || view.PartitionAt(args.GetCurrentPoint(view).Position) is null))
         {
-            if (missing is not null && value is not null)
-                ToolTipService.SetToolTip(owner, new TextBlock { Text = value, TextWrapping = TextWrapping.Wrap,
-                    MaxWidth = 520, Foreground = new SolidColorBrush(Microsoft.UI.Colors.OrangeRed) });
-            else if (!Equals(ToolTipService.GetToolTip(owner), value)) ToolTipService.SetToolTip(owner, value);
+            if (ReferenceEquals(_tipRow, candidate)) ClosePreviewTip();
+            return;
         }
+        BeginPreviewTip(candidate, pointer.Position);
+    }
+
+    private void BeginPreviewTip(CandidateRow candidate, Windows.Foundation.Point point)
+    {
+        if (ReferenceEquals(candidate, _tipRow)) return;
+        ClosePreviewTip();
+        _tipRow = candidate; _tipPoint = point;
+        _tipScrollOffset = (_preview.HorizontalOffset, _preview.VerticalOffset);
+        _tipDueAt = Environment.TickCount64 + 650;
+        if (_tracePreviewHover) AppLog.Warn("ImportPreviewTip", $"hover started text={candidate.TooltipText is not null} point={point}");
+        SchedulePreviewTip();
+    }
+
+    private void SchedulePreviewTip()
+    {
+        _previewTipTimer.Stop();
+        var remaining = _tipDueAt - Environment.TickCount64;
+        if (remaining <= 0) ShowPreviewTip();
+        else
+        {
+            _previewTipTimer.Interval = TimeSpan.FromMilliseconds(remaining);
+            _previewTipTimer.Start();
+        }
+    }
+
+    private void ShowPreviewTip()
+    {
+        const double inset = 8;
+        if (_tracePreviewHover) AppLog.Warn("ImportPreviewTip", $"show pending={_tipRow is not null} size={_previewTips.ActualWidth}x{_previewTips.ActualHeight}");
+        if (_tipRow is not { TooltipText: { } text } row || !OwnedDialogWindow.IsPointerWithin(row.Host) ||
+            _previewTips.ActualWidth <= 2 * inset || _previewTips.ActualHeight <= 2 * inset)
+        { ClosePreviewTip(); return; }
+        _previewTipText.Text = text;
+        _previewTip.MaxWidth = Math.Min(520, _previewTips.ActualWidth - 2 * inset);
+        _previewTip.Visibility = Visibility.Visible;
+        _previewTip.Measure(new Windows.Foundation.Size(_previewTip.MaxWidth, _previewTips.ActualHeight - 2 * inset));
+        var size = _previewTip.DesiredSize;
+        Canvas.SetLeft(_previewTip, Math.Max(inset, Math.Min(_tipPoint.X + 12, _previewTips.ActualWidth - size.Width - inset)));
+        Canvas.SetTop(_previewTip, Math.Max(inset, Math.Min(_tipPoint.Y + 18, _previewTips.ActualHeight - size.Height - inset)));
+    }
+
+    private void ClosePreviewTip([System.Runtime.CompilerServices.CallerMemberName] string? reason = null)
+    {
+        if (_tracePreviewHover && _tipRow is not null) AppLog.Warn("ImportPreviewTip", $"hover cleared by {reason}");
+        _previewTipTimer.Stop();
+        _tipRow = null;
+        _previewTip.Visibility = Visibility.Collapsed;
     }
     private void UpdateSelectionFeedback()
     {
@@ -979,6 +1091,8 @@ internal sealed class ImportDialog : IWallDialogSession
     private void ReleaseRow(CandidateRow row)
     {
         if (!_rows.Remove(row)) return;
+        if (ReferenceEquals(_tipRow, row)) ClosePreviewTip();
+        row.RemoveTipHandlers?.Invoke();
         row.Toggle.Checked -= row.Changed; row.Toggle.Unchecked -= row.Changed;
         row.Reset(); row.View?.StopTransientFeedback(); row.View?.UpdateFrame(null); row.Clock?.StopTransientFeedback();
     }
@@ -1034,8 +1148,14 @@ internal sealed class ImportDialog : IWallDialogSession
         if (_closed || _dismissRequested || _readsSuspended || _adding || _reading || _sourceData is null || row.Member is ClockMember) return;
         if (!_previewMemberItems.TryGetValue(row.Candidate.SelectionKey, out var item) || item.Candidate is not { } projected ||
             BuildPreviewImageWork(projected, item, _sourceData) is not { } descriptor) return;
+        if (row.RequestKey != descriptor.WorkKey && row.ShowingShellPreview)
+        {
+            row.ShowingShellPreview = false;
+            row.View?.UpdateFrame(null);
+        }
         row.RequestKey = descriptor.WorkKey;
         UpdateRowTooltip(row);
+        StartPreviewShellFrame(row, descriptor);
         if (descriptor.InferTarget && IsPreviewTargetInferenceDeferred(descriptor)) return;
         var member = PreviewMemberFor(descriptor, item.Member!);
         var frameKey = PreviewFrameKey(projected, descriptor.SourceCandidate, descriptor.Source, member,
@@ -1045,6 +1165,7 @@ internal sealed class ImportDialog : IWallDialogSession
             if (completion.Outcome == PreviewImageOutcome.Frame && TryGetFrame(frameKey, out var cached))
             {
                 row.ImageKey = frameKey; row.View?.UpdateFrame(cached);
+                row.ShowingShellPreview = false;
                 TraceFirstOffscreenBind(completion);
             }
             else if (completion.Outcome != PreviewImageOutcome.Frame) row.ImageKey = null;
@@ -1321,12 +1442,13 @@ internal sealed class ImportDialog : IWallDialogSession
                                 work.Descriptor.Source, rowMember, work.Descriptor.Width, work.Descriptor.Height, work.Descriptor.DpiScale);
                             if (loaded?.Frame is { } ready && rowFrameKey == loaded.FrameKey)
                             {
+                                row.ShowingShellPreview = false;
                                 row.ImageKey = loaded.FrameKey; row.View?.UpdateFrame(ready);
                                 TraceFirstOffscreenBind(completion);
                             }
-                            else if (completion.MissingGalleryPath is not null ||
+                            else if (row.ShowingShellPreview || completion.MissingGalleryPath is not null ||
                                 loaded?.Member.Images.Kind == MemberImageSourceKind.Folder && loaded.ImageResult?.Status == WallImageStatus.None)
-                            { row.ImageKey = null; row.View?.UpdateFrame(null); }
+                            { row.ShowingShellPreview = false; row.ImageKey = null; row.View?.UpdateFrame(null); }
                         }
                     }
                 }
@@ -1346,6 +1468,41 @@ internal sealed class ImportDialog : IWallDialogSession
             if (_previewImageQueue.Count > 0) StartPreviewImageWorkers();
             TracePreviewPreparationTerminalIfReady();
         }
+    }
+
+    private void StartPreviewShellFrame(CandidateRow row, PreviewImageDescriptor descriptor)
+    {
+        if (Attributed || row.View is null || row.Member.Images.Kind != MemberImageSourceKind.Automatic ||
+            _previewRequest is not { IsCancellationRequested: false } request || row.ShellPreviewKey == descriptor.WorkKey ||
+            _previewImageCompletions.ContainsKey(descriptor.WorkKey)) return;
+        var input = descriptor.SourceCandidate.Member.SourceShortcutPath ?? descriptor.SourceCandidate.Member.TargetInput;
+        if (input is null) return;
+        row.ShellPreviewKey = descriptor.WorkKey;
+        Track(ShowPreviewShellFrameAsync(row, descriptor, input, request.Token));
+    }
+
+    private async Task ShowPreviewShellFrameAsync(CandidateRow row, PreviewImageDescriptor descriptor, string input, CancellationToken token)
+    {
+        try
+        {
+            await _previewShellSlots.WaitAsync(token);
+            try
+            {
+                if (!CanShow()) return;
+                var result = await _images.LoadImportPreviewShellFrameAsync(row.Member, input, descriptor.Width, descriptor.Height, token);
+                if (result.Frame is not { } frame || !CanShow()) return;
+                row.View!.UpdateFrame(frame);
+                row.ShowingShellPreview = true;
+                _images.TraceImageWork(FormattableString.Invariant(
+                    $"preview-shell-frame:{SourceKind}:elapsedMs={_previewPreparationStopwatch.Elapsed.TotalMilliseconds:F1}:candidate={descriptor.SourceCandidate.SourceKey}"));
+            }
+            finally { _previewShellSlots.Release(); }
+        }
+        catch (OperationCanceledException) { }
+
+        bool CanShow() => !token.IsCancellationRequested && !_closed && !_dismissRequested && !_readsSuspended && !_adding &&
+            _rows.Contains(row) && row.RequestKey == descriptor.WorkKey && row.ImageKey is null &&
+            !_previewImageCompletions.ContainsKey(descriptor.WorkKey);
     }
 
     private void TracePreviewImageWork(PreviewImageWork work, string state, PreviewImageLoadResult? loaded,
@@ -1714,16 +1871,17 @@ internal sealed class ImportDialog : IWallDialogSession
         _autoFilter.IsEnabled = !Attributed;
         _recognizeGroups.IsEnabled = !Attributed && SourceKind != ImportPageSourceKind.SystemFeatures;
         _small.IsEnabled = _medium.IsEnabled = !Attributed && (_sourceData?.Candidates.Any(candidate => !candidate.HasRecordedSize) ?? true);
-        _position.SetEnabled(!export && !IsRecycle);
+        var positionEnabled = !export && !IsRecycle;
+        _position.SetEnabled(positionEnabled);
         var reason = ProductStrings.Get(export ? "Import.Option.ImportOnly" : "Import.Option.RecordedAttributes");
         AutomationProperties.SetHelpText(_autoFilter, _autoFilter.IsEnabled ? "" : reason);
         AutomationProperties.SetHelpText(_recognizeGroups, _recognizeGroups.IsEnabled ? "" :
             !Attributed && SourceKind == ImportPageSourceKind.SystemFeatures ? ProductStrings.Get("Import.Option.SystemGroups") : reason);
         AutomationProperties.SetHelpText(_small, _small.IsEnabled ? "" : reason);
         AutomationProperties.SetHelpText(_medium, _medium.IsEnabled ? "" : reason);
-        AutomationProperties.SetHelpText(_position, export || IsRecycle ? reason : "");
+        AutomationProperties.SetHelpText(_position, positionEnabled ? "" : reason);
         foreach (var button in _position.Children.OfType<ToggleButton>())
-            AutomationProperties.SetHelpText(button, export || IsRecycle ? reason : "");
+            AutomationProperties.SetHelpText(button, positionEnabled ? "" : reason);
         var addable = FilteredAddableCandidates();
         var count = addable.Count(IsSelected);
         var canSelectPreview = CanSelectPreview;
@@ -1887,7 +2045,7 @@ internal sealed class ImportDialog : IWallDialogSession
         if (_previewRoot is not null) _previewRoot.Changed -= OnPreviewRootChanged;
         _catalog.Changed -= _catalogChanged; ClearPreview(); ClearFrameCache();
         _sourceData = null; _projection = _previewProjection = null; _projectedCandidates = null;
-        _context = null; _plan = null; _projectedIdentities = null;
+        _context = null; _plan = null; _projectedContext = null;
         _candidateByKey.Clear(); _selected.Clear(); _recognizedTargets.Clear();
         _recognitionProjection = null; _recognitionContext = null; _recognitionFacts = null;
     }
@@ -1913,7 +2071,8 @@ internal sealed class ImportDialog : IWallDialogSession
                     kind == ImportPageSourceKind.CurrentWall ? "Import.Source.ExportOnly" : "Import.Source.ImportOnly"));
                 _source.Items.Add(item);
             }
-            _source.SelectedIndex = source >= 0 && source < SourceKinds.Length ? source : Mode == ImportPageMode.Export ? 5 : 0;
+            _source.SelectedIndex = Mode == ImportPageMode.Export ? Array.IndexOf(SourceKinds, ImportPageSourceKind.CurrentWall) :
+                source >= 0 && source < SourceKinds.Length ? source : _lastImportSource;
             _position.SetItems([ProductStrings.Get("Import.Position.Head"), ProductStrings.Get("Import.Position.Tail")],
                 showLabels: true, notifyOnReselect: false);
             Id(_position.Children[0], "position-head"); Id(_position.Children[1], "position-tail");
@@ -2116,10 +2275,12 @@ internal sealed class ImportDialog : IWallDialogSession
         public (Border Outline, Border Check)[] Selection { get; } = selection;
         public string? ImageKey { get; set; }
         public string? RequestKey { get; set; }
+        public string? ShellPreviewKey { get; set; }
+        public bool ShowingShellPreview { get; set; }
         public string IconStamp { get; set; } = "";
         public string? TooltipText { get; set; }
         public string? TooltipMissingPath { get; set; }
-        public bool? TooltipEnabled { get; set; }
+        public Action? RemoveTipHandlers { get; set; }
         public TextBlock? MissingPathText { get; set; }
     }
 }

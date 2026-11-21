@@ -61,6 +61,7 @@ public sealed partial class MainWindow
         RefreshAppearance();
         CaptureBackdropBeforeShow();
         AppWindow.Show();
+        QueueExpansionReveal();
         FocusTopSession();
         UpdatePuzzleGate();
     }
@@ -241,6 +242,7 @@ public sealed partial class MainWindow
         // Refresh its text explicitly, including while the settings dialog is open.
         _windowsSidebar?.RefreshStrings();
         RefreshMenuStartStrings();
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(WallHorizontalScrollBar, ProductStrings.Get("Settings.ExpandColumns"));
         ActionIcon.Set(RetryViewButton, ProductStrings.Get("Wall.Retry"), ActionIcon.Refresh);
         foreach (var zone in new[] { ResizeGrip, ResizeHorizontalEdge, ResizeVerticalEdge, ResizeTopLeft, ResizeTopRight, ResizeBottomLeft, ResizeBottomRight })
         {
@@ -326,7 +328,7 @@ public sealed partial class MainWindow
         // A tray-opened page can be the first visible TileWall window. Reuse the
         // hidden capture entry before creating/showing its host; F preparation
         // remains asynchronous and never delays modal admission.
-        PrepareBackdropBeforeModal();
+        CaptureBackdropBeforeShow();
         _modalClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _modal = true;
         UpdateWallHitTesting();
@@ -339,7 +341,7 @@ public sealed partial class MainWindow
         await DrainPersistenceAsync();
         if (_windowClosing || ShutdownStarted || _persistenceAdmissionClosed) return false;
         _dialogHost = new OwnedDialogWindow(this, () => ActiveDialog?.RequestDismiss());
-        RefreshDialogAppearance(Settings);
+        RefreshDialogAppearance();
         _dialogHost.Activated += (_, _) => QueueAutomaticHideCheck("DialogActivated");
         await _dialogHost.InitializeAsync();
         // Exit can close admission while the host is still bootstrapping, before
@@ -367,6 +369,7 @@ public sealed partial class MainWindow
             }
             UpdateResizeZones();
             UpdatePuzzleGate();
+            QueueExpansionReveal();
             QueueEnvironmentAdaptation();
             DialogClosed?.Invoke();
             closed?.TrySetResult();

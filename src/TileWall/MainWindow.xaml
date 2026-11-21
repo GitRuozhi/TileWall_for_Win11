@@ -12,6 +12,13 @@
             <views:WallSurface x:Name="Surface" HorizontalAlignment="Left" VerticalAlignment="Top" />
         </ScrollViewer>
         <Canvas x:Name="DragOverlay" IsHitTestVisible="False" />
+        <ScrollBar x:Name="WallHorizontalScrollBar" Height="16" Orientation="Horizontal" IndicatorMode="MouseIndicator"
+                   HorizontalAlignment="Left" VerticalAlignment="Top" Visibility="Collapsed"
+                   AutomationProperties.AutomationId="wall-horizontal-scrollbar">
+            <ScrollBar.Resources>
+                <SolidColorBrush x:Key="ScrollBarBackgroundDisabled" Color="{ThemeResource ControlStrongStrokeColorDefault}" Opacity="0.3" />
+            </ScrollBar.Resources>
+        </ScrollBar>
         <Grid x:Name="WindowsSidebarHost" HorizontalAlignment="Left" VerticalAlignment="Stretch" />
         <views:ResizeThumb x:Name="ResizeHorizontalEdge" Height="8" Margin="14,0,14,0"
                HorizontalAlignment="Stretch" VerticalAlignment="Top" Tag="Top"

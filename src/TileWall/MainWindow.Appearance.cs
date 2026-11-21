@@ -16,9 +16,11 @@ public sealed partial class MainWindow
     private readonly UISettings _appearanceSettings = new();
     private readonly AccessibilitySettings _accessibilitySettings = new();
     private DecodedImageFrame? _backgroundFrame, _snapshotFrame;
-    private ImageSource? _backgroundDialogSource, _snapshotDialogSource;
+    private ImageSource? _dialogSnapshotSource;
+    private bool? _dialogSnapshotDark;
     private readonly SemaphoreSlim _snapshotSlot = new(1, 1);
     private CancellationTokenSource? _snapshotRequest;
+    private CancellationTokenSource? _dialogSnapshotRequest;
     private DesktopBackdropSnapshot.CapturedFrame? _snapshotCapture;
     private (int X, int Y, int W, int H, double Scale)? _snapshotCaptureGeometry;
     private (int X, int Y, int W, int H, double Scale, bool Dark, AcrylicSnapshotRecipe? Recipe)? _snapshotKey;
@@ -112,15 +114,15 @@ public sealed partial class MainWindow
             (foreground.R * 299 + foreground.G * 587 + foreground.B * 114) > 128_000;
         var theme = _themeDark ? ElementTheme.Dark : ElementTheme.Light;
         if (WallRoot.RequestedTheme != theme) WallRoot.RequestedTheme = theme;
-        var contrast = _accessibilitySettings.HighContrast;
-        if (settings.BackgroundMode != WallBackgroundMode.Acrylic || contrast || !_appearanceSettings.AdvancedEffectsEnabled)
+        if (!CanUseWallSnapshot)
+        {
             _backdropTransitionCover = false;
-        if (_snapshotCapture is not null && (settings.BackgroundMode != WallBackgroundMode.Acrylic || contrast ||
-            !_appearanceSettings.AdvancedEffectsEnabled))
-            ReleaseBackdropSnapshot();
+            if (_snapshotFrame is not null || _snapshotRequestKey is not null)
+                ReleaseBackdropSnapshot(releaseCapture: false);
+        }
         InvalidateSnapshotIfGeometryChanged();
         _wallBackdrop.Configure(settings, _backdropActive, _themeDark, HasValidSnapshot);
-        if (_backdropActive || !HasValidSnapshot && _dialogHost?.IsMaterialActive == true)
+        if (_backdropActive || !HasValidSnapshot && _dialogHost is not null)
             PrepareCachedBackdropIfNeeded();
         var path = settings.BackgroundMode == WallBackgroundMode.Custom ? settings.BackgroundMedia?.Sha256 ?? settings.BackgroundImagePath : null;
         if (!string.Equals(_backgroundPath, path, StringComparison.OrdinalIgnoreCase))
@@ -131,7 +133,6 @@ public sealed partial class MainWindow
             _backgroundRequest = null;
             var previous = _backgroundFrame;
             _backgroundFrame = null;
-            _backgroundDialogSource = null;
             UpdateBackgroundLayer();
             _nativeBackground.ForgetImage(previous);
             if (path is not null)
@@ -141,23 +142,62 @@ public sealed partial class MainWindow
             }
         }
         UpdateBackgroundLayer();
-        RefreshDialogAppearance(settings);
+        RefreshDialogAppearance();
     }
 
-    private void RefreshDialogAppearance(WallSettings settings)
+    private void RefreshDialogAppearance()
     {
         if (_dialogHost is not { } host) return;
+        var contrast = _accessibilitySettings.HighContrast
+            ? _appearanceSettings.GetColorValue(UIColorType.Background) : (Color?)null;
         ImageSource? snapshot = null;
-        Windows.Graphics.RectInt32? bounds = null;
-        if (!_appearanceStopping && HasValidSnapshot && _snapshotCaptureGeometry is { } captured &&
-            _snapshotFrame is { } snapshotFrame)
+        RectInt32? bounds = null;
+        if (!_appearanceStopping && contrast is null && _snapshotCapture is { } capture &&
+            _snapshotCaptureGeometry is { } captured)
         {
-            snapshot = _snapshotDialogSource ??= DesktopBackdropSnapshot.ToBitmap(snapshotFrame);
+            if (_dialogSnapshotDark != _themeDark)
+            {
+                CancelDialogSnapshot();
+                _dialogSnapshotDark = _themeDark;
+                _dialogSnapshotRequest = new();
+                TrackAppearanceWork(PrepareDialogSnapshotAsync(capture, _themeDark, _dialogSnapshotRequest.Token));
+            }
+            snapshot = _dialogSnapshotSource;
             bounds = new(captured.X, captured.Y, captured.W, captured.H);
         }
-        host.ApplyAppearance(WallRoot.RequestedTheme, settings, _backgroundDialogSource,
-            _accessibilitySettings.HighContrast ? _appearanceSettings.GetColorValue(UIColorType.Background) : null,
-            snapshot, bounds);
+        host.ApplyAppearance(WallRoot.RequestedTheme, contrast, snapshot, bounds);
+    }
+
+    private async Task PrepareDialogSnapshotAsync(DesktopBackdropSnapshot.CapturedFrame capture, bool dark,
+        CancellationToken token)
+    {
+        // Use a fixed, fully frosted recipe for the modal surface in each theme.
+        var tint = dark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 239, 239, 239);
+        var recipe = new AcrylicSnapshotRecipe(tint, .65f, .85f, 1);
+        try
+        {
+            await _snapshotSlot.WaitAsync(token);
+            DecodedImageFrame blurred;
+            try { blurred = await Task.Run(() => DesktopBackdropSnapshot.BlurAndTint(capture, recipe, token), token); }
+            finally { _snapshotSlot.Release(); }
+            if (token.IsCancellationRequested || _windowClosing || _appearanceStopping || ShutdownStarted ||
+                !ReferenceEquals(capture, _snapshotCapture) || _themeDark != dark) return;
+            _dialogSnapshotSource = DesktopBackdropSnapshot.ToBitmap(blurred);
+            RefreshDialogAppearance();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) when (ex is OutOfMemoryException or System.Runtime.InteropServices.COMException or
+            IOException or ArgumentException or InvalidOperationException)
+        { AppLog.Warn("DialogBackdrop", $"Fixed frost unavailable: {ex.GetType().Name}"); }
+    }
+
+    private void CancelDialogSnapshot()
+    {
+        _dialogSnapshotRequest?.Cancel();
+        _dialogSnapshotRequest?.Dispose();
+        _dialogSnapshotRequest = null;
+        _dialogSnapshotSource = null;
+        _dialogSnapshotDark = null;
     }
 
     private void OnMaterialFallbackChanged(bool fallback, bool reduced)
@@ -262,7 +302,6 @@ public sealed partial class MainWindow
         if (ct.IsCancellationRequested || _windowClosing || !string.Equals(_backgroundPath, path, StringComparison.OrdinalIgnoreCase)) return;
         var previous = _backgroundFrame;
         _backgroundFrame = result.Frame;
-        _backgroundDialogSource = result.Source;
         RefreshAppearance();
         if (!ReferenceEquals(previous, _backgroundFrame)) _nativeBackground.ForgetImage(previous);
         if (result.Frame is null) AppLog.Warn("WallBackdrop", $"Custom background unavailable: {result.Status}");
@@ -294,6 +333,9 @@ public sealed partial class MainWindow
             captured.LuminosityOpacity == resolved.LuminosityOpacity;
     }
 
+    private bool CanUseWallSnapshot => Settings.BackgroundMode == WallBackgroundMode.Acrylic &&
+        !_accessibilitySettings.HighContrast && _appearanceSettings.AdvancedEffectsEnabled;
+
     private bool HasValidSnapshot => _snapshotFrame is not null && _snapshotKey is { } key && MatchesSnapshotEnvironment(key);
 
     private void InvalidateSnapshotIfGeometryChanged()
@@ -319,6 +361,7 @@ public sealed partial class MainWindow
         {
             _snapshotCapture = null;
             _snapshotCaptureGeometry = null;
+            CancelDialogSnapshot();
         }
         if (!AppWindow.IsVisible) _backdropTransitionCover = false;
         _snapshotKey = null;
@@ -327,48 +370,39 @@ public sealed partial class MainWindow
         UpdateBackgroundLayer();
         _nativeBackground.ForgetImage(_snapshotFrame);
         _snapshotFrame = null;
-        _snapshotDialogSource = null;
-        RefreshDialogAppearance(Settings);
-    }
-
-    private void PrepareBackdropBeforeModal()
-    {
-        if (_appearanceStopping || _windowClosing || AppWindow.IsVisible || _modal ||
-            Settings.BackgroundMode != WallBackgroundMode.Acrylic || _accessibilitySettings.HighContrast ||
-            !_appearanceSettings.AdvancedEffectsEnabled) return;
-        if (HasValidSnapshot) return;
-        try
-        {
-            var key = CurrentSnapshotKey;
-            if (_snapshotCapture is not null && _snapshotCaptureGeometry == (key.X, key.Y, key.W, key.H, key.Scale))
-                PrepareCachedBackdropIfNeeded();
-            else CaptureBackdropBeforeShow();
-        }
-        catch (Exception ex) when (ex is OutOfMemoryException or System.Runtime.InteropServices.COMException or
-            ArgumentException or InvalidOperationException)
-        {
-            AppLog.Warn("BackdropSnapshot", $"Hidden modal capture unavailable: {ex.GetType().Name}");
-        }
+        RefreshDialogAppearance();
     }
 
     private void CaptureBackdropBeforeShow()
     {
-        if (_appearanceStopping || _windowClosing || AppWindow.IsVisible || _modal || Settings.BackgroundMode != WallBackgroundMode.Acrylic ||
-            _accessibilitySettings.HighContrast || !_appearanceSettings.AdvancedEffectsEnabled) return;
-        ReleaseBackdropSnapshot();
+        if (_appearanceStopping || _windowClosing || AppWindow.IsVisible || _modal || _accessibilitySettings.HighContrast) return;
         var key = CurrentSnapshotKey;
-        if (key.Recipe is null) return;
+        var geometry = (key.X, key.Y, key.W, key.H, key.Scale);
+        if (_snapshotCapture is not null && _snapshotCaptureGeometry == geometry)
+        {
+            PrepareCachedBackdropIfNeeded();
+            return;
+        }
+        ReleaseBackdropSnapshot();
         TraceInput($"BackdropSnapshot capture source=hidden-before-show x={key.X} y={key.Y} width={key.W} height={key.H} scale={key.Scale}");
-        var captured = DesktopBackdropSnapshot.Capture(new Windows.Graphics.RectInt32(key.X, key.Y, key.W, key.H), key.Scale);
+        DesktopBackdropSnapshot.CapturedFrame? captured;
+        try { captured = DesktopBackdropSnapshot.Capture(new RectInt32(key.X, key.Y, key.W, key.H), key.Scale); }
+        catch (Exception ex) when (ex is OutOfMemoryException or System.Runtime.InteropServices.COMException or
+            ArgumentException or InvalidOperationException)
+        {
+            AppLog.Warn("BackdropSnapshot", $"Hidden capture unavailable: {ex.GetType().Name}");
+            return;
+        }
         if (captured is null) return;
         _snapshotCapture = captured;
-        _snapshotCaptureGeometry = (key.X, key.Y, key.W, key.H, key.Scale);
+        _snapshotCaptureGeometry = geometry;
         PrepareCachedBackdropIfNeeded();
     }
 
     private void PrepareCachedBackdropIfNeeded()
     {
-        if (_appearanceStopping || _windowClosing || ShutdownStarted || _snapshotCapture is not { } capture) return;
+        if (_appearanceStopping || _windowClosing || ShutdownStarted || !CanUseWallSnapshot ||
+            _snapshotCapture is not { } capture) return;
         var key = CurrentSnapshotKey;
         if (key.Recipe is null || _snapshotCaptureGeometry != (key.X, key.Y, key.W, key.H, key.Scale) ||
             _snapshotKey == key || _snapshotRequestKey == key) return;
@@ -403,7 +437,6 @@ public sealed partial class MainWindow
             var previous = _snapshotFrame;
             CancelBackgroundCommit();
             _snapshotFrame = blurred;
-            _snapshotDialogSource = null;
             _snapshotKey = key;
             TraceInput($"BackdropSnapshot accepted source=hidden-capture generation={generation} opacity=1 bakedAlpha={key.Recipe!.Value.EffectiveOpacity:F3}");
             RefreshAppearance();
@@ -431,6 +464,7 @@ public sealed partial class MainWindow
         CancelBackgroundCommit();
         _backgroundRequest?.Cancel();
         _snapshotRequest?.Cancel();
+        _dialogSnapshotRequest?.Cancel();
         try { await Task.WhenAll(_appearanceWork); }
         catch (Exception ex) { AppLog.Warn("WallBackdrop", $"Appearance shutdown: {ex.Message}"); }
         finally { _appearanceWork.Clear(); }

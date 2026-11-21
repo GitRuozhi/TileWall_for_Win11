@@ -4,7 +4,22 @@ using TileWall.Core.Wall;
 
 namespace TileWall.Core.Entries;
 
-public sealed record LaunchIdentity(string Key, string Target, string Arguments, string WorkingDirectory, bool IsUrl);
+public sealed record LaunchIdentity(string Key, string Target, string Arguments, string WorkingDirectory, bool IsUrl)
+{
+    internal string? AppsFolderApplicationId { get; init; }
+
+    internal string ComparisonTarget(IReadOnlySet<string>? registeredApplications)
+    {
+        if (AppsFolderApplicationId is { } id && registeredApplications?.Contains(id) == true)
+            return LaunchIdentityService.Key("apps-folder", id.ToUpperInvariant(), Arguments, "");
+        if (WorkingDirectory.Length == 0) return Key;
+        if (Key.StartsWith("path:", StringComparison.Ordinal))
+            return LaunchIdentityService.Key("path", Target.ToUpperInvariant(), Arguments, "");
+        if (Key.StartsWith("shell:", StringComparison.Ordinal) && !Key.StartsWith("shell:pidl:", StringComparison.Ordinal))
+            return LaunchIdentityService.Key("shell", Target.ToUpperInvariant(), Arguments, "");
+        return Key;
+    }
+}
 
 /// <summary>Shared, read-only identity for scans, external additions and editor commits.</summary>
 public sealed class LaunchIdentityService(IFileStore files, ILnkFileService links)
@@ -104,6 +119,6 @@ public sealed class LaunchIdentityService(IFileStore files, ILnkFileService link
         return Path.TrimEndingDirectorySeparator(value);
     }
 
-    private static string Key(string kind, string target, string args, string work) =>
+    internal static string Key(string kind, string target, string args, string work) =>
         $"{kind}:{target.Length}:{target}{args.Length}:{args}{work.Length}:{work}";
 }
