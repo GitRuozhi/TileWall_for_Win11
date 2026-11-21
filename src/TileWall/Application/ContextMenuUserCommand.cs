@@ -21,6 +21,7 @@ internal sealed record ContextMenuUserCommand(ContextMenuUserAction Action, stri
     internal const int QueryOwnedOn = 11;
     internal const int QueryOtherOrConflict = 12;
     internal const int QueryReadFailed = 13;
+    internal const int EnableDeferred = 14;
 
     internal bool Enable => Action == ContextMenuUserAction.Enable;
 
@@ -54,14 +55,11 @@ internal sealed record ContextMenuUserCommand(ContextMenuUserAction Action, stri
     } : "Add to TileWall";
 
     [SupportedOSPlatform("windows")]
-    internal static int Run(string[] args)
+    internal static int Run(string[] args, Func<ContextMenuUserCommand, ContextMenuRegistrationResult> apply)
     {
         try
         {
-            return Execute(args, IsElevated, command => command.Enable
-                ? ExplorerContextMenuRegistration.RegisterCurrentUserForCurrentExecutable(command.MenuText)
-                : ExplorerContextMenuRegistration.UnregisterCurrentUserOwnedByCurrentExecutable(),
-                ExplorerContextMenuRegistration.ReadCurrentUserState);
+            return Execute(args, IsElevated, apply, ExplorerContextMenuRegistration.ReadCurrentUserState);
         }
         catch (Exception) { return OperationFailed; }
     }
@@ -81,6 +79,7 @@ internal sealed record ContextMenuUserCommand(ContextMenuUserAction Action, stri
                 _ => QueryOtherOrConflict
             };
         var result = operation(command!);
+        if (command!.Enable && result.Success && result.Deferred) return EnableDeferred;
         return result.Success ? Success : result.RollbackIncomplete ? RollbackIncomplete : OperationFailed;
     }
 

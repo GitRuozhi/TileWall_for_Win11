@@ -35,7 +35,7 @@ public static class Program
             // The package owns this user's menu registration; only unpackaged distributions use HKCU verbs.
             return ApplicationModel.ContextMenuUserCommand.OperationFailed;
 #else
-            return ApplicationModel.ContextMenuUserCommand.Run(args);
+            return ApplicationModel.ContextMenuUserCommand.Run(args, Shell.Interop.ExplorerContextMenuController.ApplyInstallerCommand);
 #endif
         }
         if (ApplicationModel.CurrentUserUninstallCommand.IsRequested(args))

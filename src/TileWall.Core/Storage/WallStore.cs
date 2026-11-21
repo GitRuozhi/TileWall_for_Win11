@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -15,7 +16,7 @@ public sealed partial class WallStore
     private readonly ILnkFileService _links;
     private readonly WallStoragePaths _paths;
     private readonly LaunchIdentityService _identities;
-    private readonly Dictionary<string, LaunchIdentity?> _identityFacts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, EntryFact> _identityFacts = new(StringComparer.Ordinal);
     private static readonly JsonSerializerOptions JournalJson = CreateJournalJsonOptions();
     private static JsonSerializerOptions CreateJournalJsonOptions()
     {
@@ -80,9 +81,10 @@ public sealed partial class WallStore
                 {
                     AuditRecoveryMaterials();
                     blockedDuring = WallOpenBlockReason.ReferencedAssets;
-                    CheckActiveEntries(document!);
+                    var launchCommands = CheckActiveEntries(document!);
                     TryReclaimUnreferencedResources();
-                    return OpenResult(WallOpenStatus.Loaded, document) with { ManifestSha256 = manifestSha256 };
+                    return OpenResult(WallOpenStatus.Loaded, document) with
+                    { ManifestSha256 = manifestSha256, LaunchCommands = launchCommands };
                 }
                 if (!UserDataManifest.IsSupportedFormatVersion(previous.Schema) || !TryReadDocument(_paths.Previous, out var prior, out _))
                     return OpenResult(WallOpenStatus.CorruptBlocked, null, $"Invalid primary: {error}");
@@ -115,13 +117,14 @@ public sealed partial class WallStore
         string? temp = null, stage = null;
         PreparedUserDataSnapshot? snapshot = null;
         var ownsSnapshot = false;
+        var launchCommands = FrozenDictionary<string, string>.Empty;
         try
         {
             if (initial.Generation != 0 || Validate(initial).Count > 0)
                 return OpenResult(WallOpenStatus.CorruptBlocked, null, "Initial document is invalid or generation is not zero.");
             var status = Open();
             if (status.Status != WallOpenStatus.Fresh) return status;
-            CheckActiveEntries(initial);
+            launchCommands = CheckActiveEntries(initial);
             _files.CreateDirectory(_paths.Root);
             temp = _paths.Under("state.init.tmp");
             snapshot = UserDataSnapshotJson.Prepare(initial);
@@ -136,14 +139,16 @@ public sealed partial class WallStore
             _files.Move(temp, _paths.Config, overwrite: false);
             try { _files.DeleteDirectory(stage); }
             catch (Exception cleanup) when (IsStorageError(cleanup))
-            { return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; staging cleanup remains: " + cleanup.Message) with { ManifestSha256 = Hash(snapshot.ManifestBytes) }; }
-            return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes)) with { ManifestSha256 = Hash(snapshot.ManifestBytes) };
+            { return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; staging cleanup remains: " + cleanup.Message) with { ManifestSha256 = Hash(snapshot.ManifestBytes), LaunchCommands = launchCommands }; }
+            return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes)) with
+            { ManifestSha256 = Hash(snapshot.ManifestBytes), LaunchCommands = launchCommands };
         }
         catch (Exception ex) when (IsStorageError(ex))
         {
             // A replace implementation may report failure after having installed the new manifest.
             if (snapshot is not null && TryConfigHash() == Hash(snapshot.ManifestBytes))
-                return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; cleanup remains: " + ex.Message) with { ManifestSha256 = Hash(snapshot.ManifestBytes) };
+                return OpenResult(WallOpenStatus.Loaded, ReadSnapshotDocument(snapshot.ManifestBytes), "Initialized; cleanup remains: " + ex.Message) with
+                { ManifestSha256 = Hash(snapshot.ManifestBytes), LaunchCommands = launchCommands };
             try
             {
                 if (_files.Exists(_paths.Config)) return OpenResult(WallOpenStatus.RecoveryBlocked, null, ex.Message, OpenBlockReason(ex, WallOpenBlockReason.RecoveryMaterials));
@@ -180,7 +185,7 @@ public sealed partial class WallStore
             if (changes.Any(c => c is null || !WallStoragePaths.ValidId(c.MemberId)))
                 return new WallPlanResult(null, ["Invalid entry change identity."]);
             if (changes.OfType<EntryChange.CopyShortcut>().Any(copy =>
-                copy.ExpectedSourceSha256 is not null && !ValidHash(copy.ExpectedSourceSha256)))
+                (copy.ExpectedSourceSha256 is not null || copy.Arguments is not null) && !ValidHash(copy.ExpectedSourceSha256)))
                 return new WallPlanResult(null, ["Invalid shortcut source fingerprint."]);
             if (changes.OfType<EntryChange.FromPackage>().Any(copy => copy.Source is null))
                 return new WallPlanResult(null, ["Invalid verified package shortcut."]);
@@ -241,6 +246,13 @@ public sealed partial class WallStore
                         EntryChange.CreateUrl url when UrlShortcut.ValidateUrl(url.Url).Count == 0 => ManagedEntryKind.Url,
                         _ => throw new InvalidDataException($"Invalid entry source: {id}")
                     };
+                    if (replacement is EntryChange.CopyShortcut { Arguments: not null } overrideCopy)
+                    {
+                        if (kind != ManagedEntryKind.Lnk)
+                            throw new InvalidDataException($"Only file links support an argument override: {id}");
+                        RequireLinkArguments(overrideCopy.Arguments);
+                    }
+                    if (replacement is EntryChange.CreateLink newLink) RequireLinkArguments(newLink.Arguments);
                     var title = MemberPresentationRules.ResolveTitle(after);
                     var name = string.IsNullOrEmpty(title) ? "entry" : ValidName(title);
                     entry = new ManagedEntryReference(id, $"Objects/{id}/{name}.{(kind == ManagedEntryKind.Lnk ? "lnk" : "url")}", kind);
@@ -250,6 +262,12 @@ public sealed partial class WallStore
                 if (targetEdit is not null)
                 {
                     if (replacement is not null || before?.Entry is null) throw new InvalidDataException($"Invalid target edit: {id}");
+                    if (targetEdit.Arguments is not null)
+                    {
+                        RequireLinkArguments(targetEdit.Arguments);
+                        if (entry.Kind != ManagedEntryKind.Lnk || frozenPreconditions?.ContainsKey(id) != true)
+                            throw new InvalidDataException($"Argument editing requires a verified existing file link: {id}");
+                    }
                     if (entry.Kind == ManagedEntryKind.Url && UrlShortcut.ValidateUrl(targetEdit.TargetPathOrUrl).Count != 0)
                         throw new InvalidDataException($"Invalid URL: {id}");
                     if (entry.Kind == ManagedEntryKind.Lnk && !Path.IsPathFullyQualified(targetEdit.TargetPathOrUrl))
@@ -479,6 +497,7 @@ public sealed partial class WallStore
             _paths.Guard(materialDir);
         }
         InstallTransactionResult installed;
+        var launchCommands = FrozenDictionary<string, string>.Empty;
         using (timings?.Measure("store.transactionWrite"))
             installed = ExecuteInstallTransaction(journal, snapshot, oldBytes, null, () =>
             {
@@ -490,14 +509,14 @@ public sealed partial class WallStore
                     _paths.Guard(staged);
                     var bytes = ProduceEntry(op.MemberId, old.GetValueOrDefault(op.MemberId)?.Entry,
                         next[op.MemberId].Entry!, changesByMember.GetValueOrDefault(op.MemberId) ?? [],
-                        staged);
+                        staged, op.OldHash);
                     ops[i] = op with { NewHash = Hash(bytes), NewLength = bytes.LongLength };
                     ObserveIdentity(next[op.MemberId].Entry!.Kind, staged, bytes, ops[i].NewHash!);
                 }
                 using (timings?.Measure("store.media.stage"))
                     StageMedia(journal, mediaAssets ?? []);
                 StageGalleries(journal, managedGalleries ?? []);
-                ValidateGroupIdentities(proposed, journal);
+                launchCommands = GroupLaunchCommands(proposed, journal);
             }, () =>
             {
                 foreach (var op in ops.Where(o => o.OldPath is not null))
@@ -516,11 +535,13 @@ public sealed partial class WallStore
             }, timings, () => VerifyExpectedEntryPreconditions(journal, expectedEntrySha256));
         if (installed.Error is not null)
             return FinishFailedInstall(installed, commitId, stageDir, materialDir, journal, timings,
-                () => CommitResult(WallCommitStatus.CommittedNeedsCleanup, committedDocument, installed.Error.Message) with { ManifestSha256 = journal.NewHash });
+                () => CommitResult(WallCommitStatus.CommittedNeedsCleanup, committedDocument, installed.Error.Message) with
+                { ManifestSha256 = journal.NewHash, LaunchCommands = launchCommands });
         WallCommitStatus cleanupStatus;
         using (timings?.Measure("store.transactionCleanup")) cleanupStatus = CleanupAfterCommit(journal);
         return CommitResult(cleanupStatus, committedDocument,
-            cleanupStatus == WallCommitStatus.CommittedNeedsCleanup ? "Committed; cleanup needs attention." : null) with { ManifestSha256 = journal.NewHash };
+            cleanupStatus == WallCommitStatus.CommittedNeedsCleanup ? "Committed; cleanup needs attention." : null) with
+        { ManifestSha256 = journal.NewHash, LaunchCommands = launchCommands };
     }
 
     private readonly record struct InstallTransactionResult(bool IntentPublished, bool Committed, bool Blocked, Exception? Error);
@@ -628,7 +649,7 @@ public sealed partial class WallStore
     }
 
     private byte[] ProduceEntry(string id, ManagedEntryReference? oldEntry, ManagedEntryReference newEntry,
-        EntryChange[] changes, string staged)
+        EntryChange[] changes, string staged, string? oldHash)
     {
         var replacement = changes.FirstOrDefault(c => c is EntryChange.CopyShortcut or EntryChange.FromPackage or EntryChange.CreateLink or EntryChange.CreateShellLink or EntryChange.CreateUrl);
         switch (replacement)
@@ -643,7 +664,16 @@ public sealed partial class WallStore
                 _files.Copy(source, staged, false);
                 break;
             case EntryChange.CreateLink link:
-                _links.Create(staged, link.TargetPath, "", "");
+                var arguments = link.Arguments ?? string.Empty;
+                RequireFileCommandTarget(link.TargetPath, arguments);
+                _links.Create(staged, link.TargetPath, arguments, "");
+                if (link.Arguments is not null)
+                {
+                    var fields = _links.Read(staged);
+                    if (fields.HasIdList || !SameFileLinkTarget(fields.TargetPath, link.TargetPath) ||
+                        fields.Arguments != arguments || fields.WorkingDirectory.Length != 0)
+                        throw new IOException("The new shortcut differs from the confirmed file command.");
+                }
                 break;
             case EntryChange.CreateShellLink shell:
                 if (shell.NativeTarget is { } native)
@@ -662,22 +692,24 @@ public sealed partial class WallStore
                 _files.Copy(_paths.Entry(oldEntry), staged, false);
                 break;
         }
-        var edit = changes.OfType<EntryChange.ChangeTarget>().SingleOrDefault();
-        if (edit is not null)
-        {
-            if (newEntry.Kind == ManagedEntryKind.Url)
-                _files.WriteAllBytes(staged, UrlShortcut.RewriteUrlLine(_files.ReadAllBytes(staged), edit.TargetPathOrUrl));
-            else
-            {
-                var fields = _links.Read(staged);
-                if (fields.HasIdList) throw new InvalidDataException("IDList shortcut requires whole replacement.");
-                _links.EditTargetOnly(staged, edit.TargetPathOrUrl);
-            }
-        }
         var stagedBytes = _files.ReadAllBytes(staged);
         if (replacement is EntryChange.CopyShortcut { ExpectedSourceSha256: { } expected } &&
             !string.Equals(Hash(stagedBytes), expected, StringComparison.OrdinalIgnoreCase))
             throw new IOException("Shortcut source changed after confirmation.");
+
+        var edit = changes.OfType<EntryChange.ChangeTarget>().SingleOrDefault();
+        if (edit is not null && Hash(stagedBytes) != oldHash)
+            throw new IOException("The existing shortcut changed before it could be edited.");
+        if (edit is not null && newEntry.Kind == ManagedEntryKind.Url)
+        {
+            _files.WriteAllBytes(staged, UrlShortcut.RewriteUrlLine(stagedBytes, edit.TargetPathOrUrl));
+            stagedBytes = _files.ReadAllBytes(staged);
+        }
+        else if (edit is not null || replacement is EntryChange.CopyShortcut { Arguments: not null })
+        {
+            var arguments = edit?.Arguments ?? (replacement as EntryChange.CopyShortcut)?.Arguments;
+            if (EditFileLink(staged, edit?.TargetPathOrUrl, arguments)) stagedBytes = _files.ReadAllBytes(staged);
+        }
         if (replacement is EntryChange.FromPackage packageSource &&
             (stagedBytes.Length != packageSource.Source.Length || Hash(stagedBytes) != packageSource.Source.Sha256 ||
              EntryObservation.Observe(_identities, newEntry.Kind, staged, stagedBytes).Key != packageSource.Source.Identity.Key))
@@ -691,6 +723,45 @@ public sealed partial class WallStore
                 throw new IOException("The native Shell identity changed during preparation.");
         }
         return stagedBytes;
+    }
+
+    private bool EditFileLink(string staged, string? newTarget, string? arguments)
+    {
+        var previous = _links.Read(staged);
+        if (previous.HasIdList) throw new InvalidDataException("IDList shortcut requires whole replacement.");
+        if (arguments is not null && string.IsNullOrWhiteSpace(previous.TargetPath))
+            throw new InvalidDataException("Only a shortcut with a confirmed file target supports argument editing.");
+
+        var target = newTarget ?? previous.TargetPath!;
+        var sameTarget = SameFileLinkTarget(previous.TargetPath, target);
+        var expected = previous with { TargetPath = target, Arguments = arguments ?? previous.Arguments };
+        RequireFileCommandTarget(target, arguments);
+        if (sameTarget && expected.Arguments == previous.Arguments) return false;
+
+        if (arguments is null) _links.EditTargetOnly(staged, target);
+        else _links.EditFileCommand(staged, sameTarget ? null : target, arguments);
+        var actual = _links.Read(staged);
+        if (!SameFileLinkTarget(actual.TargetPath, target) || (actual with { TargetPath = target }) != expected)
+            throw new IOException("The edited shortcut differs from its confirmed command or preserved properties.");
+        return true;
+    }
+
+    private static bool SameFileLinkTarget(string? actual, string expected) =>
+        actual is not null && string.Equals(LaunchIdentityService.ForPath(actual).Target,
+            LaunchIdentityService.ForPath(expected).Target, StringComparison.OrdinalIgnoreCase);
+
+    private void RequireFileCommandTarget(string target, string? arguments)
+    {
+        if (string.IsNullOrEmpty(arguments)) return;
+        var path = LaunchIdentityService.ForPath(target).Target;
+        if (!Path.IsPathFullyQualified(path) || _files.GetPathInfo(path) is not { Exists: true, IsDirectory: false })
+            throw new InvalidDataException("Shortcut arguments require an existing file target.");
+    }
+
+    private static void RequireLinkArguments(string? arguments)
+    {
+        if (arguments is not null && (arguments.Length > ushort.MaxValue || arguments.Contains('\0')))
+            throw new InvalidDataException("The shortcut arguments cannot be stored in a Windows link.");
     }
 
     private void Install(WallJournal journal)
@@ -1175,10 +1246,26 @@ public sealed partial class WallStore
             PlanMedia(commitId, previous, recovered, []), PlanGalleries(commitId, previous, recovered, []));
         var stageDir = _paths.Under("Staging", commitId);
         var materialDir = _paths.Under("Recovery", "Entries", commitId);
+        var activeLinks = previous.Lanes.SelectMany(lane => lane.Groups).SelectMany(group => group.Members)
+            .Where(member => member.Entry?.Kind == ManagedEntryKind.Lnk).Select(member => member.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        var launchCommands = FrozenDictionary<string, string>.Empty;
         var installed = ExecuteInstallTransaction(journal, snapshot, previousBytes, oldBytes, () =>
         {
-            foreach (var entry in entries.Where(e => e.PreviousBytes is not null))
-                _files.WriteAllBytes(StageEntryPath(commitId, entry.MemberId), entry.PreviousBytes!);
+            for (var index = 0; index < entries.Count; index++)
+            {
+                var entry = entries[index];
+                if (entry.PreviousBytes is not { } bytes) continue;
+                var staged = StageEntryPath(commitId, entry.MemberId);
+                _files.WriteAllBytes(staged, bytes);
+                if (!activeLinks.Contains(entry.MemberId)) continue;
+                // Recovery has already admitted the backup by journal fingerprint.
+                // With no cached command, observe the staged link for presentation only.
+                var hash = operations[index].NewHash!;
+                try { ObserveIdentity(ManagedEntryKind.Lnk, staged, bytes, hash); }
+                catch (Exception ex) when (IsStorageError(ex)) { }
+            }
+            launchCommands = GroupLaunchCommands(recovered, journal, validateIdentities: false);
         }, () =>
         {
             foreach (var entry in entries.Where(e => e.CurrentBytes is not null))
@@ -1195,11 +1282,13 @@ public sealed partial class WallStore
         {
             var cleanup = CleanupAfterCommit(journal);
             return OpenResult(WallOpenStatus.RecoveredPrevious, committedDocument,
-                cleanup == WallCommitStatus.CommittedNeedsCleanup ? "Recovered; cleanup remains." : null) with { ManifestSha256 = journal.NewHash };
+                cleanup == WallCommitStatus.CommittedNeedsCleanup ? "Recovered; cleanup remains." : null) with
+            { ManifestSha256 = journal.NewHash, LaunchCommands = launchCommands };
         }
         if (installed.Committed)
             return OpenResult(WallOpenStatus.RecoveredPrevious, committedDocument,
-                $"Recovered; cleanup remains: {installed.Error.Message}") with { ManifestSha256 = journal.NewHash };
+                $"Recovered; cleanup remains: {installed.Error.Message}") with
+            { ManifestSha256 = journal.NewHash, LaunchCommands = launchCommands };
         if (!installed.Blocked)
         {
             try
@@ -1225,7 +1314,7 @@ public sealed partial class WallStore
     private sealed record RecoveryEntry(string MemberId, string? CurrentPath, string? PreviousPath,
         byte[]? CurrentBytes, byte[]? PreviousBytes);
 
-    private void CheckActiveEntries(WallDocument document, bool verifyMediaContents = true, bool observeIdentities = true,
+    private FrozenDictionary<string, string> CheckActiveEntries(WallDocument document, bool verifyMediaContents = true, bool observeIdentities = true,
         IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
     {
         var identityHashes = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1248,9 +1337,10 @@ public sealed partial class WallStore
                 identityHashes[member.Id] = hash;
             }
         }
-        if (observeIdentities) ValidateGroupIdentities(document, identityHashes);
+        var launchCommands = observeIdentities ? GroupLaunchCommands(document, identityHashes) : FrozenDictionary<string, string>.Empty;
         CheckGalleryReferences(document);
         CheckMediaReferences(document, verifyMediaContents);
+        return launchCommands;
     }
 
     /// <summary>

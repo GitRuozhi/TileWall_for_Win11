@@ -26,6 +26,7 @@ internal sealed partial class MemberEditorPreview : Grid
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _wheelTimer;
     private readonly WallMetrics _metrics = new();
     private WallMember? _member;
+    private string? _targetText;
     private PuzzleFrame? _frame;
     private PuzzleFrame? _latestFrame;
     private double _rasterScale = 1, _cameraScale = 1, _cameraX, _cameraY, _unionX, _unionY;
@@ -89,9 +90,10 @@ internal sealed partial class MemberEditorPreview : Grid
         Unloaded += (_, _) => ForgetHover("unloaded");
     }
 
-    internal void SetScene(WallMember member, PuzzleFrame? frame, double rasterScale, WallVisualStyle visualStyle)
+    internal void SetScene(WallMember member, PuzzleFrame? frame, double rasterScale, WallVisualStyle visualStyle,
+        string targetText)
     {
-        _member = member; _latestFrame = frame;
+        _member = member; _latestFrame = frame; _targetText = targetText;
         if (!IsGestureActive) _frame = frame;
         _rasterScale = Math.Max(0.1, rasterScale);
         _visualStyle = visualStyle;
@@ -385,7 +387,7 @@ internal sealed partial class MemberEditorPreview : Grid
     }
 
     private void UpdateTargetTooltips() => _formal.SetPreviewTargetTooltips(
-        !IsGestureActive && _member is { } member ? WallMemberVisualFactory.TargetTooltip(member) : null);
+        IsGestureActive ? null : _targetText);
 
     private void ClearPointerHint()
     {

@@ -14,6 +14,9 @@ public enum WallImageStatus { None, Loaded, Fallback, Missing, Invalid, Cancelle
 
 public sealed record WallImageResult(ImageSource? Source, WallImageStatus Status, string? Diagnostic = null);
 
+internal sealed record WallBackgroundResult(ImageSource? Source, DecodedImageFrame? Frame,
+    WallImageStatus Status, string? Diagnostic = null);
+
 /// <summary>
 /// Read-only image resolution for a tile. Call from the XAML thread: file, shell,
 /// PE and WIC work runs on a worker, then WriteableBitmap is created back on the caller thread.
@@ -40,22 +43,15 @@ public sealed partial class WallImageService : IDisposable
 
     public Task<WallImageResult> LoadBackgroundAsync(
         string? imagePath, int widthPixels, int heightPixels, CancellationToken ct = default) =>
-        LoadAsync(token => PrepareFileAsync(imagePath, "background", widthPixels, heightPixels, token),
-            widthPixels, heightPixels, ct);
+        LoadBackgroundAsync(null, imagePath, widthPixels, heightPixels, ct);
 
-    private Task<WallImageResult> LoadAsync(
-        Func<CancellationToken, Task<Prepared>> prepare, int widthPixels, int heightPixels, CancellationToken ct) =>
-        StartImageRequest(token => LoadCoreAsync(prepare, widthPixels, heightPixels, token), ct,
-            new WallImageResult(null, WallImageStatus.Cancelled));
-
-    private async Task<WallImageResult> LoadCoreAsync(
-        Func<CancellationToken, Task<Prepared>> prepare, int widthPixels, int heightPixels,
-        CancellationToken ct)
+    private async Task<WallBackgroundResult> LoadBackgroundCoreAsync(ManagedMediaReference? media, string? sourcePath,
+        int widthPixels, int heightPixels, CancellationToken ct)
     {
         if (widthPixels <= 0 || heightPixels <= 0)
             throw new ArgumentOutOfRangeException(nameof(widthPixels), "Physical dimensions must be positive.");
         if (ct.IsCancellationRequested)
-            return new(null, WallImageStatus.Cancelled);
+            return new(null, null, WallImageStatus.Cancelled);
 
         try
         {
@@ -63,32 +59,33 @@ public sealed partial class WallImageService : IDisposable
             Prepared prepared;
             try
             {
-                prepared = await Task.Run(() => prepare(ct), ct);
+                prepared = await Task.Run(() => PrepareBackgroundAsync(media is null ? sourcePath : ManagedMediaPath(media),
+                    widthPixels, heightPixels, ct, media), ct);
             }
             finally
             {
                 _slots.Release();
             }
             if (ct.IsCancellationRequested)
-                return new(null, WallImageStatus.Cancelled);
+                return new(null, null, WallImageStatus.Cancelled);
             if (prepared.Pixels is null)
-                return new(null, prepared.Status, prepared.Diagnostic);
+                return new(null, null, prepared.Status, prepared.Diagnostic);
 
             // This continuation is intentionally on the caller's XAML thread.
             var bitmap = new WriteableBitmap(prepared.Width, prepared.Height);
             using (var stream = bitmap.PixelBuffer.AsStream())
                 stream.Write(prepared.Pixels, 0, prepared.Pixels.Length);
             bitmap.Invalidate();
-            return new(bitmap, prepared.Status, prepared.Diagnostic);
+            return new(bitmap, prepared.BackgroundFrame, prepared.Status, prepared.Diagnostic);
         }
         catch (OperationCanceledException)
         {
-            return new(null, WallImageStatus.Cancelled);
+            return new(null, null, WallImageStatus.Cancelled);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or COMException or
             ArgumentException or InvalidOperationException or OverflowException)
         {
-            return new(null, WallImageStatus.Invalid, ex.GetType().Name);
+            return new(null, null, WallImageStatus.Invalid, ex.GetType().Name);
         }
     }
 
@@ -105,8 +102,8 @@ public sealed partial class WallImageService : IDisposable
         return chosen.Frames[AutomaticIconSeriesRules.SelectNativeFrame(chosen.Frames, width, height,
             static frame => (frame.Width, frame.Height))];
     }
-    private async Task<Prepared> PrepareFileAsync(string? path, string semantic, int width, int height,
-        CancellationToken ct, ManagedMediaReference? media = null)
+    private async Task<Prepared> PrepareBackgroundAsync(string? path, int width, int height,
+        CancellationToken ct, ManagedMediaReference? media)
     {
         ct.ThrowIfCancellationRequested();
         var canonicalPath = NormalizeImageFilePath(path);
@@ -118,19 +115,26 @@ public sealed partial class WallImageService : IDisposable
         using var mediaRead = verified.Lease;
         if (verified.Diagnostic is { } diagnostic)
             return new(WallImageStatus.Invalid, null, 0, 0, diagnostic);
-        var key = Fingerprint(canonicalPath, $"{semantic}:{width}x{height}");
+        var key = Fingerprint(canonicalPath, $"background:{width}x{height}");
         if (key is not null && TryGetCached(key, out var cached))
             return cached;
         var decoded = await _decoder.DecodeAsync(canonicalPath, width, height, ct);
-        if (decoded.Frame is null)
+        if (decoded.Frame is not { } frame)
             return new(decoded.Status switch
             {
                 ImageDecodeStatus.Cancelled => WallImageStatus.Cancelled,
                 ImageDecodeStatus.MissingFile => WallImageStatus.Missing,
                 _ => WallImageStatus.Invalid,
             }, null, 0, 0, decoded.ErrorType ?? decoded.Status.ToString());
-        var result = new Prepared(WallImageStatus.Loaded, decoded.Frame.BgraPremultiplied.ToArray(),
-            decoded.Frame.Width, decoded.Frame.Height, null);
+        // The native wall and the XAML projection share the same decoded pixels.
+        // Keep only that payload in the cache, including when the memory is sliced.
+        if (!MemoryMarshal.TryGetArray(frame.BgraPremultiplied, out var segment) || segment.Array is not { } pixels ||
+            segment.Offset != 0 || segment.Count != pixels.Length)
+        {
+            pixels = frame.BgraPremultiplied.ToArray();
+            frame = frame with { BgraPremultiplied = pixels };
+        }
+        var result = new Prepared(WallImageStatus.Loaded, pixels, frame.Width, frame.Height) { BackgroundFrame = frame };
         if (key is not null) Cache(key, result);
         return result;
     }
@@ -262,6 +266,7 @@ public sealed partial class WallImageService : IDisposable
     private sealed record Prepared(WallImageStatus Status, byte[]? Pixels, int Width, int Height,
         string? Diagnostic = null)
     {
+        public DecodedImageFrame? BackgroundFrame { get; init; }
         public bool MemoryCacheAllowed { get; init; } = true;
         public DateTimeOffset MemoryValidUntil { get; init; } = DateTimeOffset.MaxValue;
         public bool CacheAllowed { get; init; } = true;

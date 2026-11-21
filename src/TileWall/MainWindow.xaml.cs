@@ -15,6 +15,7 @@ using TileWall.Graphics;
 using TileWall.Core.Carousel;
 using TileWall.Resources;
 using TileWall.Shell;
+using TileWall.Shell.Interop;
 using TileWall.Views;
 using Windows.Foundation;
 using Windows.Graphics;
@@ -25,6 +26,8 @@ public sealed partial class MainWindow : Window
 {
     private const uint SpiGetWorkArea = 0x0030;
     private readonly WallSession _session;
+    internal ExplorerContextMenuController ExplorerContextMenu { get; }
+    internal event Action? TrustedWallOpened;
     private readonly EntryLauncher _launcher = new();
     private readonly WallImageService _images;
     private readonly PuzzlePresentationCoordinator _puzzles;
@@ -49,6 +52,7 @@ public sealed partial class MainWindow : Window
     private uint _tracedMovePointerId;
     private GesturePhase _tracedMovePhase;
     private readonly WallBackdrop _wallBackdrop;
+    private readonly NativeWallBackground _nativeBackground;
     private readonly NativeBackdropSurface _nativeBackdropSurface;
     private bool _backdropActive = true;
     private bool _backdropUpdateQueued;
@@ -58,6 +62,7 @@ public sealed partial class MainWindow : Window
     {
         _traceInput = scope.IsTest || Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1";
         _session = new WallSession(scope.DataRoot);
+        ExplorerContextMenu = ExplorerContextMenuController.Create(scope.DataRoot);
         _images = new WallImageService(_session.LinkFiles);
         InitializeComponent();
         StatusViewport.Children.Remove(StatusActions);
@@ -87,6 +92,7 @@ public sealed partial class MainWindow : Window
         _session.SetViewRefresh(RenderCommitted);
         InitializePersistence();
         Surface.ResolveEntryPath = _session.ManagedEntryPath;
+        Surface.ResolveTargetCommand = _session.TargetCommand;
         Surface.ResolveLocationTarget = member => EntryLauncher.ResolveLocalTarget(_session.ManagedEntryPath(member), _session.LinkFiles);
         Surface.ResolvePuzzleFrame = _puzzles.FrameFor;
         Surface.ResolvePuzzleProgress = _puzzles.ProgressFor;
@@ -106,7 +112,8 @@ public sealed partial class MainWindow : Window
         _nativeBackdropSurface = new NativeBackdropSurface(WinRT.Interop.WindowNative.GetWindowHandle(this),
             _performance.NativeErase, _performance.NativeMessage);
         InitializeNativeSizingPrototype();
-        _wallBackdrop = new WallBackdrop(DispatcherQueue, OnMaterialFallbackChanged, scope.IsTest);
+        _nativeBackground = new(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        _wallBackdrop = new WallBackdrop(DispatcherQueue, OnMaterialFallbackChanged, scope.IsTest, _nativeBackground);
         InitializeAppearance();
         SystemBackdrop = _wallBackdrop;
 
@@ -318,6 +325,7 @@ public sealed partial class MainWindow : Window
         if (!_session.RefreshViewFromCurrent())
             BlockView(ProductStrings.Get("Wall.ViewFailed"), retry: true);
         else QueueEnvironmentAdaptation();
+        if (!SettingsPersistenceBlocked) TrustedWallOpened?.Invoke();
     }
 
     private (int Columns, int Rows) ChooseInitialGrid(double workWidth, double workHeight)
@@ -608,7 +616,8 @@ public sealed partial class MainWindow : Window
     }
 
     private string? Apply(WallAction action, IReadOnlyList<EntryChange>? changes = null,
-        IReadOnlyList<PreparedMediaAsset>? preparedMedia = null)
+        IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
+        IReadOnlyDictionary<string, string>? expectedEntrySha256 = null)
     {
         var result = _session.Propose(action, WorkWidthDip, WorkHeightDip, _metrics);
         if (result.Proposal is null)
@@ -619,7 +628,7 @@ public sealed partial class MainWindow : Window
             return string.Format(ProductStrings.Get("Wall.LocationUnavailable"),
                 ProductStrings.WallRejectionReason(result.Rejection), string.Empty).TrimEnd();
         }
-        var error = CommitProposal(result.Proposal, changes, preparedMedia);
+        var error = CommitProposal(result.Proposal, changes, preparedMedia, expectedEntrySha256);
         if (error is null && result.Detail is "LAYOUT_MOVED_GROUP_END" or "LAYOUT_MOVED_WALL_END" or "LAYOUT_MOVED_NEARBY")
             TransientStatus(ProductStrings.Get(result.Detail == "LAYOUT_MOVED_NEARBY" ? "Wall.LayoutMovedNearby" : result.Detail == "LAYOUT_MOVED_GROUP_END" ? "Wall.LayoutMovedGroupEnd" : "Wall.LayoutMovedWallEnd"));
         return error;
@@ -690,7 +699,7 @@ public sealed partial class MainWindow : Window
                 RotationInterval = MemberPresentationRules.NewRotationInterval };
             var destinationLane = Math.Clamp(WallViewportPolicy.MapCreationLane(Document, lane), 0, 63);
             var dialog = new SharedMemberEditorDialog(DialogOwner, tile, _images, null, _session.LinkFiles, MaxMemberRows(),
-                (member, changes, assets) =>
+                (member, changes, assets, _) =>
                 {
                     if (string.IsNullOrWhiteSpace(member.TargetInput) && member.Images.Kind is MemberImageSourceKind.Automatic or MemberImageSourceKind.None)
                     { notice = ProductStrings.Get("Editor.EmptyNotKept"); return null; }
@@ -747,11 +756,15 @@ public sealed partial class MainWindow : Window
                 await clockDialog.ShowAsync();
                 return;
             }
+            (LinkFields? Link, string? Url, string Sha256)? managedEntry = null;
+            try { managedEntry = _session.ObserveManagedEntry(id); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
+                System.Runtime.InteropServices.COMException) { }
             var dialog = new SharedMemberEditorDialog(DialogOwner, member, _images,
                 _session.ManagedEntryPath(member), _session.LinkFiles, MaxMemberRows(),
-                (replacement, changes, assets) => SaveSharedMember(replacement, changes, isNewPlaceholder,
-                    existing => duplicateToFocus = existing, assets), Settings.VisualStyle, initialFrame: _puzzles.FrameFor(id),
-                initialAutomaticSeries: _puzzles.PreparedSeriesFor(id));
+                (replacement, changes, assets, expectedHash) => SaveSharedMember(replacement, changes, isNewPlaceholder,
+                    existing => duplicateToFocus = existing, assets, expectedHash), Settings.VisualStyle, initialFrame: _puzzles.FrameFor(id),
+                initialAutomaticSeries: _puzzles.PreparedSeriesFor(id), managedEntry: managedEntry);
             ActiveDialog = dialog;
             AttachGalleryEditor(dialog);
             await dialog.ShowAsync();
@@ -769,7 +782,8 @@ public sealed partial class MainWindow : Window
     }
 
     private string? SaveSharedMember(WallMember replacement, IReadOnlyList<EntryChange> changes,
-        bool isNewPlaceholder, Action<string> locateDuplicate, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null)
+        bool isNewPlaceholder, Action<string> locateDuplicate, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
+        string? expectedEntryHash = null)
     {
         if (FindMember(replacement.Id) is not { } current) return ProductStrings.Get("Wall.PuzzleMissing");
         try
@@ -783,7 +797,7 @@ public sealed partial class MainWindow : Window
             if (identityMayChange)
             {
                 var identities = ImportIdentities;
-                var desired = DesiredEditorIdentity(current, replacement, changes, identities);
+                var desired = DesiredEditorIdentity(current, replacement, changes, identities, expectedEntryHash);
                 if (desired is not null)
                 {
                     var duplicate = Document.Lanes.SelectMany(l => l.Groups).Where(g => g.Members.Any(m => m.Id == current.Id)).SelectMany(g => g.Members)
@@ -802,7 +816,9 @@ public sealed partial class MainWindow : Window
             }
             if (changes.Count == 0 && AutomaticIconSeriesRules.SameSeries(current.Images.IconSeries, replacement.Images.IconSeries) &&
                 !MemberPresentationRules.HasUserPropertyChanges(current, replacement)) return null;
-            return Apply(new ReplaceMemberAction(Document.Generation, replacement.Id, replacement), changes, preparedMedia);
+            var expectedEntries = expectedEntryHash is null ? null
+                : new Dictionary<string, string>(StringComparer.Ordinal) { [current.Id] = expectedEntryHash };
+            return Apply(new ReplaceMemberAction(Document.Generation, replacement.Id, replacement), changes, preparedMedia, expectedEntries);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
             System.Runtime.InteropServices.COMException)
@@ -810,21 +826,32 @@ public sealed partial class MainWindow : Window
     }
 
     private LaunchIdentity? DesiredEditorIdentity(WallMember current, WallMember replacement,
-        IReadOnlyList<EntryChange> changes, LaunchIdentityService identities)
+        IReadOnlyList<EntryChange> changes, LaunchIdentityService identities, string? expectedEntryHash = null)
     {
         if (changes.OfType<EntryChange.Remove>().Any()) return null;
         if (changes.OfType<EntryChange.CopyShortcut>().FirstOrDefault() is { } copy)
-            return identities.ResolveInput(copy.SourcePath);
+        {
+            using var stream = File.Open(copy.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var bytes = ReadExternalEntryBytes(stream);
+            if (Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)) != copy.ExpectedSourceSha256)
+                throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+            var kind = EntryNames.KindOfRelativePath(copy.SourcePath);
+            var fields = kind == EntryKind.Lnk ? _session.LinkFiles.Read(copy.SourcePath) : null;
+            if (copy.Arguments is { } arguments && fields is not null) fields = fields with { Arguments = arguments };
+            return identities.ResolveObservedInput(kind, copy.SourcePath, bytes, fields);
+        }
         if (changes.OfType<EntryChange.CreateLink>().FirstOrDefault() is { } createLink)
-            return identities.ResolveInput(createLink.TargetPath);
+            return LaunchIdentityService.ForPath(createLink.TargetPath, createLink.Arguments ?? string.Empty);
         if (changes.OfType<EntryChange.CreateUrl>().FirstOrDefault() is { } createUrl)
             return identities.ResolveInput(createUrl.Url);
         if (changes.OfType<EntryChange.ChangeTarget>().FirstOrDefault() is { } target)
         {
-            if (current.Entry?.Kind == ManagedEntryKind.Lnk && _session.ManagedEntryPath(current) is { } managed)
+            if (current.Entry?.Kind == ManagedEntryKind.Lnk)
             {
-                var fields = _session.LinkFiles.Read(managed);
-                return LaunchIdentityService.ForPath(target.TargetPathOrUrl, fields.Arguments, fields.WorkingDirectory);
+                var managed = _session.ObserveManagedEntry(current.Id);
+                if (managed?.Link is not { } fields || managed.Value.Sha256 != expectedEntryHash)
+                    throw new IOException(ProductStrings.Get("Import.SourceChanged"));
+                return LaunchIdentityService.ForPath(target.TargetPathOrUrl, target.Arguments ?? fields.Arguments, fields.WorkingDirectory);
             }
             return identities.ResolveInput(target.TargetPathOrUrl);
         }

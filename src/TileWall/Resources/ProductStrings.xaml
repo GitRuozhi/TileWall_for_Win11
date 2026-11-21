@@ -355,9 +355,9 @@
     <x:String x:Key="Settings.BackgroundFailed">无法读取这张图片，请重新选择。</x:String>
     <x:String x:Key="Wall.GroupTitleHint">单击拖动、双击修改名称</x:String>
     <x:String x:Key="Settings.ExplorerMenu">右键菜单</x:String>
-    <x:String x:Key="Settings.PackagedContextMenuHelp">为当前用户开启或关闭资源管理器中的“添加到 TileWall”，无需管理员权限。Windows 11 的现代菜单与经典菜单共用此开关；恢复默认设置不会更改此开关。</x:String>
     <x:String x:Key="Settings.ContextMenuToggle">资源管理器右键添加</x:String>
-    <x:String x:Key="Settings.ContextMenuHelp">为当前用户开启或关闭资源管理器经典右键菜单中的“添加到 TileWall”，无需管理员权限；恢复默认设置不会更改此开关。</x:String>
+    <x:String x:Key="Settings.ContextMenuHelp">开启时由当前版本提供“添加到 TileWall”。关闭时停用当前用户所有归属可验证的 TileWall 菜单，无需管理员权限。恢复默认设置会保留此设置。</x:String>
+    <x:String x:Key="Settings.ContextMenuUnverified">以下右键菜单项的归属无法验证，已保留。</x:String>
     <x:String x:Key="Settings.ContextMenuReadFailed">无法读取右键菜单设置，请重试。</x:String>
     <x:String x:Key="Settings.ContextMenuConflict">已有其他程序使用此菜单项，无法修改。</x:String>
     <x:String x:Key="Settings.ContextMenuTransfer">启用会把当前用户以下 TileWall 副本的菜单转到当前副本：&#10;{0}&#10;新的目标：&#10;{1}&#10;是否继续？</x:String>
@@ -387,6 +387,7 @@
     <x:String x:Key="Editor.PresetWide">宽</x:String>
     <x:String x:Key="Editor.PresetLarge">大</x:String>
     <x:String x:Key="Editor.InvalidTarget">目标路径不存在或网址无效。</x:String>
+    <x:String x:Key="Editor.QuoteTargetPath">请给目标文件的完整路径加双引号，再填写启动参数。</x:String>
     <x:String x:Key="Editor.Auto">自动</x:String>
     <x:String x:Key="Editor.Manual">手动</x:String>
     <x:String x:Key="Import.Small">小 1×1</x:String>

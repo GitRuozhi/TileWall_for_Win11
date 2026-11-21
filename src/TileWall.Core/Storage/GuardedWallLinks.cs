@@ -39,4 +39,10 @@ internal sealed class GuardedWallLinks(ILnkFileService inner, WallStoragePaths p
         paths.Guard(path);
         inner.EditTargetOnly(path, newTarget);
     }
+
+    public void EditFileCommand(string path, string? newTarget, string arguments)
+    {
+        paths.Guard(path);
+        inner.EditFileCommand(path, newTarget, arguments);
+    }
 }

@@ -82,6 +82,10 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             if (!_window.Settings.StayVisibleOnFocusLoss) Request(WallShowTrigger.Hide);
         };
         _window.SettingsRequested += OpenSettings;
+        _window.TrustedWallOpened += () =>
+        {
+            if (_started) _ = QueueExplorerMenuSynchronization();
+        };
         _window.DialogClosed += QueueAddDrain;
         _window.ImportReadinessChanged += () =>
         {
@@ -110,6 +114,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             QueueTaskbarEnvironmentRefresh();
         };
         _host.TaskbarCreated += QueueTaskbarEnvironmentRefresh;
+        _host.TaskbarCreated += QueueTaskbarStartReplacementRecovery;
         _host.AcceptPaths = ReceiveAdd;
         _hotKey.RegistrationChanged += UpdateTray;
         _secondaryHotKey.RegistrationChanged += UpdateTray;
@@ -123,32 +128,17 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         try
         {
+            _automaticMenuHandoffPending = !intent.Background && intent.Add is null && !intent.NotificationActivation;
             _notifications.Register(intent.NotificationActivation);
             await RecoverPreviousTaskbarAsync();
             if (_exitPending || _tearingDown) return;
             // No Activate/Show is needed to open the committed session or register process resources.
             await _window.InitializeSessionAsync(_showWhenStarted || !intent.Background && intent.Add is null);
             if (_exitPending || _tearingDown) return;
-#if !TILEWALL_PACKAGED
-            // RuntimeScope.IsTest is retained in _isTest; only the normal data
-            // scope may upgrade its own existing, ordinary-user Explorer verbs.
-            if (!_isTest)
-            {
-                try
-                {
-                    await Task.Run(() =>
-                    {
-                        if (ContextMenuUserCommand.IsElevated()) return;
-                        var migration = ExplorerContextMenuRegistration.ReconcileCurrentUserForCurrentExecutable();
-                        if (!migration.Success) AppLog.Warn("ContextMenuMigration", migration.Error ?? "Explorer registration upgrade failed.");
-                    });
-                }
-                catch (Exception ex) { AppLog.Warn("ContextMenuMigration", ex.ToString()); }
-                if (_exitPending || _tearingDown) return;
-            }
-#endif
             _window.ScheduleStartMenuStartupRefresh();
             ProductStrings.ApplyLanguage(_window.Settings.LanguageMode);
+            await QueueExplorerMenuSynchronization();
+            if (_exitPending || _tearingDown) return;
             _window.RefreshAppearance();
             _window.RefreshProductStrings();
             RestoreCommittedHotKeys();
@@ -294,6 +284,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         if (_exitPending || _tearingDown) return;
         _exitPending = true;
+        CancelTaskbarStartReplacementRecovery();
         _window.CancelWelcomeInitialization();
         _addPreparation?.Cancel();
         // Tray commands and AppWindow.Closing arrive inside native callbacks. Let
@@ -344,6 +335,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             // must release the owned host before Application.Exit destroys XAML;
             // otherwise queued layout callbacks can still read a closed AppWindow.
             await modalClosed;
+            await _explorerMenuSynchronization;
             _window.TraceExit("dialog-closed");
             if (!await StopInputForExitAsync()) return;
             _window.TraceExit("shutdown-workers");
@@ -388,6 +380,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             if (!IsCurrent()) return;
             if (ready)
             {
+                _window.BeginBackgroundAnimation(show);
                 if (show) _animation.BeginShow();
                 else _animation.BeginHide();
             }
@@ -426,11 +419,17 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _animationPreparation = null; // The owning async finally disposes it.
     }
 
-    public void CancelAnimations() { CancelAnimationPreparation(); _animation.Cancel(); }
+    public void CancelAnimations()
+    {
+        CancelAnimationPreparation();
+        _animation.Cancel();
+        _window.ResetBackgroundAnimation();
+    }
     public void SnapShow()
     {
         CancelAnimationPreparation();
         _animation.ResetVisual();
+        _window.ResetBackgroundAnimation();
         PrepareTaskbarPlacement();
         _window.ShowWall();
         TaskbarWallShown();
@@ -440,6 +439,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         CancelAnimationPreparation();
         _animation.ResetVisual();
+        _window.ResetBackgroundAnimation();
         _window.HideWall();
         TaskbarWallHidden();
         _window.CompleteBackdropAnimation(visible: false);

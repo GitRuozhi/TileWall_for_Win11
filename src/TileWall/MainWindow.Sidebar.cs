@@ -32,6 +32,6 @@ public sealed partial class MainWindow
         }
         _windowsSidebar.MaxWidth = Math.Max(48, WallRoot.ActualWidth);
         _windowsSidebar.Configure(_sidebarAnchor, _sidebarFullScreen);
-        PositionMenuStart(_scrollRegion);
+        PositionMenuStart();
     }
 }

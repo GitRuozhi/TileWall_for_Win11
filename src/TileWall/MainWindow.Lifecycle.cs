@@ -179,44 +179,49 @@ public sealed partial class MainWindow
         // Retain the wall's ordinary-app preference; taskbar activation changes only
         // its relation to the verified Explorer taskbar, never Explorer's own band.
         var topmost = Settings.AlwaysOnTop || AppWindow.IsVisible && foregroundInSession;
+        const uint flags = 0x0013; // SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
         if (BackdropTrace.Enabled)
-            BackdropTrace.Write($"ZOrder before hwnd={hwnd} foreground={GetForegroundWindow()} inSession={foregroundInSession} preference={Settings.AlwaysOnTop} presenter={presenter.IsAlwaysOnTop} actualTopmost={(Shell.Interop.Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64() & 8) != 0} desired={topmost} raise={raise}");
+            BackdropTrace.Write($"ZOrder before hwnd={hwnd} foreground={GetForegroundWindow()} inSession={foregroundInSession} preference={Settings.AlwaysOnTop} presenter={presenter.IsAlwaysOnTop} actualTopmost={IsTopmostWindow(hwnd)} desired={topmost} raise={raise}");
         if (presenter.IsAlwaysOnTop != topmost) presenter.IsAlwaysOnTop = topmost;
-        if (Settings.ActivateTaskbar && topmost && AppWindow.IsVisible &&
-            _taskbarWindow != 0 && TaskbarActivationBackend.IsCurrentTaskbar(_taskbarWindow))
+        if (topmost)
         {
-            const uint flags = 0x0013; // SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-            if (!Win32Api.SetWindowPos(hwnd, _taskbarWindow, 0, 0, 0, 0, flags))
+            // Inserting after an ordinary taskbar would move the wall out of the
+            // topmost band. The effective work area already reserves that taskbar.
+            var behindTaskbar = Settings.ActivateTaskbar && AppWindow.IsVisible &&
+                TaskbarActivationBackend.IsCurrentTaskbar(_taskbarWindow) && IsTopmostWindow(_taskbarWindow);
+            if (behindTaskbar && !Win32Api.SetWindowPos(hwnd, _taskbarWindow, 0, 0, 0, 0, flags))
                 AppLog.Warn("WindowFocus", "Could not settle the wall behind the taskbar.");
+            // Explorer can change bands between the style read and SetWindowPos.
+            // Read the actual HWND rather than trusting the presenter's cached state.
+            if ((!IsTopmostWindow(hwnd) || raise && !behindTaskbar) &&
+                !Win32Api.SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, flags))
+                AppLog.Warn("WindowFocus", "Could not raise the wall to the topmost band.");
         }
-        else if (!Settings.ActivateTaskbar && topmost && raise)
+        else
         {
-            const uint flags = 0x0013; // SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-            if (!Shell.Interop.Win32Api.SetWindowPos(WinRT.Interop.WindowNative.GetWindowHandle(this),
-                    new IntPtr(-1), 0, 0, 0, 0, flags))
-                AppLog.Warn("WindowFocus", "Could not raise the foreground wall above the taskbar.");
-        }
-        else if (!topmost && AppWindow.IsVisible && !foregroundInSession)
-        {
-            // Clearing TOPMOST alone can leave the wall first among ordinary
-            // windows. Settle behind the actual outside foreground, without activation.
-            var foreground = GetForegroundWindow();
-            if (foreground != IntPtr.Zero && GetWindowThreadProcessId(foreground, out var processId) != 0 &&
-                processId != (uint)Environment.ProcessId && GetAncestor(foreground, 3) != hwnd)
-            {
-                var target = GetAncestor(foreground, 2); // GA_ROOT; keep an outside popup's own owner chain.
-                if (target != IntPtr.Zero && target != hwnd && IsWindowVisible(target) &&
-                    (Win32Api.GetWindowLongPtrW(target, -20).ToInt64() & 8) == 0 &&
-                    GetForegroundWindow() == foreground)
-                {
-                    const uint flags = 0x0013; // SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-                    if (!Win32Api.SetWindowPos(hwnd, target, 0, 0, 0, 0, flags))
-                        AppLog.Warn("WindowFocus", "Could not settle the background wall below the foreground window.");
-                }
-            }
+            if (IsTopmostWindow(hwnd) && !Win32Api.SetWindowPos(hwnd, new IntPtr(-2), 0, 0, 0, 0, flags))
+                AppLog.Warn("WindowFocus", "Could not release the wall from the topmost band.");
+            if (AppWindow.IsVisible && !foregroundInSession) PlaceBehindForegroundWindow(hwnd, flags);
         }
         if (BackdropTrace.Enabled)
-            BackdropTrace.Write($"ZOrder after hwnd={hwnd} foreground={GetForegroundWindow()} presenter={presenter.IsAlwaysOnTop} actualTopmost={(Shell.Interop.Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64() & 8) != 0}");
+            BackdropTrace.Write($"ZOrder after hwnd={hwnd} foreground={GetForegroundWindow()} presenter={presenter.IsAlwaysOnTop} actualTopmost={IsTopmostWindow(hwnd)}");
+    }
+
+    private static bool IsTopmostWindow(IntPtr hwnd) =>
+        (Win32Api.GetWindowLongPtrW(hwnd, -20).ToInt64() & 8) != 0; // GWL_EXSTYLE / WS_EX_TOPMOST
+
+    private static void PlaceBehindForegroundWindow(IntPtr hwnd, uint flags)
+    {
+        // Clearing TOPMOST alone can leave the wall first among ordinary windows.
+        var foreground = GetForegroundWindow();
+        if (foreground != IntPtr.Zero && GetWindowThreadProcessId(foreground, out var processId) != 0 &&
+            processId != (uint)Environment.ProcessId && GetAncestor(foreground, 3) != hwnd)
+        {
+            var target = GetAncestor(foreground, 2); // GA_ROOT; keep an outside popup's own owner chain.
+            if (target != IntPtr.Zero && target != hwnd && IsWindowVisible(target) && !IsTopmostWindow(target) &&
+                GetForegroundWindow() == foreground && !Win32Api.SetWindowPos(hwnd, target, 0, 0, 0, 0, flags))
+                AppLog.Warn("WindowFocus", "Could not settle the background wall below the foreground window.");
+        }
     }
 
     internal void CancelTransientState([CallerMemberName] string reason = "")
@@ -292,7 +297,7 @@ public sealed partial class MainWindow
         try
         {
             if (!await BeginModalAsync()) return;
-            var dialog = new SettingsDialog(DialogOwner, _images, ExplorerContextMenuController.Create(_session.DataRoot), read, apply, hotKeyRecordingChanged, retryStartReplacement,
+            var dialog = new SettingsDialog(DialogOwner, _images, ExplorerContextMenu, read, apply, hotKeyRecordingChanged, retryStartReplacement,
                 token => InitializeWelcomeWallAsync(fresh: false, token));
             ActiveDialog = dialog;
             await dialog.ShowAsync();

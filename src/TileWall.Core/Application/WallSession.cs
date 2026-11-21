@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
 using TileWall.Core.Exchange;
@@ -16,6 +17,7 @@ internal sealed class WallSession
     private readonly bool _commitPerformanceEnabled = Environment.GetEnvironmentVariable("TILEWALL_PERF") == "1";
     private WallDocument? _current;
     private string? _manifestSha256;
+    private FrozenDictionary<string, string> _targetCommands = FrozenDictionary<string, string>.Empty;
     private Action<WallDocument>? _refreshView;
     private IWallStorageExecutor? _executor;
     private Func<Action, Task>? _acceptOnUi;
@@ -87,6 +89,19 @@ internal sealed class WallSession
             return null;
         return Path.GetFullPath(Path.Combine(DataRoot,
             entry.RelativePath.Replace('/', Path.DirectorySeparatorChar)));
+    }
+
+    internal string? TargetCommand(string memberId) => _targetCommands.GetValueOrDefault(memberId);
+
+    public (LinkFields? Link, string? Url, string Sha256)? ObserveManagedEntry(string memberId)
+    {
+        lock (_gate)
+        {
+            if (_current is null || _writePending || ViewBlocked || RequiresReopen || _storeRecoveryBlocked || _resultUnknown)
+                throw new IOException("The committed wall is unavailable for shortcut observation.");
+            var member = _current.EnumerateAllMembers().FirstOrDefault(item => item.Id == memberId);
+            return member?.Entry is { } entry ? _store.ObserveManagedEntry(entry) : null;
+        }
     }
 
     public string? ManagedMediaPath(ManagedMediaReference? media) =>
@@ -325,6 +340,7 @@ internal sealed class WallSession
             if (upgraded.Status is WallCommitStatus.Committed or WallCommitStatus.CommittedNeedsCleanup &&
                 upgraded.CommittedDocument is { } committed)
                 result = result with { Document = committed, ManifestSha256 = upgraded.ManifestSha256, WasUpgraded = true,
+                    LaunchCommands = upgraded.LaunchCommands,
                     Diagnostics = result.Diagnostics.Concat(upgraded.Diagnostics).ToArray() };
             else
                 return new(upgraded.Status == WallCommitStatus.RecoveryBlocked ? WallOpenStatus.RecoveryBlocked : WallOpenStatus.OpenFailed,
@@ -341,6 +357,7 @@ internal sealed class WallSession
             result = result with { Document = result.Document.ActiveView() };
             _manifestSha256 = result.ManifestSha256 ?? throw new InvalidOperationException("The opened manifest fingerprint is unavailable.");
             _current = result.Document;
+            _targetCommands = result.LaunchCommands;
             RequiresReopen = false;
             _storeRecoveryBlocked = false;
             _resultUnknown = false;
@@ -609,7 +626,11 @@ internal sealed class WallSession
         // Called only on the UI acceptance path; disk replacement is the commit point.
         // WallStore returns a frozen snapshot from every accepting path.
         _manifestSha256 = result.ManifestSha256 ?? throw new InvalidOperationException("The committed manifest fingerprint is unavailable.");
-        using (timings?.Measure("session.publish")) _current = committedDocument.ActiveView();
+        using (timings?.Measure("session.publish"))
+        {
+            _current = committedDocument.ActiveView();
+            _targetCommands = result.LaunchCommands;
+        }
         bool viewOkay;
         using (timings?.Measure("session.viewRefresh")) viewOkay = RefreshViewCore();
         return new(true, result.Status == WallCommitStatus.CommittedNeedsCleanup,

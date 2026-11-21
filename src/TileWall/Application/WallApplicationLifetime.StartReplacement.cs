@@ -1,4 +1,5 @@
 using TileWall.Core.Settings;
+using TileWall.Core.Shell;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
 using TileWall.Resources;
@@ -19,6 +20,11 @@ internal sealed partial class WallApplicationLifetime
     private string? _startReplacementError;
     private bool _taskbarStartReplacementSuspended;
     private string? _taskbarStartReplacementError;
+    private static readonly TimeSpan TaskbarStartRecoveryWindow = TimeSpan.FromSeconds(10);
+    private static readonly int[] TaskbarStartRecoveryDelays = [150, 350, 750, 1500, 2250, 3000];
+    private long? _taskbarCreatedAt;
+    private CancellationTokenSource? _taskbarStartRecovery;
+    private StartReplacementFault? _lastTaskbarStartRecoveryFault;
 
     private StartReplacementService StartInput(bool taskbar) => taskbar ? _taskbarStartReplacement : _startReplacement;
     private static bool StartInputEnabled(WallSettings settings, bool taskbar) => taskbar
@@ -56,26 +62,119 @@ internal sealed partial class WallApplicationLifetime
         Request(TileWall.Core.Shell.WallShowTrigger.Toggle);
     });
 
-    private void QueueStartReplacementFault(string failure, bool taskbar = false)
+    private void QueueStartReplacementFault(StartReplacementFault failure, bool taskbar = false)
     {
         _window.DispatcherQueue.TryEnqueue(() => _ = AcceptStartReplacementFaultAsync(failure, taskbar));
     }
 
-    private async Task AcceptStartReplacementFaultAsync(string failure, bool taskbar)
+    private async Task AcceptStartReplacementFaultAsync(StartReplacementFault failure, bool taskbar)
     {
         await _inputTransition.WaitAsync();
         try
         {
             var service = StartInput(taskbar);
-            if (_tearingDown || !StartInputEnabled(_window.Settings, taskbar) || service.IsActive ||
-                service.Fault != failure) return;
-            SetStartInputError(taskbar, StartReplacementFailure(failure));
+            if (_tearingDown || _exitPending || !StartInputEnabled(_window.Settings, taskbar) || service.IsActive ||
+                !ReferenceEquals(service.CurrentFault, failure)) return;
+            if (taskbar && (ReferenceEquals(_lastTaskbarStartRecoveryFault, failure) ||
+                TryQueueTaskbarStartReplacementRecovery(failure))) return;
+            SetStartInputError(taskbar, StartReplacementFailure(failure.Code));
             await StopStartReplacementAsync(taskbar: taskbar);
             if (!_exitPending) _window.ShowStatus(StartInputError(taskbar)!);
             _window.ActiveDialog?.RefreshStrings();
         }
         catch (Exception ex) { TileWall.Core.Shell.AppLog.Warn("StartReplacement", $"Fault notification: {ex.Message}"); }
         finally { _inputTransition.Release(); }
+    }
+
+    private void QueueTaskbarStartReplacementRecovery()
+    {
+        _taskbarCreatedAt = Environment.TickCount64;
+        _window.DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!CanActivateStartReplacement || !_window.Settings.RedirectTaskbarStartButton) return;
+            if (_taskbarStartReplacement.IsActive) _taskbarStartReplacement.InvalidateButtons(discardQueuedToggle: true);
+            else if (_taskbarStartReplacement.CurrentFault is { } fault) TryQueueTaskbarStartReplacementRecovery(fault);
+        });
+    }
+
+    private bool TryQueueTaskbarStartReplacementRecovery(StartReplacementFault fault)
+    {
+        if (_taskbarStartRecovery is not null) return true;
+        if (!CanActivateStartReplacement || !_window.Settings.RedirectTaskbarStartButton ||
+            ReferenceEquals(_lastTaskbarStartRecoveryFault, fault)) return false;
+        var eligible = fault.LocatorError?.Code == StartButtonLocatorFailure.TaskbarTopologyChanged ||
+            fault.LocatorError?.Code == StartButtonLocatorFailure.TaskbarUnavailable && _taskbarCreatedAt is { } created &&
+            Math.Abs(fault.ObservedAt - created) <= TaskbarStartRecoveryWindow.TotalMilliseconds;
+        if (!eligible) return false;
+
+        var request = new CancellationTokenSource();
+        _taskbarStartRecovery = request;
+        _taskbarStartReplacementError = null;
+        _ = RecoverTaskbarStartReplacementAsync(request, fault);
+        _window.ActiveDialog?.RefreshStrings();
+        return true;
+    }
+
+    private async Task RecoverTaskbarStartReplacementAsync(CancellationTokenSource request, StartReplacementFault trigger)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(request.Token);
+        deadline.CancelAfter(TaskbarStartRecoveryWindow);
+        var token = deadline.Token;
+        var service = _taskbarStartReplacement;
+        try
+        {
+            foreach (var delay in TaskbarStartRecoveryDelays)
+            {
+                await Task.Delay(delay, token);
+                using var stopBudget = CancellationTokenSource.CreateLinkedTokenSource(token);
+                stopBudget.CancelAfter(TimeSpan.FromSeconds(5));
+                try { await _inputTransition.WaitAsync(stopBudget.Token); }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested) { continue; }
+                try
+                {
+                    if (_hotKeyRecording) continue;
+                    if (!ReferenceEquals(_taskbarStartRecovery, request) || token.IsCancellationRequested ||
+                        !CanActivateStartReplacement || !_window.Settings.RedirectTaskbarStartButton || service.IsActive) return;
+                    if (!await StopStartReplacementAsync(stopDeadline: stopBudget.Token, taskbar: true)) continue;
+                    if (await ResumeStartReplacementAsync(taskbar: true, cancellationToken: token))
+                    {
+                        AppLog.Info("StartReplacement", "Taskbar Start-button takeover recovered after Explorer changed.");
+                        return;
+                    }
+                    if (!CanRetryTaskbarStartDiscovery(service.CurrentFault)) break;
+                }
+                finally { _inputTransition.Release(); }
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) { _taskbarStartReplacementError = StartReplacementFailure(ex.Message); }
+        finally
+        {
+            _lastTaskbarStartRecoveryFault = service.CurrentFault;
+            _taskbarStartRecovery = null;
+            if (!_tearingDown && !_exitPending)
+            {
+                if (!request.IsCancellationRequested && _window.Settings.RedirectTaskbarStartButton && !service.IsActive)
+                {
+                    var failure = _taskbarStartReplacementError ??= StartReplacementFailure(service.Fault ?? trigger.Code);
+                    AppLog.Warn("StartReplacement", $"Taskbar Start-button recovery ended: {failure}");
+                    _window.ShowStatus(failure);
+                }
+                _window.ActiveDialog?.RefreshStrings();
+            }
+            request.Dispose();
+        }
+    }
+
+    private static bool CanRetryTaskbarStartDiscovery(StartReplacementFault? fault) =>
+        fault?.LocatorError is { } error && (error.Code is StartButtonLocatorFailure.TaskbarTopologyChanged
+            or StartButtonLocatorFailure.TaskbarUnavailable or StartButtonLocatorFailure.ButtonUnrecognized || error.IsTimeout);
+
+    private void CancelTaskbarStartReplacementRecovery()
+    {
+        if (_taskbarStartRecovery is not { } request) return;
+        _taskbarStartReplacement.CloseAdmissionForStop();
+        request.Cancel();
     }
 
     private async Task InitializeStartReplacementAsync()
@@ -123,27 +222,33 @@ internal sealed partial class WallApplicationLifetime
         return results.All(result => result);
     }
 
-    private async Task<bool> ResumeStartReplacementAsync(bool taskbar = false)
+    private async Task<bool> ResumeStartReplacementAsync(bool taskbar = false, CancellationToken cancellationToken = default)
     {
-        if (!CanActivateStartReplacement || !StartInputEnabled(_window.Settings, taskbar)) return false;
+        if (!CanActivateStartReplacement || !StartInputEnabled(_window.Settings, taskbar) || cancellationToken.IsCancellationRequested)
+            return false;
         var service = StartInput(taskbar);
+        var prepared = false;
         try
         {
-            await service.PrepareAsync();
+            await service.PrepareAsync(cancellationToken);
+            prepared = true;
             if (!CanActivateStartReplacement || !StartInputEnabled(_window.Settings, taskbar))
             {
                 await StopStartReplacementAsync(taskbar: taskbar);
                 return false;
             }
-            await service.ActivateAsync();
+            await service.ActivateAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             SetStartInputSuspended(taskbar, false);
             SetStartInputError(taskbar, null);
             return true;
         }
         catch (Exception ex)
         {
-            SetStartInputError(taskbar, StartReplacementFailure(ex.Message));
-            await StopStartReplacementAsync(taskbar: taskbar);
+            if (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                SetStartInputError(taskbar, StartReplacementFailure(ex.Message));
+            // An unsuccessful cancellable Prepare already requested its own real cleanup.
+            if (prepared || !cancellationToken.CanBeCanceled) await StopStartReplacementAsync(taskbar: taskbar);
             return false;
         }
     }
@@ -151,6 +256,7 @@ internal sealed partial class WallApplicationLifetime
     private async Task StopInputForBlockedPersistenceAsync()
     {
         if (_tearingDown || !_window.SettingsPersistenceBlocked) return;
+        CancelTaskbarStartReplacementRecovery();
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         _startReplacement.CloseAdmissionForStop();
         _taskbarStartReplacement.CloseAdmissionForStop();
@@ -179,6 +285,7 @@ internal sealed partial class WallApplicationLifetime
 
     private async Task<SettingsDialogState> RetryStartReplacementAsync(bool taskbar)
     {
+        if (taskbar && _taskbarStartRecovery is not null) return CurrentSettingsState();
         if (_settingsBusy) return CurrentSettingsState() with { Error = ProductStrings.Get("Wall.SettingsSaving") };
         _settingsBusy = true;
         using var stopBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -306,11 +413,12 @@ internal sealed partial class WallApplicationLifetime
                 ? StartReplacementFailure(fault) : null),
         TaskbarStartReplacementActive: _taskbarStartReplacement.IsActive,
         TaskbarStartReplacementSuspended: _taskbarStartReplacementSuspended,
-        TaskbarStartReplacementError: _taskbarStartReplacementError ??
+        TaskbarStartReplacementError: _taskbarStartRecovery is not null ? null : _taskbarStartReplacementError ??
             (_window.Settings.RedirectTaskbarStartButton && _taskbarStartReplacement.Fault is { } taskbarFault
                 ? StartReplacementFailure(taskbarFault) : null),
         RegisteredSecondaryHotKey: _secondaryHotKey.CurrentGesture?.ToConfigString(),
-        HotKeyError: _hotKeyError, SecondaryHotKeyError: _secondaryHotKeyError);
+        HotKeyError: _hotKeyError, SecondaryHotKeyError: _secondaryHotKeyError,
+        TaskbarStartReplacementRecovering: _taskbarStartRecovery is not null);
 
     private async Task<SettingsDialogState> ApplySettingsAsync(WallSettings proposed, bool restoreDefaults,
         PreparedMediaAsset? preparedBackground)
@@ -328,6 +436,7 @@ internal sealed partial class WallApplicationLifetime
         // the saved preference after uninstall or an external startup change.
         var displayedLoginEnabled = _loginEnabled ?? _window.Settings.RunAtLogin;
         _settingsBusy = true;
+        if (!proposed.RedirectTaskbarStartButton) CancelTaskbarStartReplacementRecovery();
         using var replacementStopBudget = (!proposed.ReplaceStartMenu && _window.Settings.ReplaceStartMenu ||
             !proposed.RedirectTaskbarStartButton && _window.Settings.RedirectTaskbarStartButton)
             ? new CancellationTokenSource(TimeSpan.FromSeconds(5)) : null;
@@ -475,7 +584,8 @@ internal sealed partial class WallApplicationLifetime
             if (!proposed.ReplaceStartMenu) { _startReplacementError = null; _startReplacementSuspended = false; }
             if (!proposed.RedirectTaskbarStartButton) { _taskbarStartReplacementError = null; _taskbarStartReplacementSuspended = false; }
             TaskbarSettingsCommitted(taskbarActivationChanged);
-            ProductStrings.ApplyLanguage(proposed.LanguageMode);
+            ProductStrings.ApplyLanguage(_window.Settings.LanguageMode);
+            if (_window.Settings.LanguageMode != old.LanguageMode) _ = QueueExplorerMenuSynchronization();
             _window.RefreshAppearance();
             _window.RefreshProductStrings();
             UpdateTray();

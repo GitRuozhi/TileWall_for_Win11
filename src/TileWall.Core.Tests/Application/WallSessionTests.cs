@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using TileWall.Core.Application;
 using TileWall.Core.Configuration;
@@ -64,6 +65,24 @@ public sealed partial class WallSessionTests
             Id = "tile1", LocalBounds = new GridRect(0, 0, 1, 1),
             Visual = new MemberVisual { Title = "First" },
         }, null, 0, 0, "group1"), 500, 500);
+
+    [Fact]
+    public void ManagedShortcutObservationReadsCommittedEntryAndRechecksItsActualPath()
+    {
+        var (session, files, root) = Harness();
+        Assert.Equal(WallOpenStatus.Loaded, session.Open(1, 6).Status);
+        Assert.Null(session.ObserveManagedEntry("missing"));
+        Assert.True(session.Commit(Add(session).Proposal!, [new EntryChange.CreateLink("tile1", @"C:\target.exe")]).Committed);
+
+        var member = session.Current.EnumerateAllMembers().Single();
+        var path = session.ManagedEntryPath(member)!;
+        var observed = session.ObserveManagedEntry(member.Id).GetValueOrDefault();
+        Assert.Equal(@"C:\target.exe", observed.Link?.TargetPath);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(files.ReadAllBytes(path))), observed.Sha256);
+
+        files.ReparsePaths.Add(Path.Combine(root, "Objects"));
+        Assert.Throws<IOException>(() => session.ObserveManagedEntry(member.Id));
+    }
 
     [Fact]
     public void FreshCommitFailureKeepsCurrentLayoutAndEntry()

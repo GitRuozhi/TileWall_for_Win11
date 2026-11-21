@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="バージョン V1.52">
+  <img src="https://img.shields.io/badge/Version-V1.53-0078D4?style=flat-square" alt="バージョン V1.53">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Windows 10 と 11 に対応">
   <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="x64 / ARM64 アーキテクチャ">
@@ -35,7 +35,6 @@
 </p>
 
 https://github.com/user-attachments/assets/d99ccc0a-8e58-4ec0-b0c1-d60ef339d341
-<p align="center"><sub>現在の正式版は V1.52 です。この動画を含む V1.53 展示素材は、2026-11-17 に開発者がローカル完成版として承認しました。未アップロードです。</sub></p>
 
 ## **よみがえれ！わがタイルよ！**
 

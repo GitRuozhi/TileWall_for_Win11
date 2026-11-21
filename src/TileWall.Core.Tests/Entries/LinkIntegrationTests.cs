@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using TileWall.Core.Configuration;
 using TileWall.Core.Entries;
@@ -78,6 +79,64 @@ public sealed class LinkIntegrationTests : IDisposable
         _bed.RunManagedLink(changed);
         Assert.Contains("P2=1", _bed.OutputText());
         Assert.Contains("ARGS=keep args", _bed.OutputText());
+    }
+
+    [Fact]
+    public void NewFileCommandPersistsExactArguments()
+    {
+        const string args = "  \"two words\"\t--flag=中文  ";
+        var target = Path.Combine(_bed.SourceRoot, "target with spaces.txt");
+        File.WriteAllText(target, "ordinary launch target");
+        var result = _bed.Add(new EntryChange.CreateLink(LinkTestBed.MemberId, target, args));
+        Assert.Equal(WallCommitStatus.Committed, result.Status);
+
+        var fields = _bed.Links.Read(_bed.ManagedPath(result));
+        Assert.Equal(target, fields.TargetPath);
+        Assert.Equal(args, fields.Arguments);
+        Assert.Empty(fields.WorkingDirectory);
+    }
+
+    [Fact]
+    public void VerifiedCopyOverrideAndClearingPreserveSourceAndLinkMetadata()
+    {
+        var source = _bed.CreateLink("source.lnk", _bed.Probe1, "--previous", _bed.WorkDir, _bed.Probe1, 3, 7);
+        var original = File.ReadAllBytes(source);
+        var originalFields = _bed.Links.Read(source);
+        const string arguments = "  \"changed value\"\t--flag  ";
+        var copy = new EntryChange.CopyShortcut(LinkTestBed.MemberId, source,
+            Convert.ToHexString(SHA256.HashData(original)), arguments);
+        var added = _bed.Add(copy);
+        Assert.Equal(WallCommitStatus.Committed, added.Status);
+        Assert.Equal(original, File.ReadAllBytes(source));
+        Assert.Equal(originalFields with { Arguments = arguments }, _bed.Links.Read(_bed.ManagedPath(added)));
+
+        var managedBytes = File.ReadAllBytes(_bed.ManagedPath(added));
+        var preconditions = new Dictionary<string, string>
+        { [LinkTestBed.MemberId] = Convert.ToHexString(SHA256.HashData(managedBytes)) };
+        var clear = new EntryChange.ChangeTarget(LinkTestBed.MemberId, _bed.Probe1, "");
+        Assert.Null(_bed.PlanChange(added.CommittedDocument!, clear).Request);
+        var cleared = _bed.Change(added.CommittedDocument!, clear, preconditions);
+        Assert.Equal(WallCommitStatus.Committed, cleared.Status);
+        Assert.Equal(originalFields with { Arguments = "" }, _bed.Links.Read(_bed.ManagedPath(cleared)));
+        Assert.Equal(original, File.ReadAllBytes(source));
+    }
+
+    [Fact]
+    public void ChangedSourceForArgumentOverrideDoesNotReplaceCurrentEntry()
+    {
+        var initial = _bed.Add(new EntryChange.CreateLink(LinkTestBed.MemberId, _bed.Probe1));
+        var bytes = File.ReadAllBytes(_bed.ManagedPath(initial));
+        var source = _bed.CreateLink("source.lnk", _bed.Probe2, "--first", _bed.WorkDir, _bed.Probe2, 0, 1);
+        var copy = new EntryChange.CopyShortcut(LinkTestBed.MemberId, source,
+            Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))), "--chosen");
+        var plan = _bed.PlanChange(initial.CommittedDocument!, copy);
+        Assert.NotNull(plan.Request);
+        _bed.Links.EditFileCommand(source, null, "--changed outside TileWall");
+
+        var result = _bed.Store.Commit(initial.CommittedDocument!, plan.Request);
+        Assert.Equal(WallCommitStatus.Rejected, result.Status);
+        Assert.Equal(bytes, File.ReadAllBytes(_bed.ManagedPath(initial)));
+        Assert.Equal("--changed outside TileWall", _bed.Links.Read(source).Arguments);
     }
 
     [Fact]
@@ -183,15 +242,15 @@ internal sealed class LinkTestBed : IDisposable
         return Store.Commit(before, plan.Request);
     }
 
-    public WallCommitResult Change(WallDocument before, EntryChange change)
+    public WallCommitResult Change(WallDocument before, EntryChange change, IReadOnlyDictionary<string, string>? preconditions = null)
     {
-        var plan = PlanChange(before, change);
+        var plan = PlanChange(before, change, preconditions);
         Assert.NotNull(plan.Request);
         return Store.Commit(before, plan.Request);
     }
 
-    public WallPlanResult PlanChange(WallDocument before, EntryChange change) =>
-        Store.PlanEntries(before, before with { Generation = before.Generation + 1 }, [change]);
+    public WallPlanResult PlanChange(WallDocument before, EntryChange change, IReadOnlyDictionary<string, string>? preconditions = null) =>
+        Store.PlanEntries(before, before with { Generation = before.Generation + 1 }, [change], expectedEntrySha256: preconditions);
 
     public string ManagedPath(WallCommitResult result)
     {

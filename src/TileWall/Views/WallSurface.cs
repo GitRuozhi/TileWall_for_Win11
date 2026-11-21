@@ -58,6 +58,7 @@ public sealed class WallSurface : Canvas
     private CornerRadius WallCorners => WallCornerStyle.Corners(_document!.Settings.VisualStyle);
 
     public Func<WallMember, string?>? ResolveEntryPath { get; set; }
+    internal Func<string, string?>? ResolveTargetCommand { get; set; }
     public Func<WallMember, string?>? ResolveLocationTarget { get; set; }
     public Func<string, PuzzleFrame?>? ResolvePuzzleFrame { get; set; }
     public Func<string, double>? ResolvePuzzleProgress { get; set; }
@@ -211,6 +212,7 @@ public sealed class WallSurface : Canvas
                         _puzzles.Add(member.Id, view = CreatePuzzle(member));
                         VisualCreationCount++;
                     }
+                    view.SetTargetCommand(ResolveTargetCommand?.Invoke(member.Id));
                     AddAt(view, memberPlace.Bounds);
                     _memberModels[member.Id] = member;
                     continue;

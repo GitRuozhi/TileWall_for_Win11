@@ -34,6 +34,7 @@ public sealed class PuzzleCanvasView : Canvas
     private DipRect[] _snappedViewports = [];
     private int? _hoveredPartition;
     private string? _previewTargetTip;
+    private string? _targetCommand;
     private double _rasterScale = 1;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _scrollTimer;
     private TextBlock? _scrollTitle;
@@ -80,6 +81,7 @@ public sealed class PuzzleCanvasView : Canvas
         _planes.Clear();
         _transition = null;
         _member = member;
+        _targetCommand = null;
         _rasterScale = rasterScale;
         Width = member.LocalBounds.Width * metrics.Pitch - metrics.Gap;
         Height = member.LocalBounds.Height * metrics.Pitch - metrics.Gap;
@@ -189,6 +191,14 @@ public sealed class PuzzleCanvasView : Canvas
         if (_previewTargetTip == text) return;
         _previewTargetTip = text;
         foreach (var partition in _previewPartitions) ToolTipService.SetToolTip(partition, text);
+    }
+
+    internal void SetTargetCommand(string? command)
+    {
+        if (!Interactive || _member is not { } member || _targetCommand == command) return;
+        _targetCommand = command;
+        foreach (var part in Children.OfType<Button>())
+            WallMemberVisualFactory.SetTargetTooltip(part, member, command: command);
     }
 
     public void UpdateFrame(PuzzleFrame? frame)

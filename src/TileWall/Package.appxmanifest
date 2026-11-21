@@ -20,7 +20,7 @@
   <Identity
     Name="Ruozhi.TileWall"
     Publisher="CN=E85F876C-CE51-47F1-A1F6-9007A3C15A22"
-    Version="1.5.3.0" />
+    Version="1.5.4.0" />
 
   <mp:PhoneIdentity PhoneProductId="1A027D37-1D32-492F-ACD2-E456FB4E670C" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
@@ -83,7 +83,7 @@
         <desktop:Extension Category="windows.toastNotificationActivation">
           <desktop:ToastNotificationActivation ToastActivatorCLSID="de9c314c-7f05-4c18-88c2-0239a01315b8" />
         </desktop:Extension>
-        <!-- (2) Explorer 右键「添加到 TileWall」：文件/程序/快捷方式（Type="*"）与文件夹（Type="Directory"）。
+        <!-- (2) Explorer 右键「添加到 TileWall」：文件（Type="*"）、原快捷方式（Type=".lnk"）和文件夹。
              文件项用 desktop4:ItemType（min OS 1803；Type 仅允许 */.ext）；文件夹项必须用 desktop5:ItemType
              （ST_FileTypeOrStarWithDirectory 才含 Directory；min OS 1809=17763，由清单 MinVersion 覆盖；其父元素
              desktop4:FileExplorerContextMenus 官方 schema 允许 desktop5:ItemType 子元素）。
@@ -92,6 +92,10 @@
              A parallel desktop9 IContextMenu registration duplicates the Win11 classic item. -->
         <desktop4:Extension Category="windows.fileExplorerContextMenus">
           <desktop4:FileExplorerContextMenus>
+            <!-- Match the link itself so Explorer does not dispatch the target's wildcard verb. -->
+            <desktop4:ItemType Type=".lnk">
+              <desktop4:Verb Id="AddToTileWall" Clsid="cb391e98-9cf2-4a54-abea-fbc529ca2d44" />
+            </desktop4:ItemType>
             <desktop4:ItemType Type="*">
               <desktop4:Verb Id="AddToTileWall" Clsid="cb391e98-9cf2-4a54-abea-fbc529ca2d44" />
             </desktop4:ItemType>

@@ -10,6 +10,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using TileWall.ApplicationModel;
 using TileWall.Core.Application;
+using TileWall.Core.Entries;
 using TileWall.Core.Exchange;
 using TileWall.Core.Grid;
 using TileWall.Core.Import;
@@ -911,7 +912,8 @@ internal sealed class ImportDialog : IWallDialogSession
             StringComparer.OrdinalIgnoreCase.Equals(missing, row.Member.Images.Path) ? missing : null;
         if (missingPath is not null) diagnostics.Add(string.Format(ProductStrings.Get("Gallery.SourceMissing"), missingPath));
         else if (imageCompletion?.SourceDiagnostic is { Length: > 0 } sourceDiagnostic) diagnostics.Add(sourceDiagnostic);
-        var text = WallMemberVisualFactory.TargetTooltip(row.Member, string.Join("\n", diagnostics));
+        var text = WallMemberVisualFactory.TargetTooltip(row.Member, string.Join("\n", diagnostics),
+            LaunchCommandText.ForFile(candidate.Source.Identity));
         AutomationProperties.SetHelpText(row.Toggle, text);
         ApplyRowTooltip(row, text, missingPath);
         AutomationProperties.SetName(row.Toggle, displayName);

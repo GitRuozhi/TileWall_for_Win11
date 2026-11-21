@@ -27,17 +27,19 @@ internal static class WallMemberVisualFactory
             (member.Visual.TitleMode == MemberTitleMode.Automatic && member.ResourceOrigin == MemberResourceOrigin.Local &&
                 Directory.Exists(member.SourceShortcutPath ?? member.TargetInput)));
 
-    /// <summary>Every member surface shows its model target, without resolving it or falling back to its title.</summary>
-    internal static void SetTargetTooltip(ButtonBase button, WallMember member, string? diagnostic = null, bool disabledOnly = false)
+    /// <summary>Uses an already observed command or the model target without resolving the entry.</summary>
+    internal static void SetTargetTooltip(ButtonBase button, WallMember member, string? diagnostic = null,
+        bool disabledOnly = false, string? command = null)
     {
-        var text = TargetTooltip(member, diagnostic);
+        var text = TargetTooltip(member, diagnostic, command);
         ActionIcon.SetTip(button, text, disabledOnly);
         AutomationProperties.SetHelpText(button, text);
     }
 
-    internal static string TargetTooltip(WallMember member, string? diagnostic = null)
+    internal static string TargetTooltip(WallMember member, string? diagnostic = null, string? command = null)
     {
-        var target = string.IsNullOrWhiteSpace(member.TargetInput) ? "" : member.TargetInput;
+        var target = command ?? member.TargetInput;
+        if (string.IsNullOrWhiteSpace(target)) target = string.Empty;
         if (string.IsNullOrWhiteSpace(diagnostic)) return target;
         return target.Length == 0 ? diagnostic : $"{target}\n{diagnostic}";
     }

@@ -352,9 +352,9 @@
   <x:String x:Key="Settings.BackgroundFailed">この画像を読み取れません。別の画像を選択してください。</x:String>
   <x:String x:Key="Wall.GroupTitleHint">クリックしてドラッグすると移動し、ダブルクリックすると名前を変更します。</x:String>
   <x:String x:Key="Settings.ExplorerMenu">コンテキストメニュー</x:String>
-  <x:String x:Key="Settings.PackagedContextMenuHelp">管理者の承認なしで、現在のユーザーの「TileWall に追加」をオンまたはオフにします。Windows 11 の新旧メニューでこの設定を共有します。既定の設定に戻しても変更されません。</x:String>
   <x:String x:Key="Settings.ContextMenuToggle">エクスプローラーから追加</x:String>
-  <x:String x:Key="Settings.ContextMenuHelp">管理者の承認なしで、現在のユーザーの従来のエクスプローラーメニューにある「TileWall に追加」をオンまたはオフにします。既定の設定に戻してもこのスイッチは変更されません。</x:String>
+  <x:String x:Key="Settings.ContextMenuHelp">オンにすると、このバージョンの「TileWall に追加」を使えます。オフにすると、現在のユーザーの所有元を確認できた TileWall メニューをすべて無効にします。管理者権限は不要で、既定値に戻してもこの設定は保持されます。</x:String>
+  <x:String x:Key="Settings.ContextMenuUnverified">所有元を確認できなかった次のコンテキストメニュー項目を保持しました。</x:String>
   <x:String x:Key="Settings.ContextMenuReadFailed">コンテキストメニューの設定を読み取れませんでした。再試行してください。</x:String>
   <x:String x:Key="Settings.ContextMenuConflict">別のプログラムがこのメニュー項目を使用しています。変更できません。</x:String>
   <x:String x:Key="Settings.ContextMenuTransfer">有効にすると、現在のユーザーのメニューが次の TileWall のコピーから、このコピーに移動します:
@@ -388,6 +388,7 @@
   <x:String x:Key="Editor.PresetWide">横長</x:String>
   <x:String x:Key="Editor.PresetLarge">大</x:String>
   <x:String x:Key="Editor.InvalidTarget">起動先のパスが存在しないか、URL が無効です。</x:String>
+  <x:String x:Key="Editor.QuoteTargetPath">起動引数を指定する前に、対象ファイルの完全なパスを二重引用符で囲んでください。</x:String>
   <x:String x:Key="Editor.Auto">自動</x:String>
   <x:String x:Key="Editor.Manual">手動</x:String>
   <x:String x:Key="Import.Small">小 1×1</x:String>

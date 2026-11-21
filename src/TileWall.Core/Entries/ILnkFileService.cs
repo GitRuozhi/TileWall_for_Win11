@@ -43,4 +43,8 @@ public interface ILnkFileService
 
     /// <summary>Load→SetPath→Save：只改目标，其余字段原样（[R12][R13]；探针 C 实测）。</summary>
     void EditTargetOnly(string path, string newTarget);
+
+    /// <summary>Sets the exact arguments of a file link, changing its target only when supplied.</summary>
+    void EditFileCommand(string path, string? newTarget, string arguments) =>
+        throw new NotSupportedException("Shortcut argument editing is unavailable.");
 }

@@ -355,9 +355,9 @@
     <x:String x:Key="Settings.BackgroundFailed">無法讀取這張圖片，請重新選擇。</x:String>
     <x:String x:Key="Wall.GroupTitleHint">單擊拖動、雙擊修改名稱</x:String>
     <x:String x:Key="Settings.ExplorerMenu">右鍵選單</x:String>
-    <x:String x:Key="Settings.PackagedContextMenuHelp">為當前使用者開啟或關閉資源管理器中的“新增到 TileWall”，無需管理員許可權。Windows 11 的現代選單與經典選單共用此開關；恢復預設設定不會更改此開關。</x:String>
     <x:String x:Key="Settings.ContextMenuToggle">資源管理器右鍵新增</x:String>
-    <x:String x:Key="Settings.ContextMenuHelp">為當前使用者開啟或關閉資源管理器經典右鍵選單中的“新增到 TileWall”，無需管理員許可權；恢復預設設定不會更改此開關。</x:String>
+    <x:String x:Key="Settings.ContextMenuHelp">開啟時由目前版本提供「新增至 TileWall」。關閉時停用目前使用者所有歸屬可驗證的 TileWall 選單，無需系統管理員權限。還原預設設定會保留這項設定。</x:String>
+    <x:String x:Key="Settings.ContextMenuUnverified">以下右鍵選單項目的歸屬無法驗證，已保留。</x:String>
     <x:String x:Key="Settings.ContextMenuReadFailed">無法讀取右鍵選單設定，請重試。</x:String>
     <x:String x:Key="Settings.ContextMenuConflict">已有其他程式使用此選單項，無法修改。</x:String>
     <x:String x:Key="Settings.ContextMenuTransfer">啟用會把當前使用者以下 TileWall 副本的選單轉到當前副本：&#10;{0}&#10;新的目標：&#10;{1}&#10;是否繼續？</x:String>
@@ -387,6 +387,7 @@
     <x:String x:Key="Editor.PresetWide">寬</x:String>
     <x:String x:Key="Editor.PresetLarge">大</x:String>
     <x:String x:Key="Editor.InvalidTarget">目標路徑不存在或網址無效。</x:String>
+    <x:String x:Key="Editor.QuoteTargetPath">請將目標檔案的完整路徑放在雙引號內，再填寫啟動參數。</x:String>
     <x:String x:Key="Editor.Auto">自動</x:String>
     <x:String x:Key="Editor.Manual">手動</x:String>
     <x:String x:Key="Import.Small">小 1×1</x:String>

@@ -1,99 +1,165 @@
-using System.Runtime.InteropServices;
+using TileWall.ApplicationModel;
 using TileWall.Core.Configuration;
 using TileWall.Core.Shell;
 using TileWall.Core.Settings;
+using TileWall.Core.Wall;
 
 namespace TileWall.Shell.Interop;
 
-internal sealed record ExplorerContextMenuState(bool Enabled, bool Complete, string[] OtherTargets,
-    bool HasUnrecognizedConflict = false, string? Error = null)
+internal sealed record ExplorerContextMenuState(bool Enabled, bool Complete, string? Error = null,
+    string? HandoffFailure = null, string[]? UnverifiedEntries = null)
 {
     internal bool ReadSucceeded => Error is null;
 }
 
 internal sealed record ExplorerContextMenuChange(ExplorerContextMenuState State, string? OutcomeKey = null,
-    string? Detail = null, string[]? TransferTargets = null)
+    string? Detail = null)
 {
     internal bool Failed => OutcomeKey is not null;
 }
 
-/// <summary>Distribution choice and ownership policy for the shared settings-page operation.</summary>
+/// <summary>Owns the current instance's menu actions and the language projected to Explorer.</summary>
 internal sealed class ExplorerContextMenuController
 {
-    private readonly ExplorerMenuPreference? _preference;
-    internal string HelpKey => _preference is null ? "Settings.ContextMenuHelp" : "Settings.PackagedContextMenuHelp";
+    private readonly ExplorerMenuPreference _preference;
+    private readonly ExplorerContextMenuHandoff? _handoff;
+    private readonly SemaphoreSlim _writes = new(1, 1);
+    private string? _unsavedHandoffFailure;
 
-    private ExplorerContextMenuController(ExplorerMenuPreference? preference) => _preference = preference;
+    private static bool IsPackaged =>
+#if TILEWALL_PACKAGED
+        true;
+#else
+        false;
+#endif
+
+    internal string HelpKey => "Settings.ContextMenuHelp";
+
+    private ExplorerContextMenuController(string dataRoot, bool isolated)
+    {
+        _preference = new(new LocalFileStore(), dataRoot);
+        _handoff = isolated ? null : new(_preference, IsPackaged,
+            Environment.ProcessPath ?? throw new IOException("TileWall executable is unavailable."));
+    }
+
+    private static string NormalRoot => Path.Combine(KnownFolderPaths.LocalAppData, "TileWall");
 
     internal static ExplorerContextMenuController Create(string dataRoot)
     {
-        // Isolated runtime roots must never change the normal Explorer registration.
-        var normalRoot = Path.Combine(KnownFolderPaths.LocalAppData, "TileWall");
-        var isolated = !string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(dataRoot)),
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(normalRoot)), StringComparison.OrdinalIgnoreCase);
-#if TILEWALL_PACKAGED
-        isolated = true;
-#endif
-        return new(isolated ? new ExplorerMenuPreference(new LocalFileStore(), dataRoot) : null);
+        var isolated = !ExplorerContextMenuRegistration.SameExecutable(
+            Path.TrimEndingDirectorySeparator(dataRoot), Path.TrimEndingDirectorySeparator(NormalRoot));
+        return new(dataRoot, isolated);
     }
 
     internal Task<ExplorerContextMenuState> ReadAsync() => Task.Run(Read);
 
-    private ExplorerContextMenuState Read() => _preference is null
-        ? FromCurrentUser(ExplorerContextMenuRegistration.ReadCurrentUserState())
-        : FromPreference(_preference.Read());
-
-    internal async Task<ExplorerContextMenuChange> ApplyAsync(bool enable, string language, string[]? confirmedTargets)
+    private ExplorerContextMenuState Read()
     {
-        // Recheck ownership at each confirmation/write boundary; the UI's last snapshot is not authority.
-        var before = await ReadAsync();
-        if (!before.ReadSucceeded) return new(before, "Settings.ContextMenuReadFailed", before.Error);
-        if (ApplicationModel.ContextMenuUserCommand.IsElevated())
-            return new(before, "Settings.ContextMenuOrdinaryUserRequired");
-        if (enable && before.HasUnrecognizedConflict) return new(before, "Settings.ContextMenuConflict");
-        if (enable && before.OtherTargets.Length != 0 && (confirmedTargets is null ||
-            !before.OtherTargets.SequenceEqual(confirmedTargets, StringComparer.OrdinalIgnoreCase)))
-            return new(before, TransferTargets: before.OtherTargets);
-
-        if (_preference is not null)
+        try
         {
-            var written = await Task.Run(() => _preference.Write(enable));
-            // Failures retain and re-read the actual single value, with no desired-state shadow.
-            var actual = await ReadAsync();
-            if (!written.ReadSucceeded) return new(actual, "Settings.ContextMenuOperationFailed", written.Error);
-            if (!actual.ReadSucceeded || actual.Enabled != enable)
-                return new(actual, "Settings.ContextMenuChangedElsewhere", actual.Error);
-            NotifyShell();
-            return new(actual);
+            var state = _handoff is null ? FromPreference(_preference.Read()) : _handoff.ReadState();
+            var failure = Volatile.Read(ref _unsavedHandoffFailure) ?? _handoff?.ReadFailure();
+            return failure is null ? state : state with { HandoffFailure = failure };
         }
-
-        if (!WallLanguages.TryParseTag(language, out _)) return new(before, "Settings.ContextMenuOperationFailed");
-        var result = await Task.Run(() => enable
-            ? ExplorerContextMenuRegistration.RegisterCurrentUserForCurrentExecutable(
-                new ApplicationModel.ContextMenuUserCommand(ApplicationModel.ContextMenuUserAction.Enable, language).MenuText)
-            : ExplorerContextMenuRegistration.UnregisterCurrentUserOwnedByCurrentExecutable());
-        var state = await ReadAsync();
-        var matchesRequest = state.ReadSucceeded && (enable ? state.Complete : !state.Enabled);
-        var outcome = result.RollbackIncomplete ? "Settings.ContextMenuRollbackIncomplete"
-            : !result.Success ? "Settings.ContextMenuOperationFailed"
-            : matchesRequest ? null : "Settings.ContextMenuChangedElsewhere";
-        return new(state, outcome, result.Error);
+        catch (Exception ex) when (ExplorerContextMenuHandoff.IsOperationError(ex))
+        {
+            return new(false, false, Error: ex.Message);
+        }
     }
 
+    internal Task<ExplorerContextMenuChange?> SynchronizeAsync(WallLanguageMode language,
+        bool allowAutomaticHandoff = false)
+    {
+        var tag = WallLanguages.ResolveTag(language);
+        return MutateAsync<ExplorerContextMenuChange?>(() =>
+        {
+            if (_handoff is null || ContextMenuUserCommand.IsElevated()) return null;
+            if (allowAutomaticHandoff)
+            {
+                var handoff = ExplorerContextMenuRegistration.WithWriteLock(() =>
+                    _handoff.Enable(MenuText(tag), automatic: true));
+                if (!handoff.Success)
+                {
+                    PublishFailure(handoff);
+                    return Changed(handoff);
+                }
+            }
+
+            var result = ExplorerContextMenuRegistration.WithWriteLock(() => SynchronizeLanguage(tag));
+            return result.Success ? null : Changed(result);
+        });
+    }
+
+    internal Task<ExplorerContextMenuChange> ApplyAsync(bool enable, string language) =>
+        MutateAsync(() =>
+        {
+            if (ContextMenuUserCommand.IsElevated())
+                return new ExplorerContextMenuChange(Read(), "Settings.ContextMenuOrdinaryUserRequired");
+            if (!WallLanguages.TryParseTag(language, out var mode))
+                return new ExplorerContextMenuChange(Read(), "Settings.ContextMenuOperationFailed");
+            var tag = WallLanguages.ResolveTag(mode);
+            if (_handoff is null)
+            {
+                var result = _preference.Write(enable);
+                return new ExplorerContextMenuChange(FromPreference(result),
+                    result.ReadSucceeded ? null : "Settings.ContextMenuOperationFailed", result.Error);
+            }
+
+            var write = ExplorerContextMenuRegistration.WithWriteLock(() => enable
+                ? _handoff.Enable(MenuText(tag), automatic: false) : _handoff.Disable());
+            if (write.Success || enable) PublishFailure(write);
+            if (!write.Success) return Changed(write);
+            if (enable)
+            {
+                var synchronized = ExplorerContextMenuRegistration.WithWriteLock(() => SynchronizeLanguage(tag));
+                if (!synchronized.Success) return Changed(synchronized);
+            }
+            var actual = Read();
+            return new ExplorerContextMenuChange(actual, actual.ReadSucceeded &&
+                (enable ? actual.Complete : !actual.Enabled) ? null : "Settings.ContextMenuChangedElsewhere", actual.Error);
+        });
+
+    private ContextMenuRegistrationResult SynchronizeLanguage(string tag)
+    {
+        try
+        {
+            if (!IsPackaged)
+                return ExplorerContextMenuRegistration.WithCurrentUserWriteLock(root =>
+                    ExplorerContextMenuRegistration.SynchronizeCurrentUserLabel(root,
+                        ExplorerContextMenuRegistration.CurrentExecutable(), MenuText(tag),
+                        ExplorerContextMenuRegistration.NotifyShell));
+            if (_preference.PublishLanguage(tag)) ExplorerContextMenuRegistration.NotifyShell();
+            return new(true);
+        }
+        catch (Exception ex) when (ExplorerContextMenuHandoff.IsOperationError(ex))
+        {
+            return new(false, Error: ex.Message);
+        }
+    }
+
+    internal static ContextMenuRegistrationResult ApplyInstallerCommand(ContextMenuUserCommand command) =>
+        command.Enable
+            ? ExplorerContextMenuHandoff.EnableFromInstaller(new ExplorerMenuPreference(new LocalFileStore(), NormalRoot),
+                command.MenuText)
+            : ExplorerContextMenuRegistration.UnregisterCurrentUserOwnedByCurrentExecutable();
+
+    private async Task<T> MutateAsync<T>(Func<T> action)
+    {
+        await _writes.WaitAsync().ConfigureAwait(false);
+        try { return await Task.Run(action).ConfigureAwait(false); }
+        finally { _writes.Release(); }
+    }
+
+    private void PublishFailure(ContextMenuRegistrationResult result) =>
+        Volatile.Write(ref _unsavedHandoffFailure, result.Success ? null : result.Error ?? "Explorer menu handoff failed.");
+
+    private ExplorerContextMenuChange Changed(ContextMenuRegistrationResult result) =>
+        new(Read(), result.RollbackIncomplete ? "Settings.ContextMenuRollbackIncomplete" :
+            "Settings.ContextMenuOperationFailed", result.Error);
+
+    private static string MenuText(string tag) => new ContextMenuUserCommand(ContextMenuUserAction.Enable, tag).MenuText;
+
     private static ExplorerContextMenuState FromPreference(ExplorerMenuPreferenceState state) =>
-        new(state.Enabled, state.Enabled, [], Error: state.Error);
+        new(state.Enabled, state.Enabled, state.Error);
 
-    private static ExplorerContextMenuState FromCurrentUser(ContextMenuState state) =>
-        new(state.Targets.Any(IsCurrentTarget), state.IsCurrentExecutableComplete,
-            state.Targets.Where(target => !IsCurrentTarget(target)).Order(StringComparer.OrdinalIgnoreCase).ToArray(),
-            state.HasUnrecognizedConflict,
-            state.Status == ContextMenuStatus.ReadFailed ? state.Error ?? "Unable to read Explorer registration." : null);
-
-    private static bool IsCurrentTarget(string target) => Environment.ProcessPath is { } executable &&
-        string.Equals(Path.GetFullPath(target), Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase);
-
-    // Windows SDK ShlObj_core.h: SHCNE_ASSOCCHANGED / SHCNF_IDLIST. This is an invalidation hint, not proof.
-    private static void NotifyShell() => SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);
-    [DllImport("shell32.dll", ExactSpelling = true)]
-    private static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
 }

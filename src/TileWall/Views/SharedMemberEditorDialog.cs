@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Security.Cryptography;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -28,8 +29,10 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private WallMember _draft;
     private readonly WallImageService _images;
     private readonly string? _managedEntryPath, _originalInput;
+    private readonly LinkFields? _originalLink;
+    private readonly string? _originalLinkSha256;
     private readonly ILnkFileService _links;
-    private readonly Func<WallMember, IReadOnlyList<EntryChange>, IReadOnlyList<PreparedMediaAsset>, string?> _save;
+    private readonly Func<WallMember, IReadOnlyList<EntryChange>, IReadOnlyList<PreparedMediaAsset>, string?, string?> _save;
     private readonly int _maxRows;
     private readonly WallVisualStyle _visualStyle;
     private readonly bool _traceImages = Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1" ||
@@ -114,6 +117,9 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private bool _foregroundActivated;
     private bool _targetWasConfirmed;
     private string? _selectedShortcutPath;
+    private string? _selectedShortcutSha256;
+    private LinkFields? _selectedLink;
+    private string _targetArguments;
     private bool _targetRecognitionRequired;
     private TargetImageSourceResult? _targetRecognition;
     private long _targetRecognitionRevision;
@@ -135,9 +141,10 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
 
     internal SharedMemberEditorDialog(Window owner, WallMember original, WallImageService images,
         string? managedEntryPath, ILnkFileService links, int maxRows,
-        Func<WallMember, IReadOnlyList<EntryChange>, IReadOnlyList<PreparedMediaAsset>, string?> save,
+        Func<WallMember, IReadOnlyList<EntryChange>, IReadOnlyList<PreparedMediaAsset>, string?, string?> save,
         WallVisualStyle visualStyle = WallVisualStyle.Win10, PuzzleFrame? initialFrame = null,
-        PreparedAutomaticIconSeries? initialAutomaticSeries = null, bool isNew = false)
+        PreparedAutomaticIconSeries? initialAutomaticSeries = null, bool isNew = false,
+        (LinkFields? Link, string? Url, string Sha256)? managedEntry = null)
     {
         if (original is not (TileMember or PuzzleMember)) throw new ArgumentException("A tile or puzzle is required.", nameof(original));
         _owner = owner; _original = original; _draft = original; _images = images; _isNew = isNew;
@@ -147,7 +154,11 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _managedEntryPath = managedEntryPath; _links = links; _save = save;
         _visualStyle = visualStyle;
         _maxRows = Math.Clamp(maxRows, 0, WallViewportPolicy.MaximumMemberRows);
-        _originalInput = original.TargetInput ?? (original.ResourceOrigin == MemberResourceOrigin.Local ? ReadManagedTarget() : null);
+        _originalLink = managedEntry?.Link;
+        _originalLinkSha256 = managedEntry?.Sha256;
+        _originalInput = FileLinkTarget(_originalLink) ?? original.TargetInput ??
+            _originalLink?.ShellParsingName ?? (original.ResourceOrigin == MemberResourceOrigin.Local ? managedEntry?.Url : null);
+        _targetArguments = FileLinkTarget(_originalLink) is not null ? _originalLink!.Arguments : string.Empty;
         _explicitImageSource = original.Images.Kind != MemberImageSourceKind.Automatic &&
             !FollowsTargetImageSource(original, _originalInput);
         _draft = original with { TargetInput = _originalInput,
@@ -559,7 +570,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _height.Maximum = Math.Min(_maxRows, _draft is PuzzleMember ? 12 : 4);
         _draw.IsEnabled = _erase.IsEnabled = _layout is not null;
         if (!_titleDirty) _title.Text = WallMemberVisualFactory.ResolveTitle(_draft, _foregroundActivated ? null : false);
-        if (!_targetDirty) _target.Text = _draft.TargetInput ?? string.Empty;
+        if (!_targetDirty) _target.Text = LaunchCommandText.Format(_draft.TargetInput, _targetArguments);
         _width.Value = _draft.LocalBounds.Width; _height.Value = _draft.LocalBounds.Height;
         _source.SelectedIndex = _draft.Images.Kind == MemberImageSourceKind.None ? -1 : (int)_draft.Images.Kind;
         if (!_sourceDirty) _sourcePath.Text = _draft.Images.Path ?? string.Empty;
@@ -638,7 +649,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         }
         else if (!_ratioDirty) _imageRatio.Text = string.Empty;
         _refreshing = false;
-        _preview.SetScene(_draft, _frame, PreviewRasterizationScale, _visualStyle);
+        _preview.SetScene(_draft, _frame, PreviewRasterizationScale, _visualStyle,
+            LaunchCommandText.Format(_draft.TargetInput, _targetArguments));
     }
     private double PreviewRasterizationScale => _dialog.XamlRoot?.RasterizationScale ?? 1;
 
@@ -1184,7 +1196,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         if (IsEmptyCreation)
         {
             var empty = _draft with { TargetInput = null, Entry = null, Images = new MemberImageSource { Kind = MemberImageSourceKind.None } };
-            if (_save(empty, [], []) is { } failure) return ShowError(failure);
+            if (_save(empty, [], [], null) is { } failure) return ShowError(failure);
             _draft = empty; _saved = true; _targetDirty = _sourceDirty = false;
             return null;
         }
@@ -1219,14 +1231,20 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         {
             var target = _draft.TargetInput ?? string.Empty;
             var unchanged = string.Equals(target, _originalInput ?? string.Empty, StringComparison.Ordinal);
+            var argumentsChanged = _targetArguments != (_originalLink is { HasIdList: false } originalLink ? originalLink.Arguments : string.Empty);
             var changes = new List<EntryChange>();
+            string? expectedEntrySha256 = null;
             var isUrl = !Path.IsPathFullyQualified(target) && Uri.TryCreate(target, UriKind.Absolute, out var uri) &&
                 !uri.Scheme.Equals(Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase);
             if (target.Length == 0) { if (_targetWasConfirmed && _original.Entry is not null) changes.Add(new EntryChange.Remove(_draft.Id)); }
-            else if (_targetWasConfirmed && (!unchanged || _original.Entry is null || _selectedShortcutPath is not null))
+            else if (_targetWasConfirmed && (!unchanged || argumentsChanged || _original.Entry is null || _selectedShortcutPath is not null))
             {
                 if (_selectedShortcutPath is { } shortcutSource)
-                    changes.Add(new EntryChange.CopyShortcut(_draft.Id, shortcutSource));
+                {
+                    var arguments = FileLinkTarget(_selectedLink) is not null && _selectedLink!.Arguments != _targetArguments
+                        ? _targetArguments : null;
+                    changes.Add(new EntryChange.CopyShortcut(_draft.Id, shortcutSource, _selectedShortcutSha256, Arguments: arguments));
+                }
                 else if (isUrl)
                 {
                     if (!RegisteredUrlProtocols.IsSupported(target)) return ShowError(T("Entry.InvalidUrl"));
@@ -1234,26 +1252,16 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                 }
                 else
                 {
-                    if (!Path.IsPathFullyQualified(target) || !File.Exists(target) && !Directory.Exists(target)) return ShowError(T("Editor.InvalidTarget"));
                     target = LaunchIdentityService.NormalizePath(target);
-                    var shortcut = !Directory.Exists(target) &&
-                        new[] { ".lnk", ".url" }.Contains(Path.GetExtension(target), StringComparer.OrdinalIgnoreCase);
-                    if (shortcut)
+                    if (!Path.IsPathFullyQualified(target) || !File.Exists(target) && !Directory.Exists(target)) return ShowError(T("Editor.InvalidTarget"));
+                    if (_original.Entry?.Kind == ManagedEntryKind.Lnk)
                     {
-                        if (Path.GetExtension(target).Equals(".url", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var shortcutUrl = UrlShortcut.ReadUrlLine(File.ReadAllBytes(target));
-                            if (!RegisteredUrlProtocols.IsSupported(shortcutUrl)) return ShowError(T("Entry.InvalidUrl"));
-                        }
-
-                        changes.Add(new EntryChange.CopyShortcut(_draft.Id, target));
+                        if (_originalLink is null || _originalLinkSha256 is null) return ShowError(T("Editor.InvalidTarget"));
+                        if (_originalLink.HasIdList) return ShowError(T("Entry.IdListTarget"));
+                        expectedEntrySha256 = _originalLinkSha256;
+                        changes.Add(new EntryChange.ChangeTarget(_draft.Id, target, argumentsChanged ? _targetArguments : null));
                     }
-                    else if (_original.Entry?.Kind == ManagedEntryKind.Lnk)
-                    {
-                        if (_managedEntryPath is not null && _links.Read(_managedEntryPath).HasIdList) return ShowError(T("Entry.IdListTarget"));
-                        changes.Add(new EntryChange.ChangeTarget(_draft.Id, target));
-                    }
-                    else changes.Add(new EntryChange.CreateLink(_draft.Id, target));
+                    else changes.Add(new EntryChange.CreateLink(_draft.Id, target, _targetArguments));
                 }
             }
             if (_draft.Visual.TitleMode == MemberTitleMode.Manual && !string.IsNullOrEmpty(_draft.Visual.Title) && target.Length > 0 && EntryNames.Validate(_draft.Visual.Title).Count != 0)
@@ -1274,19 +1282,24 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             if (MemberPresentationRules.Validate(candidate) is { } validation) return ShowError(validation);
             IReadOnlyList<PreparedMediaAsset> assets = (_preparedSourceAsset is { } asset ? new[] { asset } : [])
                 .Concat(_preparedAutomaticSeries?.Assets ?? []).DistinctBy(asset => asset.Reference.Sha256).ToArray();
-            var error = _save(candidate, changes, assets);
+            var error = _save(candidate, changes, assets, expectedEntrySha256);
             if (error is not null) return ShowError(error);
             _saved = true; _draft = candidate; return null;
         }
         catch (Exception ex) { return ShowError(string.Format(T("Common.SaveFailed"), ex.Message)); }
     }
 
-    private string? ReadManagedTarget()
+    private (LinkFields Fields, string Sha256) ReadLinkWithHash(string path)
     {
-        if (_managedEntryPath is null || _original.Entry is null) return null;
-        try { return _original.Entry.Kind == ManagedEntryKind.Lnk ? _links.Read(_managedEntryPath).TargetPath : UrlShortcut.ReadUrlLine(File.ReadAllBytes(_managedEntryPath)); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException or ArgumentException) { return null; }
+        using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (stream.Length is <= 0 or > EntryObservation.MaximumBytes) throw new IOException(T("Editor.InvalidTarget"));
+        var hash = Convert.ToHexString(SHA256.HashData(stream));
+        return (_links.Read(path), hash);
     }
+
+    private static string? FileLinkTarget(LinkFields? fields) =>
+        fields is { HasIdList: false, TargetPath: { Length: > 0 } path } ? path : null;
+
     private static string? NormalizeTarget(string input)
     {
         if (input.Length == 0) return null;
@@ -1303,6 +1316,59 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             uri.HostNameType != UriHostNameType.Unknown) return uri.AbsoluteUri;
         return input;
     }
+
+    private static bool SameTarget(string? left, string? right) =>
+        string.Equals(left, right, Path.IsPathFullyQualified(left ?? string.Empty)
+            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private string? ParseTarget(string input, out string arguments, out bool ambiguous)
+    {
+        arguments = string.Empty;
+        ambiguous = false;
+        var whole = NormalizeTarget(input.Trim());
+        if (whole is null || Directory.Exists(whole) || File.Exists(whole) || RegisteredUrlProtocols.IsSupported(whole))
+            return whole;
+
+        var command = input.TrimStart();
+        if (command.StartsWith('"'))
+        {
+            var end = command.IndexOf('"', 1);
+            if (end < 0 || end + 1 < command.Length && !char.IsWhiteSpace(command[end + 1]))
+            {
+                ambiguous = true;
+                return whole;
+            }
+            var path = NormalizeTarget(command[1..end]);
+            var tail = end + 1 < command.Length ? command[(end + 2)..] : string.Empty;
+            if (tail.Length == 0 && (File.Exists(path) || Directory.Exists(path))) return path;
+            if (!CanTakeArguments(path)) return whole;
+            arguments = tail;
+            return path;
+        }
+
+        // The entire typed value can name a real file. Only then consider a
+        // command, and require quotes if more than one file can be its prefix.
+        if (!Path.IsPathFullyQualified(Environment.ExpandEnvironmentVariables(command))) return whole;
+        string? match = null;
+        for (int index = 1; index < command.Length - 1; index++)
+        {
+            if (!char.IsWhiteSpace(command[index]) || char.IsWhiteSpace(command[index - 1])) continue;
+            var path = NormalizeTarget(command[..index]);
+            if (!CanTakeArguments(path)) continue;
+            if (match is not null)
+            {
+                ambiguous = true;
+                return whole;
+            }
+            match = path;
+            arguments = command[(index + 1)..];
+        }
+        return match ?? whole;
+    }
+
+    private static bool CanTakeArguments(string? path) =>
+        path is not null && Path.IsPathFullyQualified(path) && File.Exists(path) &&
+        EntryNames.KindOfRelativePath(path) == EntryKind.None;
     private (long Generation, CancellationToken Token) BeginRequest(bool readSource = false)
     {
         CancelRequest();
@@ -1366,7 +1432,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     }
     private string? GetTargetPickerInitialFolder()
     {
-        var input = (_targetDirty ? _target.Text : _draft.TargetInput ?? _target.Text).Trim();
+        var input = (_targetDirty ? ParseTarget(_target.Text, out _, out _) : _draft.TargetInput) ?? string.Empty;
         var fallback = TargetItemPicker.GetInitialFolderForPath(input);
         try
         {
@@ -1543,18 +1609,46 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private bool ConfirmTargetCore(long revision, string input, bool selectedNewSource)
     {
         _foregroundActivated = true;
-        var target = NormalizeTarget(input.Trim());
-        if (!selectedNewSource && _draft.SourceShortcutPath is not null &&
-            string.Equals(target, _draft.TargetInput, Path.IsPathFullyQualified(target ?? string.Empty)
-                ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        if (_closed || _previewClosing || revision != _targetRevision || input != _target.Text) return false;
+        if (!selectedNewSource && input == LaunchCommandText.Format(_draft.TargetInput, _targetArguments))
         {
-            if (revision != _targetRevision || input != _target.Text) return false;
+            _targetDirty = false;
+            RefreshFields();
+            return true;
+        }
+        var arguments = string.Empty;
+        var ambiguous = false;
+        var target = selectedNewSource ? NormalizeTarget(input.Trim()) : ParseTarget(input, out arguments, out ambiguous);
+        if (ambiguous)
+        {
+            ShowError(T("Editor.QuoteTargetPath"));
+            _target.Focus(FocusState.Programmatic);
+            return false;
+        }
+        var currentTarget = _draft.TargetInput;
+        if (!selectedNewSource && (SameTarget(target, currentTarget) ||
+            currentTarget is not null && Path.IsPathFullyQualified(target ?? string.Empty) &&
+            SameTarget(target, NormalizeTarget(currentTarget))))
+        {
+            if (arguments != _targetArguments)
+            {
+                if (_selectedShortcutPath is null && _originalLink is { HasIdList: true })
+                {
+                    ShowError(T("Entry.IdListTarget"));
+                    return false;
+                }
+                _targetArguments = arguments;
+                _targetWasConfirmed = true;
+                Changed();
+            }
             _targetDirty = false;
             RefreshFields();
             return true;
         }
         string? shortcutPath = null;
+        string? shortcutSha256 = null;
         string? displayName = null;
+        LinkFields? selectedLink = null;
         if (!string.IsNullOrEmpty(target))
         {
             var local = Path.IsPathFullyQualified(target);
@@ -1576,11 +1670,6 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 { ShowError(ex.Message); _target.Focus(FocusState.Programmatic); return false; }
             }
-            if (local && !Directory.Exists(target) && Path.GetExtension(target).Equals(".url", StringComparison.OrdinalIgnoreCase))
-            {
-                try { if (!RegisteredUrlProtocols.IsSupported(UrlShortcut.ReadUrlLine(File.ReadAllBytes(target)))) { ShowError(T("Entry.InvalidUrl")); _target.Focus(FocusState.Programmatic); return false; } }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { ShowError(ex.Message); _target.Focus(FocusState.Programmatic); return false; }
-            }
             if (local && Path.GetExtension(target).ToLowerInvariant() is ".lnk" or ".url" && !Directory.Exists(target))
             {
                 try
@@ -1588,13 +1677,22 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                     shortcutPath = target;
                     displayName = Path.GetFileNameWithoutExtension(target);
                     if (Path.GetExtension(target).Equals(".url", StringComparison.OrdinalIgnoreCase))
-                        target = UrlShortcut.ReadUrlLine(File.ReadAllBytes(target));
+                    {
+                        using var stream = File.Open(target, FileMode.Open, FileAccess.Read, FileShare.Read);
+                        if (stream.Length is <= 0 or > EntryObservation.MaximumBytes) throw new IOException(T("Editor.InvalidTarget"));
+                        var bytes = new byte[(int)stream.Length];
+                        stream.ReadExactly(bytes);
+                        target = UrlShortcut.ReadUrlLine(bytes);
+                        if (!RegisteredUrlProtocols.IsSupported(target)) { ShowError(T("Entry.InvalidUrl")); _target.Focus(FocusState.Programmatic); return false; }
+                        shortcutSha256 = Convert.ToHexString(SHA256.HashData(bytes));
+                    }
                     else
                     {
-                        var fields = _links.Read(target);
-                        target = !string.IsNullOrWhiteSpace(fields.TargetPath) ? fields.TargetPath :
-                            !string.IsNullOrWhiteSpace(fields.ShellParsingName) ? fields.ShellParsingName :
-                            fields.ShellIdListHash is { } hash ? "pidl:" + hash : target;
+                        (selectedLink, shortcutSha256) = ReadLinkWithHash(target);
+                        var path = FileLinkTarget(selectedLink);
+                        if (path is not null) arguments = selectedLink.Arguments;
+                        target = path ?? selectedLink.ShellParsingName ??
+                            (selectedLink.ShellIdListHash is { } hash ? "pidl:" + hash : target);
                     }
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException or ArgumentException)
@@ -1614,6 +1712,9 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _targetDirty = false;
         if (!preserveNewerTitle) _titleDirty = false;
         _selectedShortcutPath = shortcutPath;
+        _selectedShortcutSha256 = shortcutSha256;
+        _selectedLink = selectedLink;
+        _targetArguments = arguments;
         _targetWasConfirmed = true;
         _preparedAutomaticSeries = null;
         _draft = _draft with { TargetInput = target, SourceShortcutPath = shortcutPath, TargetDisplayName = displayName,

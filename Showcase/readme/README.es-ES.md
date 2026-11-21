@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="Versión V1.52">
+  <img src="https://img.shields.io/badge/Version-V1.53-0078D4?style=flat-square" alt="Versión V1.53">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Para Windows 10 y 11">
   <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="Arquitectura x64 / ARM64">
@@ -37,7 +37,6 @@
 
 
 https://github.com/user-attachments/assets/da1f8259-6876-4211-ba44-313864f5116e
-<p align="center"><sub>Vista previa local de la versión de desarrollo V1.53. El desarrollador aprobó los materiales locales de presentación el 2026-11-17; no se han subido y la versión oficial actual sigue siendo V1.52.</sub></p>
 
 ## **¡Volved a la vida, mis mosaicos!**
 

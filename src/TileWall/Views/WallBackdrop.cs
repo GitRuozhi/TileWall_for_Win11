@@ -12,7 +12,8 @@ using Windows.UI.ViewManagement;
 namespace TileWall.Views;
 
 /// <summary>System materials with an independent alpha mask, never opacity on the wall's content.</summary>
-internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fallbackChanged, bool isTest = false) : SystemBackdrop
+internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fallbackChanged, bool isTest = false,
+    NativeWallBackground? nativeBackground = null) : SystemBackdrop
 {
     private readonly bool _diagnosticTrace = Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1" ||
         isTest && Environment.GetCommandLineArgs().Contains("--trace-input", StringComparer.OrdinalIgnoreCase);
@@ -177,7 +178,8 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
     private MaterialSlot GetMaterial(WallBackgroundMode mode)
     {
         if (_materials.TryGetValue(mode, out var cached)) return cached;
-        var proxy = new AlphaBackdropTarget(_target!, _diagnosticTrace, OnMaterialReadinessChanged);
+        ICompositionSupportsSystemBackdrop output = nativeBackground is not null ? nativeBackground : _target!;
+        var proxy = new AlphaBackdropTarget(output, _diagnosticTrace, OnMaterialReadinessChanged);
         ISystemBackdropControllerWithTargets controller = mode == WallBackgroundMode.Acrylic
             ? new DesktopAcrylicController() : new MicaController();
         var slot = new MaterialSlot(mode, controller, proxy);
@@ -429,6 +431,10 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             // borrowed brush and release our graph before removing its last target,
             // which can close that compositor and every brush created from it.
             slot.Proxy.Dispose();
+        }
+        nativeBackground?.DisconnectMaterialTarget();
+        foreach (var slot in _materials.Values)
+        {
             slot.Controller.RemoveAllSystemBackdropTargets();
             (slot.Controller as IDisposable)?.Dispose();
         }

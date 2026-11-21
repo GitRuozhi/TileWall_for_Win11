@@ -33,6 +33,7 @@ internal sealed class StartButtonLocatorException : Exception
         if (nativeResult < 0) HResult = nativeResult;
     }
     public StartButtonLocatorFailure Code { get; }
+    internal bool IsTimeout => HResult == unchecked((int)0x80131505);
 }
 
 /// <summary>
@@ -257,7 +258,15 @@ internal sealed class StartButtonLocator : IAsyncDisposable
 
                     Publish(epoch, readTick, taskbars, candidates, pendingAutoHideCount);
                 }
-                catch (StartButtonLocatorException error) when (error.HResult == unchecked((int)0x80131505)
+                catch (StartButtonLocatorException error) when (
+                    (error.Code is StartButtonLocatorFailure.TaskbarUnavailable or StartButtonLocatorFailure.AutomationUnavailable
+                        or StartButtonLocatorFailure.ButtonUnrecognized) && _publishedTaskbars.Length != 0 &&
+                    _publishedTaskbars.All(previous => !Native.HasTaskbarIdentity(previous)))
+                {
+                    throw new StartButtonLocatorException(StartButtonLocatorFailure.TaskbarTopologyChanged, error.HResult,
+                        "The previously verified Explorer taskbars are gone.");
+                }
+                catch (StartButtonLocatorException error) when (error.IsTimeout
                     && !_ready.Task.IsCompletedSuccessfully && !startupTimeoutRetried && Volatile.Read(ref _stopping) == 0)
                 {
                     // One initial UIA timeout discards the whole unpublished observation. The next normal
@@ -274,16 +283,15 @@ internal sealed class StartButtonLocator : IAsyncDisposable
                 _refresh.WaitOne(RefreshIntervalMilliseconds);
             }
         }
-        catch (OperationCanceledException) when (Volatile.Read(ref _stopping) != 0)
-        {
-            _ready.TrySetCanceled();
-        }
         catch (Exception error)
         {
-            var fault = error as StartButtonLocatorException ?? new StartButtonLocatorException(StartButtonLocatorFailure.AutomationUnavailable, error.HResult);
-            RequestStop();
-            _ready.TrySetException(fault);
-            Faulted?.Invoke(fault);
+            if (Volatile.Read(ref _stopping) == 0)
+            {
+                var fault = error as StartButtonLocatorException ?? new StartButtonLocatorException(StartButtonLocatorFailure.AutomationUnavailable, error.HResult);
+                RequestStop();
+                _ready.TrySetException(fault);
+                Faulted?.Invoke(fault);
+            }
         }
         finally
         {
@@ -311,7 +319,7 @@ internal sealed class StartButtonLocator : IAsyncDisposable
             throw new OperationCanceledException();
 
         throw new StartButtonLocatorException(StartButtonLocatorFailure.TaskbarTopologyChanged,
-            context: "Explorer taskbar windows or processes changed after discovery; explicit retry is required.");
+            context: "Explorer taskbar windows or processes changed after discovery.");
     }
 
     private void Publish(long epoch, long readTick, IReadOnlyList<Native.Taskbar> taskbars, List<Candidate> candidates,
@@ -322,8 +330,8 @@ internal sealed class StartButtonLocator : IAsyncDisposable
         {
             if (Volatile.Read(ref _stopping) != 0 || Interlocked.Read(ref _epoch) != epoch) return;
             if (candidates.Count + pendingAutoHideCount != taskbars.Count) return;
-            // A locator lifetime belongs to this confirmed set. Geometry may change, but Explorer
-            // replacement or monitor/taskbar additions/removals require a fresh explicit preparation.
+            // A locator lifetime belongs to this confirmed set. Explorer replacement or
+            // monitor/taskbar additions/removals require a fresh preparation.
             if (_publishedTaskbars.Length == 0)
                 _publishedTaskbars = taskbars.ToArray();
             if (!_previousCandidates.SequenceEqual(candidates) || _snapshot.PendingAutoHideTaskbarCount != pendingAutoHideCount)
@@ -387,18 +395,25 @@ internal sealed class StartButtonLocator : IAsyncDisposable
         internal static bool TryGetTaskbar(nint window, int processId, out Taskbar taskbar)
             => TryGetTaskbar(window, processId, out taskbar, out _);
 
+        internal static bool HasTaskbarIdentity(Taskbar taskbar) => TaskbarIdentityFailure(taskbar.Window, taskbar.ProcessId) is null;
+
         private static bool TryGetTaskbar(nint window, int processId, out Taskbar taskbar, out string? failure)
         {
             taskbar = new(window, processId, default);
-            failure = null;
-            if (!IsWindow(window)) { failure = "window no longer exists"; return false; }
-            if (!IsTaskbarClass(window)) { failure = "taskbar class changed or unreadable"; return false; }
-            GetWindowThreadProcessId(window, out var currentPid);
-            if (currentPid != processId) { failure = $"owner changed to {currentPid}"; return false; }
+            failure = TaskbarIdentityFailure(window, processId);
+            if (failure is not null) return false;
             if (!GetWindowRect(window, out var bounds)) { failure = $"GetWindowRect error={Marshal.GetLastWin32Error()}"; return false; }
             if (!bounds.ToPhysical().IsValid) { failure = $"invalid bounds={bounds.ToPhysical()}"; return false; }
             taskbar = new(window, processId, bounds.ToPhysical());
             return true;
+        }
+
+        private static string? TaskbarIdentityFailure(nint window, int processId)
+        {
+            if (!IsWindow(window)) return "window no longer exists";
+            if (!IsTaskbarClass(window)) return "taskbar class changed or unreadable";
+            GetWindowThreadProcessId(window, out var currentPid);
+            return currentPid == processId ? null : $"owner changed to {currentPid}";
         }
 
         internal static bool IsStartChild(nint window, nint taskbar, int processId)

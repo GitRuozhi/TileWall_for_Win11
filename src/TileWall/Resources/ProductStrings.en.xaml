@@ -352,9 +352,9 @@
   <x:String x:Key="Settings.BackgroundFailed">Cannot read this image. Please choose another.</x:String>
   <x:String x:Key="Wall.GroupTitleHint">Click and drag to move; double-click to rename.</x:String>
   <x:String x:Key="Settings.ExplorerMenu">Context menu</x:String>
-  <x:String x:Key="Settings.PackagedContextMenuHelp">Turn “Add to TileWall” on or off for the current user without administrator approval. The modern and classic menus share this switch on Windows 11. Restoring defaults does not change it.</x:String>
   <x:String x:Key="Settings.ContextMenuToggle">Add from File Explorer</x:String>
-  <x:String x:Key="Settings.ContextMenuHelp">Turn “Add to TileWall” on or off in the current user’s classic File Explorer menu without administrator approval. Restoring defaults does not change this switch.</x:String>
+  <x:String x:Key="Settings.ContextMenuHelp">Turn on “Add to TileWall” for this version. Turning it off disables all verified TileWall menus for the current user without administrator approval. Restoring defaults preserves this setting.</x:String>
+  <x:String x:Key="Settings.ContextMenuUnverified">These context-menu entries were retained because their ownership could not be verified.</x:String>
   <x:String x:Key="Settings.ContextMenuReadFailed">Could not read the context-menu setting. Please retry.</x:String>
   <x:String x:Key="Settings.ContextMenuConflict">Another program uses this menu entry. It cannot be changed.</x:String>
   <x:String x:Key="Settings.ContextMenuTransfer">Enabling moves the current user’s menu from these TileWall copies to this copy:&#10;{0}&#10;New target:&#10;{1}&#10;Continue?</x:String>
@@ -384,6 +384,7 @@
   <x:String x:Key="Editor.PresetWide">Wide</x:String>
   <x:String x:Key="Editor.PresetLarge">Large</x:String>
   <x:String x:Key="Editor.InvalidTarget">Target path does not exist or URL is invalid.</x:String>
+  <x:String x:Key="Editor.QuoteTargetPath">Put the full target path in double quotes before adding launch arguments.</x:String>
   <x:String x:Key="Editor.Auto">Automatic</x:String>
   <x:String x:Key="Editor.Manual">Manual</x:String>
   <x:String x:Key="Import.Small">Small 1×1</x:String>

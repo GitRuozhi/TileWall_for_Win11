@@ -196,10 +196,15 @@ public sealed partial class MainWindow
             L(transition.FromClip.Y, transition.ToClip.Y, p), L(transition.FromClip.Width, transition.ToClip.Width, p),
             L(transition.FromClip.Height, transition.ToClip.Height, p));
         SetScrollRegion(transition.FullScreen, clip, updateSurface: false, presentationSettings: transition.Settings);
-        MoveWindowIfChanged(new RectInt32((int)Math.Round(L(transition.From.X, transition.To.X, p)),
-            (int)Math.Round(L(transition.From.Y, transition.To.Y, p)),
-            Math.Max(1, (int)Math.Round(L(transition.From.Width, transition.To.Width, p))),
-            Math.Max(1, (int)Math.Round(L(transition.From.Height, transition.To.Height, p)))));
+        // Round the physical edges together so a shared right or bottom edge
+        // stays fixed even at half-pixel positions.
+        var from = transition.From;
+        var to = transition.To;
+        var left = (int)Math.Round(L(from.X, to.X, p));
+        var top = (int)Math.Round(L(from.Y, to.Y, p));
+        var right = (int)Math.Round(L(from.X + from.Width, to.X + to.Width, p));
+        var bottom = (int)Math.Round(L(from.Y + from.Height, to.Y + to.Height, p));
+        MoveWindowIfChanged(new RectInt32(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top)));
         if (t == 1)
         {
             _viewportTransition = null;

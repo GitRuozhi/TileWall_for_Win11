@@ -352,9 +352,9 @@
   <x:String x:Key="Settings.BackgroundFailed">Dieses Bild kann nicht gelesen werden. Wählen Sie ein anderes.</x:String>
   <x:String x:Key="Wall.GroupTitleHint">Zum Verschieben klicken und ziehen; zum Umbenennen doppelklicken.</x:String>
   <x:String x:Key="Settings.ExplorerMenu">Kontextmenü</x:String>
-  <x:String x:Key="Settings.PackagedContextMenuHelp">„Zu TileWall hinzufügen“ für den aktuellen Benutzer ohne Administratorbestätigung ein- oder ausschalten. Unter Windows 11 teilen sich das moderne und das klassische Menü diesen Schalter. Das Wiederherstellen der Standardwerte ändert ihn nicht.</x:String>
   <x:String x:Key="Settings.ContextMenuToggle">Aus dem Datei-Explorer hinzufügen</x:String>
-  <x:String x:Key="Settings.ContextMenuHelp">„Zu TileWall hinzufügen“ im klassischen Datei-Explorer-Menü des aktuellen Benutzers ohne Administratorbestätigung ein- oder ausschalten. Das Wiederherstellen der Standardwerte ändert diesen Schalter nicht.</x:String>
+  <x:String x:Key="Settings.ContextMenuHelp">Beim Einschalten stellt diese Version „Zu TileWall hinzufügen“ bereit. Beim Ausschalten werden alle eindeutig zugeordneten TileWall-Menüeinträge des aktuellen Benutzers deaktiviert. Dazu sind keine Administratorrechte erforderlich. Diese Einstellung wird beim Wiederherstellen der Standardwerte beibehalten.</x:String>
+  <x:String x:Key="Settings.ContextMenuUnverified">Die folgenden Kontextmenüeinträge wurden beibehalten, da ihre Zugehörigkeit nicht verifiziert werden konnte.</x:String>
   <x:String x:Key="Settings.ContextMenuReadFailed">Die Kontextmenüeinstellung konnte nicht gelesen werden. Versuchen Sie es erneut.</x:String>
   <x:String x:Key="Settings.ContextMenuConflict">Ein anderes Programm verwendet diesen Menüeintrag. Er kann nicht geändert werden.</x:String>
   <x:String x:Key="Settings.ContextMenuTransfer">Beim Aktivieren wird das Menü des aktuellen Benutzers von diesen TileWall-Kopien auf diese Kopie übertragen:
@@ -388,6 +388,7 @@ Fortfahren?</x:String>
   <x:String x:Key="Editor.PresetWide">Breit</x:String>
   <x:String x:Key="Editor.PresetLarge">Groß</x:String>
   <x:String x:Key="Editor.InvalidTarget">Der Zielpfad ist nicht vorhanden oder die URL ist ungültig.</x:String>
+  <x:String x:Key="Editor.QuoteTargetPath">Setzen Sie den vollständigen Zielpfad in doppelte Anführungszeichen, bevor Sie Startargumente hinzufügen.</x:String>
   <x:String x:Key="Editor.Auto">Automatisch</x:String>
   <x:String x:Key="Editor.Manual">Manuell</x:String>
   <x:String x:Key="Import.Small">Klein 1×1</x:String>

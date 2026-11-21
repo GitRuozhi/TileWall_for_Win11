@@ -170,10 +170,17 @@ public sealed partial class WallImageService
             Items.Clear();
         }
     }
-    public Task<WallImageResult> LoadBackgroundAsync(ManagedMediaReference? media, string? sourcePath,
+    public async Task<WallImageResult> LoadBackgroundAsync(ManagedMediaReference? media, string? sourcePath,
+        int widthPixels, int heightPixels, CancellationToken ct = default)
+    {
+        var result = await LoadBackgroundFrameAsync(media, sourcePath, widthPixels, heightPixels, ct);
+        return new(result.Source, result.Status, result.Diagnostic);
+    }
+
+    internal Task<WallBackgroundResult> LoadBackgroundFrameAsync(ManagedMediaReference? media, string? sourcePath,
         int widthPixels, int heightPixels, CancellationToken ct = default) =>
-        LoadAsync(token => PrepareFileAsync(media is null ? sourcePath : ManagedMediaPath(media),
-            "background", widthPixels, heightPixels, token, media), widthPixels, heightPixels, ct);
+        StartImageRequest(token => LoadBackgroundCoreAsync(media, sourcePath, widthPixels, heightPixels, token), ct,
+            new WallBackgroundResult(null, null, WallImageStatus.Cancelled));
 
     private (FileStream? Lease, string? Diagnostic) OpenVerifiedMedia(string path, ManagedMediaReference media)
     {

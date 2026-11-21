@@ -21,7 +21,7 @@ internal sealed record SettingsDialogState(WallSettings Settings, string? Regist
     string? RegisteredSecondaryHotKey = null, string? HotKeyError = null,
     string? SecondaryHotKeyError = null, bool TaskbarStartReplacementActive = false,
     bool TaskbarStartReplacementSuspended = false, string? TaskbarStartReplacementError = null,
-    string? TaskbarActivationError = null);
+    string? TaskbarActivationError = null, bool TaskbarStartReplacementRecovering = false);
 
 /// <summary>Immediate settings edits. The host owns persistence and operating-system rollback.</summary>
 internal sealed class SettingsDialog : IWallDialogSession
@@ -91,9 +91,6 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly Button _reset = new();
     private readonly Button _initialize = new();
     private readonly ToggleSwitch _contextMenu = new();
-    private readonly TextBlock _contextMenuTransfer = new() { TextWrapping = TextWrapping.Wrap };
-    private readonly StackPanel _contextMenuConfirmation = new() { Spacing = 8, Visibility = Visibility.Collapsed };
-    private readonly Button _confirmContextTransfer = new(), _cancelContextTransfer = new();
     private readonly List<(Button Button, string LabelKey)> _linkButtons = [];
     private readonly TextBlock _version = new();
     private readonly StatusOverlay _status = new();
@@ -110,7 +107,6 @@ internal sealed class SettingsDialog : IWallDialogSession
     private bool _persistentStatusVisible;
     private long _contextMutationRevision;
     private string? _contextOutcomeKey, _contextOutcomeArgument, _progressKey;
-    private string[]? _contextTransferTargets;
     private ExplorerContextMenuState? _contextState;
     private readonly bool _traceInput = Environment.GetEnvironmentVariable("TILEWALL_TRACE_SETTINGS") == "1" ||
         Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1";
@@ -230,14 +226,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         taskbarActivationRow.Children.Add(_taskbarActivationStatus);
         AddRow(integration, "Settings.ActivateTaskbar", taskbarActivationRow);
         AddRow(integration, "Settings.RunAtLogin", _runAtLogin);
-        var contextMenuRow = new StackPanel { Spacing = 8 };
-        contextMenuRow.Children.Add(_contextMenu);
-        _contextMenuConfirmation.Children.Add(_contextMenuTransfer);
-        var contextActions = new StackPanel { Orientation = actionsOrientation, Spacing = 8 };
-        contextActions.Children.Add(_confirmContextTransfer); contextActions.Children.Add(_cancelContextTransfer);
-        _contextMenuConfirmation.Children.Add(contextActions);
-        contextMenuRow.Children.Add(_contextMenuConfirmation);
-        AddRow(integration, "Settings.ExplorerMenu", contextMenuRow);
+        AddRow(integration, "Settings.ExplorerMenu", _contextMenu);
         var initializationActions = new StackPanel { Orientation = actionsOrientation, Spacing = 8 };
         initializationActions.Children.Add(_reset); initializationActions.Children.Add(_initialize);
         AddRow(integration, "Settings.Initialization", initializationActions);
@@ -314,7 +303,6 @@ internal sealed class SettingsDialog : IWallDialogSession
         Id(_redirectTaskbarStartButton, "redirect-taskbar-start-button");
         Id(_taskbarStartReplacementStatus, "taskbar-start-replacement-state");
         Id(_retryTaskbarStart, "taskbar-start-replacement-retry");
-        Id(_confirmContextTransfer, "context-menu-confirm-transfer"); Id(_cancelContextTransfer, "context-menu-cancel-transfer");
         // A switch has no separate double-tap action. Treat two quick clicks as
         // two taps rather than letting the second click disappear into DoubleTapped.
         var toggles = new[] { _showGrid, _runAtLogin, _topmost, _stayVisible, _layoutLocked, _activateTaskbar, _menuStart,
@@ -405,16 +393,6 @@ internal sealed class SettingsDialog : IWallDialogSession
         {
             if (_refreshing || _busy || !_contextPageOpen) return;
             BeginContextMenuChange(_contextMenu.IsOn);
-        };
-        _confirmContextTransfer.Click += (_, _) =>
-        {
-            if (_contextTransferTargets is { } targets) BeginContextMenuChange(true, targets);
-        };
-        _cancelContextTransfer.Click += (_, _) =>
-        {
-            if (_busy) return;
-            _contextTransferTargets = null;
-            RefreshContextMenuPresentation();
         };
         _dialog.PrimaryButtonClick += (_, e) =>
         {
@@ -563,8 +541,6 @@ internal sealed class SettingsDialog : IWallDialogSession
         _keyboardExperimental.Text = _taskbarExperimental.Text = ProductStrings.Get("Settings.ExperimentalFeature");
         _keyBehaviorKeyHeader.Text = ProductStrings.Get("Settings.KeyBehaviorKey");
         _keyBehaviorActionHeader.Text = ProductStrings.Get("Settings.KeyBehaviorAction");
-        _confirmContextTransfer.Content = ProductStrings.Get("Settings.ContextMenuConfirmTransfer");
-        _cancelContextTransfer.Content = ProductStrings.Get("Common.Cancel");
         AutomationProperties.SetName(_transparency, ProductStrings.Get("Settings.Transparency"));
         AutomationProperties.SetName(_transparencyInput, ProductStrings.Get("Settings.Transparency"));
         _version.Text = ProductVersion.Display;
@@ -667,7 +643,8 @@ internal sealed class SettingsDialog : IWallDialogSession
                 (!_state.TaskbarStartReplacementActive || _state.TaskbarStartReplacementSuspended);
             _taskbarStartReplacementStatus.Visibility = showTaskbarStatus ? Visibility.Visible : Visibility.Collapsed;
             _retryTaskbarStart.Visibility = _state.Settings.RedirectTaskbarStartButton && !_state.TaskbarStartReplacementActive &&
-                !_state.TaskbarStartReplacementSuspended && _retryStartReplacement is not null ? Visibility.Visible : Visibility.Collapsed;
+                !_state.TaskbarStartReplacementSuspended && !_state.TaskbarStartReplacementRecovering &&
+                _retryStartReplacement is not null ? Visibility.Visible : Visibility.Collapsed;
             _retryTaskbarStart.IsEnabled = !_busy && !HasPendingHotKeyTransition;
             RefreshHotKeyRegistrationPresentation();
             RefreshKeyBehaviorTable();
@@ -905,8 +882,6 @@ internal sealed class SettingsDialog : IWallDialogSession
             {
                 _contextOutcomeKey = null; _contextOutcomeArgument = null;
             }
-            // Keep transfer confirmation controls stable through activation clicks.
-            // Confirmation performs its own fresh ownership check before writing.
         }
         finally
         {
@@ -919,17 +894,16 @@ internal sealed class SettingsDialog : IWallDialogSession
         }
     }
 
-    private void BeginContextMenuChange(bool enable, string[]? confirmedTargets = null)
+    private void BeginContextMenuChange(bool enable)
     {
         if (_refreshing || _busy || !_contextPageOpen) return;
         _contextMutationRevision++;
         CancelHotKeyRecordings();
-        _contextTransferTargets = null;
         _contextOutcomeKey = null; _contextOutcomeArgument = null;
-        _pending = ChangeContextMenuAsync(enable, confirmedTargets);
+        _pending = ChangeContextMenuAsync(enable);
     }
 
-    private async Task ChangeContextMenuAsync(bool enable, string[]? confirmedTargets)
+    private async Task ChangeContextMenuAsync(bool enable)
     {
         _busy = true; SetFormEnabled(false);
         var failed = false;
@@ -939,14 +913,13 @@ internal sealed class SettingsDialog : IWallDialogSession
             await CancelAndWaitForHotKeysAsync();
             RefreshContextMenuPresentation();
             var language = WallLanguages.ResolveTag(ProductStrings.Language);
-            var result = await _contextMenuController.ApplyAsync(enable, language, confirmedTargets);
+            var result = await _contextMenuController.ApplyAsync(enable, language);
             _contextState = result.State;
             _contextRefreshRequested = false;
-            _contextTransferTargets = result.TransferTargets;
             _contextOutcomeKey = result.OutcomeKey;
             _contextOutcomeArgument = result.Detail;
             failed = result.Failed;
-            completed = !failed && result.TransferTargets is null && result.State.ReadSucceeded &&
+            completed = !failed && result.State.ReadSucceeded && result.State.UnverifiedEntries is not { Length: > 0 } &&
                 (enable ? result.State.Complete : !result.State.Enabled);
         }
         catch (Exception ex)
@@ -977,14 +950,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         _refreshing = true;
         try
         {
-            // A mixed state can still contain this copy's entries; On permits their exact removal.
             _contextMenu.IsOn = _contextState?.Enabled == true;
             _contextMenu.IsEnabled = !_busy && _contextState?.ReadSucceeded == true;
-            _confirmContextTransfer.IsEnabled = _cancelContextTransfer.IsEnabled = !_busy;
-            _contextMenuConfirmation.Visibility = _contextTransferTargets is null ? Visibility.Collapsed : Visibility.Visible;
-            if (_contextTransferTargets is not null)
-                _contextMenuTransfer.Text = string.Format(ProductStrings.Get("Settings.ContextMenuTransfer"),
-                    string.Join("\n", _contextTransferTargets), Environment.ProcessPath);
             RefreshStatus();
         }
         finally { _refreshing = wasRefreshing; }
@@ -1485,8 +1452,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         foreach (var control in _anchorButtons.Cast<FrameworkElement>().Concat([_expandColumns, _fullScreen, _menuStart]))
             DialogActionFeedback.SetReason(control, () => SettingsBlockReason() ??
                 (_state.Settings.LayoutLocked ? ProductStrings.Get("Settings.LayoutLockReason") : null));
-        foreach (var control in new FrameworkElement[] { _reset, _initialize, _resetHotKey, _resetSecondaryHotKey,
-            _confirmContextTransfer, _cancelContextTransfer })
+        foreach (var control in new FrameworkElement[] { _reset, _initialize, _resetHotKey, _resetSecondaryHotKey })
             DialogActionFeedback.SetReason(control, SettingsBlockReason);
         foreach (var control in new FrameworkElement[] { _retryStart, _retryTaskbarStart })
             DialogActionFeedback.SetReason(control, () => SettingsBlockReason() ??
@@ -1505,10 +1471,17 @@ internal sealed class SettingsDialog : IWallDialogSession
 
     private void RefreshStatus()
     {
+        var menuFailure = _contextState?.HandoffFailure;
+        var menuOutcome = _contextOutcomeKey ?? (menuFailure is null ? null : "Settings.ContextMenuOperationFailed");
+        var unverified = _contextState?.UnverifiedEntries;
         var message = _progressKey is { } progress ? ProductStrings.Get(progress) : string.Join("\n", new[]
         {
             _state.Error is { } error ? string.Format(ProductStrings.Get("Settings.ApplyFailed"), error) : null,
-            _contextOutcomeKey is { } outcome ? ProductStrings.Get(outcome) : null,
+            menuOutcome is not null ? ProductStrings.Get(menuOutcome) : null,
+            _contextOutcomeArgument ?? menuFailure,
+            unverified is { Length: > 0 }
+                ? ProductStrings.Get("Settings.ContextMenuUnverified") + "\n" + string.Join("\n", unverified)
+                : null,
         }.Where(value => !string.IsNullOrEmpty(value)));
         if (message.Length != 0)
         {

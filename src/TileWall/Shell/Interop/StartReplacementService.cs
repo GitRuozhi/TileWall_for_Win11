@@ -7,6 +7,11 @@ namespace TileWall.Shell.Interop;
 
 internal enum StartReplacementChannel { WindowsKey, TaskbarButton }
 
+internal sealed record StartReplacementFault(string Code, StartButtonLocatorException? LocatorError)
+{
+    internal long ObservedAt { get; } = Environment.TickCount64;
+}
+
 /// <summary>
 /// Owns Start-entry capture. Prepare is pass-through; only Activate admits new gestures.
 /// One thread owns hooks and all input ledgers.
@@ -37,14 +42,15 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
     private bool _stopping, _quit, _prepared;
     private volatile bool _desktopRecoveryPending;
     private bool _desktopRecoveryQueued;
-    private string? _fault;
+    private StartReplacementFault? _fault;
 
-    internal string? Fault => Volatile.Read(ref _fault);
+    internal StartReplacementFault? CurrentFault => Volatile.Read(ref _fault);
+    internal string? Fault => CurrentFault?.Code;
     internal bool IsActive => _admission && !_desktopRecoveryPending;
     internal bool HasRetainedResources => _locator?.HasRetainedResources == true || _thread is not null
         && (!_finished.Task.IsCompletedSuccessfully || _keyboardHook != 0 || _mouseHook != 0 || _desktopHook != 0);
     internal bool IsCurrentActivation(long generation) => IsActive && Interlocked.Read(ref _generation) == generation;
-    internal event Action<string>? Faulted;
+    internal event Action<StartReplacementFault>? Faulted;
 
     internal async Task PrepareAsync(CancellationToken cancellationToken = default)
     {
@@ -64,7 +70,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
                 _locator = new StartButtonLocator();
                 _locator.Faulted += LocatorFaulted;
                 _locator.SnapshotChanged += SnapshotChanged;
-                await _locator.StartAsync(cancellationToken).ConfigureAwait(false);
+                await _locator.StartAsync(cancellationToken).WaitAsync(cancellationToken).ConfigureAwait(false);
             }
             cancellationToken.ThrowIfCancellationRequested();
             if (_stopRequested) throw new InvalidOperationException("Input preparation was superseded by stop.");
@@ -78,7 +84,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
             _thread = new Thread(Run) { Name = channel == StartReplacementChannel.WindowsKey
                 ? "TileWall Win-key input" : "TileWall taskbar input", IsBackground = true };
             _thread.Start();
-            await _ready.Task.ConfigureAwait(false);
+            await _ready.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             if (_stopRequested || _locator is not null && !_locator.CurrentSnapshot.IsReady || Fault is not null)
                 throw new InvalidOperationException("Input preparation became unavailable.");
@@ -100,18 +106,20 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
         finally { _transition.Release(); }
     }
 
-    internal async Task<long> ActivateAsync()
+    internal async Task<long> ActivateAsync(CancellationToken cancellationToken = default)
     {
-        await _transition.WaitAsync().ConfigureAwait(false);
+        await _transition.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (!_prepared || _stopRequested || Fault is not null) throw new InvalidOperationException("Input preparation is not healthy.");
             var expectedGeneration = Interlocked.Read(ref _generation);
             var completed = new TaskCompletionSource<long>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (cancellationToken.CanBeCanceled) ObserveOwnerFault(completed.Task);
             Post(() =>
             {
                 try
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (_stopRequested || _stopping || Fault is not null)
                         throw new InvalidOperationException("Activation was superseded by stop or failure.");
                     if (_admission && _desktopRecoveryPending)
@@ -137,13 +145,24 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
                         _keyboard.Activate(held);
                     }
                     else _mouse.Activate((Win32Api.GetAsyncKeyState(1) & 0x8000) != 0);
+                    cancellationToken.ThrowIfCancellationRequested();
                     var generation = Interlocked.Increment(ref _generation);
                     _admission = true;
+                    if (_stopRequested || cancellationToken.IsCancellationRequested)
+                    {
+                        CloseAdmissionForStop();
+                        cancellationToken.ThrowIfCancellationRequested();
+                        throw new InvalidOperationException("Activation was superseded by stop.");
+                    }
                     completed.SetResult(generation);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    completed.SetCanceled(cancellationToken);
                 }
                 catch (Exception ex) { SetFault("activate-failed"); completed.SetException(ex); }
             });
-            return await completed.Task.ConfigureAwait(false);
+            return await completed.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         finally { _transition.Release(); }
     }
@@ -207,7 +226,11 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
         return await ActivateAsync().ConfigureAwait(false);
     }
 
-    internal void InvalidateButtons() => _locator?.Invalidate();
+    internal void InvalidateButtons(bool discardQueuedToggle = false)
+    {
+        if (discardQueuedToggle) Interlocked.Increment(ref _generation);
+        _locator?.Invalidate();
+    }
 
     private void Run()
     {
@@ -327,6 +350,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
         var suppress = false;
         try
         {
+            var generation = Interlocked.Read(ref _generation);
             if (!_admission) _mouse.Stop();
             var kind = (uint)message switch
             {
@@ -344,7 +368,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
                 && _locator is { } locator && locator.TryHitTest(native.Point.X, native.Point.Y, out var target)) hit = target!.Identity;
             var decision = _mouse.Handle(kind, source, hit);
             suppress = decision.Suppress;
-            if (decision.Toggle && IsActive) enqueueToggle(Interlocked.Read(ref _generation));
+            if (decision.Toggle && IsCurrentActivation(generation)) enqueueToggle(generation);
         }
         catch (Exception) { SetFault("mouse-callback-failed"); }
         WakeForCleanup();
@@ -456,7 +480,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
 
     private void LocatorFaulted(StartButtonLocatorException error)
     {
-        SetFault($"start-button-{error.Code}: {error.Message}");
+        SetFault($"start-button-{error.Code}: {error.Message}", error);
         if (_threadId != 0)
         {
             try { Post(BeginStop); }
@@ -464,17 +488,18 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
         }
     }
 
-    private void SetFault(string code)
+    private void SetFault(string code, StartButtonLocatorException? locatorError = null)
     {
         _admission = false;
-        var generation = Interlocked.Increment(ref _generation);
-        if (Interlocked.CompareExchange(ref _fault, code, null) is not null) return;
+        Interlocked.Increment(ref _generation);
+        var fault = new StartReplacementFault(code, locatorError);
+        if (Interlocked.CompareExchange(ref _fault, fault, null) is not null) return;
         // Never run logging or an arbitrary subscriber on the hook thread.
         ThreadPool.QueueUserWorkItem(_ =>
         {
             try
             {
-                if (Fault == code && Interlocked.Read(ref _generation) == generation) Faulted?.Invoke(code);
+                if (ReferenceEquals(CurrentFault, fault)) Faulted?.Invoke(fault);
             }
             catch (Exception) { /* Subscriber failure cannot terminate the input owner. Fault remains readable. */ }
         });
@@ -491,10 +516,15 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
     private static TaskCompletionSource Completion()
     {
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        // A timeout ends only the caller's wait. Faults reported later by the native owner still need an observer.
-        _ = completion.Task.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        ObserveOwnerFault(completion.Task);
         return completion;
+    }
+
+    private static void ObserveOwnerFault(Task ownerWork)
+    {
+        // A timeout ends only the caller's wait. Faults reported later by the native owner still need an observer.
+        _ = ownerWork.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
     public async ValueTask DisposeAsync()
     {

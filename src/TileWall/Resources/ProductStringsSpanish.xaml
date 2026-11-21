@@ -352,9 +352,9 @@
   <x:String x:Key="Settings.BackgroundFailed">No se puede leer esta imagen. Elige otra.</x:String>
   <x:String x:Key="Wall.GroupTitleHint">Haz clic y arrastra para mover; haz doble clic para cambiar el nombre.</x:String>
   <x:String x:Key="Settings.ExplorerMenu">Menú contextual</x:String>
-  <x:String x:Key="Settings.PackagedContextMenuHelp">Activa o desactiva «Añadir a TileWall» para el usuario actual sin aprobación de administrador. Los menús moderno y clásico comparten este interruptor en Windows 11. Restaurar los valores predeterminados no lo cambia.</x:String>
   <x:String x:Key="Settings.ContextMenuToggle">Añadir desde el Explorador de archivos</x:String>
-  <x:String x:Key="Settings.ContextMenuHelp">Activa o desactiva «Añadir a TileWall» en el menú clásico del Explorador de archivos del usuario actual sin aprobación de administrador. Restaurar los valores predeterminados no cambia este interruptor.</x:String>
+  <x:String x:Key="Settings.ContextMenuHelp">Al activarlo, esta versión ofrece «Añadir a TileWall». Al desactivarlo, se deshabilitan todas las entradas de TileWall cuya pertenencia se haya verificado para el usuario actual. No se necesitan permisos de administrador. Restaurar los valores predeterminados conserva este ajuste.</x:String>
+  <x:String x:Key="Settings.ContextMenuUnverified">Se conservaron estas entradas del menú contextual porque no se pudo verificar a qué aplicación pertenecen.</x:String>
   <x:String x:Key="Settings.ContextMenuReadFailed">No se pudo leer la configuración del menú contextual. Reinténtalo.</x:String>
   <x:String x:Key="Settings.ContextMenuConflict">Otro programa usa esta entrada del menú. No se puede modificar.</x:String>
   <x:String x:Key="Settings.ContextMenuTransfer">Al activarlo, el menú del usuario actual pasará de estas copias de TileWall a esta copia:
@@ -388,6 +388,7 @@ Nuevo destino:
   <x:String x:Key="Editor.PresetWide">Ancho</x:String>
   <x:String x:Key="Editor.PresetLarge">Grande</x:String>
   <x:String x:Key="Editor.InvalidTarget">La ruta de destino no existe o la URL no es válida.</x:String>
+  <x:String x:Key="Editor.QuoteTargetPath">Escribe la ruta completa del destino entre comillas dobles antes de añadir los argumentos de inicio.</x:String>
   <x:String x:Key="Editor.Auto">Automático</x:String>
   <x:String x:Key="Editor.Manual">Manual</x:String>
   <x:String x:Key="Import.Small">Pequeño 1×1</x:String>

@@ -13,7 +13,8 @@ internal sealed record ContextMenuState(ContextMenuStatus Status, IReadOnlyList<
 {
     public bool IsCurrentExecutableComplete => Status == ContextMenuStatus.CurrentExecutable;
 }
-internal sealed record ContextMenuRegistrationResult(bool Success, bool RollbackIncomplete = false, string? Error = null);
+internal sealed record ContextMenuRegistrationResult(bool Success, bool RollbackIncomplete = false, string? Error = null,
+    bool Deferred = false);
 
 /// <summary>Current-user, 64-bit classic-menu registration for unpackaged distributions.</summary>
 [SupportedOSPlatform("windows")]
@@ -35,6 +36,7 @@ internal static class ExplorerContextMenuRegistration
         [FileVerbPath, DirectoryVerbPath, UrlVerbPath, ShortcutVerbPath];
     private static readonly string[] LegacyCleanupPaths =
         [.. VerbPaths, LegacyInternetShortcutVerbPath, LegacyUrlAssociationVerbPath];
+    internal static IReadOnlyList<string> HandoffPaths { get; } = Array.AsReadOnly(LegacyCleanupPaths);
     internal const RegistryHive RegistrationHive = RegistryHive.CurrentUser;
     internal const RegistryView RegistrationView = RegistryView.Registry64;
     private const string CommandSuffix = "\" " + ExplorerAddCommandLine.AddArgument + " \"%1\"";
@@ -87,17 +89,6 @@ internal static class ExplorerContextMenuRegistration
         { return new(ContextMenuStatus.ReadFailed, [], Error: ex.Message); }
     }
 
-    internal static ContextMenuRegistrationResult RegisterCurrentUserForCurrentExecutable(string menuText) =>
-        WithCurrentUserWriteLock(root => RegisterCurrentUser(menuText, root, CurrentExecutable(), NotifyShell, IsRecognizedTileWall));
-
-    internal static ContextMenuRegistrationResult ReconcileCurrentUserForCurrentExecutable()
-    {
-        using var identity = WindowsIdentity.GetCurrent();
-        if (new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
-            return new(false, Error: "Context-menu migration requires the ordinary user.");
-        return WithCurrentUserWriteLock(root => ReconcileCurrentUser(root, CurrentExecutable(), NotifyShell));
-    }
-
     // Upgrade only the complete, current-executable registration written before
     // shortcuts had their own verb. Do not enable an absent menu or take ownership.
     internal static ContextMenuRegistrationResult ReconcileCurrentUser(RegistryKey root, string executable, Action notifyShell)
@@ -128,7 +119,14 @@ internal static class ExplorerContextMenuRegistration
 
     internal static string WriteMutexName(string userSid) => @"Global\TileWall.ContextMenu.Write." + userSid + ".v1";
 
-    private static ContextMenuRegistrationResult WithCurrentUserWriteLock(Func<RegistryKey, ContextMenuRegistrationResult> operation)
+    internal static ContextMenuRegistrationResult WithCurrentUserWriteLock(Func<RegistryKey, ContextMenuRegistrationResult> operation) =>
+        WithWriteLock(() =>
+        {
+            using var root = RegistryKey.OpenBaseKey(RegistrationHive, RegistrationView);
+            return operation(root);
+        });
+
+    internal static ContextMenuRegistrationResult WithWriteLock(Func<ContextMenuRegistrationResult> operation)
     {
         try
         {
@@ -142,8 +140,7 @@ internal static class ExplorerContextMenuRegistration
                 try { held = mutex.WaitOne(TimeSpan.FromSeconds(5)); }
                 catch (AbandonedMutexException) { held = true; }
                 if (!held) return new(false, Error: "Another context-menu operation is still running.");
-                using var root = RegistryKey.OpenBaseKey(RegistrationHive, RegistrationView);
-                return operation(root);
+                return operation();
             }
             finally { if (held) mutex.ReleaseMutex(); }
         }
@@ -182,9 +179,43 @@ internal static class ExplorerContextMenuRegistration
         command.SetValue(string.Empty, BuildCommand(executable), RegistryValueKind.String);
     }
 
+    internal static ContextMenuRegistrationResult SynchronizeCurrentUserLabel(RegistryKey root, string executable,
+        string menuText, Action notifyShell)
+    {
+        var migration = ReconcileCurrentUser(root, executable, notifyShell);
+        if (!migration.Success) return migration;
+        var state = ReadCurrentUserState(root, executable, _ => false);
+        if (state.Status == ContextMenuStatus.ReadFailed) return new(false, Error: state.Error);
+        if (!state.IsCurrentExecutableComplete) return new(true);
+
+        return Mutate(root, VerbPaths, notifyShell, (path, previous) =>
+        {
+            if (previous is null || ReadTarget(previous) is not { } target ||
+                !SameExecutable(target, executable) || !IsComplete(previous, target, path))
+                throw new IOException($"Explorer menu ownership changed: {path}");
+            return previous.GetValue("MUIVerb") as string != menuText;
+        }, path =>
+        {
+            using var key = root.OpenSubKey(path, writable: true) ??
+                throw new IOException($"Explorer menu registration disappeared: {path}");
+            key.SetValue(string.Empty, menuText, RegistryValueKind.String);
+            key.SetValue("MUIVerb", menuText, RegistryValueKind.String);
+        }, null, null, () =>
+        {
+            foreach (var path in VerbPaths)
+            {
+                using var key = root.OpenSubKey(path);
+                if (key is null || ReadTarget(key) is not { } target || !SameExecutable(target, executable) ||
+                    !IsComplete(key, target, path) || key.GetValue("MUIVerb") as string != menuText)
+                    throw new IOException($"Unable to verify the Explorer menu label: {path}");
+            }
+        });
+    }
+
     internal static ContextMenuRegistrationResult UnregisterOwned(RegistryKey root, string executable,
         Action notifyShell, Action<string>? afterChange = null, Action<string>? beforeRollback = null,
-        bool includeLegacy = false, Action? afterMutation = null) => Mutate(root, includeLegacy ? LegacyCleanupPaths : VerbPaths, notifyShell,
+        bool includeLegacy = false, Action? afterMutation = null) =>
+        Mutate(root, includeLegacy ? LegacyCleanupPaths : VerbPaths, notifyShell,
             (_, previous) => previous is not null && ReadTarget(previous) is { } target && SameExecutable(target, executable),
             path => root.DeleteSubKeyTree(path, throwOnMissingSubKey: false), afterChange, beforeRollback, afterMutation);
 
@@ -286,10 +317,10 @@ internal static class ExplorerContextMenuRegistration
         catch (Exception ex) when (IsRegistryError(ex)) { return false; }
     }
 
-    private static bool SameExecutable(string left, string right) =>
+    internal static bool SameExecutable(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
-    private static string CurrentExecutable()
+    internal static string CurrentExecutable()
     {
         var executable = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable)) throw new IOException("TileWall executable is unavailable.");
@@ -300,7 +331,7 @@ internal static class ExplorerContextMenuRegistration
         or System.Security.SecurityException or ArgumentException or System.ComponentModel.Win32Exception;
 
     // Windows SDK ShlObj_core.h: SHCNE_ASSOCCHANGED / SHCNF_IDLIST.
-    private static void NotifyShell() => SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);
+    internal static void NotifyShell() => SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);
     [DllImport("shell32.dll", ExactSpelling = true)]
     private static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
 

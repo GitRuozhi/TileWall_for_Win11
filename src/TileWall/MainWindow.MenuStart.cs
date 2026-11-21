@@ -11,7 +11,6 @@ using TileWall.Core.Wall;
 using TileWall.Graphics;
 using TileWall.Resources;
 using TileWall.Views;
-using Windows.Foundation;
 
 namespace TileWall;
 
@@ -20,7 +19,7 @@ public sealed partial class MainWindow
     private readonly ScrollViewer _menuStart = new()
     {
         Width = WallViewportPolicy.MenuWidthDip, HorizontalAlignment = HorizontalAlignment.Left,
-        VerticalAlignment = VerticalAlignment.Top, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        VerticalAlignment = VerticalAlignment.Stretch, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Padding = new Thickness(0, 8, 0, 8),
         Visibility = Visibility.Collapsed,
     };
@@ -156,7 +155,7 @@ public sealed partial class MainWindow
                     row.Click += (_, _) => LaunchMember(id);
                     AutomationProperties.SetAutomationId(row, "menu-member-" + id);
                     AutomationProperties.SetName(row, label.Text);
-                    WallMemberVisualFactory.SetTargetTooltip(row, member);
+                    WallMemberVisualFactory.SetTargetTooltip(row, member, command: _session.TargetCommand(member.Id));
                     entryPanel.Children.Add(row);
                 }
             }
@@ -164,7 +163,7 @@ public sealed partial class MainWindow
             UpdateExpansion();
         }
         _menuStart.Content = panel;
-        PositionMenuStart(_scrollRegion);
+        PositionMenuStart();
     }
 
     private void RefreshMenuStartStrings()
@@ -238,14 +237,12 @@ public sealed partial class MainWindow
         if (_hasDocument) RenderMenuStart(Document);
     }
 
-    private void PositionMenuStart(Rect region)
+    private void PositionMenuStart()
     {
         if (!_hasDocument || !PresentedViewportSettings.MenuStart) return;
         var right = _sidebarAnchor is AnchorCorner.TopRight or AnchorCorner.BottomRight;
-        var width = Math.Max(1, (AppWindow.Size.Width - _frameWidth) / Scale);
-        var clientHeight = Math.Max(1, (AppWindow.Size.Height - _frameHeight) / Scale);
-        _menuStart.Height = clientHeight;
-        _menuStart.Margin = new Thickness(right ? Math.Max(0, width - WallViewportPolicy.FixedWidth(true))
-            : WallViewportPolicy.SidebarWidthDip, 0, 0, 0);
+        _menuStart.HorizontalAlignment = right ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+        _menuStart.Margin = right ? new Thickness(0, 0, WallViewportPolicy.SidebarWidthDip, 0)
+            : new Thickness(WallViewportPolicy.SidebarWidthDip, 0, 0, 0);
     }
 }

@@ -144,6 +144,14 @@ public sealed class ShellLinkFileService : ILnkFileService
         Save(link, path);
     }
 
+    public void EditFileCommand(string path, string? newTarget, string arguments)
+    {
+        var link = Load(path);
+        if (newTarget is not null) link.SetPath(newTarget);
+        link.SetArguments(arguments);
+        Save(link, path);
+    }
+
     /// <summary>8.3 短路径 → 长路径；GetLongPathName 失败（网络路径/不存在）回退原串（M4 设计 §11 风险 5）。</summary>
     public static string NormalizePath(string path)
     {

@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="Version V1.52">
+  <img src="https://img.shields.io/badge/Version-V1.53-0078D4?style=flat-square" alt="Version V1.53">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Für Windows 10 und 11">
   <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="x64 / ARM64 Architektur">
@@ -37,7 +37,6 @@
 
 
 https://github.com/user-attachments/assets/1ea64b8a-82db-4d76-9d7e-e8d279c6b613
-<p align="center"><sub>Lokale Videovorschau der Entwicklungsversion V1.53. Der Entwickler hat die lokalen Showcase-Medien am 2026-11-17 freigegeben; sie wurden nicht hochgeladen. Die offizielle Version bleibt V1.52.</sub></p>
 
 ## **Erhebt euch wieder, meine Kacheln!**
 

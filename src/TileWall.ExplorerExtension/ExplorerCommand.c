@@ -57,6 +57,40 @@ static HRESULT CopyString(PCWSTR value, PWSTR* result)
     return S_OK;
 }
 
+static BOOL LoadTitleResource(LANGID language, PWSTR text, UINT capacity)
+{
+    const WORD* entry;
+    DWORD remaining, index;
+    WORD length;
+    HRSRC resource = FindResourceExW(Module, RT_STRING,
+        MAKEINTRESOURCEW(1 + IDS_MENU_TITLE / 16), language);
+    if (!resource) return FALSE;
+    entry = (const WORD*)LockResource(LoadResource(Module, resource));
+    remaining = SizeofResource(Module, resource) / sizeof(*entry);
+    if (!entry) return FALSE;
+    // RT_STRING packs sixteen length-prefixed UTF-16 strings, without a terminator.
+    for (index = 0; index < IDS_MENU_TITLE % 16; ++index) {
+        if (!remaining || *entry >= remaining) return FALSE;
+        remaining -= *entry + 1;
+        entry += *entry + 1;
+    }
+    if (!remaining) return FALSE;
+    length = *entry++;
+    if (!length || length >= remaining || length >= capacity) return FALSE;
+    for (index = 0; index < length; ++index) text[index] = entry[index];
+    text[length] = 0;
+    return TRUE;
+}
+
+static void ReadMenuTitle(PWSTR text, UINT capacity)
+{
+    LANGID language = ReadExplorerMenuLanguage();
+    if (language && LoadTitleResource(language, text, capacity)) return;
+    if (!language && LoadStringW(Module, IDS_MENU_TITLE, text, (int)capacity)) return;
+    if (LoadTitleResource(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), text, capacity)) return;
+    lstrcpynW(text, L"Add to TileWall", (int)capacity);
+}
+
 static ULONG STDMETHODCALLTYPE CommandAddRef(IExplorerCommand* self)
 {
     return (ULONG)InterlockedIncrement(&((Command*)self)->References);
@@ -90,8 +124,7 @@ static HRESULT STDMETHODCALLTYPE GetTitle(IExplorerCommand* self, IShellItemArra
     WCHAR text[64];
     UNREFERENCED_PARAMETER(self);
     UNREFERENCED_PARAMETER(items);
-    // LoadString reads this module's mapped resource, using the user's Windows UI language.
-    if (!LoadStringW(Module, IDS_MENU_TITLE, text, (int)ARRAYSIZE(text))) return CopyString(L"Add to TileWall", title);
+    ReadMenuTitle(text, ARRAYSIZE(text));
     return CopyString(text, title);
 }
 
@@ -274,7 +307,7 @@ static HRESULT STDMETHODCALLTYPE QueryContextMenu(IContextMenu* self, HMENU menu
     if ((flags & CMF_DEFAULTONLY) || firstId > lastId || !command->Selection ||
         FAILED(IShellItemArray_GetCount(command->Selection, &count)) || count != 1 || !ReadExplorerMenuEnabled())
         return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 0);
-    if (!LoadStringW(Module, IDS_MENU_TITLE, title, (int)ARRAYSIZE(title))) lstrcpyW(title, L"Add to TileWall");
+    ReadMenuTitle(title, ARRAYSIZE(title));
     item.cbSize = (UINT)sizeof(item);
     item.fMask = MIIM_ID | MIIM_STRING | MIIM_STATE;
     item.wID = firstId;

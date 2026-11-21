@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-V1.52-0078D4?style=flat-square" alt="버전 V1.52">
+  <img src="https://img.shields.io/badge/Version-V1.53-0078D4?style=flat-square" alt="버전 V1.53">
   <img src="https://img.shields.io/badge/UI-WinUI%203-5C2D91?style=flat-square" alt="WinUI 3">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square" alt="Windows 10 및 11용">
   <img src="https://img.shields.io/badge/Architecture-x64%20%2F%20ARM64-0078D4?style=flat-square" alt="x64 / ARM64 아키텍처">
@@ -35,7 +35,6 @@
 </p>
 
 https://github.com/user-attachments/assets/038fa1cd-2f04-4475-9ab2-fd45a4b84c9f
-<p align="center"><sub>현재 정식 버전은 V1.52입니다. 이 영상을 포함한 V1.53 소개 자료는 2026-11-17 개발자가 로컬 완성본으로 승인했습니다. 아직 업로드하지 않았습니다.</sub></p>
 
 ## **부활하라! 나의 타일이여!**
 

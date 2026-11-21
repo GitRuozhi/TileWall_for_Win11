@@ -2,10 +2,6 @@
 // The main application owns writes; the Shell only reads this independently replaceable preference.
 #include <shlobj.h>
 
-static const WCHAR PreferenceSuffix[] = L"\\TileWall\\explorer-menu.state";
-static const CHAR PreferenceEnabled[] = "TileWall.ExplorerMenu/1\n1\n";
-// The exact disabled document is "TileWall.ExplorerMenu/1\n0\n". All other bytes also fail closed.
-
 static BOOL MissingPreferencePath(DWORD error)
 {
     return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
@@ -53,28 +49,30 @@ static BOOL PreferenceHandleMatches(HANDLE file, PCWSTR expected)
     return matches;
 }
 
-static BOOL ParsePreferenceBytes(const BYTE* bytes, DWORD count)
+static BOOL EqualPreferenceBytes(const BYTE* bytes, DWORD count, PCSTR expected, DWORD length)
 {
     DWORD at;
-    if (count != sizeof(PreferenceEnabled) - 1) return FALSE;
+    if (count != length) return FALSE;
     for (at = 0; at < count; ++at)
-        if (bytes[at] != (BYTE)PreferenceEnabled[at]) return FALSE;
+        if (bytes[at] != (BYTE)expected[at]) return FALSE;
     return TRUE;
 }
 
-static BOOL ReadExplorerMenuEnabled(void)
+// Returns one for a readable document, zero for a verified missing path, or -1 on failure.
+static int ReadExplorerMenuDocument(PCWSTR suffix, BYTE* bytes, DWORD capacity, DWORD* read)
 {
     PWSTR local = NULL, path = NULL;
     WCHAR drive[4];
-    SIZE_T length, at;
-    DWORD driveType, read = 0;
+    SIZE_T length, at, suffixLength = (SIZE_T)lstrlenW(suffix) + 1;
+    DWORD driveType;
     HANDLE file = INVALID_HANDLE_VALUE;
     BY_HANDLE_FILE_INFORMATION info;
     LARGE_INTEGER size;
-    BYTE bytes[65];
-    BOOL exists, enabled = FALSE;
+    BOOL exists;
+    int status = -1;
     HRESULT hr = SHGetKnownFolderPath(&FOLDERID_LocalAppData,
         KF_FLAG_NO_PACKAGE_REDIRECTION | KF_FLAG_DONT_VERIFY, NULL, &local);
+    *read = 0;
     if (FAILED(hr) || !local) goto done;
     length = (SIZE_T)lstrlenW(local);
     // Never let a relocated/remote Known Folder introduce a network operation into menu building.
@@ -84,30 +82,68 @@ static BOOL ReadExplorerMenuEnabled(void)
     driveType = GetDriveTypeW(drive);
     if (driveType != DRIVE_FIXED && driveType != DRIVE_REMOVABLE && driveType != DRIVE_RAMDISK) goto done;
     while (length > 2 && local[length - 1] == L'\\') --length;
-    if (length + ARRAYSIZE(PreferenceSuffix) > 32768) goto done;
-    path = (PWSTR)HeapAlloc(GetProcessHeap(), 0, (length + ARRAYSIZE(PreferenceSuffix)) * sizeof(WCHAR));
+    if (length + suffixLength > 32768) goto done;
+    path = (PWSTR)HeapAlloc(GetProcessHeap(), 0, (length + suffixLength) * sizeof(WCHAR));
     if (!path) goto done;
     for (at = 0; at < length; ++at) path[at] = local[at];
-    for (at = 0; at < ARRAYSIZE(PreferenceSuffix); ++at) path[length + at] = PreferenceSuffix[at];
+    for (at = 0; at < suffixLength; ++at) path[length + at] = suffix[at];
     if (!CheckPreferencePath(path, &exists)) goto done;
-    if (!exists) { enabled = TRUE; goto done; }
+    if (!exists) { status = 0; goto done; }
     file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
         OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
     if (file == INVALID_HANDLE_VALUE) {
-        if (MissingPreferencePath(GetLastError()) && CheckPreferencePath(path, &exists) && !exists) enabled = TRUE;
+        if (MissingPreferencePath(GetLastError()) && CheckPreferencePath(path, &exists) && !exists) status = 0;
         goto done;
     }
     if (GetFileType(file) != FILE_TYPE_DISK || !GetFileInformationByHandle(file, &info) ||
         (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) ||
-        !GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > 64 ||
+        !GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart >= capacity ||
         !PreferenceHandleMatches(file, path) || !CheckPreferencePath(path, &exists) || !exists) goto done;
     // Read one extra byte so growth/oversize cannot turn a valid prefix into an accepted state.
-    if (!ReadFile(file, bytes, (DWORD)sizeof(bytes), &read, NULL) ||
+    if (!ReadFile(file, bytes, capacity, read, NULL) || *read >= capacity ||
         !CheckPreferencePath(path, &exists) || !exists) goto done;
-    enabled = ParsePreferenceBytes(bytes, read);
+    status = 1;
 done:
     if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
     if (path) HeapFree(GetProcessHeap(), 0, path);
     if (local) CoTaskMemFree(local);
-    return enabled;
+    return status;
+}
+
+static BOOL ReadExplorerMenuEnabled(void)
+{
+    static const CHAR enabled[] = "TileWall.ExplorerMenu/1\n1\n";
+    BYTE bytes[65];
+    DWORD read;
+    int status = ReadExplorerMenuDocument(L"\\TileWall\\explorer-menu.state", bytes, ARRAYSIZE(bytes), &read);
+    return status == 0 || (status == 1 && EqualPreferenceBytes(bytes, read, enabled, sizeof(enabled) - 1));
+}
+
+static LANGID ReadExplorerMenuLanguage(void)
+{
+    static const CHAR header[] = "TileWall.ExplorerMenuLanguage/1\n";
+    static const struct {
+        CHAR Tag[7];
+        LANGID Language;
+    } languages[] = {
+        {"en-US\n", MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US)},
+        {"zh-CN\n", MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED)},
+        {"zh-TW\n", MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL)},
+        {"ja-JP\n", MAKELANGID(LANG_JAPANESE, SUBLANG_NEUTRAL)},
+        {"ko-KR\n", MAKELANGID(LANG_KOREAN, SUBLANG_NEUTRAL)},
+        {"de-DE\n", MAKELANGID(LANG_GERMAN, SUBLANG_NEUTRAL)},
+        {"fr-FR\n", MAKELANGID(LANG_FRENCH, SUBLANG_NEUTRAL)},
+        {"es-ES\n", MAKELANGID(LANG_SPANISH, SUBLANG_NEUTRAL)}
+    };
+    const DWORD headerLength = sizeof(header) - 1;
+    BYTE bytes[65];
+    DWORD read;
+    UINT at;
+    if (ReadExplorerMenuDocument(L"\\TileWall\\explorer-menu.language", bytes, ARRAYSIZE(bytes), &read) != 1 ||
+        read != headerLength + sizeof(languages[0].Tag) - 1 ||
+        !EqualPreferenceBytes(bytes, headerLength, header, headerLength)) return 0;
+    for (at = 0; at < ARRAYSIZE(languages); ++at)
+        if (EqualPreferenceBytes(bytes + headerLength, read - headerLength,
+            languages[at].Tag, sizeof(languages[at].Tag) - 1)) return languages[at].Language;
+    return 0;
 }

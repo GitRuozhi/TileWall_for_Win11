@@ -93,8 +93,11 @@ public sealed partial class MainWindow
             0, _metrics, settings.MenuStart).Width
         : Math.Max(0, MaximumWindowedClientWidthDip - WallViewportPolicy.FixedWidth(settings.MenuStart));
 
-    private void ReadPrimaryScreen() => _screenArea = new WorkAreaRect
-        { Left = 0, Top = 0, Right = GetSystemMetrics(0), Bottom = GetSystemMetrics(1) };
+    private void ReadPrimaryScreen()
+    {
+        _screenArea = new WorkAreaRect { Left = 0, Top = 0, Right = GetSystemMetrics(0), Bottom = GetSystemMetrics(1) };
+        _nativeBackground.SetScreenExtent(_screenArea.Right, _screenArea.Bottom);
+    }
 
     private static string ViewportFailure(WallLayoutResult result)
     {
