@@ -2,9 +2,9 @@
 
 本页记录对外版本状态、功能变化、兼容性、已知限制和必要验证范围。[GitHub Releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases)提供正式下载；源码与构建说明见[开发者指南](DeveloperGuide.zh-CN.md)。GitHub发行与Microsoft Store上架状态分别以对应页面为准。
 
-## V1.55（1.5.5）——2026-11-21
+## [V1.55](https://github.com/GitRuozhi/TileWall_for_Win11/releases/tag/V1.55)（1.5.5）——2026-11-21
 
-本地开发验证版。
+GitHub 正式发布，提供 x64 和 ARM64 的便携 ZIP 与 EXE 安装器。Microsoft Store 于 2026-11-22 上架。
 
 - 新增「导入 Windows 开始屏幕」。新用户在欢迎墙保存并显示后可一键导入，已有用户可从设置发起。Windows 10 保留原组和组内阅读顺序，Windows 11 保留系统固定列表顺序，包括平铺导出的固定文件夹成员。
 - 导入按启动身份去重，从第三逻辑栏或现有内容末尾之后追加。可验证的原快捷方式保留启动参数、工作目录和图标。排版按需扩容或减少本批磁贴尺寸，正式墙与受管入口一次保存。
