@@ -45,8 +45,11 @@ https://github.com/user-attachments/assets/0b544816-0753-48cb-a88a-ce454d780772
 基于微软原生 WinUI 3 架构打造，适配 Windows 10 与 Windows 11，支持 x64 与 ARM64，开源、免费、轻量、无广告、开源。
 
 官方安装：[**打开微软商店**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
+
 离线安装包：[下载 EXE 离线安装包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
 便携压缩包：[下载 便携压缩包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
 数据位置： `%LOCALAPPDATA%\TileWall`
 
 
