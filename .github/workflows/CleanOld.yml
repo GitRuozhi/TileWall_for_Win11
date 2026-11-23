@@ -4,7 +4,11 @@ on:
   schedule:
     - cron: '0 2 * * 0' # 每周日凌晨 2 点自动运行（时间可改）
   workflow_dispatch:      # 同时允许你在 Actions 页面手动点击运行
-
+  
+# 关键：必须赋予写入权限，否则无法删除 Releases
+permissions:
+  contents: write
+  
 jobs:
   delete-old-releases:
     runs-on: ubuntu-latest
