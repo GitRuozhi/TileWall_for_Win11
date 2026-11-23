@@ -1,25 +1,30 @@
-name: Cleanup Old Releases
+name: Cleanup Releases with CLI
 
 on:
-  schedule:
-    - cron: '0 2 * * 0' # 每周日凌晨 2 点自动运行（时间可改）
-  workflow_dispatch:      # 同时允许你在 Actions 页面手动点击运行
-  
-# 关键：必须赋予写入权限，否则无法删除 Releases
+  workflow_dispatch:
+
 permissions:
   contents: write
-  
+
 jobs:
-  delete-old-releases:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Delete old releases via gh CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          KEEP=5
+          echo "将在 $REPO 中保留最新的 $KEEP 个 Release（按发布时间）"
 
-      - name: Delete old releases
-        uses: Nats-ji/delete-old-releases@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          keep-count: 7                 # 核心设置：只保留最新 7 个版本
-          keep-old-minor-releases: false # 不额外保留旧的小版本，确保严格只留最近 7 个
-          remove-tags: true             # 可选：同时删除旧版本对应的 Git Tag（如不需要可改为 false）
+          # 1. 获取所有 Release，按发布时间降序排列，跳过前 KEEP 个，提取出待删除的 tag
+          gh release list -R "$REPO" --limit 100 --json tagName,publishedAt \
+            | jq -r "sort_by(.publishedAt) | reverse | .[$KEEP:] | .[].tagName" \
+            | while read -r tag; do
+                if [ -n "$tag" ]; then
+                  echo "准备删除: $tag"
+                  # 2. 实际删除命令（先注释掉，用于预览）
+                  gh release delete "$tag" -R "$REPO" --cleanup-tag --yes
+                fi
+              done
