@@ -38,13 +38,20 @@ https://github.com/user-attachments/assets/d99ccc0a-8e58-4ec0-b0c1-d60ef339d341
 
 ## **よみがえれ！わがタイルよ！**
 
-**TileWall** は、画像、アルバム、パズルを自分好みに楽しめる独立型タイルランチャーです。Windows 11 で、Windows 10 でおなじみのタイルとスタートメニューの使い心地を再現します。
+**TileWall** は、Windows 10 のクラシックなタイルのスタートメニューとスタート画面の使い心地を Windows 11 でそのまま再現します。タイルをクリックして起動、右クリックで管理、ドラッグで自由に並べ替え。以前とまったく同じ操作で、覚え直す必要はありません。
 
-Windows 10/11 と x64・ARM64 に対応しています。アプリの UI は、簡体字中国語、繁体字中国語、英語、日本語、韓国語、ドイツ語、フランス語、スペイン語の8言語に対応し、システム言語に合わせる設定も選べます。
+システムのメニューと共存する独立したランチャーとして **Win + ~**（1 の左隣のキー）で呼び出すことも、システムのスタートメニューを置き換えて **Win** キーやスタートボタンで TileWall を開くこともできます。どちらも使い方に合わせて選べます。
 
-**TileWall** は Windows 標準の UI フレームワーク WinUI 3 で開発されています。スタートメニューとタイルウォールを再現し、既定では **Win + バッククォートキー** で表示できます。システムのスタートメニューとは独立して動作します。Windows Shell を置き換える必要はなく、これまでの使い方を変える必要もありません。
+マイクロソフトネイティブの WinUI 3 で開発し、Windows 10/11、x64 と ARM64 に対応。オープンソース、無料、軽量、広告なし。
 
-[**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)からインストールするか、[ポータブル圧縮ファイル](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)または [EXE オフラインインストーラー](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)をダウンロードできます。ポータブル版は展開後すぐに実行でき、3種類の配布方法で現在のユーザーのタイルウォールデータを共有します。データの保存先は `%LOCALAPPDATA%\TileWall` です。
+公式インストール：[**Microsoft Store を開く**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
+
+オフラインインストーラー：[EXE オフラインインストーラーをダウンロード](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+ポータブル圧縮ファイル：[ポータブル圧縮ファイルをダウンロード](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+データの保存先： `%LOCALAPPDATA%\TileWall`
+
 
 <p align="center">
   <picture>

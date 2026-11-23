@@ -38,13 +38,20 @@ https://github.com/user-attachments/assets/038fa1cd-2f04-4475-9ab2-fd45a4b84c9f
 
 ## **부활하라! 나의 타일이여!**
 
-**TileWall**은 이미지, 앨범, 퍼즐 기능을 원하는 대로 꾸밀 수 있는 독립형 타일 런처입니다. Windows 11에서 익숙한 Windows 10 타일과 시작 메뉴 경험을 되살립니다.
+**TileWall**은 Windows 11에서 Windows 10의 클래식 타일 시작 메뉴와 시작 화면 경험을 그대로 재현합니다. 타일을 클릭해 실행하고, 마우스 오른쪽 버튼으로 관리하고, 끌어서 자유롭게 배치하세요. 예전과 똑같이 쓸 수 있어 새로 익힐 것이 없습니다.
 
-Windows 10/11과 x64 및 ARM64를 지원합니다. 앱 UI는 중국어(간체), 중국어(번체), 영어, 일본어, 한국어, 독일어, 프랑스어, 스페인어의 8개 언어로 제공되며, 시스템 언어를 따르도록 설정할 수도 있습니다.
+시스템 메뉴와 함께 쓰는 독립 런처로 **Win + ~**(1 왼쪽 키)를 눌러 호출하거나, 시스템 시작 메뉴를 대체해 **Win** 키나 시작 버튼으로 TileWall을 열 수 있습니다. 사용 방식은 그대로 존중합니다.
 
-**TileWall**은 Windows 네이티브 UI 프레임워크 WinUI 3로 개발되어 시작 메뉴와 타일 벽을 재현합니다. 기본적으로 **Win + 백틱 키**로 호출하며, Windows 시작 메뉴와 독립적으로 작동합니다. Windows Shell을 교체하거나 기존 사용 습관을 바꿀 필요가 없습니다.
+마이크로소프트의 네이티브 WinUI 3 프레임워크로 만들어 Windows 10/11과 x64, ARM64를 지원합니다. 오픈 소스, 무료, 가볍고 광고가 없습니다.
 
-[**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)에서 설치하거나 [포터블 압축 파일](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) 또는 [EXE 오프라인 설치 패키지](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)를 다운로드할 수 있습니다. 포터블 버전은 압축을 풀면 바로 실행할 수 있으며, 세 가지 배포 방식 모두 현재 사용자 계정의 타일 벽 데이터를 함께 사용합니다. 데이터 위치는 `%LOCALAPPDATA%\TileWall`입니다.
+공식 설치: [**Microsoft Store 열기**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
+
+오프라인 설치 패키지: [EXE 오프라인 설치 패키지 다운로드](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+포터블 압축 파일: [포터블 압축 파일 다운로드](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+데이터 위치: `%LOCALAPPDATA%\TileWall`
+
 
 <p align="center">
   <picture>

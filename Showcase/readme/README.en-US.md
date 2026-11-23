@@ -40,13 +40,19 @@ https://github.com/user-attachments/assets/bab65f40-d8f2-4264-85ab-ded99de349f0
 
 ## **Come back to life, my tiles!**
 
-**TileWall** is a standalone tile launcher with customizable pictures, albums, and puzzles, bringing the familiar Windows 10 tiles and Start menu experience back to Windows 11.
+**TileWall** faithfully recreates the classic Windows 10 tile Start menu and Start screen experience on Windows 11. Click a tile to launch, right-click to manage, and drag to rearrange — it all works exactly as before, with nothing new to learn.
 
-Supports Windows 10 and Windows 11 on x64 and ARM64 PCs. The app interface supports eight languages: English, Simplified Chinese, Traditional Chinese, Japanese, Korean, German, French, and Spanish. Follow the system language or choose one in Settings.
+Use it as a standalone launcher alongside the system menu and summon it with **Win + ~** (the key left of 1), or replace the system Start menu so the **Win** key or the Start button opens TileWall. Either way it follows your habits.
 
-Built with the native Windows UI framework WinUI 3, **TileWall** recreates the Start menu and tile wall. Open it with **Win + the grave-accent key** by default. It works independently of the system Start menu, so you can keep Windows Shell and your usual habits.
+Built on Microsoft's native WinUI 3 framework for Windows 10 and 11 on x64 and ARM64. Open source, free, lightweight, and ad-free.
 
-Install from the [**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS), or download the [portable archive](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) or [offline EXE installer](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest). Extract the portable version and run it directly. All three editions share the current user's tile wall data at `%LOCALAPPDATA%\TileWall`.
+Official install: [**Open Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
+
+Offline installer: [Download the EXE offline installer](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+Portable archive: [Download the portable archive](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+Data location: `%LOCALAPPDATA%\TileWall`
 
 
 <p align="center">

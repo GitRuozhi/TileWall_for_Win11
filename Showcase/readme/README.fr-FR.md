@@ -40,13 +40,20 @@ https://github.com/user-attachments/assets/179e51ce-5066-47ad-a813-e9809004cce9
 
 ## **Reprenez vie, mes vignettes !**
 
-**TileWall** est un lanceur indépendant de vignettes qui recrée sous Windows 11 l’expérience familière des vignettes et du menu Démarrer de Windows 10, avec des images, des albums et des puzzles à personnaliser.
+**TileWall** reproduit fidèlement l’expérience du menu Démarrer à vignettes et de l’écran d’accueil de Windows 10 sous Windows 11. Clique sur une vignette pour lancer, clic droit pour gérer, glisser-déposer pour réorganiser : tout fonctionne comme avant, sans rien réapprendre.
 
-TileWall prend en charge Windows 10 et 11 sur les PC x64 et ARM64. L’interface est disponible en huit langues : chinois simplifié, chinois traditionnel, anglais, japonais, coréen, allemand, français et espagnol, avec une option pour suivre la langue du système.
+Utilise-le comme lanceur autonome à côté du menu système et ouvre-le avec **Win + ~** (la touche à gauche du 1), ou remplace le menu Démarrer de Windows pour que la touche **Win** ou le bouton Démarrer ouvre TileWall. À chacun sa façon de travailler.
 
-**TileWall** est développé avec WinUI 3, le framework d’interface natif de Windows. Il recrée le menu Démarrer et le mur de vignettes. Par défaut, le raccourci **Win + la touche accent grave** affiche le mur, indépendamment du menu Démarrer du système. Tu n’as pas besoin de remplacer le shell Windows ni de changer tes habitudes.
+Développé sur WinUI 3, le framework natif de Microsoft, pour Windows 10 et 11 sur x64 et ARM64. Open source, gratuit, léger et sans publicité.
 
-Tu peux l’installer depuis le [**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS), télécharger l’[archive portable](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) ou le [programme d’installation EXE hors ligne](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest). Il suffit d’extraire la version portable pour la lancer. Les trois modes de distribution utilisent les mêmes données du mur de vignettes pour l’utilisateur actuel, stockées dans `%LOCALAPPDATA%\TileWall`.
+Installation officielle : [**Ouvrir le Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
+
+Programme d’installation EXE hors ligne : [Télécharger le programme d’installation EXE hors ligne](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+Archive portable : [Télécharger l’archive portable](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+Emplacement des données : `%LOCALAPPDATA%\TileWall`
+
 
 <p align="center">
   <picture>

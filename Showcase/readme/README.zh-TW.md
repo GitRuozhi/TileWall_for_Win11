@@ -40,13 +40,19 @@ https://github.com/user-attachments/assets/712a30b3-e72e-48dc-b7fc-1673b6aeab42
 
 ## **復活吧！我的動態磚！**
 
-**TileWall** 是一款獨立的動態磚啟動牆，提供個人化的圖片、相簿與拼圖玩法，在 Windows 11 上重現 Windows 10 熟悉的動態磚與開始功能表體驗。
+**TileWall** 在 Windows 11 上完整重現了 Windows 10 經典動態磚開始功能表與開始畫面的熟悉體驗。點擊動態磚啟動、右鍵管理、自由拖曳排版，都和以前一模一樣，無需重新適應。
 
-支援 Windows 10 與 Windows 11，適用於 x64 和 ARM64 電腦。介面提供簡體中文、繁體中文、英文、日文、韓文、德文、法文與西班牙文八種語言，可跟隨系統語言，也能在設定中手動選擇。
+既可以讓它作為獨立啟動牆與系統功能表共存，按 Win + ~（數字 1 左邊）呼叫，也可以直接取代系統開始功能表，按 Win 鍵或點擊開始按鈕一鍵喚起，完全尊重你的使用習慣。
 
-**TileWall** 使用 Windows 原生介面框架 WinUI 3 開發，重現開始功能表與動態磚牆；預設按下 **Win + 反引號鍵** 即可呼叫，並與系統開始功能表各自獨立。不必取代 Windows Shell，也不必改變原有的使用習慣。
+以微軟原生 WinUI 3 架構打造，適用於 Windows 10 與 Windows 11，支援 x64 與 ARM64，開源、免費、輕量、無廣告。
 
-可以透過[**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)安裝，也可以下載[可攜壓縮包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)或 [EXE 離線安裝包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)。可攜版解壓後即可執行，三種發佈方式共用目前使用者的動態磚牆資料，資料位置為 `%LOCALAPPDATA%\TileWall`。
+官方安裝：[**開啟 Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
+
+離線安裝包：[下載 EXE 離線安裝包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+可攜壓縮包：[下載可攜壓縮包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+資料位置： `%LOCALAPPDATA%\TileWall`
 
 
 <p align="center">

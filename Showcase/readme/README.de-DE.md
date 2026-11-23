@@ -40,13 +40,19 @@ https://github.com/user-attachments/assets/1ea64b8a-82db-4d76-9d7e-e8d279c6b613
 
 ## **Erhebt euch wieder, meine Kacheln!**
 
-**TileWall** ist ein eigenständiger Kachel-Launcher mit personalisierbaren Bildern, Alben und Puzzles. Er bringt das vertraute Kachel- und Startmenü-Erlebnis von Windows 10 unter Windows 11 zurück.
+**TileWall** bildet das klassische Kachel-Startmenü und den Startbildschirm von Windows 10 unter Windows 11 vollständig nach. Kachel anklicken zum Starten, Rechtsklick zum Verwalten, per Drag-and-drop frei anordnen – alles wie bisher, ohne Umgewöhnung.
 
-TileWall unterstützt Windows 10 und 11 auf x64- und ARM64-PCs. Die App-Oberfläche ist in acht Sprachen verfügbar: vereinfachtes und traditionelles Chinesisch, Englisch, Japanisch, Koreanisch, Deutsch, Französisch und Spanisch. Außerdem kannst du die Systemsprache übernehmen lassen.
+Nutze TileWall als eigenständigen Launcher neben dem Systemmenü und rufe es mit **Win + ~** (die Taste links neben der 1) auf, oder ersetze das Startmenü von Windows, sodass die **Win**-Taste oder die Startschaltfläche TileWall öffnet. Ganz so, wie es zu dir passt.
 
-**TileWall** basiert auf WinUI 3, dem nativen Windows-UI-Framework. Es bildet das Startmenü und die Kachelwand nach. Standardmäßig rufst du sie mit **Win + der Backtick-Taste** auf; sie funktioniert unabhängig vom Windows-Startmenü. Du musst weder die Windows-Shell ersetzen noch deine gewohnten Abläufe ändern.
+Auf dem nativen WinUI-3-Framework von Microsoft gebaut, für Windows 10 und 11 auf x64 und ARM64. Open Source, kostenlos, leichtgewichtig und werbefrei.
 
-Du kannst TileWall über den [**Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS) installieren oder das [portable Archiv](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) beziehungsweise das [EXE-Offline-Installationspaket](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) herunterladen. Die portable Version lässt sich direkt nach dem Entpacken starten. Alle drei Vertriebswege verwenden dieselben Daten der Kachelwand für den aktuellen Benutzer. Sie liegen unter `%LOCALAPPDATA%\TileWall`.
+Offizielle Installation: [**Microsoft Store öffnen**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
+
+Offline-Installationspaket: [EXE-Offline-Installationspaket herunterladen](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+Portables Archiv: [Portables Archiv herunterladen](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+Datenpfad: `%LOCALAPPDATA%\TileWall`
 
 
 <p align="center">

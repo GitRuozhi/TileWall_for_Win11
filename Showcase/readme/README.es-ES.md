@@ -40,13 +40,20 @@ https://github.com/user-attachments/assets/da1f8259-6876-4211-ba44-313864f5116e
 
 ## **¡Volved a la vida, mis mosaicos!**
 
-**TileWall** es un lanzador independiente de mosaicos que recupera en Windows 11 la familiar experiencia de los mosaicos y del menú Inicio de Windows 10, con imágenes, álbumes y puzles para personalizarla.
+**TileWall** reproduce fielmente la experiencia del menú Inicio con mosaicos y de la pantalla de inicio de Windows 10 en Windows 11. Haz clic en un mosaico para abrirlo, clic derecho para gestionarlo y arrástralo para reorganizarlo: todo funciona igual que antes, sin nada nuevo que aprender.
 
-TileWall es compatible con Windows 10 y 11 en equipos x64 y ARM64. La interfaz está disponible en ocho idiomas: chino simplificado, chino tradicional, inglés, japonés, coreano, alemán, francés y español, con la opción de seguir el idioma del sistema.
+Úsalo como lanzador independiente junto al menú del sistema y ábrelo con **Win + ~** (la tecla a la izquierda del 1), o sustituye el menú Inicio de Windows para que la tecla **Win** o el botón Inicio abran TileWall. Siempre respetando tu forma de trabajar.
 
-**TileWall** está desarrollado con WinUI 3, el framework de interfaz nativo de Windows. Recupera el menú Inicio y el panel de mosaicos. De forma predeterminada, el atajo **Win + la tecla de acento grave** muestra el panel, independientemente del menú Inicio del sistema. No tienes que sustituir Windows Shell ni cambiar tus costumbres.
+Creado sobre WinUI 3, el framework nativo de Microsoft, para Windows 10 y 11 en x64 y ARM64. Código abierto, gratuito, ligero y sin publicidad.
 
-Puedes instalarlo desde [Microsoft Store](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS), descargar el [paquete comprimido portátil](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest) o el [instalador EXE sin conexión](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest). Basta con descomprimir la versión portátil para ejecutarla. Las tres formas de distribución comparten los datos del panel de mosaicos del usuario actual, ubicados en `%LOCALAPPDATA%\TileWall`.
+Instalación oficial: [**Abrir Microsoft Store**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
+
+Instalador EXE sin conexión: [Descargar el instalador EXE sin conexión](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+Paquete comprimido portátil: [Descargar el paquete comprimido portátil](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+
+Ubicación de los datos: `%LOCALAPPDATA%\TileWall`
+
 
 <p align="center">
   <picture>
