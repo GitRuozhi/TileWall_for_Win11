@@ -23,7 +23,6 @@ public sealed partial class MainWindow
     private WallPresentationBounds PresentationBounds => WallPresentationGeometry.ResolveArea(ScreenPresentationBounds,
         _taskbarPlacementScreen == ScreenPresentationBounds && _taskbarPlacementArea is { } area
             ? new(area.X, area.Y, area.Width, area.Height) : null, Settings.ActivateTaskbar);
-    internal bool HasTaskbarPresentationBounds => PresentationBounds != ScreenPresentationBounds;
 
     // Observe/apply callers own Explorer effects. This entry only changes this window's
     // presentation and must never show, activate, capture, or publish a layout proposal.

@@ -1,7 +1,6 @@
 using TileWall.Core.Entries;
 using TileWall.Core.Application;
 using TileWall.Core.Exchange;
-using TileWall.Core.Grid;
 using TileWall.Core.Import;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
@@ -15,7 +14,7 @@ internal sealed record ImportBatchItem(string SourcePath, TileMember Member, Exp
     public string? ExpectedSourceSha256 { get; init; }
     public string? ExpectedSourceStamp { get; init; }
 
-    public static ImportBatchItem Create(string sourcePath)
+    public static ImportBatchItem Create(string sourcePath, TileSizePreset preset)
     {
         if (!Path.IsPathFullyQualified(sourcePath)) throw new IOException(sourcePath);
         // Normalize before admission, including equivalent local-root spellings.
@@ -33,7 +32,7 @@ internal sealed record ImportBatchItem(string SourcePath, TileMember Member, Exp
         if (errors.Count != 0) throw new IOException($"{path}: {string.Join("; ", errors)}");
         return new(path, new TileMember
         {
-            Id = $"tile-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 2, 2),
+            Id = $"tile-{Guid.NewGuid():N}", LocalBounds = MemberSizeRules.TileBounds(preset),
             RotationInterval = MemberPresentationRules.NewRotationInterval,
             Visual = new MemberVisual { Title = name },
             TargetInput = path,

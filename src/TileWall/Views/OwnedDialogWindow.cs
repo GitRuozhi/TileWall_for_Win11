@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Markup;
 using TileWall.Core.Shell;
 using TileWall.Core.Wall;
 using TileWall.Graphics;
@@ -21,19 +22,63 @@ namespace TileWall.Views;
 internal sealed class OwnedDialogWindow : Window
 {
     private sealed class ResizeOption { }
-    private sealed class PrimaryPage(FrameworkElement content)
+    private sealed class PrimaryPage(FrameworkElement content, bool inlineToolTips)
     {
         internal FrameworkElement Content { get; } = content;
+        internal bool InlineToolTips { get; } = inlineToolTips;
         internal string? Name { get; set; }
     }
     private static readonly ConditionalWeakTable<ContentDialog, ResizeOption> ResizableDialogs = new();
     private static readonly ConditionalWeakTable<ContentDialog, PrimaryPage> PrimaryPages = new();
     internal static void EnableUserResize(ContentDialog dialog) => ResizableDialogs.GetValue(dialog, static _ => new ResizeOption());
 
-    internal static void EnablePageChrome(ContentDialog dialog, FrameworkElement page)
+    internal static void EnablePageChrome(ContentDialog dialog, FrameworkElement page, bool inlineToolTips = false)
     {
-        PrimaryPages.Add(dialog, new PrimaryPage(page));
+        PrimaryPages.Add(dialog, new PrimaryPage(page, inlineToolTips));
         if (page is Panel panel) panel.Background ??= Transparent;
+    }
+
+    internal static OwnedDialogWindow? InlineToolTipsFor(XamlRoot? root)
+    {
+        if (root?.Content is DialogRoot element && element.Host._dialog is { } dialog &&
+            PrimaryPages.TryGetValue(dialog, out var page) && page.InlineToolTips &&
+            ReferenceEquals(dialog.Content, page.Content)) return element.Host;
+        return null;
+    }
+
+    internal void ShowControlTip(FrameworkElement owner, string text)
+    {
+        const double inset = 8, gap = 6;
+        if (_root.ActualWidth <= 2 * inset || _root.ActualHeight <= 2 * inset) return;
+        if (_controlTipLayer is null)
+        {
+            _controlTip = (Border)XamlReader.Load("""
+                <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    Padding="8,5" Background="{ThemeResource TileWallNoticeBackgroundBrush}">
+                    <TextBlock Foreground="{ThemeResource TileWallNoticeTextBrush}" TextWrapping="Wrap" />
+                </Border>
+                """);
+            _controlTipLayer = new Canvas { IsHitTestVisible = false };
+            _controlTipLayer.Children.Add(_controlTip);
+            _root.Children.Add(_controlTipLayer);
+        }
+
+        var tip = _controlTip!;
+        ((TextBlock)tip.Child).Text = text;
+        tip.MaxWidth = Math.Min(380, _root.ActualWidth - 2 * inset);
+        tip.Visibility = Visibility.Visible;
+        tip.Measure(new Size(tip.MaxWidth, _root.ActualHeight - 2 * inset));
+        var anchor = owner.TransformToVisual(_root).TransformPoint(default);
+        var size = tip.DesiredSize;
+        var above = anchor.Y - size.Height - gap;
+        Canvas.SetLeft(tip, Math.Clamp(anchor.X, inset, Math.Max(inset, _root.ActualWidth - size.Width - inset)));
+        Canvas.SetTop(tip, Math.Clamp(above >= inset ? above : anchor.Y + owner.ActualHeight + gap,
+            inset, Math.Max(inset, _root.ActualHeight - size.Height - inset)));
+    }
+
+    internal void HideControlTip()
+    {
+        if (_controlTip is { } tip) tip.Visibility = Visibility.Collapsed;
     }
 
     internal static void SetPageName(ContentDialog dialog, string name)
@@ -52,6 +97,9 @@ internal sealed class OwnedDialogWindow : Window
     private int _resizeEdges;
     private RectInt32 _resizeOrigin;
     private readonly Window _owner;
+    private Canvas? _controlTipLayer;
+    private Border? _controlTip;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _controlTipWatch;
     private readonly DialogRoot _root;
     private readonly Grid _backgroundLayer = new() { IsHitTestVisible = false };
     private readonly Brush _darkFrost = CreateFrostFallback(43, 30);
@@ -72,7 +120,9 @@ internal sealed class OwnedDialogWindow : Window
     private string? _stockName;
     private bool _pageChrome;
     private Color? _highContrastBackground;
-    private double _resizeContentInset;
+    private Size _resizeContentInset;
+    private Size _manualPageSize;
+    private Size? _stockCardLimit;
     private bool _releasing, _fitQueued, _fitting, _shown, _opened;
     private uint? _dragPointer;
     private NativePoint _dragStart;
@@ -326,13 +376,15 @@ internal sealed class OwnedDialogWindow : Window
             AppLog.Warn("OwnedDialogInput", $"CloseFocus previous={previous} moved={moved} current={FocusManager.GetFocusedElement(root)?.GetType().Name ?? "none"}");
     }
 
-    internal static Size ContentBudget(Window owner)
+    internal static Size ContentBudget(Window owner, bool previewPage = false)
     {
         var scale = (owner.Content as FrameworkElement)?.XamlRoot?.RasterizationScale ?? 1;
         var work = owner is OwnedDialogWindow host ? host.WorkArea :
             DisplayArea.GetFromWindowId(owner.AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
         if (owner is MainWindow wall) work = wall.ConstrainDialogWorkArea(work);
-        return new Size(Math.Max(400, work.Width / scale - 72), Math.Max(240, work.Height / scale - 180));
+        return previewPage
+            ? new Size(Math.Max(1, work.Width / scale - 48), Math.Max(1, work.Height / scale - 60))
+            : new Size(Math.Max(400, work.Width / scale - 72), Math.Max(240, work.Height / scale - 180));
     }
 
     private async Task<ContentDialogResult> ShowDialogAsync(ContentDialog dialog)
@@ -342,6 +394,7 @@ internal sealed class OwnedDialogWindow : Window
         dialog.CornerRadius = new CornerRadius(0);
         dialog.Background = Transparent;
         _dialog = dialog; _resizable = ResizableDialogs.TryGetValue(dialog, out _); _userSized = false;
+        _stockCardLimit = null;
         dialog.HorizontalAlignment = HorizontalAlignment.Left;
         dialog.VerticalAlignment = VerticalAlignment.Top;
         dialog.Opened += OnDialogOpened;
@@ -364,6 +417,11 @@ internal sealed class OwnedDialogWindow : Window
         {
             ReleaseTextFocus(dialog);
             dialog.Opened -= OnDialogOpened;
+            _controlTipWatch?.Stop();
+            ActionIcon.DismissTips(_root);
+            if (_controlTipLayer is { } layer) _root.Children.Remove(layer);
+            _controlTipLayer = null;
+            _controlTip = null;
             dialog.Closing -= OnDialogClosing;
             dialog.UnregisterPropertyChangedCallback(ContentControl.ContentProperty, contentChanged);
             if (_pageChrome) SetPageChrome(dialog, false);
@@ -371,6 +429,41 @@ internal sealed class OwnedDialogWindow : Window
             _dialog = null; _title = null; _contentPresenter = null; _card = null; _root.Children.Remove(dialog);
             _pageFrame = null; _layoutRoot = null;
         }
+    }
+
+    private void StartControlTipWatch()
+    {
+        if (InlineToolTipsFor(_root.XamlRoot) is null) return;
+        if (_controlTipWatch is null)
+        {
+            _controlTipWatch = DispatcherQueue.CreateTimer();
+            _controlTipWatch.Interval = TimeSpan.FromMilliseconds(100);
+            _controlTipWatch.IsRepeating = true;
+            _controlTipWatch.Tick += (_, _) => ObserveControlTipPointer();
+        }
+        _controlTipWatch.Start();
+    }
+
+    private void ObserveControlTipPointer()
+    {
+        if (InlineToolTipsFor(_root.XamlRoot) is null) return;
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        // Start from the page lifetime and check actual foreground ownership. WinUI
+        // can omit routed hover or activation notifications on reopened owned windows.
+        if (GetForegroundWindow() != hwnd)
+        {
+            ActionIcon.DismissTips(_root);
+            return;
+        }
+        if (!GetCursorPos(out var cursor) || GetAncestor(WindowFromPoint(cursor), 2) != hwnd)
+        {
+            ActionIcon.ObservePointer(_root, null);
+            return;
+        }
+        if (GetAsyncKeyState(1) < 0 || GetAsyncKeyState(2) < 0) return;
+        var origin = new NativePoint();
+        if (!ClientToScreen(hwnd, ref origin)) return;
+        ActionIcon.ObservePointer(_root, new Point((cursor.X - origin.X) / Scale, (cursor.Y - origin.Y) / Scale));
     }
 
     private static void OnDialogClosing(ContentDialog sender, ContentDialogClosingEventArgs args)
@@ -381,6 +474,7 @@ internal sealed class OwnedDialogWindow : Window
     private void OnDialogOpened(ContentDialog sender, ContentDialogOpenedEventArgs args)
     {
         _opened = true;
+        StartControlTipWatch();
         _root.UpdateLayout();
         RefreshDialogParts(sender);
         FitToContent();
@@ -415,6 +509,7 @@ internal sealed class OwnedDialogWindow : Window
     private void UpdatePageChrome()
     {
         if (_dialog is not { } dialog) return;
+        HideControlTip();
         var enabled = PrimaryPages.TryGetValue(dialog, out var page) && ReferenceEquals(dialog.Content, page.Content);
         if (_pageChrome != enabled) SetPageChrome(dialog, enabled);
     }
@@ -434,6 +529,8 @@ internal sealed class OwnedDialogWindow : Window
             else AutomationProperties.SetName(dialog, _stockName);
         }
         ApplyPageTemplateParts();
+        ApplyManualPageSize();
+        _root.InvalidateMeasure();
         QueueFit();
     }
 
@@ -499,9 +596,7 @@ internal sealed class OwnedDialogWindow : Window
     {
         if (_releasing || _dialog is null || _fitting) return;
         if (_dragPointer is not null || _resizePointer is not null) return;
-        if (_userSized && _owner is not MainWindow { HasTaskbarPresentationBounds: true })
-        { ApplyCardRegion(AppWindow.Size.Width, AppWindow.Size.Height); return; }
-        var desired = _userSized ? new Size(AppWindow.Size.Width / Scale, AppWindow.Size.Height / Scale) : _dialog.DesiredSize;
+        var desired = IsManualPage ? _manualPageSize : _dialog.DesiredSize;
         if (desired.Width <= 0 || desired.Height <= 0) return;
         _fitting = true;
         try
@@ -514,6 +609,7 @@ internal sealed class OwnedDialogWindow : Window
                 ? new RectInt32(Math.Clamp(position.X, work.X, work.X + work.Width - width),
                     Math.Clamp(position.Y, work.Y, work.Y + work.Height - height), width, height)
                 : CenteredOnOwner(work, width, height);
+            if (IsManualPage) ApplyManualPageSize(new Size(width / Scale, height / Scale));
             if (AppWindow.Size.Width != width || AppWindow.Size.Height != height || position.X != bounds.X || position.Y != bounds.Y)
                 AppWindow.MoveAndResize(bounds);
             ApplyCardRegion(width, height);
@@ -533,6 +629,52 @@ internal sealed class OwnedDialogWindow : Window
             }
         }
         finally { _fitting = false; }
+    }
+
+    private bool IsManualPage => _userSized && _pageChrome;
+
+    private void ApplyManualPageSize(Size? available = null)
+    {
+        if (!_userSized || _dialog is not { } dialog) return;
+        if (!IsManualPage)
+        {
+            dialog.Width = dialog.Height = double.NaN;
+            if (_card is { } stockCard)
+            {
+                stockCard.Width = stockCard.Height = double.NaN;
+                if (_stockCardLimit is { } limit)
+                {
+                    stockCard.MaxWidth = limit.Width;
+                    stockCard.MaxHeight = limit.Height;
+                }
+                stockCard.HorizontalAlignment = HorizontalAlignment.Center;
+                stockCard.VerticalAlignment = VerticalAlignment.Center;
+            }
+            return;
+        }
+
+        var size = available ?? _manualPageSize;
+        if (dialog.Width != size.Width) dialog.Width = size.Width;
+        if (dialog.Height != size.Height) dialog.Height = size.Height;
+        if (dialog.Content is FrameworkElement content)
+        {
+            var width = Math.Max(0, size.Width - _resizeContentInset.Width);
+            var height = Math.Max(0, size.Height - _resizeContentInset.Height);
+            // The page's natural fit limit must not cap the user-selected viewport.
+            if (content.MaxHeight < height) content.MaxHeight = height;
+            if (content.Width != width) content.Width = width;
+            if (content.Height != height) content.Height = height;
+        }
+        if (_card is { } card)
+        {
+            var limit = _stockCardLimit ??= new Size(card.MaxWidth, card.MaxHeight);
+            card.MaxWidth = Math.Max(limit.Width, size.Width);
+            card.MaxHeight = Math.Max(limit.Height, size.Height);
+            card.HorizontalAlignment = HorizontalAlignment.Left;
+            card.VerticalAlignment = VerticalAlignment.Top;
+            if (card.Width != size.Width) card.Width = size.Width;
+            if (card.Height != size.Height) card.Height = size.Height;
+        }
     }
 
     private void ApplyCardRegion(int width, int height)
@@ -557,7 +699,7 @@ internal sealed class OwnedDialogWindow : Window
             _root.SetResizeCursor(0);
         }
         var point = e.GetCurrentPoint(_root);
-        if (_resizable && point.Properties.IsLeftButtonPressed)
+        if (_resizable && _pageChrome && point.Properties.IsLeftButtonPressed)
         {
             var edges = ResizeEdgesAt(point.Position);
             if (edges != 0 && TryGetScreenPoint(point.Position, out var pressedAt))
@@ -574,8 +716,10 @@ internal sealed class OwnedDialogWindow : Window
                 _resizeOrigin = origin;
                 // Preserve the stock card's padding/border while giving star columns
                 // a finite content width. Auto width collapses the editor's preview.
-                _resizeContentInset = _dialog?.Content is FrameworkElement content
-                    ? Math.Max(0, origin.Width / Scale - content.ActualWidth) : 0;
+                if (!_userSized && _dialog?.Content is FrameworkElement content)
+                    _resizeContentInset = new Size(
+                        Math.Max(0, origin.Width / Scale - content.ActualWidth),
+                        Math.Max(0, origin.Height / Scale - content.ActualHeight));
                 TraceDrag("begin", e.Pointer.PointerId, "resize", edges, pressedAt);
                 e.Handled = true; return;
             }
@@ -663,7 +807,7 @@ internal sealed class OwnedDialogWindow : Window
             e.Handled = true;
             return;
         }
-        if (_resizable)
+        if (_resizable && _pageChrome)
             _root.SetResizeCursor(ResizeEdgesAt(e.GetCurrentPoint(_root).Position));
     }
 
@@ -688,33 +832,23 @@ internal sealed class OwnedDialogWindow : Window
             var workArea = WorkArea; var r = _resizeOrigin;
             var left = r.X + ((_resizeEdges & 1) != 0 ? dx : 0); var top = r.Y + ((_resizeEdges & 4) != 0 ? dy : 0);
             var right = r.X + r.Width + ((_resizeEdges & 2) != 0 ? dx : 0); var bottom = r.Y + r.Height + ((_resizeEdges & 8) != 0 ? dy : 0);
-            var contentMinimum = _dialog?.Content is FrameworkElement page ? page.MinWidth + _resizeContentInset : 0;
+            var contentMinimum = _dialog?.Content is FrameworkElement page ? page.MinWidth + _resizeContentInset.Width : 0;
             var minWidth = (int)Math.Ceiling(Math.Max(480, contentMinimum) * Scale); var minHeight = (int)(320 * Scale);
             if (right - left < minWidth) { if ((_resizeEdges & 1) != 0) left = right - minWidth; else right = left + minWidth; }
             if (bottom - top < minHeight) { if ((_resizeEdges & 4) != 0) top = bottom - minHeight; else bottom = top + minHeight; }
             left = Math.Max(workArea.X, left); top = Math.Max(workArea.Y, top);
             right = Math.Min(workArea.X + workArea.Width, right); bottom = Math.Min(workArea.Y + workArea.Height, bottom);
-            _userSized = true; _fitting = true;
+            var resizedWidth = right - left;
+            var resizedHeight = bottom - top;
+            if (resizedWidth <= 0 || resizedHeight <= 0) return;
+            _userSized = true;
+            _manualPageSize = new Size(resizedWidth / Scale, resizedHeight / Scale);
+            _fitting = true;
             try
             {
-                if (_dialog is { } dialog)
-                {
-                    dialog.Width = (right - left) / Scale; dialog.Height = (bottom - top) / Scale;
-                    dialog.MaxWidth = dialog.Width; dialog.MaxHeight = dialog.Height;
-                    if (dialog.Content is FrameworkElement content)
-                        content.Width = Math.Max(content.MinWidth, dialog.Width - _resizeContentInset);
-                    // The stock template centers BackgroundElement and does not bind
-                    // its size to ContentDialog.Width/Height. Explicit user sizing owns
-                    // that card as well as the outer HWND; initial auto-fit stays intact.
-                    if (_card is { } card)
-                    {
-                        card.MaxWidth = card.Width = dialog.Width;
-                        card.MaxHeight = card.Height = dialog.Height;
-                        card.HorizontalAlignment = HorizontalAlignment.Left;
-                        card.VerticalAlignment = VerticalAlignment.Top;
-                    }
-                }
-                AppWindow.MoveAndResize(new RectInt32(left, top, right - left, bottom - top)); ApplyCardRegion(right - left, bottom - top);
+                ApplyManualPageSize();
+                AppWindow.MoveAndResize(new RectInt32(left, top, resizedWidth, resizedHeight));
+                ApplyCardRegion(resizedWidth, resizedHeight);
                 _root.InvalidateMeasure();
             }
             finally { _fitting = false; }
@@ -791,6 +925,10 @@ internal sealed class OwnedDialogWindow : Window
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetCursorPos(out NativePoint point);
+    [DllImport("user32.dll", ExactSpelling = true)] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", ExactSpelling = true)] private static extern IntPtr WindowFromPoint(NativePoint point);
+    [DllImport("user32.dll", ExactSpelling = true)] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+    [DllImport("user32.dll", ExactSpelling = true)] private static extern short GetAsyncKeyState(int key);
 
     private void TraceDrag(string phase, uint pointer, string kind, int edges, NativePoint? point)
     {
@@ -861,18 +999,20 @@ internal sealed class OwnedDialogWindow : Window
             var desired = new Size();
             foreach (var child in Children)
             {
-                if (ReferenceEquals(child, host._backgroundLayer)) continue;
-                child.Measure(host._userSized ? availableSize : budget);
+                if (ReferenceEquals(child, host._backgroundLayer) || ReferenceEquals(child, host._controlTipLayer)) continue;
+                child.Measure(host.IsManualPage ? availableSize : budget);
                 desired = child.DesiredSize;
             }
             host._backgroundLayer.Measure(availableSize);
+            host._controlTipLayer?.Measure(availableSize);
             return new Size(Math.Min(availableSize.Width, desired.Width), Math.Min(availableSize.Height, desired.Height));
         }
 
         protected override Size ArrangeOverride(Size finalSize)
         {
             foreach (var child in Children)
-                child.Arrange(new Rect(new Point(), host._userSized || ReferenceEquals(child, host._backgroundLayer) ? finalSize : child.DesiredSize));
+                child.Arrange(new Rect(new Point(), host.IsManualPage || ReferenceEquals(child, host._backgroundLayer) ||
+                    ReferenceEquals(child, host._controlTipLayer) ? finalSize : child.DesiredSize));
             return finalSize;
         }
     }

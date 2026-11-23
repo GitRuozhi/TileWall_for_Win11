@@ -10,6 +10,14 @@ internal sealed partial class IconSelector(params string[] glyphs) : StackPanel
 {
     private readonly List<ToggleButton> _buttons = [];
     private int _selectedIndex = -1;
+    private Action? _availabilityChanged;
+    internal bool HasEnabledItem => _buttons.Any(button => button.IsEnabled);
+
+    internal void ObserveAvailability(Action changed)
+    {
+        _availabilityChanged = changed;
+        foreach (var button in _buttons) UnavailableControls.WatchAvailability(button, changed);
+    }
     internal event EventHandler? SelectionChanged;
     internal int SelectedIndex
     {
@@ -68,7 +76,9 @@ internal sealed partial class IconSelector(params string[] glyphs) : StackPanel
                 if (notifyOnReselect || previous != position) SelectionChanged?.Invoke(this, EventArgs.Empty);
             };
             _buttons.Add(button); Children.Add(button);
+            if (_availabilityChanged is { } changed) UnavailableControls.WatchAvailability(button, changed);
         }
         SelectedIndex = _selectedIndex;
+        _availabilityChanged?.Invoke();
     }
 }

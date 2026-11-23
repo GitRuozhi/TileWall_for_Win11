@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
@@ -12,6 +13,7 @@ using TileWall.Core.Wall;
 using TileWall.Graphics;
 using TileWall.Resources;
 using TileWall.Shell.Interop;
+using MenuAction = TileWall.Core.Settings.WallContextMenuActions;
 
 namespace TileWall.Views;
 
@@ -69,6 +71,13 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly ToggleSwitch _expandColumns = new(), _menuStart = new();
     private static readonly WallLanguageMode[] LanguageModes = [WallLanguageMode.System, .. WallLanguages.Supported];
     private readonly ComboBox _language = new(), _visualStyle = new(), _theme = new(), _background = new();
+    private readonly Grid _menuActionTables = new() { ColumnSpacing = 8, RowSpacing = 8 };
+    private readonly List<(CheckBox Check, TextBlock Label, bool Wall, MenuAction Action, string ResourceKey)> _menuActions = [];
+    private readonly List<(ToggleButton Button, TileSizePreset Preset, string Glyph)> _initialSizeButtons = [];
+    private readonly ToggleSwitch _showUnavailableControls = new();
+    private readonly Button _resetInitialIconFit = new() { AllowFocusOnInteraction = false };
+    private readonly NumberBox _initialIconFit = new() { Minimum = 20, Maximum = 200, Width = 88,
+        SmallChange = 1, ValidationMode = NumberBoxValidationMode.Disabled };
     private readonly ToggleSwitch _topmost = new(), _stayVisible = new(), _layoutLocked = new(), _activateTaskbar = new(), _runAtLogin = new(), _showGrid = new();
     private readonly HotKeyRecorder _hotKey = new(), _secondaryHotKey = new();
     private readonly Button _resetHotKey = new(), _resetSecondaryHotKey = new();
@@ -236,7 +245,21 @@ internal sealed class SettingsDialog : IWallDialogSession
         var initializationActions = new StackPanel { Orientation = actionsOrientation, Spacing = 8 };
         initializationActions.Children.Add(_reset); initializationActions.Children.Add(_initialize);
         AddRow(integration, "Settings.Initialization", initializationActions);
-        AddRow(integration, "WindowsStartImport.Setting", _importStart);
+        AddRow(integration, "WindowsStartImport.SettingsLabel", _importStart);
+        var personalization = AddGroup("Settings.Personalization", "personalization", compact);
+        AddRow(personalization, "Settings.ShowUnavailableControls", _showUnavailableControls);
+        Id(_showUnavailableControls, "show-unavailable-controls");
+        AddRow(personalization, "Settings.InitialTileSize", InitialTileSizeRow());
+        var iconFit = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        iconFit.Children.Add(_resetInitialIconFit);
+        iconFit.Children.Add(_initialIconFit);
+        iconFit.Children.Add(new TextBlock { Text = "%", VerticalAlignment = VerticalAlignment.Center });
+        Id(_resetInitialIconFit, "reset-initial-icon-fit");
+        Id(_initialIconFit, "initial-icon-fit");
+        AddRow(personalization, "Settings.InitialIconFit", iconFit);
+        var controlsWidth = pageWidth - navigationWidth - columnGap - 24 - (compact ? 0 : 164);
+        AddRow(personalization, "Settings.MenuVisibility", MenuActionTables(stack: controlsWidth < 350));
+        _labels["Settings.MenuVisibility"].VerticalAlignment = VerticalAlignment.Top;
         var about = AddGroup("Settings.About", "about", compact);
         AddRow(about, "Settings.Product", new TextBlock { Text = "TileWall", VerticalAlignment = VerticalAlignment.Center });
         AddRow(about, "Settings.VersionLabel", _version);
@@ -382,6 +405,35 @@ internal sealed class SettingsDialog : IWallDialogSession
         _layoutLocked.Toggled += (_, _) => BeginApply(s => s with { LayoutLocked = _layoutLocked.IsOn });
         _activateTaskbar.Toggled += (_, _) => BeginApply(s => s with { ActivateTaskbar = _activateTaskbar.IsOn });
         _showGrid.Toggled += (_, _) => BeginApply(s => s with { ShowGrid = _showGrid.IsOn });
+        _showUnavailableControls.Toggled += (_, _) => BeginApply(s => s with { ShowUnavailableControls = _showUnavailableControls.IsOn });
+        _resetInitialIconFit.Click += (_, _) =>
+        {
+            if (_refreshing || _busy) return;
+            var percent = new WallSettings().DefaultIconFitPercent;
+            if (_state.Settings.DefaultIconFitPercent == percent)
+            {
+                // Repaint an uncommitted edit even when the saved value already equals the default.
+                _refreshing = true;
+                _initialIconFit.Value = double.NaN;
+                _initialIconFit.Value = percent;
+                _refreshing = false;
+            }
+            else
+                BeginApply(s => s with { DefaultIconFitPercent = percent }, _resetInitialIconFit);
+        };
+        _initialIconFit.ValueChanged += (_, e) =>
+        {
+            if (_refreshing || _busy) return;
+            if (e.NewValue is >= 20 and <= 200 && e.NewValue == Math.Truncate(e.NewValue))
+                BeginApply(s => s with { DefaultIconFitPercent = (int)e.NewValue });
+            else
+            {
+                _refreshing = true;
+                _initialIconFit.Value = _state.Settings.DefaultIconFitPercent;
+                _refreshing = false;
+                _status.Show(ProductStrings.Get("Settings.IconFitRange"), transient: true, renew: true);
+            }
+        };
         _runAtLogin.Toggled += (_, _) => BeginApply(s => s with { RunAtLogin = _runAtLogin.IsOn });
         _replaceStartMenu.Toggled += (_, _) => BeginApply(s => s with { ReplaceStartMenu = _replaceStartMenu.IsOn });
         _redirectTaskbarStartButton.Toggled += (_, _) => BeginApply(s => s with { RedirectTaskbarStartButton = _redirectTaskbarStartButton.IsOn });
@@ -507,10 +559,16 @@ internal sealed class SettingsDialog : IWallDialogSession
         SetChoices(_visualStyle, "Settings.VisualStyle", ["Settings.Win10Style", "Settings.Win11Style"]);
         SetChoices(_background, "Settings.Background", ["Settings.Acrylic", "Settings.Mica", "Settings.Custom"]);
         foreach (var (key, label) in _labels) label.Text = ProductStrings.Get(key);
+        RefreshMenuActionStrings();
+        foreach (var (button, preset, glyph) in _initialSizeButtons)
+            ActionIcon.SetIcon(button, ProductStrings.Get($"Editor.Preset{preset}"), glyph);
+        ActionIcon.SetIcon(_resetInitialIconFit, ProductStrings.Get("Settings.ResetInitialIconFit"), ActionIcon.Reset);
+        AutomationProperties.SetName(_initialIconFit, ProductStrings.Get("Settings.InitialIconFit"));
+        ToolTipService.SetToolTip(_initialIconFit, ProductStrings.Get("Settings.IconFitRange"));
         foreach (var (button, key) in _linkButtons) ActionIcon.Set(button, ProductStrings.Get(key), ActionIcon.Link);
         foreach (var (toggle, key) in new[] { (_topmost, "Settings.Topmost"), (_stayVisible, "Settings.StayVisible"), (_layoutLocked, "Settings.LayoutLocked"),
             (_activateTaskbar, "Settings.ActivateTaskbar"),
-            (_showGrid, "Settings.ShowGrid"), (_runAtLogin, "Settings.RunAtLogin"), (_fullScreen, "Settings.FullScreen"),
+            (_showGrid, "Settings.ShowGrid"), (_showUnavailableControls, "Settings.ShowUnavailableControls"), (_runAtLogin, "Settings.RunAtLogin"), (_fullScreen, "Settings.FullScreen"),
             (_expandColumns, "Settings.ExpandColumns"), (_menuStart, "Settings.MenuStart"),
             (_replaceStartMenu, "Settings.ReplaceStartMenu"),
             (_redirectTaskbarStartButton, "Settings.RedirectTaskbarStartButton"),
@@ -523,9 +581,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         }
         ActionIcon.Set(_reset, ProductStrings.Get("Settings.Reset"), ActionIcon.Reset);
         ActionIcon.Set(_initialize, ProductStrings.Get("Settings.InitializeWall"), ActionIcon.Reset);
-        ActionIcon.Set(_importStart, ProductStrings.Get("WindowsStartImport.Import"), ActionIcon.Import);
-        AutomationProperties.SetName(_importStart, ProductStrings.Get("WindowsStartImport.Setting"));
-        ActionIcon.SetTip(_importStart, ProductStrings.Get("WindowsStartImport.Setting"));
+        ActionIcon.Set(_importStart, ProductStrings.Get("WindowsStartImport.SettingsAction"), ActionIcon.Import);
         ActionIcon.SetIcon(_resetHotKey, ProductStrings.Get("Settings.ResetHotKey"), ActionIcon.Reset);
         ActionIcon.SetIcon(_resetSecondaryHotKey, ProductStrings.Get("Settings.ResetSecondaryHotKey"), ActionIcon.Reset);
         foreach (var (key, control, helpKey) in new (string, FrameworkElement, string)[]
@@ -589,6 +645,14 @@ internal sealed class SettingsDialog : IWallDialogSession
         _layoutLocked.IsOn = _state.Settings.LayoutLocked;
         RefreshTaskbarActivationPresentation();
         _showGrid.IsOn = _state.Settings.ShowGrid; _runAtLogin.IsOn = _state.Settings.RunAtLogin;
+        _showUnavailableControls.IsOn = _state.Settings.ShowUnavailableControls;
+        foreach (var (check, _, wall, action, _) in _menuActions)
+        {
+            var hidden = wall ? _state.Settings.HiddenWallMenuActions : _state.Settings.HiddenMemberMenuActions;
+            check.IsChecked = (hidden & action) == 0;
+        }
+        SelectInitialSize(_state.Settings.DefaultTileSize);
+        _initialIconFit.Value = _state.Settings.DefaultIconFitPercent;
         _hotKey.SetConfigured(_state.Settings.HotKey);
         _secondaryHotKey.SetConfigured(_state.Settings.SecondaryHotKey);
         RefreshContextMenuPresentation();
@@ -1200,18 +1264,18 @@ internal sealed class SettingsDialog : IWallDialogSession
         return false;
     }
 
-    private void BeginApply(Func<WallSettings, WallSettings> change)
+    private void BeginApply(Func<WallSettings, WallSettings> change, Control? source = null)
     {
         TraceSettings("BeginApply");
         if (_refreshing || _busy || _initialization is not null) { TraceSettings("IgnoredBusyOrRefresh"); return; }
         var candidate = change(_state.Settings);
         if (candidate == _state.Settings) { TraceSettings("IgnoredUnchanged"); return; }
         TraceSettings("Candidate", SettingsFlags(candidate));
-        _pending = ApplyAsync(candidate);
+        _pending = ApplyAsync(candidate, focusAfterSave: source?.FocusState == FocusState.Keyboard ? source : null);
     }
 
     private async Task ApplyAsync(WallSettings candidate, bool restoreDefaults = false,
-        PreparedMediaAsset? preparedBackground = null, CancellationToken candidateToken = default)
+        PreparedMediaAsset? preparedBackground = null, CancellationToken candidateToken = default, Control? focusAfterSave = null)
     {
         TraceSettings("ApplyStart", SettingsFlags(candidate));
         var settingKey = ChangedSettingKey(_state.Settings, candidate);
@@ -1246,6 +1310,7 @@ internal sealed class SettingsDialog : IWallDialogSession
             SetFormEnabled(true);
             RestoreState();
             if (restoreAnchorFocus) _anchor.Focus(FocusState.Programmatic);
+            if (!_closeRequested) focusAfterSave?.Focus(FocusState.Keyboard);
             FinishPending();
             if (completed)
             {
@@ -1266,6 +1331,11 @@ internal sealed class SettingsDialog : IWallDialogSession
         if (before.LayoutLocked != after.LayoutLocked) return "Settings.LayoutLocked";
         if (before.ActivateTaskbar != after.ActivateTaskbar) return "Settings.ActivateTaskbar";
         if (before.ShowGrid != after.ShowGrid) return "Settings.ShowGrid";
+        if (before.ShowUnavailableControls != after.ShowUnavailableControls) return "Settings.ShowUnavailableControls";
+        if (before.HiddenWallMenuActions != after.HiddenWallMenuActions) return "Settings.WallMenuTitle";
+        if (before.HiddenMemberMenuActions != after.HiddenMemberMenuActions) return "Settings.MemberMenuTitle";
+        if (before.DefaultTileSize != after.DefaultTileSize) return "Settings.InitialTileSize";
+        if (before.DefaultIconFitPercent != after.DefaultIconFitPercent) return "Settings.InitialIconFit";
         if (before.RunAtLogin != after.RunAtLogin) return "Settings.RunAtLogin";
         if (before.ReplaceStartMenu != after.ReplaceStartMenu) return "Settings.ReplaceStartMenu";
         if (before.RedirectTaskbarStartButton != after.RedirectTaskbarStartButton) return "Settings.RedirectTaskbarStartButton";
@@ -1444,6 +1514,126 @@ internal sealed class SettingsDialog : IWallDialogSession
         row.Children.Add(toggle);
         Grid.SetColumn(explanation, 1); row.Children.Add(explanation);
         return row;
+    }
+
+    private Grid MenuActionTables(bool stack)
+    {
+        var wall = MenuActionTable("Settings.WallMenuTitle", WallContextMenu.WallActions, wall: true);
+        var member = MenuActionTable("Settings.MemberMenuTitle", WallContextMenu.MemberActions, wall: false);
+        if (stack)
+        {
+            _menuActionTables.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            _menuActionTables.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(member, 1);
+        }
+        else
+        {
+            _menuActionTables.ColumnDefinitions.Add(new ColumnDefinition());
+            _menuActionTables.ColumnDefinitions.Add(new ColumnDefinition());
+            Grid.SetColumn(member, 1);
+        }
+        _menuActionTables.Children.Add(wall);
+        _menuActionTables.Children.Add(member);
+        return _menuActionTables;
+    }
+
+    private Border MenuActionTable(string titleKey, IReadOnlyList<WallMenuItemDefinition> items, bool wall)
+    {
+        var table = new StackPanel();
+        var id = wall ? "wall-menu-" : "member-menu-";
+        var heading = (Border)XamlReader.Load("""
+            <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                Background="{ThemeResource LayerFillColorDefaultBrush}" Padding="0,4" />
+            """);
+        var title = new TextBlock { TextWrapping = TextWrapping.Wrap, FontWeight = new Windows.UI.Text.FontWeight { Weight = 600 } };
+        AutomationProperties.SetHeadingLevel(title, AutomationHeadingLevel.Level2);
+        heading.Child = Check(title, titleKey, MenuAction.MenuHidden, "enabled");
+        table.Children.Add(heading);
+        foreach (var item in items)
+        {
+            var label = new TextBlock { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+            table.Children.Add(Check(label, item.ResourceKey, item.Id, item.Id.ToString()));
+        }
+        var frame = VisualStyles.InputFrame(transparent: true);
+        frame.VerticalAlignment = VerticalAlignment.Top;
+        frame.Child = table;
+        AutomationProperties.SetLabeledBy(frame, title);
+        Id(frame, id + "table");
+        return frame;
+
+        CheckBox Check(TextBlock label, string resourceKey, MenuAction action, string suffix)
+        {
+            var check = new CheckBox
+            {
+                Content = label, MinWidth = 0, MinHeight = 32,
+                Margin = new Thickness(action == MenuAction.MenuHidden ? 12 : 26, 0, 8, 0),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+            };
+            Id(check, id + suffix);
+            _menuActions.Add((check, label, wall, action, resourceKey));
+            RoutedEventHandler changed = (_, _) => BeginApply(settings =>
+            {
+                var hidden = wall ? settings.HiddenWallMenuActions : settings.HiddenMemberMenuActions;
+                hidden = check.IsChecked == true ? hidden & ~action : hidden | action;
+                return wall ? settings with { HiddenWallMenuActions = hidden } : settings with { HiddenMemberMenuActions = hidden };
+            }, check);
+            check.Checked += changed;
+            check.Unchecked += changed;
+            return check;
+        }
+    }
+
+    private void RefreshMenuActionStrings()
+    {
+        var wallTitle = ProductStrings.Get("Settings.WallMenuTitle");
+        var memberTitle = ProductStrings.Get("Settings.MemberMenuTitle");
+        var nameFormat = ProductStrings.Get("Settings.MenuActionName");
+        var help = ProductStrings.Get("Settings.MenuVisibilityHelp");
+        SetHelp("Settings.MenuVisibility", _menuActionTables, help);
+        foreach (var (check, label, wall, action, resourceKey) in _menuActions)
+        {
+            label.Text = ProductStrings.Get(resourceKey);
+            AutomationProperties.SetName(check, action == MenuAction.MenuHidden ? label.Text :
+                string.Format(nameFormat, wall ? wallTitle : memberTitle, label.Text));
+            AutomationProperties.SetHelpText(check, help);
+        }
+    }
+
+    private StackPanel InitialTileSizeRow()
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        Id(row, "initial-tile-size");
+        foreach (var (preset, glyph) in new[] { (TileSizePreset.Small, ActionIcon.PresetSmall),
+            (TileSizePreset.Medium, ActionIcon.PresetMedium), (TileSizePreset.Wide, ActionIcon.PresetWide),
+            (TileSizePreset.Large, ActionIcon.PresetLarge) })
+        {
+            var button = new ToggleButton();
+            Id(button, $"initial-tile-size-{preset}");
+            _initialSizeButtons.Add((button, preset, glyph));
+            row.Children.Add(button);
+            button.Checked += (_, _) =>
+            {
+                if (_refreshing || _busy) return;
+                SelectInitialSize(preset);
+                BeginApply(settings => settings with { DefaultTileSize = preset }, button);
+            };
+            button.Unchecked += (_, _) =>
+            {
+                if (!_refreshing && !_busy) SelectInitialSize(_state.Settings.DefaultTileSize);
+            };
+        }
+        return row;
+    }
+
+    private void SelectInitialSize(TileSizePreset selected)
+    {
+        var wasRefreshing = _refreshing;
+        _refreshing = true;
+        try
+        {
+            foreach (var (button, preset, _) in _initialSizeButtons) button.IsChecked = preset == selected;
+        }
+        finally { _refreshing = wasRefreshing; }
     }
 
     private Border KeyBehaviorTable()

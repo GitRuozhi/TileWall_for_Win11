@@ -2,6 +2,8 @@ using TileWall.Core.Grid;
 
 namespace TileWall.Core.Wall;
 
+public enum TileSizePreset { Small, Medium, Wide, Large }
+
 /// <summary>Shared creation, editing and persistence size contract.</summary>
 public static class MemberSizeRules
 {
@@ -13,6 +15,15 @@ public static class MemberSizeRules
     public const int PuzzleMinimumRows = 2;
     public const int PuzzleMaximumColumns = 8;
     public const int PuzzleMaximumRows = 12;
+    public static GridRect TileBounds(TileSizePreset preset) => preset switch
+    {
+        TileSizePreset.Small => new(0, 0, 1, 1),
+        TileSizePreset.Medium => new(0, 0, 2, 2),
+        TileSizePreset.Wide => new(0, 0, 4, 2),
+        TileSizePreset.Large => new(0, 0, 4, 4),
+        _ => throw new ArgumentOutOfRangeException(nameof(preset)),
+    };
+
     public static bool IsTileSize(int columns, int rows) => columns is >= 1 and <= TileMaximumColumns && rows is >= 1 and <= TileMaximumRows;
     public static bool IsPuzzleSize(int columns, int rows) => columns is >= PuzzleMinimumColumns and <= PuzzleMaximumColumns && rows is >= PuzzleMinimumRows and <= PuzzleMaximumRows;
     public static bool IsPartitionSize(int columns, int rows) => columns is >= 1 and <= PartitionMaximumColumns && rows is >= 1 and <= PartitionMaximumRows;

@@ -88,7 +88,7 @@ public sealed partial class MainWindow
                 ReadImportContextAsync, (source, path, token) => ReadImportSourceAsync(_importSourceProjection, source, path, token),
                 (context, source, projection, token) => PrepareImportPageAsync(_importSourceProjection, context, source, projection, token),
                 SaveImportAsync, SaveExportAsync, IsImportContextCurrent, Document.Settings.VisualStyle, LoadImportIconAsync,
-                KnownFolderPaths.Desktop, RestoreRecycledMembersAsync);
+                KnownFolderPaths.Desktop, RestoreRecycledMembersAsync, Settings.ShowUnavailableControls);
             ActiveDialog = dialog;
             await dialog.ShowAsync();
         }
@@ -571,7 +571,9 @@ public sealed partial class MainWindow
             if (!CanProcessExternalImport || _windowClosing || ShutdownStarted)
                 throw new IOException(ProductStrings.Get("Wall.ViewBlocked"));
             var current = Document;
+            var settings = current.Settings;
             var budget = CurrentViewportBudget;
+            var scale = Scale;
             var identities = ImportIdentities;
             var executor = _storageExecutor ?? throw new InvalidOperationException("Storage worker is unavailable.");
             var lastGroup = current.Lanes.SelectMany(lane => lane.Groups).LastOrDefault();
@@ -579,14 +581,14 @@ public sealed partial class MainWindow
             {
                 token.ThrowIfCancellationRequested();
                 if (!CanProcessExternalImport || _windowClosing || ShutdownStarted || !ReferenceEquals(Document, current) ||
-                    Document.Generation != current.Generation || CurrentViewportBudget != budget ||
+                    Document.Generation != current.Generation || CurrentViewportBudget != budget || Scale != scale ||
                     _session.ResultUnknown || _session.RequiresReopen || _session.RecoveryBlocked)
                     throw new ImportSourceChangedException("The import source changed.");
             }
             RequireCurrent();
             var observed = await executor.ExecuteAsync(() =>
             {
-                var incoming = message.Paths.Select(path => ObserveExternalItem(ImportBatchItem.Create(path), identities, token)).ToArray();
+                var incoming = message.Paths.Select(path => ObserveExternalItem(ImportBatchItem.Create(path, settings.DefaultTileSize), identities, token)).ToArray();
                 var keys = incoming.ToDictionary(item => item.Member.Id, item => item.ExpectedIdentityKey!, StringComparer.Ordinal);
                 var hashes = new Dictionary<string, string>(StringComparer.Ordinal);
                 var files = new LocalFileStore();
@@ -625,7 +627,7 @@ public sealed partial class MainWindow
                 var placed = plan.Proposal.Document.EnumerateAllMembers().ToDictionary(member => member.Id, StringComparer.Ordinal);
                 var prepared = await PrepareAcceptedTargetImagesAsync(accepted.Select(item =>
                     (Member: placed[item.Member.Id], Input: (string?)item.SourcePath, Inference: (TargetImageSourceResult?)null)).ToArray(),
-                    current.Generation, RequireCurrent, token);
+                    current.Generation, RequireCurrent, token, initialIconFitPercent: settings.DefaultIconFitPercent);
                 await executor.ExecuteAsync(() =>
                 {
                     foreach (var item in accepted)
@@ -668,7 +670,7 @@ public sealed partial class MainWindow
     private async Task<(IReadOnlyDictionary<string, WallMember> Members, IReadOnlyList<PreparedMediaAsset> Assets,
         IReadOnlyList<TargetImageSourceResult> Sources)> PrepareAcceptedTargetImagesAsync(
         IReadOnlyList<(WallMember Member, string? Input, TargetImageSourceResult? Inference)> inputs,
-        long generation, Action requireCurrent, CancellationToken token)
+        long generation, Action requireCurrent, CancellationToken token, int? initialIconFitPercent = null)
     {
         var members = new Dictionary<string, WallMember>(StringComparer.Ordinal);
         var assets = new Dictionary<string, PreparedMediaAsset>(StringComparer.Ordinal);
@@ -713,13 +715,17 @@ public sealed partial class MainWindow
             else if (member.ResourceOrigin == MemberResourceOrigin.Local && member.Images.Kind == MemberImageSourceKind.Automatic &&
                 member.Images.IconSeries is null)
             {
-                var width = (int)Math.Clamp(Math.Ceiling(_metrics.WidthOf(member.LocalBounds.Width) * Scale), 1, 4096);
-                var height = (int)Math.Clamp(Math.Ceiling(_metrics.HeightOf(member.LocalBounds.Height) * Scale), 1, 4096);
-                var reserve = member.ImageDisplay.Mode == TileWall.Core.Imaging.ImageDisplayMode.Custom
+                var scale = Scale;
+                var pixelWidth = _metrics.WidthOf(member.LocalBounds.Width) * scale;
+                var pixelHeight = _metrics.HeightOf(member.LocalBounds.Height) * scale;
+                var width = (int)Math.Clamp(Math.Ceiling(pixelWidth), 1, 4096);
+                var height = (int)Math.Clamp(Math.Ceiling(pixelHeight), 1, 4096);
+                var fitPercent = member is TileMember ? initialIconFitPercent : null;
+                var reserve = fitPercent is null && member.ImageDisplay.Mode == TileWall.Core.Imaging.ImageDisplayMode.Custom
                     ? Math.Max(1, member.ImageDisplay.CustomScale) : 1;
                 var prepared = await _images.PrepareAutomaticIconSeriesAsync(member, input.Input,
-                    (int)Math.Clamp(Math.Ceiling(_metrics.WidthOf(member.LocalBounds.Width) * Scale * reserve), 1, 4096),
-                    (int)Math.Clamp(Math.Ceiling(_metrics.HeightOf(member.LocalBounds.Height) * Scale * reserve), 1, 4096), token);
+                    (int)Math.Clamp(Math.Ceiling(pixelWidth * reserve), 1, 4096),
+                    (int)Math.Clamp(Math.Ceiling(pixelHeight * reserve), 1, 4096), token, initialFitPercent: fitPercent);
                 requireCurrent();
                 if (!await _images.IsTargetSourceCurrentAsync(source, token))
                     throw new ImportSourceChangedException("The import source changed.");
@@ -728,7 +734,8 @@ public sealed partial class MainWindow
                 {
                     // This method only receives newly accepted pure-source/Explorer members.
                     // Attributed records retain their saved display and never enter this preparation.
-                    member = MemberPresentationRules.ApplyAutomaticImageDefaults(member, prepared.Series, width, height);
+                    member = MemberPresentationRules.ApplyAutomaticImageDefaults(member, prepared.Series, width, height,
+                        fitPercent: fitPercent ?? 100);
                     prepared = prepared with { Series = member.Images.IconSeries! };
                     foreach (var asset in prepared.Assets) await AddAssetAsync(asset);
                 }

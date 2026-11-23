@@ -10,7 +10,7 @@ public sealed partial class MainWindow
 
     partial void CreateWindowsSidebar()
     {
-        _windowsSidebar = new WindowsSidebar(Status, OnContextMenuVisibilityChanged);
+        _windowsSidebar = new WindowsSidebar(Status, OnContextMenuVisibilityChanged, () => Settings.ShowUnavailableControls);
         WindowsSidebarHost.Children.Add(_windowsSidebar);
         WallRoot.SizeChanged += (_, _) => UpdateWindowsSidebar();
         UpdateWindowsSidebar();

@@ -4,6 +4,7 @@ using TileWall.Core.Storage;
 using TileWall.Core.Components;
 using TileWall.Core.Grid;
 using TileWall.Core.Imaging;
+using TileWall.Core.Settings;
 
 namespace TileWall.Core.Wall;
 
@@ -101,6 +102,13 @@ public sealed record WallSettings
     public bool AlwaysOnTop { get; init; } = true;
     public bool StayVisibleOnFocusLoss { get; init; }
     public bool ShowGrid { get; init; }
+    public bool ShowUnavailableControls { get; init; } = true;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public WallContextMenuActions HiddenWallMenuActions { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public WallContextMenuActions HiddenMemberMenuActions { get; init; }
+    public TileSizePreset DefaultTileSize { get; init; } = TileSizePreset.Medium;
+    public int DefaultIconFitPercent { get; init; } = 100;
     public WallLanguageMode LanguageMode { get; init; } = WallLanguageMode.System;
     public string? HotKey { get; init; } = "Win+Oem3";
     public string SecondaryHotKey { get; init; } = "Win+Ctrl+Oem3";

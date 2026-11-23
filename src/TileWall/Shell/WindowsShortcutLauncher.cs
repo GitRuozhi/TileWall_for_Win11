@@ -10,7 +10,7 @@ namespace TileWall.Shell;
 internal enum WindowsShortcut
 {
     Documents, Downloads, Music, Pictures, Videos, Profile, Network, Explorer, Settings,
-    AccountSettings, Lock, SignOut, Sleep, ShutDown, Restart,
+    AccountSettings, Lock, SignOut, Sleep, Hibernate, ShutDown, Restart,
 }
 
 /// <summary>Windows destinations only; no managed entry or wall state is changed.</summary>
@@ -34,6 +34,7 @@ internal static class WindowsShortcutLauncher
             return shortcut switch
             {
                 WindowsShortcut.Sleep => !PolicyEnabled("Explorer", "NoClose") && IsPwrSuspendAllowed() && HasShutdownPrivilege(),
+                WindowsShortcut.Hibernate => !PolicyEnabled("Explorer", "NoClose") && IsHibernateAvailable() && HasShutdownPrivilege(),
                 WindowsShortcut.ShutDown or WindowsShortcut.Restart => !PolicyEnabled("Explorer", "NoClose") && IsPwrShutdownAllowed() && HasShutdownPrivilege(),
                 WindowsShortcut.Lock => !PolicyEnabled("System", "DisableLockWorkstation"),
                 WindowsShortcut.SignOut => !PolicyEnabled("Explorer", "NoLogoff"),
@@ -66,6 +67,7 @@ internal static class WindowsShortcutLauncher
                     if (!ExitWindowsEx(0, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
                     break;
                 case WindowsShortcut.Sleep:
+                case WindowsShortcut.Hibernate:
                 case WindowsShortcut.ShutDown:
                 case WindowsShortcut.Restart:
                     ExecutePower(shortcut);
@@ -148,12 +150,27 @@ internal static class WindowsShortcutLauncher
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             try
             {
-                var accepted = shortcut == WindowsShortcut.Sleep ? SetSuspendState(false, false, false)
+                var accepted = shortcut is WindowsShortcut.Sleep or WindowsShortcut.Hibernate
+                    ? SetSuspendState(shortcut == WindowsShortcut.Hibernate, false, false)
                     : ExitWindowsEx(shortcut == WindowsShortcut.Restart ? 2u : 1u, 0x80040000);
                 if (!accepted) throw new Win32Exception(Marshal.GetLastWin32Error());
             }
             finally { AdjustTokenPrivileges(token, false, ref previous, 0, out _, out _); }
         }
+    }
+
+    private static bool IsHibernateAvailable() =>
+        GetPwrCapabilities(out var caps) && caps.SupportsHibernate;
+
+    // Windows 10+ SYSTEM_POWER_CAPABILITIES, including the trailing battery and wake state arrays.
+    [StructLayout(LayoutKind.Explicit, Size = 76)]
+    private struct PowerCapabilities
+    {
+        [FieldOffset(6)] internal byte SystemS4;
+        [FieldOffset(8)] internal byte HiberFilePresent;
+        [FieldOffset(22)] internal byte HiberFileType;
+
+        internal readonly bool SupportsHibernate => SystemS4 != 0 && HiberFilePresent != 0 && HiberFileType == 2;
     }
 
     [StructLayout(LayoutKind.Sequential)] private struct Luid { internal uint Low; internal int High; }
@@ -174,6 +191,8 @@ internal static class WindowsShortcutLauncher
     [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ExitWindowsEx(uint flags, uint reason);
     [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool LockWorkStation();
+    [DllImport("powrprof.dll")] [return: MarshalAs(UnmanagedType.U1)]
+    private static extern bool GetPwrCapabilities(out PowerCapabilities capabilities);
     [DllImport("powrprof.dll")] [return: MarshalAs(UnmanagedType.U1)] private static extern bool IsPwrSuspendAllowed();
     [DllImport("powrprof.dll")] [return: MarshalAs(UnmanagedType.U1)] private static extern bool IsPwrShutdownAllowed();
     [DllImport("powrprof.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.U1)]

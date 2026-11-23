@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Windows.Foundation;
@@ -9,9 +10,11 @@ namespace TileWall.Views;
 internal static class VisualStyles
 {
     internal static Grid PreviewPage(FrameworkElement previewPane, StackPanel cards, Size budget,
-        double preferredWidth, double preferredRightWidth, double? preferredLeftWidth = null)
+        double preferredWidth, double preferredRightWidth, double? preferredLeftWidth = null,
+        FrameworkElement? resizingFooter = null)
     {
         const double gap = 24;
+        var stretchRight = resizingFooter is not null;
         var width = Math.Min(preferredWidth, budget.Width);
         var columnSpace = Math.Max(2, width - gap);
         var minRight = Math.Min(preferredRightWidth, Math.Min(340, columnSpace * .75));
@@ -20,14 +23,56 @@ internal static class VisualStyles
         if (preferredLeftWidth is { } left)
             right = Math.Clamp(columnSpace - left, minRight, columnSpace - minLeft);
         var page = new Grid { Width = width, MinWidth = Math.Min(680, width), MaxHeight = budget.Height, ColumnSpacing = gap };
-        page.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = minLeft });
-        page.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(right) });
+        page.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(stretchRight ? Math.Max(1, columnSpace - right) : 1, GridUnitType.Star),
+            MinWidth = minLeft,
+        });
+        page.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = stretchRight ? new GridLength(Math.Max(1, right), GridUnitType.Star) : new GridLength(right),
+            MinWidth = stretchRight ? minRight : 0,
+        });
         var controls = new ScrollViewer { Content = cards, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Disabled };
+        if (resizingFooter is not null)
+        {
+            // Keep the action card at the bottom when the enlarged viewport has room.
+            // The same content scrolls together when it exceeds the viewport.
+            var form = new Grid { RowSpacing = cards.Spacing };
+            form.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
+            form.RowDefinitions.Add(new() { Height = GridLength.Auto });
+            controls.Content = form;
+            form.Children.Add(cards);
+            Grid.SetRow(resizingFooter, 1);
+            form.Children.Add(resizingFooter);
+            controls.SizeChanged += (_, e) => form.MinHeight = e.NewSize.Height;
+        }
         page.Children.Add(previewPane);
         Grid.SetColumn(controls, 1);
         page.Children.Add(controls);
         return page;
+    }
+
+    internal static Grid FormRow(TextBlock label, FrameworkElement value, double labelWidth, double gap)
+    {
+        var row = new Grid { ColumnSpacing = gap, RowSpacing = gap };
+        if (labelWidth > 0)
+        {
+            row.ColumnDefinitions.Add(new() { Width = new GridLength(labelWidth) });
+            row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetColumn(value, 1);
+        }
+        else
+        {
+            row.RowDefinitions.Add(new() { Height = GridLength.Auto });
+            row.RowDefinitions.Add(new() { Height = GridLength.Auto });
+            Grid.SetRow(value, 1);
+        }
+        row.Children.Add(label);
+        row.Children.Add(value);
+        AutomationProperties.SetLabeledBy(value, label);
+        return row;
     }
 
     internal static Border ActionCard(Button primary, Button cancel, bool stacked = false)

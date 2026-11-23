@@ -59,12 +59,37 @@ internal static class UserDataSnapshotJson
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow,
         WriteIndented = true,
+        TypeInfoResolver = CurrentResolver(),
     };
+
+    private static DefaultJsonTypeInfoResolver CurrentResolver()
+    {
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(typeInfo =>
+        {
+            if (typeInfo.Type != typeof(WallSettings)) return;
+            foreach (var property in typeInfo.Properties)
+            {
+                property.ShouldSerialize = property.Name switch
+                {
+                    "showUnavailableControls" => (_, value) => value is false,
+                    "defaultTileSize" => (_, value) => value is TileSizePreset preset && preset != TileSizePreset.Medium,
+                    "defaultIconFitPercent" => (_, value) => value is int percent && percent != 100,
+                    _ => property.ShouldSerialize,
+                };
+            }
+        });
+        return resolver;
+    }
+
     // Older schemas retain their original field contract, including their optional forward fields.
+    private static readonly string[] Format6PreferenceNames = ["showUnavailableControls", "defaultTileSize", "defaultIconFitPercent",
+        "hiddenWallMenuActions", "hiddenMemberMenuActions"];
     private static readonly JsonSerializerOptions V1Options = CreateHistoricalOptions(1);
     private static readonly JsonSerializerOptions V2Options = CreateHistoricalOptions(2);
     private static readonly JsonSerializerOptions V3Options = CreateHistoricalOptions(3);
     private static readonly JsonSerializerOptions V4Options = CreateHistoricalOptions(4);
+    private static readonly JsonSerializerOptions V5Options = CreateHistoricalOptions(5);
 
     private static JsonSerializerOptions CreateHistoricalOptions(int version)
     {
@@ -76,12 +101,16 @@ internal static class UserDataSnapshotJson
                     typeInfo.Properties.Remove(extension);
             if (typeInfo.Type == typeof(WallSettings))
             {
-                typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "layoutLocked"));
-                typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "redirectTaskbarStartButton"));
+                foreach (var name in Format6PreferenceNames)
+                    typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == name));
                 if (version < 5)
+                {
+                    typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "layoutLocked"));
+                    typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "redirectTaskbarStartButton"));
                     typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "activateTaskbar"));
+                }
             }
-            if (typeInfo.Type == typeof(StartGroup))
+            if (version < 5 && typeInfo.Type == typeof(StartGroup))
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "reservedRows"));
             if (version < 4 && typeInfo.Type == typeof(MemberImageSource))
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == "iconSeries"));
@@ -97,7 +126,7 @@ internal static class UserDataSnapshotJson
         return new(Options) { TypeInfoResolver = resolver };
     }
     private static JsonSerializerOptions OptionsFor(int version) => version switch
-        { 1 => V1Options, 2 => V2Options, 3 => V3Options, 4 => V4Options, _ => Options };
+        { 1 => V1Options, 2 => V2Options, 3 => V3Options, 4 => V4Options, 5 => V5Options, _ => Options };
 
     internal static bool RequiresUpgrade(WallDocument document) => document.StorageMetadata is { } metadata &&
         (metadata.ManifestVersion < UserDataManifest.CurrentFormatVersion ||
@@ -203,6 +232,9 @@ internal static class UserDataSnapshotJson
                     ? settings.SchemaVersion != manifest.SchemaVersion : settings.SchemaVersion < UserDataManifest.CurrentFormatVersion) ||
                 wall.SchemaVersion < 1 || recycle.SchemaVersion < 1 || settings.Value is null || wall.Lanes is null || recycle.Members is null)
                 throw new InvalidDataException("Incomplete or unsupported snapshot set.");
+            if (manifest.SchemaVersion < 6 && settings.Value.ExtensionData is { } extensions &&
+                Format6PreferenceNames.Any(extensions.ContainsKey))
+                throw new UnsupportedSnapshotStructureException("The snapshot contains preferences that require settings format 6; data remains untouched.");
             // Format 4 can retain unknown optional fields, but these names now carry
             // layout semantics. Do not silently reinterpret or emit duplicate fields
             // when upgrading an older envelope that used them as opaque metadata.

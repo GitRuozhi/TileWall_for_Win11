@@ -315,7 +315,7 @@ public static partial class WallLayoutEngine
             document.Lanes.Count != document.Columns) return [.. errors, "WALL_STRUCTURE"];
         if (document.Settings is null) errors.Add("SETTINGS_NULL");
         else if (!Enum.IsDefined(document.Settings.AnchorCorner) || !Enum.IsDefined(document.Settings.LanguageMode)
-            || !Enum.IsDefined(document.Settings.VisualStyle) ||
+            || !Enum.IsDefined(document.Settings.VisualStyle) || !Enum.IsDefined(document.Settings.DefaultTileSize) ||
             !Enum.IsDefined(document.Settings.ThemeMode) || !Enum.IsDefined(document.Settings.BackgroundMode))
             errors.Add("SETTINGS_ENUM");
         else
@@ -328,6 +328,8 @@ public static partial class WallLayoutEngine
                 document.Settings.ManualWindowedViewportWidthDip is { } manualWidth &&
                 (!double.IsFinite(manualWidth) || manualWidth <= 0))
                 errors.Add("SETTINGS_WINDOWED_VIEWPORT_WIDTH");
+            if (document.Settings.DefaultIconFitPercent is < 20 or > 200)
+                errors.Add("SETTINGS_ICON_FIT");
             if (document.Settings.BackgroundTransparency is < 0 or > 100)
                 errors.Add("SETTINGS_TRANSPARENCY");
             if (document.Settings.BackgroundMode == WallBackgroundMode.Custom && document.Settings.BackgroundMedia is null &&

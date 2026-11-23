@@ -6,7 +6,9 @@
     xmlns:views="using:TileWall.Views"
     Title="TileWall">
     <Grid x:Name="WallRoot" Background="Transparent" AutomationProperties.AutomationId="wall-root">
-        <ScrollViewer x:Name="WallScroll" HorizontalScrollMode="Disabled" VerticalScrollMode="Disabled"
+        <ScrollViewer x:Name="WallScroll" Background="Transparent" AllowDrop="True"
+                      DragOver="OnWallDragOver" Drop="OnWallDrop"
+                      HorizontalScrollMode="Disabled" VerticalScrollMode="Disabled"
                       HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Disabled"
                       ZoomMode="Disabled" HorizontalContentAlignment="Left" VerticalContentAlignment="Top">
             <views:WallSurface x:Name="Surface" HorizontalAlignment="Left" VerticalAlignment="Top" />

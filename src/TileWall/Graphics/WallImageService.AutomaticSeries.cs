@@ -16,12 +16,17 @@ public sealed partial class WallImageService
 
     /// <summary>Freeze one selected image and every usable native resolution. No formal writes.</summary>
     public Task<PreparedAutomaticIconSeries?> PrepareAutomaticIconSeriesAsync(WallMember member, string? entryOrTarget,
-        int width, int height, CancellationToken ct = default) => StartImageRequest<PreparedAutomaticIconSeries?>(token =>
+        int width, int height, CancellationToken ct = default, int? initialFitPercent = null) => StartImageRequest<PreparedAutomaticIconSeries?>(token =>
         Task.Run(async () =>
         {
-            using var trace = ImageCandidateTrace.Start("automatic-series", entryOrTarget, width, height);
             if (member.ResourceOrigin == MemberResourceOrigin.Package || member.Images.Kind != MemberImageSourceKind.Automatic ||
                 member.Images.IconSeries is not null) return null;
+            // Source selection uses the scaled canvas as its acquisition hint. The
+            // actual display demand is resolved from each admitted frame's aspect ratio.
+            var fitScale = (initialFitPercent ?? 100) / 100d;
+            var requestedWidth = initialFitPercent is null ? width : (int)Math.Clamp(Math.Ceiling(width * fitScale), 1, 4096);
+            var requestedHeight = initialFitPercent is null ? height : (int)Math.Clamp(Math.Ceiling(height * fitScale), 1, 4096);
+            using var trace = ImageCandidateTrace.Start("automatic-series", entryOrTarget, requestedWidth, requestedHeight);
             string? target;
             AutomaticSourceSnapshot before;
             using (trace?.Measure("before"))
@@ -31,8 +36,8 @@ public sealed partial class WallImageService
             }
             List<IconCandidateSeries> candidates;
             using (trace?.Measure("collect"))
-                candidates = await CollectIconSeriesAsync(entryOrTarget, width, height, target, true, token).ConfigureAwait(false);
-            var selected = SelectIconSeries(candidates, width, height);
+                candidates = await CollectIconSeriesAsync(entryOrTarget, requestedWidth, requestedHeight, target, true, token).ConfigureAwait(false);
+            var selected = SelectIconSeries(candidates, requestedWidth, requestedHeight);
             token.ThrowIfCancellationRequested();
             using (trace?.Measure("after"))
                 if (before != AutomaticSourceStamp(entryOrTarget, target) || target != VerifiedPackageIconTarget(entryOrTarget, member))
@@ -50,7 +55,7 @@ public sealed partial class WallImageService
             }
             var series = new AutomaticIconSeries(selected.Identity, frames.AsReadOnly(), 0,
                 member.LocalBounds.Width, member.LocalBounds.Height);
-            series = series with { SelectedFrame = AutomaticIconSeriesRules.SelectFrame(series, width, height) };
+            series = series with { SelectedFrame = AutomaticIconSeriesRules.SelectFrame(series, requestedWidth, requestedHeight) };
             return new PreparedAutomaticIconSeries(series, assets.AsReadOnly());
         }, token), ct, null);
 

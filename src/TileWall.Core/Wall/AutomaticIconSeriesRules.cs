@@ -81,18 +81,47 @@ public static class AutomaticIconSeriesRules
         { Columns = columns, Rows = rows };
     }
 
-    /// <summary>New automatic images fill at 100%, or use the largest native plane without enlargement.</summary>
+    /// <summary>Choose a native frame for the requested fill-relative scale, with a 1:1 fallback.</summary>
     public static (AutomaticIconSeries Series, MemberImageDisplay Display) NewImageDefaults(
-        AutomaticIconSeries series, int physicalWidth, int physicalHeight)
+        AutomaticIconSeries series, int physicalWidth, int physicalHeight, int fitPercent = 100)
     {
-        var index = SelectFrame(series, physicalWidth, physicalHeight);
-        var frame = series.Frames[index];
-        return (series with { SelectedFrame = index }, new MemberImageDisplay
+        if (fitPercent is < 20 or > 200) throw new ArgumentOutOfRangeException(nameof(fitPercent));
+        var scale = fitPercent / 100d;
+        var display = new MemberImageDisplay
         {
-            Mode = frame.Width >= physicalWidth && frame.Height >= physicalHeight
-                ? ImageDisplayMode.Fill : ImageDisplayMode.Original,
-            CustomScale = 1,
-        });
+            Mode = fitPercent == 100 ? ImageDisplayMode.Fill : ImageDisplayMode.Custom,
+            CustomScale = scale,
+        };
+        var index = SelectFrame(series, physicalWidth, physicalHeight);
+        if (fitPercent != 100)
+        {
+            // Use the actual fill geometry of each native frame, including non-square icons.
+            var bestArea = long.MaxValue;
+            var cover = -1;
+            for (var candidate = 0; candidate < series.Frames.Count; candidate++)
+            {
+                var frame = series.Frames[candidate];
+                var area = (long)frame.Width * frame.Height;
+                if (area < bestArea && Covers(frame, display))
+                {
+                    cover = candidate;
+                    bestArea = area;
+                }
+            }
+            index = cover >= 0 ? cover : SelectFrame(series, double.MaxValue, double.MaxValue);
+        }
+        var selected = series.Frames[index];
+        var sufficient = fitPercent == 100
+            ? selected.Width >= physicalWidth && selected.Height >= physicalHeight
+            : Covers(selected, display);
+
+        bool Covers(AutomaticIconFrame frame, MemberImageDisplay sizing)
+        {
+            var demand = ImageDecodeSizing.DisplayDemand(frame.Width, frame.Height, physicalWidth, physicalHeight, sizing);
+            return frame.Width >= demand.Width && frame.Height >= demand.Height;
+        }
+        return (series with { SelectedFrame = index },
+            sufficient ? display : new MemberImageDisplay { Mode = ImageDisplayMode.Original });
     }
 
     /// <summary>Display resolution may change; the confirmed frame remains the geometry reference.</summary>

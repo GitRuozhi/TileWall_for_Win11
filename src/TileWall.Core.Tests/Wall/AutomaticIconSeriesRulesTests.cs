@@ -54,6 +54,28 @@ public sealed class AutomaticIconSeriesRulesTests
         }
     }
 
+    [Theory]
+    [InlineData(20, 0, TileWall.Core.Imaging.ImageDisplayMode.Custom, 0.20)]
+    [InlineData(75, 1, TileWall.Core.Imaging.ImageDisplayMode.Custom, 0.75)]
+    [InlineData(200, 2, TileWall.Core.Imaging.ImageDisplayMode.Original, 1.0)]
+    public void CustomFitUsesThePhysicalFillDemandForEachFrame(int percent, int selected,
+        TileWall.Core.Imaging.ImageDisplayMode mode, double scale)
+    {
+        var series = Series((32, 32), (160, 160), (256, 256));
+        var result = AutomaticIconSeriesRules.NewImageDefaults(series, 150, 100, percent);
+        Assert.Equal(selected, result.Series.SelectedFrame);
+        Assert.Equal(mode, result.Display.Mode);
+        Assert.Equal(scale, result.Display.CustomScale, 8);
+    }
+
+    [Fact]
+    public void RectangularFrameThatWouldBeUpscaledUsesTheOriginalPlane()
+    {
+        var series = Series((128, 64));
+        var result = AutomaticIconSeriesRules.NewImageDefaults(series, 100, 100, 75);
+        Assert.Equal(TileWall.Core.Imaging.ImageDisplayMode.Original, result.Display.Mode);
+    }
+
     [Fact]
     public void BindingWithoutDefaultsPreservesExplicitDisplayAndTheConfirmedReference()
     {

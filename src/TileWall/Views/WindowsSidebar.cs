@@ -30,6 +30,7 @@ internal sealed class WindowsSidebar : Panel
     private readonly Button _brand;
     private readonly Action<string> _status;
     private readonly Action<bool> _menuVisibility;
+    private readonly Func<bool> _showUnavailableControls;
     private readonly AccessibilitySettings _accessibility = new();
     private readonly UISettings _colors = new();
     private UIElement? _pointerTrackingRoot;
@@ -38,9 +39,9 @@ internal sealed class WindowsSidebar : Panel
     private WallLanguageMode? _language;
     private bool _expanded, _pointerInside, _menuOpen;
 
-    internal WindowsSidebar(Action<string> status, Action<bool> menuVisibility)
+    internal WindowsSidebar(Action<string> status, Action<bool> menuVisibility, Func<bool> showUnavailableControls)
     {
-        _status = status; _menuVisibility = menuVisibility;
+        _status = status; _menuVisibility = menuVisibility; _showUnavailableControls = showUnavailableControls;
         Width = CollapsedWidth;
         AutomationProperties.SetAutomationId(this, "windows-sidebar");
         _itemsHost.Children.Add(_items);
@@ -236,14 +237,14 @@ internal sealed class WindowsSidebar : Panel
             presenterStyle.BasedOn = baseStyle;
         var menu = new MenuFlyout { Placement = FlyoutPlacementMode.Top, MenuFlyoutPresenterStyle = presenterStyle };
         var actions = power
-            ? new[] { WindowsShortcut.Sleep, WindowsShortcut.ShutDown, WindowsShortcut.Restart }
+            ? new[] { WindowsShortcut.Sleep, WindowsShortcut.Hibernate, WindowsShortcut.ShutDown, WindowsShortcut.Restart }
             : [WindowsShortcut.AccountSettings, WindowsShortcut.Lock, WindowsShortcut.SignOut];
         foreach (var action in actions)
         {
             var key = action.ToString();
             var item = new MenuFlyoutItem { Text = ProductStrings.Get("Sidebar." + key), Icon = ActionIcon.Glyph(action switch
             {
-                WindowsShortcut.Sleep => "\uE708", WindowsShortcut.ShutDown => "\uE7E8", WindowsShortcut.Restart => "\uE72C",
+                WindowsShortcut.Sleep or WindowsShortcut.Hibernate => "\uE708", WindowsShortcut.ShutDown => "\uE7E8", WindowsShortcut.Restart => "\uE72C",
                 WindowsShortcut.AccountSettings => "\uE713", WindowsShortcut.Lock => "\uE72E", _ => "\uF3B1",
             }) };
             AutomationProperties.SetAutomationId(item, "windows-sidebar-" + key.ToLowerInvariant());
@@ -257,11 +258,16 @@ internal sealed class WindowsSidebar : Panel
             {
                 var item = (MenuFlyoutItem)menu.Items[i];
                 item.IsEnabled = WindowsShortcutLauncher.IsAvailable(actions[i]);
+                UnavailableControls.Project(item, _showUnavailableControls());
                 var tip = item.IsEnabled ? item.Text : ProductStrings.Get("Sidebar.Unavailable");
                 ToolTipService.SetToolTip(item, tip);
                 AutomationProperties.SetHelpText(item, item.IsEnabled ? "" : tip);
             }
             _menuOpen = true; SetExpanded(true); _menuVisibility(true);
+        };
+        menu.Opened += (_, _) =>
+        {
+            if (menu.Items.All(item => item.Visibility == Visibility.Collapsed)) menu.Hide();
         };
         menu.Closed += (_, _) =>
         {

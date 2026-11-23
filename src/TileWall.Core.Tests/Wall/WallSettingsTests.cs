@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json.Nodes;
+using TileWall.Core.Settings;
 using TileWall.Core.Storage;
 using TileWall.Core.Wall;
 using Xunit;
@@ -101,6 +102,27 @@ public sealed class WallSettingsTests
         var document = WallDocument.Empty(1, 1) with { Settings = new() { MenuStart = enabled } };
         var restored = WallJson.Deserialize(WallJson.Serialize(document));
         Assert.Equal(enabled, restored.Settings.MenuStart);
+    }
+
+    [Theory]
+    [InlineData(WallContextMenuActions.None, WallContextMenuActions.None)]
+    [InlineData(WallContextMenuActions.Settings, WallContextMenuActions.Edit | (WallContextMenuActions)0x80000000u)]
+    [InlineData(WallContextMenuActions.Settings | WallContextMenuActions.MenuHidden, WallContextMenuActions.SizeSmall)]
+    public void ContextMenuPreferencesRoundTripInTheLocalSnapshot(WallContextMenuActions hiddenWall,
+        WallContextMenuActions hiddenMember)
+    {
+        var document = WallDocument.Empty(1, 1) with
+        {
+            Settings = new() { HiddenWallMenuActions = hiddenWall, HiddenMemberMenuActions = hiddenMember },
+        };
+        var snapshot = UserDataSnapshotJson.Prepare(document);
+        var saved = JsonNode.Parse(snapshot.Files["settings.json"])!["value"]!;
+        Assert.Equal(hiddenWall != WallContextMenuActions.None, saved.AsObject().ContainsKey("hiddenWallMenuActions"));
+        Assert.Equal(hiddenMember != WallContextMenuActions.None, saved.AsObject().ContainsKey("hiddenMemberMenuActions"));
+        var restored = UserDataSnapshotJson.Read(snapshot.Manifest, name => snapshot.Files[name],
+            _ => throw new InvalidOperationException());
+        Assert.Equal(hiddenWall, restored.Settings.HiddenWallMenuActions);
+        Assert.Equal(hiddenMember, restored.Settings.HiddenMemberMenuActions);
     }
 
     [Theory]

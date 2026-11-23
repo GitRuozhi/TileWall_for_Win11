@@ -120,6 +120,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _host.TaskbarCreated += QueueTaskbarEnvironmentRefresh;
         _host.TaskbarCreated += QueueTaskbarStartReplacementRecovery;
         _host.AcceptPaths = ReceiveAdd;
+        _window.AcceptDroppedPaths = ReceiveAdd;
         _hotKey.RegistrationChanged += UpdateTray;
         _secondaryHotKey.RegistrationChanged += UpdateTray;
         _notifications = new ExplorerAddNotification(scope.IsTest, () =>

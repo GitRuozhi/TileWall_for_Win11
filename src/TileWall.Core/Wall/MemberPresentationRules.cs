@@ -62,14 +62,14 @@ public static class MemberPresentationRules
 
     /// <summary>Bind a newly prepared icon; only an unmodified creation default may change its display policy.</summary>
     public static WallMember ApplyAutomaticImageDefaults(WallMember member, AutomaticIconSeries series,
-        int physicalWidth, int physicalHeight, bool applyDefaults = true)
+        int physicalWidth, int physicalHeight, bool applyDefaults = true, int fitPercent = 100)
     {
         ArgumentNullException.ThrowIfNull(member);
         ArgumentNullException.ThrowIfNull(series);
         if (member.Images.Kind != MemberImageSourceKind.Automatic)
             throw new ArgumentException("An automatic image source is required.", nameof(member));
         if (!applyDefaults) return member with { Images = member.Images with { IconSeries = series } };
-        var defaults = AutomaticIconSeriesRules.NewImageDefaults(series, physicalWidth, physicalHeight);
+        var defaults = AutomaticIconSeriesRules.NewImageDefaults(series, physicalWidth, physicalHeight, fitPercent);
         return member with
         {
             Images = member.Images with { IconSeries = defaults.Series },

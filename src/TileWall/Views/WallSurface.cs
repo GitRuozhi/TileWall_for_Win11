@@ -15,6 +15,7 @@ using TileWall.Graphics;
 using Windows.Foundation;
 using Windows.UI;
 using Colors = Microsoft.UI.Colors;
+using MenuAction = TileWall.Core.Settings.WallContextMenuActions;
 
 namespace TileWall.Views;
 
@@ -64,6 +65,7 @@ public sealed class WallSurface : Canvas
     public Func<string, double>? ResolvePuzzleProgress { get; set; }
     public Func<string, MemberTransition?>? ResolvePuzzleTransition { get; set; }
     public Func<string, bool>? CanAdvanceMemberImage { get; set; }
+    internal Func<WallSettings>? ReadCommittedMenuSettings { get; set; }
     public bool ImagesActive { get; set; }
     public bool HasClocks => _clocks.Count > 0;
 
@@ -538,7 +540,7 @@ public sealed class WallSurface : Canvas
             _document!.Settings.VisualStyle, (button, _) =>
             {
                 button.Click += (_, _) => MemberInvoked?.Invoke(member.Id);
-                button.ContextFlyout = CreateMemberContextMenu(member);
+                AttachMemberContextMenu(button, member);
             });
         AutomationProperties.SetAutomationId(view, $"puzzle-{member.Id}");
         if (ResolvePuzzleTransition?.Invoke(member.Id) is { } transition) view.UpdateTransition(transition);
@@ -663,28 +665,25 @@ public sealed class WallSurface : Canvas
                 tag.StartsWith("member:", StringComparison.Ordinal)) return;
             if (ReferenceEquals(node, this)) break;
         }
-        var hit = Hit(e.GetPosition(this));
         var position = e.GetPosition(this);
+        var hit = Hit(position);
         var lane = _document is null ? 0 : Math.Max(0,
             (int)Math.Floor((position.X - _metrics.Margin) /
                 (_metrics.LaneWidth + _metrics.ColumnGap)));
+        var settings = ReadCommittedMenuSettings?.Invoke() ?? _document?.Settings;
         var menu = CreateContextMenu();
-        AddMenuItem(menu, WallMenuAction.NewTile, () => NewTileRequested?.Invoke(hit.GroupId, lane));
-        var componentLabel = ProductStrings.Get("Menu.AddComponent");
-        var addComponent = new MenuFlyoutSubItem { Text = componentLabel, Icon = ActionIcon.Glyph(ActionIcon.Add) };
-        AutomationProperties.SetAutomationId(addComponent, "wall-menu-AddComponent");
-        AutomationProperties.SetName(addComponent, componentLabel); ToolTipService.SetToolTip(addComponent, componentLabel);
-        var clockLabel = ProductStrings.Get("Wall.TimeAndDate");
-        var newClock = new MenuFlyoutItem { Text = clockLabel, Icon = ActionIcon.Glyph(ActionIcon.Clock) };
-        AutomationProperties.SetAutomationId(newClock, "wall-menu-NewClock");
-        AutomationProperties.SetName(newClock, clockLabel); ToolTipService.SetToolTip(newClock, clockLabel);
-        newClock.Click += (_, _) => NewClockRequested?.Invoke(hit.GroupId, lane);
-        addComponent.Items.Add(newClock);
-        menu.Items.Add(addComponent);
-        AddMenuItem(menu, WallMenuAction.Import, () => ImportRequested?.Invoke(hit.GroupId, lane));
-        AddMenuItem(menu, WallMenuAction.Settings, () => SettingsRequested?.Invoke());
-        menu.ShowAt(this, e.GetPosition(this));
+        WallContextMenu.AddItems(menu.Items, WallContextMenu.WallActions,
+            settings?.HiddenWallMenuActions ?? MenuAction.None, settings?.ShowUnavailableControls != false,
+            item => item.Id switch
+            {
+                MenuAction.NewTile => new(() => NewTileRequested?.Invoke(hit.GroupId, lane), LogClick: true),
+                MenuAction.NewClock => new(() => NewClockRequested?.Invoke(hit.GroupId, lane)),
+                MenuAction.Import => new(() => ImportRequested?.Invoke(hit.GroupId, lane), LogClick: true),
+                MenuAction.Settings => new(() => SettingsRequested?.Invoke(), LogClick: true),
+                _ => null,
+            });
         e.Handled = true;
+        if (menu.Items.Count != 0) menu.ShowAt(this, position);
     }
 
     private FrameworkElement CreateTitle(StartGroup group, DipRect bounds)
@@ -849,76 +848,13 @@ public sealed class WallSurface : Canvas
         var reset = WallMemberVisualFactory.ConfigureInteraction(button, content, WallCorners, content.SetExternalHover);
         _memberInteractions[member.Id] = () => { reset(); content.StopTransientFeedback(); };
         WallMemberVisualFactory.SetTargetTooltip(button, member);
-        button.ContextFlyout = CreateMemberContextMenu(member);
+        AttachMemberContextMenu(button, member);
         return button;
     }
 
     private void StopClockFeedback()
     {
         foreach (var clock in _clocks.Values) clock.StopTransientFeedback();
-    }
-
-    private void AddManagedEntryMenuItems(MenuFlyout menu, WallMember member)
-    {
-        var open = member is TileMember or PuzzleMember ? null
-            : AddAction(WallMenuAction.Open, () => MemberInvoked?.Invoke(member.Id));
-        var admin = AddAction(WallMenuAction.Admin, () => MemberAdminRequested?.Invoke(member.Id));
-        var location = AddAction(WallMenuAction.Location, () => MemberLocationRequested?.Invoke(member.Id));
-        menu.Opening += (_, _) => RefreshAvailability();
-        RefreshAvailability();
-
-        MenuFlyoutItem AddAction(WallMenuAction id, Action action)
-        {
-            var label = MenuLabel(id);
-            var item = new MenuFlyoutItem { Text = label, Icon = ActionIcon.Glyph(MenuGlyph(id)) };
-            AutomationProperties.SetAutomationId(item, $"wall-menu-{id}");
-            ToolTipService.SetToolTip(item, label); AutomationProperties.SetName(item, label);
-            item.Click += (_, _) => action();
-            menu.Items.Add(item);
-            return item;
-        }
-
-        void RefreshAvailability()
-        {
-            var entryPath = member.Entry is null ? null : ResolveEntryPath?.Invoke(member);
-            var available = entryPath is not null && File.Exists(entryPath);
-            var reason = available ? string.Empty : ProductStrings.Get(member.Entry is null
-                ? "Wall.NoManagedEntry" : "Wall.EntryMissing");
-            if (open is not null) Update(open, ProductStrings.Get("Wall.Open"), available);
-            Update(admin, ProductStrings.Get("Wall.Admin"), available && member.Entry?.Kind == ManagedEntryKind.Lnk);
-            Update(location, ProductStrings.Get("Wall.Location"), available && ResolveLocationTarget?.Invoke(member) is not null);
-
-            void Update(MenuFlyoutItem item, string label, bool enabled)
-            {
-                item.Text = label;
-                item.IsEnabled = enabled;
-                AutomationProperties.SetName(item, item.Text);
-                AutomationProperties.SetHelpText(item, reason);
-                ToolTipService.SetToolTip(item, available ? label : reason);
-            }
-        }
-    }
-
-    private static MenuFlyoutItem AddMenuItem(MenuFlyout menu, WallMenuAction id, Action action)
-    {
-        var label = MenuLabel(id);
-        var item = new MenuFlyoutItem { Text = label, Icon = ActionIcon.Glyph(MenuGlyph(id)) };
-        AutomationProperties.SetAutomationId(item, $"wall-menu-{id}");
-        ToolTipService.SetToolTip(item, label); AutomationProperties.SetName(item, label);
-        menu.Opening += (_, _) =>
-        {
-            var currentLabel = MenuLabel(id);
-            item.Text = currentLabel;
-            ToolTipService.SetToolTip(item, currentLabel);
-            AutomationProperties.SetName(item, currentLabel);
-        };
-        item.Click += (_, _) =>
-        {
-            TileWall.Core.Shell.AppLog.Info("WallContextMenu", $"Click action={label}");
-            action();
-        };
-        menu.Items.Add(item);
-        return item;
     }
 
     private MenuFlyout CreateContextMenu()
@@ -937,80 +873,72 @@ public sealed class WallSurface : Canvas
         return menu;
     }
 
-    internal MenuFlyout CreateMemberContextMenu(WallMember member)
+    internal void AttachMemberContextMenu(FrameworkElement element, WallMember member)
     {
-        var menu = CreateContextMenu();
-        if (member.Images.Kind == MemberImageSourceKind.Folder)
+        MenuFlyout? activeMenu = null;
+        element.ContextRequested += (target, args) =>
         {
-            var requested = false;
-            var next = AddMenuItem(menu, WallMenuAction.NextImage, () => requested = true);
-            menu.Opening += (_, _) =>
+            args.Handled = true;
+            // Project before showing so an empty menu stays closed.
+            var menu = CreateMemberContextMenu(member);
+            if (menu.Items.Count == 0) return;
+            activeMenu = menu;
+            menu.Closed += (_, _) =>
             {
-                requested = false;
-                next.IsEnabled = CanAdvanceMemberImage?.Invoke(member.Id) == true;
-                var help = ProductStrings.Get(next.IsEnabled ? "Wall.NextImage" : "Wall.NextImageUnavailable");
-                ToolTipService.SetToolTip(next, help);
-                AutomationProperties.SetHelpText(next, help);
+                if (ReferenceEquals(activeMenu, menu)) activeMenu = null;
             };
+            if (args.TryGetPosition(target, out var position)) menu.ShowAt(target, position);
+            else menu.ShowAt(element);
+        };
+        element.ContextCanceled += (_, _) => activeMenu?.Hide();
+    }
+
+    private MenuFlyout CreateMemberContextMenu(WallMember member)
+    {
+        var id = member.Id;
+        var settings = ReadCommittedMenuSettings?.Invoke() ?? _document?.Settings;
+        var menu = CreateContextMenu();
+        bool? entryExists = null;
+        WallContextMenu.AddItems(menu.Items, WallContextMenu.MemberActions,
+            settings?.HiddenMemberMenuActions ?? MenuAction.None, settings?.ShowUnavailableControls != false,
+            ResolveCommand);
+        return menu;
+
+        WallMenuCommand? ResolveCommand(WallMenuItemDefinition item)
+        {
+            if (item.Size is { } size)
+                return member is TileMember ? new(() => MemberSizeRequested?.Invoke(id, size)) : null;
+            return item.Id switch
+            {
+                MenuAction.NextImage when member.Images.Kind == MemberImageSourceKind.Folder => NextImageCommand(),
+                MenuAction.Admin => ManagedCommand(() => MemberAdminRequested?.Invoke(id), () => member.Entry?.Kind == ManagedEntryKind.Lnk),
+                MenuAction.Location => ManagedCommand(() => MemberLocationRequested?.Invoke(id), () => ResolveLocationTarget?.Invoke(member) is not null),
+                MenuAction.Edit => new(() => MemberEditRequested?.Invoke(id), LogClick: true),
+                MenuAction.Remove => new(() => MemberRemoveRequested?.Invoke(id), LogClick: true),
+                _ => null,
+            };
+        }
+
+        WallMenuCommand NextImageCommand()
+        {
+            var enabled = CanAdvanceMemberImage?.Invoke(id) == true;
+            var requested = false;
             menu.Closed += (_, _) =>
             {
                 if (!requested) return;
                 requested = false;
-                MemberNextImageRequested?.Invoke(member.Id);
+                MemberNextImageRequested?.Invoke(id);
             };
+            return new(() => requested = true, enabled, enabled ? "Wall.NextImage" : "Wall.NextImageUnavailable", LogClick: true);
         }
-        AddManagedEntryMenuItems(menu, member);
-        if (member is TileMember) AddSizeMenu(menu, member.Id);
-        AddMenuItem(menu, WallMenuAction.Edit, () => MemberEditRequested?.Invoke(member.Id));
-        AddMenuItem(menu, WallMenuAction.Remove, () => MemberRemoveRequested?.Invoke(member.Id));
-        return menu;
-    }
 
-    private void AddSizeMenu(MenuFlyout menu, string memberId)
-    {
-        var label = ProductStrings.Get("Wall.Size");
-        var sizes = new MenuFlyoutSubItem { Text = label, Icon = ActionIcon.Glyph(ActionIcon.PresetMedium) };
-        AutomationProperties.SetAutomationId(sizes, "wall-menu-Size");
-        AutomationProperties.SetName(sizes, label); ToolTipService.SetToolTip(sizes, label);
-        menu.Opened += (_, _) =>
+        WallMenuCommand ManagedCommand(Action execute, Func<bool>? supportsCommand = null)
         {
-            var currentLabel = ProductStrings.Get("Wall.Size");
-            sizes.Text = currentLabel;
-            AutomationProperties.SetName(sizes, currentLabel);
-            ToolTipService.SetToolTip(sizes, currentLabel);
-        };
-        foreach (var (key, columns, rows, glyph) in new[] { ("Editor.PresetSmall", 1, 1, ActionIcon.PresetSmall),
-            ("Editor.PresetMedium", 2, 2, ActionIcon.PresetMedium), ("Editor.PresetWide", 4, 2, ActionIcon.PresetWide),
-            ("Editor.PresetLarge", 4, 4, ActionIcon.PresetLarge) })
-        {
-            var name = ProductStrings.Get(key);
-            var item = new MenuFlyoutItem { Text = name, Icon = ActionIcon.Glyph(glyph) };
-            AutomationProperties.SetAutomationId(item, $"wall-menu-Size-{columns}x{rows}");
-            AutomationProperties.SetName(item, name);
-            ToolTipService.SetToolTip(item, $"{name} ({columns}×{rows})");
-            menu.Opened += (_, _) =>
-            {
-                var currentName = ProductStrings.Get(key);
-                item.Text = currentName;
-                AutomationProperties.SetName(item, currentName);
-                ToolTipService.SetToolTip(item, $"{currentName} ({columns}×{rows})");
-            };
-            item.Click += (_, _) => MemberSizeRequested?.Invoke(memberId, new(columns, rows));
-            sizes.Items.Add(item);
+            entryExists ??= member.Entry is not null && ResolveEntryPath?.Invoke(member) is { } path && File.Exists(path);
+            if (entryExists != true) return new(execute, false, member.Entry is null ? "Wall.NoManagedEntry" : "Wall.EntryMissing");
+            return new(execute, supportsCommand?.Invoke() != false);
         }
-        menu.Items.Add(sizes);
     }
-
-    private enum WallMenuAction { Open, Edit, Remove, Settings, Import, NextImage, Location, Admin, NewTile }
-    private static string MenuLabel(WallMenuAction action) => ProductStrings.Get(action == WallMenuAction.NewTile ? "Menu.New" : "Wall." + action);
-    private static string MenuGlyph(WallMenuAction action) => action switch
-    {
-        WallMenuAction.Edit => ActionIcon.Edit, WallMenuAction.Remove => ActionIcon.Delete,
-        WallMenuAction.Settings => ActionIcon.Settings, WallMenuAction.Import => ActionIcon.Share,
-        WallMenuAction.NextImage => ActionIcon.Next, WallMenuAction.Location => ActionIcon.Browse,
-        WallMenuAction.Open => "\uE8E5",
-        WallMenuAction.Admin => "\uE7EF", _ => ActionIcon.Add,
-    };
 
     private void AddAt(FrameworkElement element, DipRect rect)
     {

@@ -94,6 +94,7 @@ public sealed partial class MainWindow : Window
         InitializePersistence();
         Surface.ResolveEntryPath = _session.ManagedEntryPath;
         Surface.ResolveTargetCommand = _session.TargetCommand;
+        Surface.ReadCommittedMenuSettings = () => Settings;
         Surface.ResolveLocationTarget = member => EntryLauncher.ResolveLocalTarget(_session.ManagedEntryPath(member), _session.LinkFiles);
         Surface.ResolvePuzzleFrame = _puzzles.FrameFor;
         Surface.ResolvePuzzleProgress = _puzzles.ProgressFor;
@@ -695,7 +696,8 @@ public sealed partial class MainWindow : Window
         try
         {
             if (!await BeginModalAsync()) return;
-            var tile = new TileMember { Id = $"member-{Guid.NewGuid():N}", LocalBounds = new GridRect(0, 0, 2, 2),
+            var settings = Document.Settings;
+            var tile = new TileMember { Id = $"member-{Guid.NewGuid():N}", LocalBounds = MemberSizeRules.TileBounds(settings.DefaultTileSize),
                 RotationInterval = MemberPresentationRules.NewRotationInterval };
             var destinationLane = Math.Clamp(WallViewportPolicy.MapCreationLane(Document, lane), 0, 63);
             var dialog = new SharedMemberEditorDialog(DialogOwner, tile, _images, null, _session.LinkFiles, MaxMemberRows(),
@@ -712,7 +714,8 @@ public sealed partial class MainWindow : Window
                         destinationLane >= Document.Lanes.Count ? 0 : Document.Lanes[destinationLane].Groups.Count,
                         groupId is null ? $"group-{Guid.NewGuid():N}" : null);
                     return Apply(action, changes, assets);
-                }, Settings.VisualStyle, isNew: true);
+                }, settings.VisualStyle, isNew: true, defaultIconFitPercent: settings.DefaultIconFitPercent,
+                showUnavailableControls: settings.ShowUnavailableControls, wallRasterizationScale: () => Scale);
             ActiveDialog = dialog;
             AttachGalleryEditor(dialog);
             await dialog.ShowAsync();
@@ -764,7 +767,8 @@ public sealed partial class MainWindow : Window
                 _session.ManagedEntryPath(member), _session.LinkFiles, MaxMemberRows(),
                 (replacement, changes, assets, expectedHash) => SaveSharedMember(replacement, changes, isNewPlaceholder,
                     existing => duplicateToFocus = existing, assets, expectedHash), Settings.VisualStyle, initialFrame: _puzzles.FrameFor(id),
-                initialAutomaticSeries: _puzzles.PreparedSeriesFor(id), managedEntry: managedEntry);
+                initialAutomaticSeries: _puzzles.PreparedSeriesFor(id), managedEntry: managedEntry,
+                showUnavailableControls: Settings.ShowUnavailableControls);
             ActiveDialog = dialog;
             AttachGalleryEditor(dialog);
             await dialog.ShowAsync();

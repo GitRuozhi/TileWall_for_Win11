@@ -58,10 +58,14 @@ public static class ExplorerAddPayload
 
         // 逐条过滤（§4.3）：非绝对/不存在 → 丢弃该条；其余（含全空）照常投递——
         // 全空到达主应用后呈现「所选对象不含可添加的文件或文件夹」，不静默吞掉用户手势。
-        var paths = dto.Paths.Where(IsAddableExistingPath).ToArray();
-        var filteredAnyPath = paths.Length < dto.Paths.Count;
-        message = new ExplorerAddMessage(paths, dto.Truncated || filteredAnyPath);
+        message = FromPaths(dto.Paths, dto.Truncated);
         return true;
+    }
+
+    public static ExplorerAddMessage FromPaths(IReadOnlyList<string> paths, bool truncated = false)
+    {
+        var accepted = paths.Where(IsAddableExistingPath).ToArray();
+        return new ExplorerAddMessage(accepted, truncated || accepted.Length < paths.Count);
     }
 
     /// <summary>接收侧单条准入：完全限定路径且真实存在（目录或文件），并沿用路由的盘符根规则。</summary>

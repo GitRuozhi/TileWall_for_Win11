@@ -100,7 +100,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private readonly StackPanel _statistics = new() { Spacing = 16, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly StatusOverlay _status = new(VerticalAlignment.Top);
     private readonly StatusOverlay _feedback = new();
-    private readonly Grid _options = new() { RowSpacing = 6, ColumnSpacing = 8 };
+    private readonly StackPanel _options = new() { Spacing = 6 };
     private readonly ContentControl _optionsHost;
     private readonly ItemsRepeater _repeater = new() { HorizontalCacheLength = .5, VerticalCacheLength = .5 };
     private readonly ImportPreviewLayout _previewLayout = new();
@@ -144,6 +144,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private DateTimeOffset _previewProgressLastTraceAt;
     private string? _previewProgressPendingCandidateKey, _previewProgressPendingStage;
     private int _sourceEpoch, _renderEpoch, _preparationEpoch, _tileSize = 1, _catalogRevision, _lastImportSource;
+    private readonly bool _showUnavailableControls;
     private ImportPageMode Mode => _mode.SelectedIndex == 1 ? ImportPageMode.Export : ImportPageMode.Import;
     private ImportPageSourceKind SourceKind => SourceKinds[Math.Clamp(_source.SelectedIndex, 0, SourceKinds.Length - 1)];
     private bool IsRecycle => Mode == ImportPageMode.Import && SourceKind == ImportPageSourceKind.RecycleBin;
@@ -163,12 +164,13 @@ internal sealed class ImportDialog : IWallDialogSession
         Func<ImportPageContext, bool> contextCurrent, WallVisualStyle style,
         Func<ImportSourceCandidate, int, int, CancellationToken, Task<PuzzleFrameResult>>? loadIcon = null,
         string? initialExportDirectory = null,
-        Func<IReadOnlyList<string>, long, CancellationToken, Task<string?>>? restoreRecycled = null)
+        Func<IReadOnlyList<string>, long, CancellationToken, Task<string?>>? restoreRecycled = null, bool showUnavailableControls = true)
     {
         _owner = owner; _images = images; _catalog = catalog; _reader = reader;
         _readContext = readContext; _readSource = readSource; _prepare = prepare; _save = save; _saveExport = saveExport;
         _contextCurrent = contextCurrent; _style = style; _loadIcon = loadIcon; _initialExportDirectory = initialExportDirectory;
         _restoreRecycled = restoreRecycled;
+        _showUnavailableControls = showUnavailableControls;
         _position.SelectedIndex = 1;
         if (!string.IsNullOrWhiteSpace(initialExportDirectory)) _exportPath = Path.Combine(initialExportDirectory, DefaultExportFileName());
         _catalogChanged = () => owner.DispatcherQueue.TryEnqueue(() => SourceChanged(ImportPageSourceKind.StartMenu));
@@ -178,7 +180,7 @@ internal sealed class ImportDialog : IWallDialogSession
             foreach (var row in _rows) row.Clock?.Refresh(DateTimeOffset.Now);
             TracePreviewPreparationProgress();
         };
-        var budget = OwnedDialogWindow.ContentBudget(owner);
+        var budget = OwnedDialogWindow.ContentBudget(owner, previewPage: true);
         var previewWidth = _metrics.WallWidth(1);
         var pathRow = new Grid { ColumnSpacing = 6 };
         pathRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
@@ -250,8 +252,8 @@ internal sealed class ImportDialog : IWallDialogSession
         previewPane.Children.Add(_status);
         previewPane.Children.Add(_feedback);
         previewPane.Children.Add(_previewTips);
-        var page = VisualStyles.PreviewPage(previewPane, rightBody, budget, preferredWidth: 860,
-            preferredRightWidth: 400, preferredLeftWidth: previewWidth);
+        var page = VisualStyles.PreviewPage(previewPane, rightBody, budget, preferredWidth: previewWidth + 24 + 420,
+            preferredRightWidth: 420, preferredLeftWidth: previewWidth);
         page.Height = Math.Min(560, budget.Height);
         rightBody.SizeChanged += (_, e) =>
         {
@@ -262,11 +264,6 @@ internal sealed class ImportDialog : IWallDialogSession
         {
             _preview.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
             _preview.HorizontalScrollMode = ScrollMode.Auto;
-        }
-        if (_rightWidth >= 310)
-        {
-            _options.ColumnDefinitions.Add(new() { Width = new GridLength(92) });
-            _options.ColumnDefinitions.Add(new());
         }
         for (var index = 0; index < values.Length; index++) AddOption(index, values[index]);
         rightBody.Children.Add(VisualStyles.ActionCard(_primary, _cancel, stacked: _rightWidth < 370));
@@ -1858,8 +1855,10 @@ internal sealed class ImportDialog : IWallDialogSession
         var idle = !_closed && !_dismissRequested && !_adding && !_picking;
         var export = Mode == ImportPageMode.Export;
         _optionsHost.IsEnabled = idle;
+        if (!_showUnavailableControls) _optionsHost.Visibility = idle ? Visibility.Visible : Visibility.Collapsed;
         for (var index = 0; index < _source.Items.Count; index++)
-            if (_source.Items[index] is ComboBoxItem item) item.IsEnabled = export == (SourceKinds[index] == ImportPageSourceKind.CurrentWall);
+            if (_source.Items[index] is ComboBoxItem item)
+                item.IsEnabled = export == (SourceKinds[index] == ImportPageSourceKind.CurrentWall);
         _source.IsEnabled = idle && !export;
         var pathEnabled = export || SourceKind == ImportPageSourceKind.WallPackage;
         _path.IsEnabled = pathEnabled; _chooseFile.IsEnabled = idle && pathEnabled;
@@ -1893,9 +1892,10 @@ internal sealed class ImportDialog : IWallDialogSession
         foreach (var row in _rows)
         {
             var enabled = canSelectPreview && row.Candidate.CanAdd && MatchesFilter(row.Candidate);
-            if (row.Toggle.IsEnabled == enabled) continue;
+            var changed = row.Toggle.IsEnabled != enabled;
+            // The toggle also renders the candidate tile. Keep it visible when selection is unavailable.
             row.Toggle.IsEnabled = enabled;
-            UpdateRowTooltip(row);
+            if (changed) UpdateRowTooltip(row);
         }
         var primaryText = ProductStrings.Get(export ? "Import.ExportConfirm" : IsRecycle ? "Recycle.Restore" : "Import.Confirm");
         if (AutomationProperties.GetName(_primary) != primaryText)
@@ -2112,18 +2112,11 @@ internal sealed class ImportDialog : IWallDialogSession
     });
     private void AddOption(int index, FrameworkElement value)
     {
-        var row = _options.RowDefinitions.Count;
-        _options.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        var label = _optionLabels[index];
-        Grid.SetRow(label, row); _options.Children.Add(label);
-        if (_options.ColumnDefinitions.Count == 0)
-        {
-            _options.RowDefinitions.Add(new() { Height = GridLength.Auto });
-            row++;
-        }
-        else Grid.SetColumn(value, 1);
-        Grid.SetRow(value, row); _options.Children.Add(value);
-        AutomationProperties.SetLabeledBy(value, label);
+        var row = _rightWidth >= 310
+            ? VisualStyles.FormRow(_optionLabels[index], value, labelWidth: 92, gap: 8)
+            : VisualStyles.FormRow(_optionLabels[index], value, labelWidth: 0, gap: 6);
+        _options.Children.Add(row);
+        if (!_showUnavailableControls) UnavailableControls.WatchRow(row, value);
     }
     private static TextBlock Label() => new() { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
     private void UpdateStatisticLayout()

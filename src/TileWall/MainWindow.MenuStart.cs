@@ -150,7 +150,8 @@ public sealed partial class MainWindow
                     var row = new Button { Content = content, Height = 36, Padding = new Thickness(0),
                         BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(0),
                         HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                        Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), ContextFlyout = Surface.CreateMemberContextMenu(member) };
+                        Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+                    Surface.AttachMemberContextMenu(row, member);
                     var id = member.Id;
                     row.Click += (_, _) => LaunchMember(id);
                     AutomationProperties.SetAutomationId(row, "menu-member-" + id);
