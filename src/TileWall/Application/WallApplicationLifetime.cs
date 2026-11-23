@@ -46,6 +46,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private bool _addTruncated;
     private CancellationTokenSource? _animationPreparation;
     private long _animationGeneration;
+    private bool _displayPowerSubscribed;
 
     public WallApplicationLifetime(RuntimeScope scope, SingleInstanceGate instance,
         Microsoft.UI.Xaml.Application application)
@@ -113,7 +114,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _host.DisplayChanged += () =>
         {
             _taskbarStartReplacement.InvalidateButtons();
-            _window.QueueEnvironmentRefresh();
+            _window.QueueEnvironmentRefresh(observeDisplay: true);
             QueueTaskbarEnvironmentRefresh();
         };
         _host.TaskbarCreated += QueueTaskbarEnvironmentRefresh;
@@ -123,6 +124,31 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _secondaryHotKey.RegistrationChanged += UpdateTray;
         _notifications = new ExplorerAddNotification(scope.IsTest, () =>
             _window.DispatcherQueue.TryEnqueue(() => Request(WallShowTrigger.Show)));
+        try
+        {
+            Microsoft.Windows.System.Power.PowerManager.DisplayStatusChanged += OnDisplayStatusChanged;
+            _displayPowerSubscribed = true;
+        }
+        catch (Exception ex) { AppLog.Warn("DisplayEnvironment", $"Display power subscription unavailable: {ex.Message}"); }
+    }
+
+    internal static bool IsSessionDisplayOn()
+    {
+        try
+        {
+            return Microsoft.Windows.System.Power.PowerManager.DisplayStatus is
+                Microsoft.Windows.System.Power.DisplayStatus.On or Microsoft.Windows.System.Power.DisplayStatus.Dimmed;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private void OnDisplayStatusChanged(object? sender, object args)
+    {
+        var on = IsSessionDisplayOn();
+        _window.DispatcherQueue.TryEnqueue(() => _window.EnvironmentDisplayPowerChanged(on));
     }
 
     public Task StartAsync(StartupIntent intent) => _startup ??= StartCoreAsync(intent);
@@ -381,7 +407,11 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     }
 
     public void BeginShowAnimation() => BeginWallAnimation(show: true);
-    public void BeginHideAnimation() => BeginWallAnimation(show: false);
+    public void BeginHideAnimation()
+    {
+        _window.PauseEnvironmentForHide();
+        BeginWallAnimation(show: false);
+    }
 
     private void BeginWallAnimation(bool show)
     {
@@ -478,6 +508,12 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     public void RemoveTrayIcon() => _tray.Dispose();
     public void DestroyShellHostWindow()
     {
+        try
+        {
+            if (_displayPowerSubscribed)
+                Microsoft.Windows.System.Power.PowerManager.DisplayStatusChanged -= OnDisplayStatusChanged;
+        }
+        catch (Exception ex) { AppLog.Warn("DisplayEnvironment", $"Display power unsubscribe failed: {ex.Message}"); }
         _notifications.Dispose();
         _host.Dispose();
     }

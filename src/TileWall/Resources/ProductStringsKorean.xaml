@@ -504,6 +504,8 @@
   <x:String x:Key="MenuStart.Collapse">그룹 접기</x:String>
   <x:String x:Key="MenuStart.Unnamed">- 이름 없는 그룹 {0:00} -</x:String>
   <x:String x:Key="Wall.EnvironmentScroll">화면에 모든 내용을 표시할 수 없습니다. 배치는 유지됩니다. 원하는 방향으로 스크롤하여 내용을 확인하세요.</x:String>
+  <x:String x:Key="Wall.EnvironmentWaiting">화면이 변경되었습니다. 현재 조정은 저장되지 않았습니다. {0}초 동안 안정된 후 레이아웃을 저장합니다.</x:String>
+  <x:String x:Key="Wall.EnvironmentSaved">화면 변경에 맞춘 레이아웃을 저장했습니다({0}열 × {1}행).</x:String>
   <x:String x:Key="Welcome.ThisPC">내 PC</x:String>
   <x:String x:Key="Welcome.ControlPanel">제어판</x:String>
   <x:String x:Key="Welcome.Settings">설정</x:String>

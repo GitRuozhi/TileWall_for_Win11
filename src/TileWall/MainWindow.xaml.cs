@@ -136,7 +136,11 @@ public sealed partial class MainWindow : Window
         Surface.NewClockRequested += (groupId, lane) => _ = CreateClockAsync(groupId, lane);
         Surface.SettingsRequested += () => SettingsRequested?.Invoke();
         Surface.ImportRequested += (groupId, lane) => _ = OpenImportAsync(groupId, lane);
-        Surface.TitleEditFinished += () => ImportReadinessChanged?.Invoke();
+        Surface.TitleEditFinished += () =>
+        {
+            ImportReadinessChanged?.Invoke();
+            ResumeEnvironmentAdaptation();
+        };
         Surface.ContextMenuVisibilityChanged += OnContextMenuVisibilityChanged;
         AppWindow.Changed += (_, args) =>
         {
@@ -309,7 +313,7 @@ public sealed partial class MainWindow : Window
         if (!_upgradeOwnsStatus) return;
         _upgradeOwnsStatus = false;
         ClearStatus();
-        if (_environmentOverflow && !_viewBlocked) PersistentStatus(ProductStrings.Get("Wall.EnvironmentScroll"));
+        RefreshEnvironmentStatus();
     }
 
     private void AcceptOpenedWall(WallOpenResult result)
@@ -352,6 +356,7 @@ public sealed partial class MainWindow : Window
 
     private void RenderCommitted(WallDocument document)
     {
+        ObserveEnvironmentDocument(document);
         var scrollAnchor = CaptureCommittedScrollAnchor(document);
         RefreshAppearance();
         _puzzles.Sync(document);
@@ -362,16 +367,13 @@ public sealed partial class MainWindow : Window
         Surface.IsHitTestVisible = !PersistenceInteractionBlocked;
         _viewBlocked = false;
         // A carousel or automatic-icon commit can arrive while an operation notice is still visible.
-        if (!_statusOverlay.HasTransient)
-        {
-            ClearStatus();
-            if (_environmentOverflow) PersistentStatus(ProductStrings.Get("Wall.EnvironmentScroll"));
-        }
+        if (!_statusOverlay.HasTransient) ClearStatus();
         RetryViewButton.Visibility = Visibility.Collapsed;
         RetryOpenButton.Visibility = OpenDataFolderButton.Visibility = Visibility.Collapsed;
         _initialOpenBlocked = false;
         _openFailureMessage = null;
-        if (!_carouselCommit) PlaceWall();
+        if (!_carouselCommit && (_environmentWallShown || _userDataUpgradeInProgress && AppWindow.IsVisible)) PlaceWall();
+        RefreshEnvironmentStatus();
         RestoreCommittedScrollAnchor(document, scrollAnchor);
         UpdatePuzzleGate();
         Surface.RefreshClocks(_clock.UtcNow);
@@ -548,10 +550,7 @@ public sealed partial class MainWindow : Window
         RestoreStatusAfterTransient();
     }
 
-    private void RestoreStatusAfterTransient()
-    {
-        if (_environmentOverflow) PersistentStatus(ProductStrings.Get("Wall.EnvironmentScroll"));
-    }
+    private void RestoreStatusAfterTransient() => RefreshEnvironmentStatus();
 
     private void PlaceWall()
     {

@@ -500,6 +500,8 @@
   <x:String x:Key="MenuStart.Collapse">Réduire le groupe</x:String>
   <x:String x:Key="MenuStart.Unnamed">- Groupe sans nom {0:00} -</x:String>
   <x:String x:Key="Wall.EnvironmentScroll">L’écran ne peut pas afficher tout le contenu. Votre disposition est conservée ; faites défiler dans l’un ou l’autre sens pour y accéder.</x:String>
+  <x:String x:Key="Wall.EnvironmentWaiting">L’affichage a changé. L’ajustement actuel n’est pas enregistré. La disposition sera enregistrée après {0} secondes de stabilité.</x:String>
+  <x:String x:Key="Wall.EnvironmentSaved">La disposition adaptée à l’affichage a été enregistrée ({0} colonnes × {1} lignes).</x:String>
   <x:String x:Key="Welcome.ThisPC">Ce PC</x:String>
   <x:String x:Key="Welcome.ControlPanel">Panneau de configuration</x:String>
   <x:String x:Key="Welcome.Settings">Paramètres</x:String>

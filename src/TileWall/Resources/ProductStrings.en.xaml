@@ -500,6 +500,8 @@
     <x:String x:Key="MenuStart.Collapse">Collapse group</x:String>
     <x:String x:Key="MenuStart.Unnamed">- Unnamed group {0:00} -</x:String>
     <x:String x:Key="Wall.EnvironmentScroll">The screen cannot fit all content. Your layout is preserved; scroll in either direction to reach it.</x:String>
+    <x:String x:Key="Wall.EnvironmentWaiting">The screen has changed. The current adjustment is unsaved. The layout will be saved after {0} seconds of stability.</x:String>
+    <x:String x:Key="Wall.EnvironmentSaved">Screen adjustment saved ({0} columns × {1} rows).</x:String>
     <x:String x:Key="Welcome.ThisPC">This PC</x:String>
     <x:String x:Key="Welcome.ControlPanel">Control Panel</x:String>
     <x:String x:Key="Welcome.Settings">Settings</x:String>

@@ -38,7 +38,7 @@ public sealed partial class MainWindow
         {
             CancelTransientState();
             StopViewportTransition();
-            if (_hasDocument && !_viewBlocked) ApplyViewport(animateMode: false);
+            if (_hasDocument && !_viewBlocked && _environmentWallShown) ApplyViewport(animateMode: false);
             _dialogHost?.RefreshPlacementBounds();
         }
         UpdateWindowZOrder(IsForegroundWallSession());
@@ -195,7 +195,7 @@ public sealed partial class MainWindow
         {
             (visibleWidth, visibleHeight) = WallViewportPolicy.FullScreenVisibleSize(width, height, _metrics, settings.MenuStart);
             if (Surface.Geometry is { } geometry)
-                visibleWidth = WallViewportPolicy.ResolveVisibleWidth(settings, geometry, visibleWidth, visibleWidth, _metrics);
+                visibleWidth = ResolvePresentedTileWidth(settings, geometry, visibleWidth, visibleWidth);
             x = right ? width - sideWidth - visibleWidth : sideWidth; y = height * .05;
         }
         else

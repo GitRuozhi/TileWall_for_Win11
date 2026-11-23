@@ -22,6 +22,7 @@ public sealed partial class MainWindow
     private int _frameWidth;
     private int _frameHeight;
     private bool _environmentQueued;
+    private bool _displayObservationRequested;
     private bool _needsVisualRefresh;
     private bool _focusCheckQueued, _contextMenuOpen;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _focusCheckRetry;
@@ -61,6 +62,8 @@ public sealed partial class MainWindow
         RefreshAppearance();
         CaptureBackdropBeforeShow();
         AppWindow.Show();
+        _environmentWallShown = true;
+        QueueEnvironmentAdaptation(observeDisplay: true);
         QueueExpansionReveal();
         FocusTopSession();
         UpdatePuzzleGate();
@@ -68,6 +71,7 @@ public sealed partial class MainWindow
 
     internal void HideWall()
     {
+        PauseEnvironmentForHide();
         ClearTransientStatus();
         _focusCheckRetry?.Stop();
         CancelTransientState();
@@ -285,7 +289,7 @@ public sealed partial class MainWindow
             return CommitProposal(mode.Proposal, preparedMedia: preparedMedia);
         }
         var next = Document with { Generation = checked(Document.Generation + 1), Settings = settings };
-        var fit = WallViewportPolicy.Validate(next, ViewportBudget(settings), _metrics);
+        var fit = WallViewportPolicy.Validate(next, RecoverableViewportBudget(settings), _metrics);
         if (fit.Proposal is null) return ViewportFailure(fit);
         return CommitProposal(fit.Proposal, preparedMedia: preparedMedia);
     }
@@ -382,9 +386,11 @@ public sealed partial class MainWindow
 
     private void UpdateWallHitTesting() => WallRoot.IsHitTestVisible = !_modal && !PersistenceInteractionBlocked;
 
-    internal void QueueEnvironmentRefresh()
+    internal void QueueEnvironmentRefresh(bool observeDisplay = false)
     {
-        if (_environmentQueued || _windowClosing || ShutdownStarted) return;
+        if (_windowClosing || ShutdownStarted) return;
+        _displayObservationRequested |= observeDisplay;
+        if (_environmentQueued) return;
         _environmentQueued = DispatcherQueue.TryEnqueue(() =>
         {
             _environmentQueued = false;
@@ -395,7 +401,24 @@ public sealed partial class MainWindow
 
     private void RefreshEnvironment(bool force)
     {
-        if (_persistencePending) { _environmentAfterPersistence = true; return; }
+        if (!force && !_environmentWallShown)
+        {
+            if (_dialogHost is not null) _dialogHost.RefreshPlacementBounds();
+            return;
+        }
+
+        if (!force && _persistencePending)
+        {
+            _environmentAfterPersistence = true;
+            // Sample while a write settles so a real screen change still starts
+            // the correct waiting period. The existing render delay is separate.
+            if (_displayObservationRequested)
+                QueueEnvironmentAdaptation(observeDisplay: true);
+            return;
+        }
+
+        var observeDisplay = _displayObservationRequested;
+        _displayObservationRequested = false;
         RefreshAppearance();
         if (!SystemParametersInfoW(SpiGetWorkArea, 0, out var area, 0)) return;
         RefreshNativeFrame();
@@ -403,6 +426,7 @@ public sealed partial class MainWindow
         var scale = Scale;
         ReadPrimaryScreen();
         var physicalChanged = _lastEnvironmentScale != scale || !_lastEnvironmentScreen.Equals(_screenArea);
+        if (physicalChanged || observeDisplay) QueueEnvironmentAdaptation(observeDisplay: true);
         if (!force && !physicalChanged && _lastEnvironmentWork.Equals(area)) return;
         if (!force && !physicalChanged)
         {
@@ -430,9 +454,7 @@ public sealed partial class MainWindow
         else _needsVisualRefresh = true;
         ApplyViewport();
         UpdatePuzzleGate();
-        // Explorer's work-area/auto-hide animation is only presentation. Logical
-        // capacity continues to use the complete physical screen and DPI.
-        if (physicalChanged) QueueEnvironmentAdaptation();
+        RefreshEnvironmentStatus();
     }
 
     private void RefreshNativeFrame()
@@ -455,19 +477,18 @@ public sealed partial class MainWindow
         var geometry = previewGeometry ?? Surface.Geometry ?? WallLayoutEngine.Measure(document, _metrics);
         var fixedWidth = WallViewportPolicy.FixedWidth(document.Settings.MenuStart);
         var maximumTileWidth = MaximumTileWidthDip(document.Settings);
-        if (maximumTileWidth <= 0 || !document.Settings.ExpandColumns &&
-            WallViewportPolicy.CompleteColumns(maximumTileWidth, _metrics) == 0)
+        if (previewDocument is null)
         {
-            // The environment proposal must publish expansion before a narrow normal
-            // viewport is displayed. A rejected save leaves the previous view intact.
-            QueueEnvironmentAdaptation();
-            return;
+            var budget = ViewportBudget(document.Settings);
+            _environmentOverflow = geometry.WallWidth > budget.MaxWidthDip || geometry.WallHeight > budget.MaxHeightDip;
         }
+        if (maximumTileWidth <= 0) return;
+
         var contentWidth = geometry.WallWidth + fixedWidth;
         var visibleWidth = document.Settings.WindowedViewportWidthDip ??
             (document.Settings.ExpandColumns ? MaximumWindowedClientWidthDip : contentWidth);
-        visibleWidth = fixedWidth + WallViewportPolicy.ResolveVisibleWidth(document.Settings, geometry,
-            visibleWidth - fixedWidth, maximumTileWidth, _metrics);
+        visibleWidth = fixedWidth + ResolvePresentedTileWidth(document.Settings, geometry,
+            visibleWidth - fixedWidth, maximumTileWidth);
         var area = PresentationBounds;
         var width = fullScreen ? area.Width :
             (int)Math.Ceiling(visibleWidth * Scale) + _frameWidth;
@@ -489,6 +510,12 @@ public sealed partial class MainWindow
         UpdateWindowZOrder(IsForegroundWallSession());
         UpdateResizeZones();
     }
+
+    private double ResolvePresentedTileWidth(WallSettings settings, WallGeometry geometry,
+        double requestedWidth, double maximumWidth) =>
+        _environmentOverflow && WallViewportPolicy.CompleteColumns(maximumWidth, _metrics) == 0
+            ? maximumWidth
+            : WallViewportPolicy.ResolveVisibleWidth(settings, geometry, requestedWidth, maximumWidth, _metrics);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct CursorPoint { public int X; public int Y; }

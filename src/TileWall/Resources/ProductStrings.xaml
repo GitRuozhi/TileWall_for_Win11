@@ -503,6 +503,8 @@
     <x:String x:Key="MenuStart.Collapse">收起分组</x:String>
     <x:String x:Key="MenuStart.Unnamed">- 未命名组{0:00} -</x:String>
     <x:String x:Key="Wall.EnvironmentScroll">当前屏幕容纳不下全部内容，已保留原布局，可向两个方向滚动。</x:String>
+    <x:String x:Key="Wall.EnvironmentWaiting">屏幕已变化，当前调整尚未保存。稳定{0}秒后保存布局。</x:String>
+    <x:String x:Key="Wall.EnvironmentSaved">已适应屏幕变化，布局已保存（{0}栏 × {1}行）。</x:String>
     <x:String x:Key="Welcome.ThisPC">此电脑</x:String>
     <x:String x:Key="Welcome.ControlPanel">控制面板</x:String>
     <x:String x:Key="Welcome.Settings">设置</x:String>

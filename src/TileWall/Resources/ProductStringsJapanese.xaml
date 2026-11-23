@@ -504,6 +504,8 @@
   <x:String x:Key="MenuStart.Collapse">グループを折りたたむ</x:String>
   <x:String x:Key="MenuStart.Unnamed">- 名前のないグループ {0:00} -</x:String>
   <x:String x:Key="Wall.EnvironmentScroll">画面にすべての内容が収まりません。レイアウトは保持されています。縦横にスクロールして表示できます。</x:String>
+  <x:String x:Key="Wall.EnvironmentWaiting">画面が変わりました。現在の調整は未保存です。{0} 秒間安定するとレイアウトを保存します。</x:String>
+  <x:String x:Key="Wall.EnvironmentSaved">画面に合わせたレイアウトを保存しました（{0} 列 × {1} 行）。</x:String>
   <x:String x:Key="Welcome.ThisPC">PC</x:String>
   <x:String x:Key="Welcome.ControlPanel">コントロール パネル</x:String>
   <x:String x:Key="Welcome.Settings">設定</x:String>

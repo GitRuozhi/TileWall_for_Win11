@@ -150,7 +150,8 @@ public sealed partial class MainWindow
                     _puzzles.SetPersistenceBusy(_persistenceAdmissionClosed || _userMutationReservations != 0);
                     UpdateResizeZones();
                     if (_environmentAfterPersistence)
-                    { _environmentAfterPersistence = false; QueueEnvironmentRefresh(); QueueEnvironmentAdaptation(); }
+                    { _environmentAfterPersistence = false; QueueEnvironmentRefresh(); }
+                    QueueEnvironmentAdaptation();
                     if (_appearanceAfterPersistence)
                     { _appearanceAfterPersistence = false; QueueAppearanceRefresh(); }
                     ImportReadinessChanged?.Invoke();
@@ -195,6 +196,7 @@ public sealed partial class MainWindow
         Surface.IsHitTestVisible = !PersistenceInteractionBlocked && !_viewBlocked;
         UpdateResizeZones();
         ImportReadinessChanged?.Invoke();
+        QueueEnvironmentAdaptation(observeDisplay: true);
     }
 
     private Task QueueUserMutationAsync(Func<Task> action)
@@ -219,7 +221,11 @@ public sealed partial class MainWindow
             {
                 _userMutationReservations--;
                 _puzzles.SetPersistenceBusy(PersistenceWriteBlocked || _userMutationReservations != 0);
-                if (!_windowClosing) UpdateResizeZones();
+                if (!_windowClosing)
+                {
+                    UpdateResizeZones();
+                    ResumeEnvironmentAdaptation();
+                }
             }
         }
         return _pendingUserMutations = RunAsync();
@@ -241,6 +247,7 @@ public sealed partial class MainWindow
     private async Task ShutdownPersistenceCoreAsync()
     {
         _shutdownStarted = true;
+        SuspendEnvironmentAdaptation();
         CancelWelcomeInitialization();
         await WaitForWelcomeInitializationAsync();
         _statusOverlay.Clear();

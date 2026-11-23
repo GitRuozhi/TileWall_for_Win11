@@ -503,6 +503,8 @@
     <x:String x:Key="MenuStart.Collapse">收起分組</x:String>
     <x:String x:Key="MenuStart.Unnamed">- 未命名組{0:00} -</x:String>
     <x:String x:Key="Wall.EnvironmentScroll">當前螢幕容納不下全部內容，已保留原佈局，可向兩個方向滾動。</x:String>
+    <x:String x:Key="Wall.EnvironmentWaiting">螢幕已變更，目前的調整尚未儲存。穩定 {0} 秒後儲存版面配置。</x:String>
+    <x:String x:Key="Wall.EnvironmentSaved">已適應螢幕變更，版面配置已儲存（{0} 欄 × {1} 列）。</x:String>
     <x:String x:Key="Welcome.ThisPC">此電腦</x:String>
     <x:String x:Key="Welcome.ControlPanel">控制面板</x:String>
     <x:String x:Key="Welcome.Settings">設定</x:String>

@@ -504,6 +504,8 @@ Nuevo destino:
   <x:String x:Key="MenuStart.Collapse">Contraer grupo</x:String>
   <x:String x:Key="MenuStart.Unnamed">- Grupo sin nombre {0:00} -</x:String>
   <x:String x:Key="Wall.EnvironmentScroll">La pantalla no puede mostrar todo el contenido. Se conserva la distribución; desplázate en cualquier dirección para acceder a él.</x:String>
+  <x:String x:Key="Wall.EnvironmentWaiting">La pantalla ha cambiado. El ajuste actual aún no se ha guardado. La distribución se guardará tras {0} segundos de estabilidad.</x:String>
+  <x:String x:Key="Wall.EnvironmentSaved">Se ha guardado la distribución ajustada a la pantalla ({0} columnas × {1} filas).</x:String>
   <x:String x:Key="Welcome.ThisPC">Este equipo</x:String>
   <x:String x:Key="Welcome.ControlPanel">Panel de control</x:String>
   <x:String x:Key="Welcome.Settings">Configuración</x:String>

@@ -504,6 +504,8 @@ Fortfahren?</x:String>
   <x:String x:Key="MenuStart.Collapse">Gruppe zuklappen</x:String>
   <x:String x:Key="MenuStart.Unnamed">- Unbenannte Gruppe {0:00} -</x:String>
   <x:String x:Key="Wall.EnvironmentScroll">Der Bildschirm bietet nicht genug Platz für alle Inhalte. Ihre Anordnung bleibt erhalten; scrollen Sie in die gewünschte Richtung, um sie zu erreichen.</x:String>
+  <x:String x:Key="Wall.EnvironmentWaiting">Die Anzeige hat sich geändert. Die aktuelle Anpassung ist noch nicht gespeichert. Das Layout wird nach {0} Sekunden stabiler Anzeige gespeichert.</x:String>
+  <x:String x:Key="Wall.EnvironmentSaved">Das angepasste Layout wurde gespeichert ({0} Spalten × {1} Zeilen).</x:String>
   <x:String x:Key="Welcome.ThisPC">Dieser PC</x:String>
   <x:String x:Key="Welcome.ControlPanel">Systemsteuerung</x:String>
   <x:String x:Key="Welcome.Settings">Einstellungen</x:String>
