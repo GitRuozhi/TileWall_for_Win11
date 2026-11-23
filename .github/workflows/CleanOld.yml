@@ -1,0 +1,21 @@
+name: Cleanup Old Releases
+
+on:
+  schedule:
+    - cron: '0 2 * * 0' # 每周日凌晨 2 点自动运行（时间可改）
+  workflow_dispatch:      # 同时允许你在 Actions 页面手动点击运行
+
+jobs:
+  delete-old-releases:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Delete old releases
+        uses: Nats-ji/delete-old-releases@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          keep-count: 7                 # 核心设置：只保留最新 7 个版本
+          keep-old-minor-releases: false # 不额外保留旧的小版本，确保严格只留最近 7 个
+          remove-tags: true             # 可选：同时删除旧版本对应的 Git Tag（如不需要可改为 false）
