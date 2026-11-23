@@ -17,19 +17,21 @@ jobs:
           set -euo pipefail
           REPO="${{ github.repository }}"
           KEEP=5
-          echo "将在 $REPO 中保留最新的 $KEEP 个已发布 Release（按发布时间），超出的连 tag 一起删除"
+          echo "将在 $REPO 中保留最新的 $KEEP 个已发布 Release（按发布时间），超出的连 tag 一起删除；草稿永不删除"
 
-          # 1. 只取已发布的 Release（排除草稿），按发布时间降序，跳过前 KEEP 个，得到待删除的 tag
-          list=$(gh release list -R "$REPO" --limit 100 --exclude-drafts --json tagName,publishedAt)
-          count=$(printf '%s' "$list" | jq 'length')
-          echo "已发布 Release 共 $count 个"
+          # 1. 读取全部 Release，只保留已发布项，草稿全程排除
+          list=$(gh release list -R "$REPO" --limit 100 --json tagName,publishedAt,isDraft)
+          published=$(printf '%s' "$list" | jq '[.[] | select(.isDraft == false)]')
+          count=$(printf '%s' "$published" | jq 'length')
+          draft_count=$(printf '%s' "$list" | jq '[.[] | select(.isDraft == true)] | length')
+          echo "已发布 Release 共 $count 个，草稿 $draft_count 个（不处理）"
           if [ "$count" -le "$KEEP" ]; then
-            echo "没有超过 $KEEP 个，无需删除"
+            echo "已发布 Release 不超过 $KEEP 个，无需删除"
             exit 0
           fi
 
-          # 2. 逐个删除 release 及其 tag
-          printf '%s' "$list" | jq -r "sort_by(.publishedAt) | reverse | .[$KEEP:] | .[].tagName" | while read -r tag; do
+          # 2. 按发布时间降序跳过前 KEEP 个已发布项，逐个删除 release 及其 tag
+          printf '%s' "$published" | jq -r "sort_by(.publishedAt) | reverse | .[$KEEP:] | .[].tagName" | while read -r tag; do
             echo "准备删除: $tag"
             gh release delete "$tag" -R "$REPO" --cleanup-tag --yes
             echo "已删除: $tag"
