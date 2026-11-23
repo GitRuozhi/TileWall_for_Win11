@@ -14,17 +14,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           REPO="${{ github.repository }}"
           KEEP=5
-          echo "将在 $REPO 中保留最新的 $KEEP 个 Release（按发布时间）"
+          echo "将在 $REPO 中保留最新的 $KEEP 个已发布 Release（按发布时间），超出的连 tag 一起删除"
 
-          # 1. 获取所有 Release，按发布时间降序排列，跳过前 KEEP 个，提取出待删除的 tag
-          gh release list -R "$REPO" --limit 100 --json tagName,publishedAt \
-            | jq -r "sort_by(.publishedAt) | reverse | .[$KEEP:] | .[].tagName" \
-            | while read -r tag; do
-                if [ -n "$tag" ]; then
-                  echo "准备删除: $tag"
-                  # 2. 实际删除命令（先注释掉，用于预览）
-                  gh release delete "$tag" -R "$REPO" --cleanup-tag --yes
-                fi
-              done
+          # 1. 只取已发布的 Release（排除草稿），按发布时间降序，跳过前 KEEP 个，得到待删除的 tag
+          list=$(gh release list -R "$REPO" --limit 100 --exclude-drafts --json tagName,publishedAt)
+          count=$(printf '%s' "$list" | jq 'length')
+          echo "已发布 Release 共 $count 个"
+          if [ "$count" -le "$KEEP" ]; then
+            echo "没有超过 $KEEP 个，无需删除"
+            exit 0
+          fi
+
+          # 2. 逐个删除 release 及其 tag
+          printf '%s' "$list" | jq -r "sort_by(.publishedAt) | reverse | .[$KEEP:] | .[].tagName" | while read -r tag; do
+            echo "准备删除: $tag"
+            gh release delete "$tag" -R "$REPO" --cleanup-tag --yes
+            echo "已删除: $tag"
+          done
