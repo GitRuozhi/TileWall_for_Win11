@@ -42,7 +42,7 @@ https://github.com/user-attachments/assets/0b544816-0753-48cb-a88a-ce454d780772
 
 既可以让它作为独立启动墙与系统菜单共存，按 Win + ~ （数字 1 左边) 呼出，也可以直接替代系统开始菜单，按 Win 键或点击开始按钮一键唤起，完全尊重你的使用习惯。
 
-基于微软原生 WinUI 3 架构打造，适配 Windows 10 与 Windows 11，支持 x64 与 ARM64，开源、免费、轻量、无广告、开源。
+基于微软原生 WinUI 3 架构打造，适配 Windows 10 与 Windows 11，支持 x64 与 ARM64，开源、免费、轻量、无广告。
 
 官方安装：[**打开微软商店**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
 
