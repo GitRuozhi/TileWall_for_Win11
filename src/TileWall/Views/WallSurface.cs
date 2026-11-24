@@ -25,7 +25,9 @@ public sealed class WallSurface : Canvas
     private const byte GridCellOpacity = 13;
     private readonly WallMetrics _metrics = new();
     private readonly Dictionary<string, Button> _buttons = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Action> _memberInteractions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, WallMemberVisualFactory.ButtonInteraction> _memberInteractions = new(StringComparer.Ordinal);
+    private WallMemberVisualFactory.ButtonInteraction? _dropHover;
+    internal bool HasDropHover => _dropHover is not null;
     private readonly Dictionary<string, Border> _cues = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PuzzleCanvasView> _puzzles = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PuzzleFrame?> _puzzleFrames = new(StringComparer.Ordinal);
@@ -251,7 +253,7 @@ public sealed class WallSurface : Canvas
 
     private void RemoveMemberView(string id)
     {
-        if (_memberInteractions.Remove(id, out var reset)) reset();
+        if (_memberInteractions.Remove(id, out var interaction)) interaction.Reset();
         if (_buttons.Remove(id, out var button)) Children.Remove(button);
         if (_puzzles.Remove(id, out var puzzle)) { puzzle.StopTransientFeedback(); Children.Remove(puzzle); }
         _memberModels.Remove(id); _puzzleFrames.Remove(id); _cues.Remove(id); _clocks.Remove(id);
@@ -411,6 +413,27 @@ public sealed class WallSurface : Canvas
             pixels.Width / scale, pixels.Height / scale), position);
     }
 
+    private WallMemberVisualFactory.ButtonInteraction? MemberInteractionAt(Point position)
+    {
+        var hit = Hit(position);
+        if (hit.MemberId is not { } id) return null;
+        if (_memberInteractions.TryGetValue(id, out var interaction)) return interaction;
+        if (!_puzzles.TryGetValue(id, out var puzzle)) return null;
+        var bounds = Geometry!.Groups.First(group => group.GroupId == hit.GroupId)
+            .Members.First(member => member.MemberId == id).Bounds;
+        return puzzle.InteractionAt(new Point(position.X - bounds.X, position.Y - bounds.Y));
+    }
+
+    internal void UpdateDropHover(Point? position, bool restore = true)
+    {
+        var current = position is { } point ? MemberInteractionAt(point) : null;
+        if (!restore && ReferenceEquals(_dropHover, current)) return;
+        var previous = _dropHover;
+        _dropHover = restore ? current : null;
+        if (!ReferenceEquals(previous, _dropHover)) previous?.SetHover(false);
+        _dropHover?.SetHover(true);
+    }
+
     public void ShowDragCue(string? memberId, bool allowed, string? groupId = null)
     {
         if (_dragMemberId == memberId && _dragGroupId == groupId && _dragAllowed == allowed &&
@@ -424,8 +447,9 @@ public sealed class WallSurface : Canvas
         var dragging = memberId is not null || groupId is not null;
         if (wasDragging != dragging)
         {
+            UpdateDropHover(null);
             StopClockFeedback();
-            foreach (var reset in _memberInteractions.Values) reset();
+            foreach (var interaction in _memberInteractions.Values) interaction.Reset();
             foreach (var puzzle in _puzzles.Values) puzzle.StopTransientFeedback();
         }
         ClearGroupFeedback();
@@ -487,9 +511,10 @@ public sealed class WallSurface : Canvas
 
     public void ClearTransientInteraction()
     {
+        UpdateDropHover(null);
         ClearGroupFeedback();
         StopClockFeedback();
-        foreach (var reset in _memberInteractions.Values) reset();
+        foreach (var interaction in _memberInteractions.Values) interaction.Reset();
         foreach (var puzzle in _puzzles.Values) puzzle.StopTransientFeedback();
     }
 
@@ -845,8 +870,8 @@ public sealed class WallSurface : Canvas
         var title = WallMemberVisualFactory.ResolveTitle(member);
         AutomationProperties.SetName(button, $"{ProductStrings.Get("Wall.Clock")}: {(string.IsNullOrWhiteSpace(title) ? member.Id : title)}");
         button.Click += (_, _) => MemberInvoked?.Invoke(member.Id);
-        var reset = WallMemberVisualFactory.ConfigureInteraction(button, content, WallCorners, content.SetExternalHover);
-        _memberInteractions[member.Id] = () => { reset(); content.StopTransientFeedback(); };
+        var interaction = WallMemberVisualFactory.ConfigureInteraction(button, content, WallCorners, content.SetExternalHover);
+        _memberInteractions[member.Id] = interaction with { Reset = () => { interaction.Reset(); content.StopTransientFeedback(); } };
         WallMemberVisualFactory.SetTargetTooltip(button, member);
         AttachMemberContextMenu(button, member);
         return button;

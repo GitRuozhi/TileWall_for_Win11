@@ -112,14 +112,13 @@ internal static class DesktopBackdropSnapshot
             materialPixels[index] = ToByte(blue);
             materialPixels[index + 3] = 255;
         }
-        // Expand M to exactly S's padded coordinate space before cropping either.
-        // Interpolation may smooth M; S is never resampled or reconstructed from M.
-        var material = ImageFrameDecoder.ResizePixels(blurred with { BgraPremultiplied = materialPixels },
-            captured.Pixels.Width, captured.Pixels.Height, token);
         var opacity = Math.Clamp(recipe.EffectiveOpacity, 0, 1);
         var pixels = new byte[checked(captured.Width * captured.Height * 4)];
+        // Scale M in S's padded coordinate space, writing only the crop directly into F.
+        ImageFrameDecoder.CopyResizedPixelCrop(blurred with { BgraPremultiplied = materialPixels },
+            captured.Pixels.Width, captured.Pixels.Height, captured.Left, captured.Top,
+            captured.Width, captured.Height, pixels, token);
         var sharpPixels = captured.Pixels.BgraPremultiplied.Span;
-        var softenedPixels = material.BgraPremultiplied.Span;
         for (var row = 0; row < captured.Height; row++)
         {
             token.ThrowIfCancellationRequested();
@@ -130,7 +129,7 @@ internal static class DesktopBackdropSnapshot
                 var source = sourceOffset + column * 4;
                 var destination = destinationOffset + column * 4;
                 for (var channel = 0; channel < 3; channel++)
-                    pixels[destination + channel] = ToByte(opacity * softenedPixels[source + channel] +
+                    pixels[destination + channel] = ToByte(opacity * pixels[destination + channel] +
                         (1 - opacity) * sharpPixels[source + channel]);
                 pixels[destination + 3] = 255;
             }

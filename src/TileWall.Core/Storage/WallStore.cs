@@ -324,7 +324,10 @@ public sealed partial class WallStore
     }
 
     public WallCommitResult Commit(WallDocument current, WallCommitRequest request,
-        WallCommitTimings? timings = null)
+        WallCommitTimings? timings = null) => Commit(current, request, timings, deferResourceReclamation: false);
+
+    internal WallCommitResult Commit(WallDocument current, WallCommitRequest request,
+        WallCommitTimings? timings, bool deferResourceReclamation)
     {
         using var total = timings?.Measure("store.total");
         try
@@ -383,7 +386,8 @@ public sealed partial class WallStore
                 if (blocked is not null) return blocked;
             }
             var committed = CommitCore(current, plan.Request.Proposed, plan.Request.EntryChanges,
-                expectedHash, timings, plan.Request.MediaAssets, plan.Request.ExpectedEntrySha256, plan.Request.ManagedGalleries);
+                expectedHash, timings, plan.Request.MediaAssets, plan.Request.ExpectedEntrySha256,
+                plan.Request.ManagedGalleries, deferResourceReclamation);
             return request.PreserveStoredRecycleBin && committed.CommittedDocument is { } document
                 ? committed with { CommittedDocument = document.ActiveView() } : committed;
         }
@@ -433,7 +437,7 @@ public sealed partial class WallStore
         string expectedDiskHash, WallCommitTimings? timings = null,
         IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
         IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
-        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null, bool deferResourceReclamation = false)
     {
         using var total = timings?.Measure("store.transactionTotal");
         var commitId = Guid.NewGuid().ToString("N");
@@ -539,7 +543,8 @@ public sealed partial class WallStore
                 () => CommitResult(WallCommitStatus.CommittedNeedsCleanup, committedDocument, installed.Error.Message) with
                 { ManifestSha256 = journal.NewHash, LaunchCommands = launchCommands });
         WallCommitStatus cleanupStatus;
-        using (timings?.Measure("store.transactionCleanup")) cleanupStatus = CleanupAfterCommit(journal);
+        using (timings?.Measure("store.transactionCleanup"))
+            cleanupStatus = CleanupAfterCommit(journal, deferResourceReclamation, timings);
         return CommitResult(cleanupStatus, committedDocument,
             cleanupStatus == WallCommitStatus.CommittedNeedsCleanup ? "Committed; cleanup needs attention." : null) with
         { ManifestSha256 = journal.NewHash, LaunchCommands = launchCommands };
@@ -811,17 +816,22 @@ public sealed partial class WallStore
         _files.DeleteDirectory(material);
     }
 
-    private WallCommitStatus CleanupAfterCommit(WallJournal journal)
+    private WallCommitStatus CleanupAfterCommit(WallJournal journal, bool deferResourceReclamation = false,
+        WallCommitTimings? timings = null)
     {
         try
         {
-            var stage = _paths.Under("Staging", journal.CommitId);
-            PreserveCommittedMaterial(journal, _paths.Under("Staging", journal.CommitId, JournalName));
-            var keepMaterialId = RecoverySourceToKeep(journal);
-            PruneMaterials(journal, keepMaterialId);
-            PruneCorruptDiagnostics(journal);
-            _files.DeleteDirectory(stage);
-            TryReclaimUnreferencedResources(journal.NewHash);
+            using (timings?.Measure("store.recoveryFinalize"))
+            {
+                var stage = _paths.Under("Staging", journal.CommitId);
+                PreserveCommittedMaterial(journal, _paths.Under("Staging", journal.CommitId, JournalName));
+                var keepMaterialId = RecoverySourceToKeep(journal);
+                PruneMaterials(journal, keepMaterialId);
+                PruneCorruptDiagnostics(journal);
+                _files.DeleteDirectory(stage);
+            }
+            if (!deferResourceReclamation)
+                using (timings?.Measure("store.reclamation")) TryReclaimUnreferencedResources(journal.NewHash);
             return WallCommitStatus.Committed;
         }
         catch (Exception ex) when (IsStorageError(ex))

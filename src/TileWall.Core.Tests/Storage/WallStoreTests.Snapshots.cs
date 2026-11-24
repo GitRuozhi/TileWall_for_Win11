@@ -145,6 +145,39 @@ public sealed partial class WallStoreTests
     }
 
     [Fact]
+    public void TwoDeferredCommitsRetireStagingAndReclaimOnlyAfterTheLeaseEnds()
+    {
+        var (store, files, _, root) = Harness();
+        var initial = Wall();
+        store.InitializeFresh(initial);
+        var gallery = Gallery();
+        var withGallery = store.Commit(initial, new(0, WithGallery(initial, gallery), [], ManagedGalleries: [gallery])).CommittedDocument!;
+        var removed = store.Commit(withGallery, new(1, Wall() with { Generation = 2 }, [])).CommittedDocument!;
+        var source = store.ManagedGalleryPath(gallery.Reference);
+        var next = store.Commit(removed, new(2, removed with { Generation = 3 }, []), null, deferResourceReclamation: true);
+        Assert.Equal(WallCommitStatus.Committed, next.Status);
+        var last = store.Commit(next.CommittedDocument!, new(3, removed with { Generation = 4 }, []), null,
+            deferResourceReclamation: true);
+        Assert.Equal(WallCommitStatus.Committed, last.Status);
+        Assert.Empty(files.ListDirectories(Path.Combine(root, "Staging")));
+        Assert.True(files.GetPathInfo(source).Exists);
+        var snapshots = Path.Combine(root, "Snapshots");
+        using (store.AcquireResourceReadLease(gallery.Reference))
+        {
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            Assert.Throws<OperationCanceledException>(() => store.TryReclaimUnreferencedResources(token: cancelled.Token));
+            Assert.True(files.ListDirectories(snapshots).Count > 2);
+            store.TryReclaimUnreferencedResources();
+            Assert.True(files.GetPathInfo(source).Exists);
+        }
+        store.TryReclaimUnreferencedResources();
+        Assert.False(files.GetPathInfo(source).Exists);
+        Assert.Equal(2, files.ListDirectories(snapshots).Count);
+        Assert.Equal(4, store.Open().Document!.Generation);
+    }
+
+    [Fact]
     public void GcDeletionFailureDoesNotRevokeCommitOrBlockOpenAndRetriesLater()
     {
         var inner = new InMemoryFileStore(); var files = new FaultingFiles(inner);

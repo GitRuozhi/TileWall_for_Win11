@@ -25,8 +25,24 @@ public sealed partial class MainWindow
 
     private DeferredGesturePress? _deferredGesturePress;
 
-    // A real mouse press during a background or interactive unpin transaction
-    // can reserve this path. Existing queued mutations keep their order.
+    private void OnDropHoverPointerChanged(object sender, PointerRoutedEventArgs e)
+    {
+        if (Surface.HasDropHover && e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse)
+            RestoreDropHover(restore: false);
+    }
+
+    private void RestoreDropHover(bool restore = true)
+    {
+        if (_windowClosing || ShutdownStarted || _modal || _viewBlocked || !_hasDocument || !AppWindow.IsVisible ||
+            _gesture.Phase != GesturePhase.Idle || (Win32Api.GetAsyncKeyState(1) & 0x8000) != 0 ||
+            !GetCursorPos(out var cursor) || !TryGetResizeScreenPoint(default, Scale, out var origin)) return;
+        var root = new Point((cursor.X - origin.X) / Scale, (cursor.Y - origin.Y) / Scale);
+        var point = _scrollRegion.Contains(root) ? WallRoot.TransformToVisual(Surface).TransformPoint(root) : (Point?)null;
+        Surface.UpdateDropHover(point, restore);
+    }
+
+    // A real mouse press during an interactive layout save or background
+    // save can reserve this path. Existing queued mutations keep their order.
     // Other foreground saves and closed admission keep their interaction gate.
     private bool TryDeferGesturePress(PointerRoutedEventArgs e)
     {
@@ -36,7 +52,8 @@ public sealed partial class MainWindow
             _persistenceAdmissionClosed || _openingWall || _modal || _viewBlocked || !_hasDocument ||
             _windowClosing || ShutdownStarted || _resizing || _gesture.Phase != GesturePhase.Idle ||
             e.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse ||
-            !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed || !GetCursorPos(out var cursor)) return false;
+            !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed ||
+            !TryGetResizeScreenPoint(e.GetCurrentPoint(WallRoot).Position, Scale, out var screen)) return false;
         if (_viewportTransition is { AutomaticHeight: true } or { ResizeSettlement: true }) StopViewportTransition();
         var pressed = e.GetCurrentPoint(Surface);
         var point = pressed.Position;
@@ -50,7 +67,7 @@ public sealed partial class MainWindow
         var press = new DeferredGesturePress
         {
             PointerId = pointer.PointerId, MemberId = hit.MemberId, GroupId = hit.GroupHandle ? hit.GroupId : null,
-            ScreenStart = new(cursor.X, cursor.Y), LatestScreen = new(cursor.X, cursor.Y), FurthestScreen = new(cursor.X, cursor.Y),
+            ScreenStart = screen, LatestScreen = screen, FurthestScreen = screen,
             ContentStart = point, PressTimestamp = pressed.Timestamp,
             GrabOffset = new(point.X - bounds.X, point.Y - bounds.Y), Scale = Scale,
             ReleaseCapture = () => Surface.ReleasePointerCapture(pointer),
@@ -142,10 +159,10 @@ public sealed partial class MainWindow
 
     private bool UpdateDeferredGesturePress(PointerRoutedEventArgs e)
     {
-        if (_deferredGesturePress is not { } press || press.PointerId != e.Pointer.PointerId) return false;
+        if (_deferredGesturePress is not { } press || press.PointerId != e.Pointer.PointerId ||
+            !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return false;
         ObserveDeferredGestureHistory(press, e);
-        if (!e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) CancelDeferredGesturePress(press.PointerId);
-        else if (GetCursorPos(out var cursor)) press.LatestScreen = new(cursor.X, cursor.Y);
+        if (GetCursorPos(out var cursor)) ObserveDeferredGesturePoint(press, new(cursor.X, cursor.Y));
         e.Handled = true;
         return true;
     }
@@ -170,8 +187,11 @@ public sealed partial class MainWindow
 
     private bool ReleaseDeferredGesturePress(PointerRoutedEventArgs e)
     {
-        if (_deferredGesturePress is not { } press || press.PointerId != e.Pointer.PointerId) return false;
+        if (_deferredGesturePress is not { } press || press.PointerId != e.Pointer.PointerId ||
+            e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return false;
         ObserveDeferredGestureHistory(press, e);
+        if (TryGetResizeScreenPoint(e.GetCurrentPoint(WallRoot).Position, press.Scale, out var release))
+            ObserveDeferredGesturePoint(press, release);
         var wasClick = Math.Abs(press.FurthestScreen.X - press.ScreenStart.X) +
             Math.Abs(press.FurthestScreen.Y - press.ScreenStart.Y) < 3 * press.Scale;
         if (!CancelDeferredGesturePress(e.Pointer.PointerId)) return false;
@@ -180,11 +200,7 @@ public sealed partial class MainWindow
         {
             _suppressClickMember = null;
             try { LaunchMember(memberId); }
-            finally
-            {
-                _suppressClickMember = memberId;
-                DispatcherQueue.TryEnqueue(() => _suppressClickMember = null);
-            }
+            finally { SuppressMemberClick(memberId); }
         }
         return true;
     }
@@ -193,8 +209,7 @@ public sealed partial class MainWindow
     {
         if (_deferredGesturePress is not { } press || pointerId is { } id && press.PointerId != id) return false;
         _deferredGesturePress = null;
-        _suppressClickMember = press.MemberId;
-        DispatcherQueue.TryEnqueue(() => _suppressClickMember = null);
+        SuppressMemberClick(press.MemberId);
         press.ReleaseCapture();
         return true;
     }

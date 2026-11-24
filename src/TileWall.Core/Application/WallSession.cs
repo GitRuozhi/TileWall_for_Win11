@@ -112,6 +112,10 @@ internal sealed class WallSession
     public IDisposable AcquireResourceReadLease(ManagedGalleryReference? gallery = null, ManagedMediaReference? media = null) =>
         _store.AcquireResourceReadLease(gallery, media);
 
+    // The app schedules this on its storage executor and yields it before synchronous writes.
+    internal void ReclaimUnreferencedResources(CancellationToken token) =>
+        _store.TryReclaimUnreferencedResources(token: token);
+
     public Task<WallPackageSnapshot> CapturePackageSnapshotAsync(long expectedGeneration,
         IEnumerable<string> selectedMemberIds, CancellationToken token = default)
     {
@@ -469,7 +473,7 @@ internal sealed class WallSession
     public Task<WallSessionResult> CommitAsync(WallProposal proposal, IReadOnlyList<EntryChange>? changes = null,
         IReadOnlyList<PreparedMediaAsset>? mediaAssets = null,
         IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
-        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null)
+        IReadOnlyList<PreparedManagedGallery>? managedGalleries = null, bool deferResourceReclamation = false)
     {
         lock (_gate)
         {
@@ -485,7 +489,8 @@ internal sealed class WallSession
             var reservation = new UiCommitReservation();
             _writePending = true;
             _activeUiCommit = reservation;
-            return CommitReservedAsync(before, frozen, entryChanges, preparedMedia, managedGalleries?.ToArray() ?? [], preconditions, _manifestSha256!, reservation, _executor, _acceptOnUi);
+            return CommitReservedAsync(before, frozen, entryChanges, preparedMedia, managedGalleries?.ToArray() ?? [],
+                preconditions, _manifestSha256!, reservation, _executor, _acceptOnUi, deferResourceReclamation);
         }
     }
 
@@ -493,7 +498,7 @@ internal sealed class WallSession
         IReadOnlyList<EntryChange> changes, IReadOnlyList<PreparedMediaAsset> mediaAssets,
         IReadOnlyList<PreparedManagedGallery> managedGalleries, IReadOnlyDictionary<string, string>? expectedEntrySha256,
         string manifestSha256, UiCommitReservation reservation,
-        IWallStorageExecutor executor, Func<Action, Task> acceptOnUi)
+        IWallStorageExecutor executor, Func<Action, Task> acceptOnUi, bool deferResourceReclamation)
     {
         var timings = CreateCommitTimings();
         var total = timings?.Measure("session.total");
@@ -515,7 +520,7 @@ internal sealed class WallSession
                         ClearRecycleBin = proposal.ClearRecycleBin,
                         ExpectedManifestSha256 = manifestSha256,
                     },
-                    timings);
+                    timings, deferResourceReclamation);
             }).ConfigureAwait(false);
             outcome = stored.Status.ToString();
             if (stored.Status == WallCommitStatus.RecoveryBlocked)

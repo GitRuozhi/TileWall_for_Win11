@@ -37,6 +37,12 @@ public sealed partial class MainWindow
         return assets.Values.ToArray();
     }
 
+    // Move actions preserve member dimensions, image sources and background settings.
+    // Legacy sources without a bound original must still go through formal preparation.
+    private static bool DropNeedsMediaPreparation(WallDocument document) =>
+        document.Settings.BackgroundMode == WallBackgroundMode.Custom && document.Settings.BackgroundMedia is null ||
+        document.EnumerateAllMembers().Any(member => member.Images.Kind == MemberImageSourceKind.Single && member.Images.Media is null);
+
     private async Task<(WallProposal Proposal, IReadOnlyList<PreparedMediaAsset> Assets)> PrepareFormalMediaAsync(
         WallProposal proposal, IReadOnlyList<EntryChange>? changes, double scale, bool useWelcomeIconDefaults = false)
     {

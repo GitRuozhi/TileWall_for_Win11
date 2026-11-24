@@ -21,12 +21,13 @@ public sealed partial class WallStore
     }
 
     private ManagedGalleryManifest CheckGallery(ManagedGalleryReference gallery, string? directory = null,
-        ICollection<Stream>? protectedHandles = null)
+        ICollection<Stream>? protectedHandles = null, CancellationToken token = default)
     {
         directory ??= _paths.Gallery(gallery);
         _paths.GuardTree(directory);
         byte[] Read(string path)
         {
+            token.ThrowIfCancellationRequested();
             if (protectedHandles is null) return _files.ReadAllBytes(path);
             var stream = _files.OpenReadProtected(path); protectedHandles.Add(stream);
             if (stream.Length > PreparedMediaAsset.MaximumBytes) throw new InvalidDataException("Oversized managed gallery file.");

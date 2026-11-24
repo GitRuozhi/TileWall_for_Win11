@@ -8,11 +8,49 @@ public sealed partial class ImageFrameDecoder
     internal static DecodedImageFrame ResizePixels(DecodedImageFrame source, int width, int height, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
+        ValidateResize(source, width, height);
+        if (source.Width == width && source.Height == height) return source;
+        var output = new byte[checked(width * height * 4)];
+        CopyResizedPixels(source, width, height, output, crop: null, token);
+        return source with { Width = width, Height = height, BgraPremultiplied = output };
+    }
+
+    internal static void CopyResizedPixelCrop(DecodedImageFrame source, int width, int height, int left, int top,
+        int cropWidth, int cropHeight, byte[] output, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        ValidateResize(source, width, height);
+        if (left < 0 || top < 0 || cropWidth < 1 || cropHeight < 1 ||
+            (long)left + cropWidth > width || (long)top + cropHeight > height ||
+            output.Length != checked(cropWidth * cropHeight * 4))
+            throw new ArgumentOutOfRangeException(nameof(cropWidth));
+        if (source.Width == width && source.Height == height)
+        {
+            // The original equal-size path returns the source without resampling.
+            var input = source.BgraPremultiplied.Span;
+            var stride = checked(cropWidth * 4);
+            for (var row = 0; row < cropHeight; row++)
+            {
+                token.ThrowIfCancellationRequested();
+                var offset = checked(((top + row) * width + left) * 4);
+                input.Slice(offset, stride).CopyTo(output.AsSpan(row * stride, stride));
+            }
+            return;
+        }
+
+        CopyResizedPixels(source, width, height, output, new WicRectangle(left, top, cropWidth, cropHeight), token);
+    }
+
+    private static void ValidateResize(DecodedImageFrame source, int width, int height)
+    {
         if (width < 1 || height < 1 || source.Width < 1 || source.Height < 1 ||
             source.BgraPremultiplied.Length != checked(source.Width * source.Height * 4))
             throw new ArgumentOutOfRangeException(nameof(width));
-        if (source.Width == width && source.Height == height) return source;
-        var output = new byte[checked(width * height * 4)];
+    }
+
+    private static void CopyResizedPixels(DecodedImageFrame source, int width, int height, byte[] output,
+        WicRectangle? crop, CancellationToken token)
+    {
         if (!MemoryMarshal.TryGetArray(source.BgraPremultiplied, out var input))
             input = new(source.BgraPremultiplied.ToArray());
         var inputPin = GCHandle.Alloc(input.Array!, GCHandleType.Pinned);
@@ -34,10 +72,15 @@ public sealed partial class ImageFrameDecoder
             Marshal.ThrowExceptionForHR(WicPixels.Method<WicPixels.InitializeScaler>(scaler, 8)(scaler, bitmap,
                 checked((uint)width), checked((uint)height), 3)); // WICBitmapInterpolationModeFant
             token.ThrowIfCancellationRequested();
-            Marshal.ThrowExceptionForHR(WicPixels.Method<WicPixels.CopyPixels>(scaler, 7)(scaler, 0,
-                checked((uint)width * 4), checked((uint)output.Length), outputPin.AddrOfPinnedObject()));
+            var outputBytes = checked((uint)output.Length);
+            var outputAddress = outputPin.AddrOfPinnedObject();
+            var result = crop is { } rectangle
+                ? WicPixels.Method<WicPixels.CopyPixelsRect>(scaler, 7)(scaler, in rectangle,
+                    checked((uint)rectangle.Width * 4), outputBytes, outputAddress)
+                : WicPixels.Method<WicPixels.CopyPixels>(scaler, 7)(scaler, 0,
+                    checked((uint)width * 4), outputBytes, outputAddress);
+            Marshal.ThrowExceptionForHR(result);
             token.ThrowIfCancellationRequested();
-            return source with { Width = width, Height = height, BgraPremultiplied = output };
         }
         finally
         {
@@ -47,6 +90,15 @@ public sealed partial class ImageFrameDecoder
             if (initialized >= 0) WicPixels.CoUninitialize();
             outputPin.Free(); inputPin.Free();
         }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly struct WicRectangle(int x, int y, int width, int height)
+    {
+        internal readonly int X = x;
+        internal readonly int Y = y;
+        internal readonly int Width = width;
+        internal readonly int Height = height;
     }
 
     // Native WIC is not indexed by this winapp find-api SDK scope. GUIDs, slot
@@ -68,5 +120,7 @@ public sealed partial class ImageFrameDecoder
         internal delegate int InitializeScaler(nint scaler, nint source, uint width, uint height, int interpolation);
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         internal delegate int CopyPixels(nint source, nint rectangle, uint stride, uint bytes, nint pixels);
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        internal delegate int CopyPixelsRect(nint source, in WicRectangle rectangle, uint stride, uint bytes, nint pixels);
     }
 }

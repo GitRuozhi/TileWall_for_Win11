@@ -78,7 +78,7 @@ public sealed partial class MainWindow
         Action<string?>? settle = null, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
         IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
         IReadOnlyList<PreparedManagedGallery>? managedGalleries = null, bool background = false,
-        bool useWelcomeIconDefaults = false, bool allowInteraction = false)
+        bool useWelcomeIconDefaults = false, bool allowInteraction = false, bool layoutDrop = false)
     {
         Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
         if (PersistenceWriteBlocked || background && !CanAcceptBackgroundWrite) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
@@ -91,12 +91,13 @@ public sealed partial class MainWindow
         _backgroundPersistencePending = background;
         _interactivePersistencePending = allowInteraction;
         _pendingCarouselCommit = carousel;
+        YieldDeferredReclamation();
         _puzzles.SetPersistenceBusy(true);
         UpdateWallHitTesting();
         Surface.IsHitTestVisible = !_viewBlocked && !PersistenceInteractionBlocked;
         UpdateResizeZones();
         var operation = CommitProposalAsyncCore(proposal, changes, settle, preparedMedia, expectedEntrySha256, managedGalleries,
-            useWelcomeIconDefaults);
+            useWelcomeIconDefaults, layoutDrop);
         _pendingPersistence = operation.IsCompleted ? null : operation;
         return operation;
     }
@@ -104,16 +105,21 @@ public sealed partial class MainWindow
     private async Task<string?> CommitProposalAsyncCore(WallProposal proposal,
         IReadOnlyList<EntryChange>? changes, Action<string?>? settle, IReadOnlyList<PreparedMediaAsset>? preparedMedia,
         IReadOnlyDictionary<string, string>? expectedEntrySha256, IReadOnlyList<PreparedManagedGallery>? managedGalleries,
-        bool useWelcomeIconDefaults)
+        bool useWelcomeIconDefaults, bool layoutDrop)
     {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         string? error = null;
         try
         {
-            var media = await PrepareFormalMediaAsync(proposal, changes, Scale, useWelcomeIconDefaults);
-            var result = await _session.CommitAsync(media.Proposal, changes,
-                AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia), expectedEntrySha256, managedGalleries);
-            _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);
+            var prepareMedia = !layoutDrop || DropNeedsMediaPreparation(proposal.Document);
+            var media = prepareMedia
+                ? await PrepareFormalMediaAsync(proposal, changes, Scale, useWelcomeIconDefaults)
+                : (Proposal: proposal, Assets: Array.Empty<PreparedMediaAsset>());
+            var assets = prepareMedia ? AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia) : null;
+            var result = await _session.CommitAsync(media.Proposal, changes, assets, expectedEntrySha256, managedGalleries,
+                deferResourceReclamation: layoutDrop);
+            if (layoutDrop && result.Committed && !result.NeedsCleanup) _reclamationRequested = true;
+            if (!layoutDrop) _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);
             error = DescribeCommit(result);
         }
         catch (Exception ex)
@@ -155,6 +161,7 @@ public sealed partial class MainWindow
                     if (_appearanceAfterPersistence)
                     { _appearanceAfterPersistence = false; QueueAppearanceRefresh(); }
                     ImportReadinessChanged?.Invoke();
+                    QueueDeferredReclamation();
                 }
             }
         }
@@ -180,6 +187,7 @@ public sealed partial class MainWindow
     internal void SuspendPersistenceAdmission()
     {
         _persistenceAdmissionClosed = true;
+        YieldDeferredReclamation();
         _puzzles.SetPersistenceBusy(true);
         UpdateWallHitTesting();
         Surface.IsHitTestVisible = false;
@@ -201,6 +209,7 @@ public sealed partial class MainWindow
 
     private Task QueueUserMutationAsync(Func<Task> action)
     {
+        YieldDeferredReclamation();
         var previous = _pendingUserMutations;
         _userMutationReservations++;
         _puzzles.SetPersistenceBusy(true);
@@ -225,6 +234,7 @@ public sealed partial class MainWindow
                 {
                     UpdateResizeZones();
                     ResumeEnvironmentAdaptation();
+                    QueueDeferredReclamation();
                 }
             }
         }
@@ -247,6 +257,7 @@ public sealed partial class MainWindow
     private async Task ShutdownPersistenceCoreAsync()
     {
         _shutdownStarted = true;
+        YieldDeferredReclamation();
         SuspendEnvironmentAdaptation();
         CancelWelcomeInitialization();
         await WaitForWelcomeInitializationAsync();

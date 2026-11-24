@@ -100,6 +100,8 @@ internal sealed class NativeWallBackground(IntPtr hwnd) : ICompositionSupportsSy
         if (!ReferenceEquals(_cover?.Image, frame)) _projection?.ForgetImage(frame);
     }
 
+    internal void ReleaseIdleUploadDevice() => _projection?.ReleaseIdleUploadDevice();
+
     internal async Task<bool> WaitForCoverCommitAsync(CancellationToken token)
     {
         var projection = _projection;
@@ -368,6 +370,13 @@ internal sealed class NativeWallBackground(IntPtr hwnd) : ICompositionSupportsSy
             Release(_imageSurface);
             _imageSurface = null;
             _image = null;
+        }
+
+        internal void ReleaseIdleUploadDevice()
+        {
+            if (_imageSurface is not null || _image is not null) return;
+            Release(_images);
+            _images = null;
         }
 
         public void Dispose()

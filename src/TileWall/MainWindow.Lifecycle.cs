@@ -78,6 +78,7 @@ public sealed partial class MainWindow
         AppWindow.Hide();
         UpdateWindowZOrder(foregroundInSession: false);
         ReleaseBackdropSnapshot();
+        _nativeBackground.ReleaseIdleUploadDevice();
         Surface.ClearTransientInteraction();
         _needsVisualRefresh = true;
         UpdatePuzzleGate();
@@ -335,6 +336,7 @@ public sealed partial class MainWindow
         CaptureBackdropBeforeShow();
         _modalClosed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _modal = true;
+        YieldDeferredReclamation();
         UpdateWallHitTesting();
         Surface.ClearTransientInteraction();
         UpdateNativeSizingRegion(); // Remove the opt-in native edge before any asynchronous dialog setup.
@@ -447,12 +449,12 @@ public sealed partial class MainWindow
         _puzzles.Sync(Document);
         if (force || AppWindow.IsVisible)
         {
-            Surface.Render(Document);
+            Surface.Render(DropBasis);
             Surface.RefreshClocks(_clock.UtcNow);
             _needsVisualRefresh = false;
         }
         else _needsVisualRefresh = true;
-        ApplyViewport();
+        ApplyViewport(DropBasis);
         UpdatePuzzleGate();
         RefreshEnvironmentStatus();
     }

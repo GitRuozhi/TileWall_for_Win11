@@ -872,7 +872,7 @@ internal sealed class ImportDialog : IWallDialogSession
             CornerRadius = WallCornerStyle.Corners(_style), HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Stretch };
         CandidateRow? row = null;
-        var reset = WallMemberVisualFactory.ConfigureInteraction(toggle, card, toggle.CornerRadius,
+        var interaction = WallMemberVisualFactory.ConfigureInteraction(toggle, card, toggle.CornerRadius,
             hover =>
             {
                 if (!isPuzzle) view?.SetExternalHover(hover);
@@ -901,7 +901,7 @@ internal sealed class ImportDialog : IWallDialogSession
             { UpdateSelectionFeedback(); return; }
             Select(row.Candidate, toggle.IsChecked == true); _error = null; _feedback.Clear(); SelectionChanged();
         };
-        row = new(candidate, member, view, clock, host, toggle, changed, reset, selection) { IconStamp = IconStamp(candidate) };
+        row = new(candidate, member, view, clock, host, toggle, changed, interaction.Reset, selection) { IconStamp = IconStamp(candidate) };
         var tipRow = row;
         PointerEventHandler pointerInside = (_, args) => TrackPreviewPointer(tipRow, args);
         PointerEventHandler pointerOutside = (_, _) =>

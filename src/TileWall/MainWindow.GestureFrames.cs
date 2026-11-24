@@ -27,24 +27,26 @@ public sealed partial class MainWindow
     private Dictionary<string, StartGroup> _gestureGroups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> _gestureLaunchKeys = new(StringComparer.Ordinal);
     private readonly Dictionary<(WallAction Action, bool Prepend), WallLayoutResult> _dropCache = [];
+    private (WallAction Action, bool Prepend) _dropAction;
     private WallLayoutResult? _drawnDrop;
     private string? _memberDropNotice;
     private readonly GesturePerformance _performance = new();
 
     private void BeginGestureFrames(WallGeometry geometry)
     {
-        _gestureDocument = Document;
+        var basis = DropBasis;
+        _gestureDocument = basis;
         _gestureGeometry = geometry;
         _gestureScale = Scale;
-        _gestureGroups = Document.Lanes.SelectMany(l => l.Groups).ToDictionary(g => g.Id, StringComparer.Ordinal);
+        _gestureGroups = basis.Lanes.SelectMany(l => l.Groups).ToDictionary(g => g.Id, StringComparer.Ordinal);
         _gestureMembers = _gestureGroups.Values.SelectMany(g => g.Members).ToDictionary(m => m.Id, StringComparer.Ordinal);
         _memberDropSession = _gesture.MemberId is { } memberId
-            ? new WallMemberDropSession(Document, memberId, _gesture.NewGroupId, _metrics) : null;
+            ? new WallMemberDropSession(basis, memberId, _gesture.NewGroupId, _metrics) : null;
         _memberDropSlot = null; _memberDropResult = null;
         _dropCache.Clear(); _drawnDrop = null; _dragInputPending = false;
         _hasConsumedDragSample = false;
         _gestureLaunchKeys.Clear();
-        _performance.Begin("drag", Document, Scale, Surface.VisualCreationCount, Surface.GridCreationCount);
+        _performance.Begin("drag", basis, Scale, Surface.VisualCreationCount, Surface.GridCreationCount);
         RecordCompositionGateAtBegin();
         EnsureFrameSubscription();
     }
@@ -167,7 +169,7 @@ public sealed partial class MainWindow
     }
 
     private bool GestureSnapshotIsCurrent() => _gestureDocument is not null &&
-        _gestureDocument.Generation == Document.Generation && _gestureScale == Scale;
+        _gestureDocument.Generation == DropBasis.Generation && _gestureScale == Scale;
 
     private void ConsumeDragSample(Point point)
     {
@@ -185,9 +187,10 @@ public sealed partial class MainWindow
             var geometry = preview?.Geometry ?? _gestureGeometry!;
             if (!Settings.FullScreen && Surface.Geometry?.WallHeight != geometry.WallHeight)
                 Surface.BeginAutomaticHeightPresentation();
-            Surface.Render(preview?.Document ?? Document, preview?.Geometry ?? _gestureGeometry);
+            var presented = preview?.Document ?? _gestureDocument!;
+            Surface.Render(presented, geometry);
             Surface.RefreshClocks(_clock.UtcNow);
-            ApplyViewport(preview?.Document ?? Document, preview?.Geometry ?? _gestureGeometry,
+            ApplyViewport(presented, geometry,
                 animateMode: false, animateHeight: true);
             Surface.ShowDragCue(_gesture.MemberId, preview is not null, _gesture.GroupId);
             if (_gesture.MemberId is not null)
@@ -204,6 +207,8 @@ public sealed partial class MainWindow
                 }
             }
             _drawnDrop = proposal;
+            if (preview is not null)
+                TraceInput($"DropQueue preview base={_gestureDocument!.Generation} committed={Document.Generation} next={preview.Document.Generation}");
             _performance.View(Stopwatch.GetTimestamp() - start);
         }
         _memberDropSession?.SetDisplayed(proposal?.Proposal is not null ? _memberDropSlot : null);
@@ -220,12 +225,13 @@ public sealed partial class MainWindow
         _performance.Ghost();
     }
 
-    private WallLayoutResult CachedDrop(WallAction action, WallDocument? expanded = null)
+    private WallLayoutResult CachedDrop(WallAction action, bool prepend = false)
     {
-        var key = (action, expanded is not null);
+        var key = (action, prepend);
+        _dropAction = key;
         if (_dropCache.TryGetValue(key, out var result)) { _performance.CacheHit(); return result; }
         var start = Stopwatch.GetTimestamp();
-        result = WallLayoutEngine.TryApply(expanded ?? _gestureDocument ?? Document, action,
+        result = WallDropPlan.Calculate(_gestureDocument!, action, prepend,
             WorkWidthDip, WorkHeightDip, _metrics);
         _performance.Proposal(Stopwatch.GetTimestamp() - start);
         _dropCache.Add(key, result);

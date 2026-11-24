@@ -60,7 +60,7 @@ public sealed partial class WallStore
         }
     }
 
-    private ProtectedResources CaptureProtectedResourceSet(string? excludedCommitId = null)
+    private ProtectedResources CaptureProtectedResourceSet(string? excludedCommitId = null, CancellationToken token = default)
     {
         Monitor.Enter(_resourceGate);
         var result = new ProtectedResources { ReleaseGate = () => Monitor.Exit(_resourceGate) };
@@ -69,6 +69,7 @@ public sealed partial class WallStore
             var snapshots = new Dictionary<string, UserDataManifest>(StringComparer.Ordinal);
             byte[] Read(string path)
             {
+                token.ThrowIfCancellationRequested();
                 var stream = _files.OpenReadProtected(path); result.Handles.Add(stream);
                 if (stream.Length is < 1 or > 64 * 1024 * 1024) throw new InvalidDataException("Invalid protected material size.");
                 var bytes = new byte[checked((int)stream.Length)]; stream.ReadExactly(bytes); stream.Position = 0; return bytes;
@@ -84,8 +85,9 @@ public sealed partial class WallStore
                 result.Media.UnionWith(MediaById(document).Keys);
                 foreach (var gallery in GalleryReferences(document))
                 {
+                    token.ThrowIfCancellationRequested();
                     if (result.Sources.Add(gallery.ContentId))
-                        _ = CheckGallery(gallery, protectedHandles: result.Handles);
+                        _ = CheckGallery(gallery, protectedHandles: result.Handles, token: token);
                 }
             }
             void ProtectManifest(string path, bool required = false)
@@ -113,6 +115,7 @@ public sealed partial class WallStore
             ProtectManifest(_paths.Previous);
             foreach (var directory in _files.ListDirectories(_paths.RecoveryEntries))
             {
+                token.ThrowIfCancellationRequested();
                 var id = Path.GetFileName(directory);
                 if (id == excludedCommitId) continue;
                 if (!ValidCommitId(id)) throw new InvalidDataException("Unknown recovery material prevents reclamation.");
@@ -127,6 +130,7 @@ public sealed partial class WallStore
             }
             foreach (var directory in _files.ListDirectories(_paths.Staging))
             {
+                token.ThrowIfCancellationRequested();
                 var id = Path.GetFileName(directory);
                 if (id == excludedCommitId) continue;
                 if (!ValidCommitId(id)) throw new InvalidDataException("Unknown pending material prevents reclamation.");
@@ -162,13 +166,14 @@ public sealed partial class WallStore
     }
 
     /// <summary>Independent best-effort GC. It can never revoke a successful commit or block a healthy wall.</summary>
-    private void TryReclaimUnreferencedResources(string? expectedFingerprint = null)
+    internal void TryReclaimUnreferencedResources(string? expectedFingerprint = null, CancellationToken token = default)
     {
         try
         {
             lock (_resourceGate)
                 if (expectedFingerprint is not null && _lastReclamationState == expectedFingerprint) return;
-            using var protection = CaptureProtectedResourceSet();
+            token.ThrowIfCancellationRequested();
+            using var protection = CaptureProtectedResourceSet(token: token);
             if (!protection.Complete) return;
             var fingerprint = protection.CurrentFingerprint;
             if (_lastReclamationState == fingerprint) return;
@@ -178,6 +183,7 @@ public sealed partial class WallStore
                 if (_files.ListFiles(root).Count != 0) throw new InvalidDataException("Unknown files in a formal resource root.");
                 foreach (var directory in _files.ListDirectories(root))
                 {
+                    token.ThrowIfCancellationRequested();
                     var id = Path.GetFileName(directory);
                     if (!protectedIds.Contains(id)) candidates.Add((kind, directory));
                 }
@@ -187,10 +193,16 @@ public sealed partial class WallStore
             Collect(_paths.Sources, "source", protection.Sources);
             Collect(_paths.Snapshots, "snapshot", protection.Snapshots);
             // Establish ownership for the whole batch before deleting anything.
-            foreach (var candidate in candidates) ValidateReclamationCandidate(candidate.Kind, candidate.Directory);
             foreach (var candidate in candidates)
             {
-                ValidateReclamationCandidate(candidate.Kind, candidate.Directory);
+                token.ThrowIfCancellationRequested();
+                ValidateReclamationCandidate(candidate.Kind, candidate.Directory, token);
+            }
+            foreach (var candidate in candidates)
+            {
+                token.ThrowIfCancellationRequested();
+                ValidateReclamationCandidate(candidate.Kind, candidate.Directory, token);
+                token.ThrowIfCancellationRequested();
                 _files.DeleteDirectory(candidate.Directory);
             }
             _lastReclamationState = fingerprint;
@@ -201,7 +213,7 @@ public sealed partial class WallStore
         }
     }
 
-    private void ValidateReclamationCandidate(string kind, string directory)
+    private void ValidateReclamationCandidate(string kind, string directory, CancellationToken token)
     {
         _paths.GuardTree(directory);
         var id = Path.GetFileName(directory);
@@ -222,7 +234,7 @@ public sealed partial class WallStore
             var reference = new ManagedMediaReference(id, Path.GetExtension(files[0]), bytes.LongLength);
             if (!PreparedMediaAsset.IsValidReference(reference) || Hash(bytes) != id) throw new InvalidDataException("Invalid orphan media.");
         }
-        else if (kind == "source") _ = CheckGallery(new(id, id), directory);
+        else if (kind == "source") _ = CheckGallery(new(id, id), directory, token: token);
         else
         {
             if (!UserDataSnapshotJson.ValidHash(id) || files.Select(Path.GetFileName).Any(name => !SnapshotFileNames.Contains(name, StringComparer.Ordinal)))

@@ -493,7 +493,7 @@ public sealed partial class MainWindow
             if (_hasDocument && !_viewBlocked)
             {
                 CancelTransientState();
-                Surface.Render(Document);
+                Surface.Render(DropBasis);
                 Surface.RefreshClocks(_clock.UtcNow);
             }
         });

@@ -14,7 +14,7 @@ namespace TileWall.Views;
 /// <summary>Fixed hit targets and clipped viewports onto the same complete member canvas.</summary>
 public sealed class PuzzleCanvasView : Canvas
 {
-    private readonly List<Action> _resetInteractions = [];
+    private readonly List<WallMemberVisualFactory.ButtonInteraction> _interactions = [];
     private readonly List<(Border Band, TextBlock Title, double ViewportWidth)> _externalTitles = [];
     private readonly List<Action<bool, bool>> _partitionHover = [];
     private readonly List<Grid> _previewPartitions = [];
@@ -59,7 +59,7 @@ public sealed class PuzzleCanvasView : Canvas
         StopScrolling();
         foreach (var title in _externalTitles)
             title.Band.Visibility = RevealTitles ? Visibility.Visible : Visibility.Collapsed;
-        foreach (var reset in _resetInteractions) reset();
+        foreach (var interaction in _interactions) interaction.Reset();
     }
 
     public PuzzleCanvasView()
@@ -73,7 +73,7 @@ public sealed class PuzzleCanvasView : Canvas
     {
         StopTransientFeedback();
         Children.Clear();
-        _resetInteractions.Clear();
+        _interactions.Clear();
         _externalTitles.Clear();
         _partitionHover.Clear();
         _previewPartitions.Clear();
@@ -150,7 +150,7 @@ public sealed class PuzzleCanvasView : Canvas
                 AutomationProperties.SetAutomationId(button, $"member-{member.Id}-partition-{index}");
                 AutomationProperties.SetName(button, title);
                 WallMemberVisualFactory.SetTargetTooltip(button, member);
-                _resetInteractions.Add(WallMemberVisualFactory.ConfigureInteraction(button, content, content.CornerRadius, SetTitleHover));
+                _interactions.Add(WallMemberVisualFactory.ConfigureInteraction(button, content, content.CornerRadius, SetTitleHover));
                 part = button;
                 PartitionCreated?.Invoke(button, index);
             }
@@ -184,6 +184,9 @@ public sealed class PuzzleCanvasView : Canvas
         }
         return null;
     }
+
+    internal WallMemberVisualFactory.ButtonInteraction? InteractionAt(Point point) =>
+        PartitionAt(point) is { } index && index < _interactions.Count ? _interactions[index] : null;
 
     internal void SetPreviewTargetTooltips(string? text)
     {

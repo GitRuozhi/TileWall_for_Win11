@@ -44,8 +44,10 @@ internal static class WallMemberVisualFactory
         return target.Length == 0 ? diagnostic : $"{target}\n{diagnostic}";
     }
 
+    internal sealed record ButtonInteraction(Action Reset, Action<bool> SetHover);
+
     /// <summary>Shared pointer/focus states for wall, import and gallery buttons; hit targets never move.</summary>
-    internal static Action ConfigureInteraction(ButtonBase button, Grid content, CornerRadius corners,
+    internal static ButtonInteraction ConfigureInteraction(ButtonBase button, Grid content, CornerRadius corners,
         Action<bool>? hoverChanged = null, bool drawHoverEdge = true, bool deferHoverExit = false, Grid? partitionFocus = null)
     {
         // Stock button templates add theme-dependent fills over image content.
@@ -86,7 +88,13 @@ internal static class WallMemberVisualFactory
             hovering = keyboardFocus = pointerPressed = keyPressed = false;
             Update(immediate: true);
         }
-        button.PointerEntered += (_, _) => { ++hoverRevision; hovering = true; Update(); };
+        void SetHover(bool hover)
+        {
+            ++hoverRevision;
+            hovering = hover;
+            Update();
+        }
+        button.PointerEntered += (_, _) => SetHover(true);
         button.PointerExited += (_, _) =>
         {
             pointerPressed = false;
@@ -145,7 +153,7 @@ internal static class WallMemberVisualFactory
             if (button.Visibility != Visibility.Visible) Reset();
         });
         Update(immediate: true);
-        return Reset;
+        return new(Reset, SetHover);
     }
 
     internal static Action<bool, bool> ConfigurePreviewHover(Grid content, CornerRadius corners)

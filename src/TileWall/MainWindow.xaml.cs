@@ -159,7 +159,9 @@ public sealed partial class MainWindow : Window
             TraceInput($"CaptureLost source={e.OriginalSource?.GetType().Name} phase={_gesture.Phase} pointer={e.Pointer.PointerId}");
             // Capturing on the surface transfers capture away from the child Button.
             // Its routed loss is expected; only loss of the surface's own capture cancels the gesture.
-            if (ReferenceEquals(e.OriginalSource, Surface)) { CancelDeferredGesturePress(e.Pointer.PointerId); TerminateGesture(); }
+            if (!ReferenceEquals(e.OriginalSource, Surface)) return;
+            if (_gesture.Phase != GesturePhase.Idle) TerminateGesture();
+            else CancelDeferredGesturePress(e.Pointer.PointerId);
         };
         Surface.PointerCanceled += (_, e) =>
         {
@@ -167,6 +169,8 @@ public sealed partial class MainWindow : Window
             CancelDeferredGesturePress(e.Pointer.PointerId);
             TerminateGesture();
         };
+        WallRoot.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler(OnDropHoverPointerChanged), true);
+        WallRoot.AddHandler(UIElement.PointerExitedEvent, new PointerEventHandler(OnDropHoverPointerChanged), true);
         WallRoot.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(OnKeyDown), true);
         WallRoot.Loaded += (_, _) =>
         {
@@ -357,12 +361,17 @@ public sealed partial class MainWindow : Window
 
     private void RenderCommitted(WallDocument document)
     {
+        var keepDropPresentation = KeepDropPresentation(document);
+        if (keepDropPresentation) TraceInput($"DropQueue keep newer preview at commit={document.Generation}");
         ObserveEnvironmentDocument(document);
-        var scrollAnchor = CaptureCommittedScrollAnchor(document);
+        var scrollAnchor = keepDropPresentation ? null : CaptureCommittedScrollAnchor(document);
         RefreshAppearance();
         _puzzles.Sync(document);
-        if (_carouselCommit) Surface.RefreshPuzzlePresentation(document);
-        else Surface.Render(document);
+        if (!keepDropPresentation)
+        {
+            if (_carouselCommit) Surface.RefreshPuzzlePresentation(document);
+            else Surface.Render(document);
+        }
         if (!_carouselCommit) RenderMenuStart(document);
         Surface.Visibility = Visibility.Visible;
         Surface.IsHitTestVisible = !PersistenceInteractionBlocked;
@@ -373,9 +382,10 @@ public sealed partial class MainWindow : Window
         RetryOpenButton.Visibility = OpenDataFolderButton.Visibility = Visibility.Collapsed;
         _initialOpenBlocked = false;
         _openFailureMessage = null;
-        if (!_carouselCommit && (_environmentWallShown || _userDataUpgradeInProgress && AppWindow.IsVisible)) PlaceWall();
+        if (!keepDropPresentation && !_carouselCommit &&
+            (_environmentWallShown || _userDataUpgradeInProgress && AppWindow.IsVisible)) PlaceWall();
         RefreshEnvironmentStatus();
-        RestoreCommittedScrollAnchor(document, scrollAnchor);
+        if (!keepDropPresentation) RestoreCommittedScrollAnchor(document, scrollAnchor);
         UpdatePuzzleGate();
         Surface.RefreshClocks(_clock.UtcNow);
         QueueEnvironmentAdaptation();
@@ -576,6 +586,7 @@ public sealed partial class MainWindow : Window
             return ProductStrings.Get("Wall.LayoutLocked");
         try
         {
+            SettleReclamationBeforeSynchronousWrite();
             var commitStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var scale = Scale;
             var media = Task.Run(() => PrepareFormalMediaAsync(proposal, changes, scale)).GetAwaiter().GetResult();
@@ -666,7 +677,7 @@ public sealed partial class MainWindow : Window
         if (!Surface.ImagesActive) Surface.ClearTransientInteraction();
         else if (!imagesWereActive && _hasDocument)
         {
-            Surface.Render(Document);
+            Surface.Render(DropBasis);
             _needsVisualRefresh = false;
         }
         UpdateVisibleWallFrames();
@@ -685,6 +696,7 @@ public sealed partial class MainWindow : Window
             Surface.RefreshClocks(_clock.UtcNow); _clockTimer.Start();
         }
         ImportReadinessChanged?.Invoke();
+        QueueDeferredReclamation();
     }
 
     private Task CreateTileAsync(string? groupId, int lane) => CreateMemberAsync(groupId, lane);
@@ -983,8 +995,10 @@ public sealed partial class MainWindow : Window
         _tracedMovePointerId = 0;
         _tracedMovePhase = GesturePhase.Idle;
         TraceInput($"Press source={e.OriginalSource?.GetType().Name} pointer={e.Pointer.PointerId} phase={_gesture.Phase} left={e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed}");
-        if (TryDeferGesturePress(e)) return;
-        if (LayoutMutationBlocked || _modal || _viewBlocked || !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return;
+        var continuing = CanContinueDrops;
+        if (!continuing && _drops.Count == 0 && TryDeferGesturePress(e)) return;
+        if ((!continuing && LayoutMutationBlocked) || _modal || _viewBlocked ||
+            !e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed) return;
         try
         {
             if (_viewportTransition is { AutomaticHeight: true } or { ResizeSettlement: true }) StopViewportTransition();
@@ -998,10 +1012,11 @@ public sealed partial class MainWindow : Window
             var hit = Surface.Hit(point);
             TraceInput($"PressHit member={hit.MemberId} group={hit.GroupId} handle={hit.GroupHandle} x={point.X:F1} y={point.Y:F1}");
             if (hit.MemberId is null && !hit.GroupHandle || Settings.LayoutLocked && hit.GroupHandle) return;
+            YieldDeferredReclamation();
             // Capture a complete settled frame in the ghost, including a flip interrupted by this press.
             _puzzles.SetGate(MemberCarouselGate.Gesture);
             StopViewportTransition();
-            var geometry = Surface.Geometry ?? WallLayoutEngine.Measure(Document, _metrics);
+            var geometry = Surface.Geometry ?? WallLayoutEngine.Measure(DropBasis, _metrics);
             var bounds = hit.MemberId is { } memberId
                 ? geometry.Groups.SelectMany(g => g.Members).First(m => m.MemberId == memberId).Bounds
                 : geometry.Groups.First(g => g.GroupId == hit.GroupId).Bounds;
@@ -1045,17 +1060,17 @@ public sealed partial class MainWindow : Window
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (UpdateDeferredGesturePress(e)) return;
-        if (_traceInput && e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed &&
-            (_tracedMovePointerId != e.Pointer.PointerId || _tracedMovePhase != _gesture.Phase))
-        {
-            TraceInput($"Move source={e.OriginalSource?.GetType().Name} pointer={e.Pointer.PointerId} phase={_gesture.Phase}");
-            _tracedMovePointerId = e.Pointer.PointerId;
-            _tracedMovePhase = _gesture.Phase;
-        }
-        if (_gesture.Phase == GesturePhase.Idle || _gesture.PointerId != e.Pointer.PointerId) return;
         try
         {
+            if (UpdateDeferredGesturePress(e)) return;
+            if (_traceInput && e.GetCurrentPoint(Surface).Properties.IsLeftButtonPressed &&
+                (_tracedMovePointerId != e.Pointer.PointerId || _tracedMovePhase != _gesture.Phase))
+            {
+                TraceInput($"Move source={e.OriginalSource?.GetType().Name} pointer={e.Pointer.PointerId} phase={_gesture.Phase}");
+                _tracedMovePointerId = e.Pointer.PointerId;
+                _tracedMovePhase = _gesture.Phase;
+            }
+            if (_gesture.Phase == GesturePhase.Idle || _gesture.PointerId != e.Pointer.PointerId) return;
             LatchGesturePointerHistory(e);
             _latestDragPoint = CommittedPointerPoint(e);
             _gesture.Advance(_latestDragPoint, _gestureThresholdDip);
@@ -1069,49 +1084,50 @@ public sealed partial class MainWindow : Window
 
     private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        if (ReleaseDeferredGesturePress(e)) return;
-        TraceInput($"Release source={e.OriginalSource?.GetType().Name} pointer={e.Pointer.PointerId} phase={_gesture.Phase}");
-        if (_gesture.Phase == GesturePhase.Idle || _gesture.PointerId != e.Pointer.PointerId) return;
         try
         {
+            if (ReleaseDeferredGesturePress(e)) return;
+            TraceInput($"Release source={e.OriginalSource?.GetType().Name} pointer={e.Pointer.PointerId} phase={_gesture.Phase}");
+            if (_gesture.Phase == GesturePhase.Idle || _gesture.PointerId != e.Pointer.PointerId) return;
             if (!GestureSnapshotIsCurrent()) { TerminateGesture(); return; }
             _dragInputPending = false;
             LatchGesturePointerHistory(e);
-            var point = CommittedPointerPoint(e);
-            _performance.Input();
-            // A release can arrive before the next display callback. Consume and draw its
-            // sample through the same path, then commit that exact displayed proposal.
-            ConsumeDragSample(point);
-            var dragged = _gesture.Phase == GesturePhase.Dragging;
-            var proposal = dragged ? _gesture.Preview : null;
-            var id = _gesture.MemberId;
-            var groupId = _gesture.GroupId;
-            var before = _gestureDocument ?? Document;
-            TraceInput($"ReleaseDecision dragged={dragged} member={id} proposal={proposal?.Proposal is not null}");
-            TerminateGesture(restoreScroll: false, restoreView: proposal?.Proposal is null);
-            if (!dragged)
-            {
-                if (id is not null) LaunchMember(id);
-                _suppressClickMember = id;
-                DispatcherQueue.TryEnqueue(() => _suppressClickMember = null);
-                return;
-            }
-            _suppressClickMember = id;
-            DispatcherQueue.TryEnqueue(() => _suppressClickMember = null);
-            var dropResult = proposal;
-            if (dropResult is not { Proposal: { } acceptedProposal })
-            {
-                AppLog.Warn("WallDrop", $"rejection={dropResult?.Rejection} detail={dropResult?.Detail}");
-                Status(DescribeDropFailure(dropResult));
-                return;
-            }
-            _ = CommitProposalAsync(acceptedProposal, settle: error =>
-            {
-                SettleReleasePersistence(error, automaticHeight: true);
-                if (error is null) ShowCommittedDropFeedback(dropResult, before, id, groupId);
-            });
+            CompletePointerGesture(CommittedPointerPoint(e), e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse);
         }
         catch (Exception ex) { RecoverGestureError(ex); }
+    }
+
+    private void CompletePointerGesture(Point point, bool mouse)
+    {
+        _performance.Input();
+        // Draw the release sample through the usual preview path and commit that proposal.
+        ConsumeDragSample(point);
+        var dragged = _gesture.Phase == GesturePhase.Dragging;
+        var drop = dragged ? _gesture.Preview : null;
+        var id = _gesture.MemberId;
+        var before = _gestureDocument ?? Document;
+        var action = _dropAction;
+        TraceInput($"ReleaseDecision dragged={dragged} member={id} proposal={drop?.Proposal is not null}");
+        TerminateGesture(restoreScroll: false, restoreView: drop?.Proposal is null);
+        if (!dragged && id is not null) LaunchMember(id);
+        SuppressMemberClick(id);
+        if (!dragged) return;
+        if (mouse) RestoreDropHover();
+        if (drop is not { Proposal: not null })
+        {
+            AppLog.Warn("WallDrop", $"rejection={drop?.Rejection} detail={drop?.Detail}");
+            Status(DescribeDropFailure(drop));
+            return;
+        }
+        var pending = new WallDropPlan(before, drop, action.Action, action.Prepend);
+        _performance.End("release", Surface.VisualCreationCount, Surface.GridCreationCount);
+        if (pending.HasChange) EnqueueDrop(pending);
+    }
+
+    private void SuppressMemberClick(string? id)
+    {
+        _suppressClickMember = id;
+        DispatcherQueue.TryEnqueue(() => _suppressClickMember = null);
     }
 
     private void LatchGesturePointerHistory(PointerRoutedEventArgs e)
@@ -1146,35 +1162,31 @@ public sealed partial class MainWindow : Window
     private WallLayoutResult? CalculateDrop(Point point)
     {
         if (_gesture.MemberId is not null) return CalculateMemberDrop(point);
-        var geometry = _gestureGeometry ?? WallLayoutEngine.Measure(Document, _metrics);
+        var basis = _gestureDocument!;
+        var geometry = _gestureGeometry!;
         var derivedLanes = Settings.FullScreen || Settings.ExpandColumns;
         var rightAnchor = !derivedLanes && Settings.AnchorCorner is AnchorCorner.TopRight or AnchorCorner.BottomRight;
         if (point.X < 0 || point.Y < 0 || point.X >= (derivedLanes ? Math.Max(geometry.WallWidth, WallScroll.ViewportWidth) : geometry.WallWidth) || point.Y >= (derivedLanes ? WallScroll.ViewportHeight : geometry.WallHeight))
             return InvalidDrop("Wall.OutsideWall");
         if (rightAnchor && point.X < _metrics.Margin)
         {
-            if (Document.Columns >= 64)
+            if (basis.Columns >= 64)
                 return InvalidDrop("Wall.OutsideLane");
             // Extending inward from a right anchor prepends a lane. The proposal still commits once
             // against the original generation, preserving every existing group/member identity.
-            var expanded = Document with { Columns = Document.Columns + 1,
-                Lanes = new[] { new WallLane { Groups = [] } }.Concat(Document.Lanes).ToArray() };
-            WallAction action;
-            if (_gesture.GroupId is { } movedGroup)
-                action = new MoveGroupAction(Document.Generation, movedGroup, 0, 0);
-            else return null;
-            return CachedDrop(action, expanded);
+            return _gesture.GroupId is { } movedGroup
+                ? CachedDrop(new MoveGroupAction(basis.Generation, movedGroup, 0, 0), prepend: true) : null;
         }
-        var lane = !derivedLanes && !rightAnchor && point.X >= geometry.WallWidth - _metrics.Margin ? Document.Columns :
+        var lane = !derivedLanes && !rightAnchor && point.X >= geometry.WallWidth - _metrics.Margin ? basis.Columns :
             (int)Math.Floor((point.X - _metrics.Margin) / (_metrics.LaneWidth + _metrics.ColumnGap));
-        lane = WallViewportPolicy.MapCreationLane(Document, lane);
-        if (lane < 0 || lane >= 64 || !derivedLanes && lane > Document.Columns)
+        lane = WallViewportPolicy.MapCreationLane(basis, lane);
+        if (lane < 0 || lane >= 64 || !derivedLanes && lane > basis.Columns)
             return InvalidDrop("Wall.OutsideLane");
         if (_gesture.GroupId is { } groupId)
         {
             var before = geometry.Groups.Count(g => g.LaneIndex == lane && g.GroupId != groupId &&
                 g.TitleBounds.Y + g.TitleBounds.Height / 2 < point.Y);
-            return CachedDrop(new MoveGroupAction(Document.Generation, groupId, lane, before));
+            return CachedDrop(new MoveGroupAction(basis.Generation, groupId, lane, before));
         }
         return null;
     }
@@ -1194,27 +1206,26 @@ public sealed partial class MainWindow : Window
     private WallLayoutResult ResolveMemberDrop(WallMemberDropSlot slot, WallMember member)
     {
         var original = _gestureGeometry!;
+        var basis = _gestureDocument!;
         var derivedLanes = Settings.FullScreen || Settings.ExpandColumns;
         var rightAnchor = !derivedLanes && Settings.AnchorCorner is AnchorCorner.TopRight or AnchorCorner.BottomRight;
         if (slot.Bounds.Row < 0)
             return InvalidDrop("Wall.OutsideWall");
         if (slot.LaneIndex == -1 && rightAnchor)
         {
-            if (Document.Columns >= 64) return InvalidDrop("Wall.OutsideLane");
+            if (basis.Columns >= 64) return InvalidDrop("Wall.OutsideLane");
             if (slot.Bounds.Row == 0) return InvalidDrop("Wall.OutsideGroup");
-            var expanded = Document with { Columns = Document.Columns + 1,
-                Lanes = new[] { new WallLane { Groups = [] } }.Concat(Document.Lanes).ToArray() };
-            var prepend = new MoveMemberAction(Document.Generation, member.Id,
+            var prepend = new MoveMemberAction(basis.Generation, member.Id,
                 slot.Bounds with { Row = slot.Bounds.Row - 1 }, null, 0, 0, _gesture.NewGroupId);
-            return CachedDrop(prepend, expanded);
+            return CachedDrop(prepend, prepend: true);
         }
         var availableLanes = derivedLanes
-            ? Math.Max(Document.Columns, (int)Math.Floor((Math.Max(original.WallWidth, WallScroll.ViewportWidth) -
+            ? Math.Max(basis.Columns, (int)Math.Floor((Math.Max(original.WallWidth, WallScroll.ViewportWidth) -
                 2 * _metrics.Margin + _metrics.ColumnGap) / (_metrics.LaneWidth + _metrics.ColumnGap)))
-            : Document.Columns + (rightAnchor ? 0 : 1);
+            : basis.Columns + (rightAnchor ? 0 : 1);
         if (slot.LaneIndex < 0 || slot.LaneIndex >= 64 || slot.LaneIndex >= availableLanes)
             return InvalidDrop("Wall.OutsideLane");
-        var lane = WallViewportPolicy.MapCreationLane(_gestureDocument!, slot.LaneIndex);
+        var lane = WallViewportPolicy.MapCreationLane(basis, slot.LaneIndex);
         var action = _memberDropSession!.Resolve(slot with { LaneIndex = lane });
         if (_traceInput)
         {
@@ -1268,20 +1279,26 @@ public sealed partial class MainWindow : Window
         var ghost = _gesture.GhostHost;
         if (ghost is null)
         {
-            ghost = new Border
-            {
-                Width = visual.Width,
-                Height = visual.Height,
-                CornerRadius = WallCornerStyle.Corners(Document.Settings.VisualStyle),
-                Child = visual,
-                RenderTransform = new TranslateTransform(),
-            };
+            ghost = CreateDragGhost(visual);
             _gesture.SetGhostHost(ghost);
-            DragOverlay.Children.Add(ghost);
         }
         point = ContentToViewport(point);
         PositionGhost(ghost, point.X - _gesture.GrabOffset.X,
             point.Y - (_gesture.GroupId is null ? _gesture.GrabOffset.Y : 12));
+    }
+
+    private Border CreateDragGhost(FrameworkElement visual)
+    {
+        var ghost = new Border
+        {
+            Width = visual.Width,
+            Height = visual.Height,
+            CornerRadius = WallCornerStyle.Corners(Document.Settings.VisualStyle),
+            Child = visual,
+            RenderTransform = new TranslateTransform(),
+        };
+        DragOverlay.Children.Add(ghost);
+        return ghost;
     }
 
     private void TerminateGesture(bool restoreScroll = true, bool restoreView = true)
@@ -1307,11 +1324,13 @@ public sealed partial class MainWindow : Window
         {
             if (wasDragging && restoreView && !_viewBlocked)
             {
-                if (!Settings.FullScreen && Surface.Geometry?.WallHeight != _metrics.WallHeight(Document.Rows))
+                var basis = DropBasis;
+                var geometry = WallLayoutEngine.Measure(basis, _metrics);
+                if (!basis.Settings.FullScreen && Surface.Geometry?.WallHeight != geometry.WallHeight)
                     Surface.BeginAutomaticHeightPresentation();
-                Surface.Render(Document);
+                Surface.Render(basis, geometry);
                 Surface.RefreshClocks(_clock.UtcNow);
-                ApplyViewport(animateMode: false, animateHeight: true);
+                ApplyViewport(basis, geometry, animateMode: false, animateHeight: true);
             }
             Surface.ShowDragCue(null, false);
             ResumeEnvironmentAdaptation();
