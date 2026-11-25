@@ -895,4 +895,8 @@
   <x:String x:Key="WindowsStartImport.Invalid">The exported Windows Start layout has an invalid format.</x:String>
   <x:String x:Key="WindowsStartImport.Failed">Could not import the pinned items from Windows Start.</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">The pinned items cannot fit on the wall. {0}</x:String>
+    <x:String x:Key="Settings.InitialTileBackground">Initial tile background</x:String>
+    <x:String x:Key="Settings.LogDirectory">Log directory</x:String>
+    <x:String x:Key="Settings.OpenLogDirectory">Open log directory</x:String>
+    <x:String x:Key="Settings.OpenLogDirectoryFailed">Could not open the log directory: {0}</x:String>
 </ResourceDictionary>

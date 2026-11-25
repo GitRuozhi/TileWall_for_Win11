@@ -899,4 +899,8 @@
   <x:String x:Key="WindowsStartImport.Invalid">내보낸 Windows 시작 레이아웃의 형식이 올바르지 않습니다.</x:String>
   <x:String x:Key="WindowsStartImport.Failed">Windows 시작에 고정된 항목을 가져올 수 없습니다.</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">고정된 항목을 모두 배치할 수 없습니다. {0}</x:String>
+    <x:String x:Key="Settings.InitialTileBackground">타일 초기 배경</x:String>
+    <x:String x:Key="Settings.LogDirectory">로그 폴더</x:String>
+    <x:String x:Key="Settings.OpenLogDirectory">로그 폴더 열기</x:String>
+    <x:String x:Key="Settings.OpenLogDirectoryFailed">로그 폴더를 열 수 없습니다: {0}</x:String>
 </ResourceDictionary>

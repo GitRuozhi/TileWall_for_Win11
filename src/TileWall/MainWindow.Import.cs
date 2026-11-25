@@ -425,11 +425,26 @@ public sealed partial class MainWindow
     private async Task<ImportPageResult> SaveImportAsync(ImportPageRequest request)
     {
         var plan = request.Plan;
+        var operation = request.Operation;
+        ImportPageResult SourceChanged()
+        {
+            operation.Finish(ImportOutcome.Rejected, "SourceChanged");
+            return new(ProductStrings.Get("Import.SourceChanged"), true);
+        }
         bool Current() => request.IsCurrent() && IsImportContextCurrent(request.Context) && !PersistenceInteractionBlocked;
         if (!Current() || request.Source.Refreshing || !request.Source.AvailabilityPrepared || !request.Context.Covers(request.Projection))
-            return new(ProductStrings.Get("Import.SourceChanged"), true);
-        if (plan.Status == ImportPlanStatus.NoChange) return new();
-        if (plan.Status != ImportPlanStatus.Ready || plan.Proposal is null) return new(ProductStrings.Get("Import.LayoutRejected"));
+            return SourceChanged();
+        if (plan.Status == ImportPlanStatus.NoChange)
+        {
+            operation.Finish(ImportOutcome.NoChange, "NoAddableItems");
+            return new();
+        }
+        if (plan.Status != ImportPlanStatus.Ready || plan.Proposal is null)
+        {
+            operation.Finish(ImportOutcome.Rejected, plan.Rejection.ToString());
+            return new(ProductStrings.Get("Import.LayoutRejected"));
+        }
+        operation.Stage("preparation");
         var kind = request.Source.Candidates[0].SourceKind;
         var native = kind is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or
             ImportPageSourceKind.SystemFeatures or ImportPageSourceKind.WindowsStart;
@@ -445,7 +460,7 @@ public sealed partial class MainWindow
         {
             if (member.Entry is null) continue;
             if (!request.Context.ExistingEntrySha256.TryGetValue(member.Id, out var hash))
-                return new(ProductStrings.Get("Import.SourceChanged"), true);
+                return SourceChanged();
             expectedEntrySha256.Add(member.Id, hash);
         }
         IReadOnlyList<PreparedMediaAsset> media = [];
@@ -463,7 +478,7 @@ public sealed partial class MainWindow
                     var source = request.Source.Candidates.Single(candidate => candidate.SourceKey == accepted.SourceKey);
                     if (source.Member.Entry is null) continue;
                     var entry = await batch.ReadEntryAsync(source.SourceKey);
-                    if (entry.Identity.Key != source.Identity?.Key) return new(ProductStrings.Get("Import.SourceChanged"), true);
+                    if (entry.Identity.Key != source.Identity?.Key) return SourceChanged();
                     changes.Add(new EntryChange.FromPackage(accepted.MemberId, entry));
                 }
                 var reusable = await _session.ReusablePackageMediaAsync(request.Context.Document.Generation);
@@ -522,7 +537,8 @@ public sealed partial class MainWindow
                         return (Member: placed[accepted.MemberId], Input: source.Member.SourceShortcutPath ?? source.Member.TargetInput,
                             Inference: known?.Matches(request.Source, source) == true ? known.Result : null);
                     }).ToArray();
-                var prepared = await PrepareAcceptedTargetImagesAsync(inputs, request.Context.Document.Generation, RequireCurrent, CancellationToken.None);
+                var prepared = await PrepareAcceptedTargetImagesAsync(inputs, request.Context.Document.Generation,
+                    request.Context.Document.Settings, RequireCurrent, CancellationToken.None);
                 proposal = WithPreparedTargetImages(proposal, prepared.Members);
                 media = prepared.Assets;
                 // Native direct paths have no copied shortcut bytes for Store to compare.
@@ -530,9 +546,10 @@ public sealed partial class MainWindow
                 if (native) await ConfirmNativeImportAsync(request.Source, kind, keys, refresh: false);
                 await RequireTargetSourcesCurrentAsync(prepared.Sources, RequireCurrent, CancellationToken.None);
             }
-            if (!Current()) return new(ProductStrings.Get("Import.SourceChanged"), true);
+            operation.Prepared(plan.AddedCount);
+            if (!Current()) return SourceChanged();
             var error = await CommitProposalAsync(proposal, changes, preparedMedia: media,
-                expectedEntrySha256: expectedEntrySha256, managedGalleries: galleries);
+                expectedEntrySha256: expectedEntrySha256, managedGalleries: galleries, importOperation: operation);
             if (error?.Contains(WallStore.ImportDestinationChanged, StringComparison.Ordinal) == true)
                 return new(ProductStrings.Get("Import.SourceChanged"), true);
             if (error is null) TransientStatus(string.Format(ProductStrings.Get("Import.Added"), plan.AddedCount));
@@ -541,7 +558,7 @@ public sealed partial class MainWindow
         catch (Exception ex)
         {
             if (ex.Message.Contains(WallStore.ImportDestinationChanged, StringComparison.Ordinal))
-                return new(ProductStrings.Get("Import.SourceChanged"), true);
+                return SourceChanged();
             foreach (var accepted in plan.Accepted)
                 if (request.Source.StartMenuSources.TryGetValue(accepted.SourceKey, out var source)) StartMenuImports.InvalidateSource(source.Candidate);
             var changed = ex is ImportSourceChangedException || ex.Message == ProductStrings.Get("Import.SourceChanged") ||
@@ -549,6 +566,8 @@ public sealed partial class MainWindow
             if (changed && request.Source.Candidates.FirstOrDefault()?.SourceKind is { } sourceKind &&
                 sourceKind is ImportPageSourceKind.Desktop or ImportPageSourceKind.InstalledApplications or ImportPageSourceKind.SystemFeatures)
                 _nativeRefreshes.Remove(sourceKind);
+            operation.Finish(changed ? ImportOutcome.Rejected : ex is OperationCanceledException ? ImportOutcome.Canceled : ImportOutcome.Failed,
+                changed ? "SourceChanged" : ex.GetType().Name);
             return new(changed ? ProductStrings.Get("Import.SourceChanged") : string.Format(ProductStrings.Get("Import.Failed"), ex.Message), changed &&
                 !_session.ResultUnknown && !_session.RequiresReopen && !_session.RecoveryBlocked);
         }
@@ -627,7 +646,7 @@ public sealed partial class MainWindow
                 var placed = plan.Proposal.Document.EnumerateAllMembers().ToDictionary(member => member.Id, StringComparer.Ordinal);
                 var prepared = await PrepareAcceptedTargetImagesAsync(accepted.Select(item =>
                     (Member: placed[item.Member.Id], Input: (string?)item.SourcePath, Inference: (TargetImageSourceResult?)null)).ToArray(),
-                    current.Generation, RequireCurrent, token, initialIconFitPercent: settings.DefaultIconFitPercent);
+                    current.Generation, settings, RequireCurrent, token, initialIconFitPercent: settings.DefaultIconFitPercent);
                 await executor.ExecuteAsync(() =>
                 {
                     foreach (var item in accepted)
@@ -670,7 +689,7 @@ public sealed partial class MainWindow
     private async Task<(IReadOnlyDictionary<string, WallMember> Members, IReadOnlyList<PreparedMediaAsset> Assets,
         IReadOnlyList<TargetImageSourceResult> Sources)> PrepareAcceptedTargetImagesAsync(
         IReadOnlyList<(WallMember Member, string? Input, TargetImageSourceResult? Inference)> inputs,
-        long generation, Action requireCurrent, CancellationToken token, int? initialIconFitPercent = null)
+        long generation, WallSettings settings, Action requireCurrent, CancellationToken token, int? initialIconFitPercent = null)
     {
         var members = new Dictionary<string, WallMember>(StringComparer.Ordinal);
         var assets = new Dictionary<string, PreparedMediaAsset>(StringComparer.Ordinal);
@@ -688,7 +707,7 @@ public sealed partial class MainWindow
             if (input.Inference is not null && !await _images.IsTargetSourceCurrentAsync(source, token))
                 throw new ImportSourceChangedException("The import source changed.");
             requireCurrent(); sources.Add(source);
-            var member = source.ApplyTo(input.Member);
+            var member = MemberPresentationRules.ApplyInitialTileBackground(source.ApplyTo(input.Member), settings);
             async Task AddAssetAsync(PreparedMediaAsset asset)
             {
                 reusable ??= (await _session.ReusablePackageMediaAsync(generation)).Select(media => media.Sha256).ToHashSet(StringComparer.Ordinal);

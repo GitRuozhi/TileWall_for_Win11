@@ -84,7 +84,7 @@ internal static class UserDataSnapshotJson
 
     // Older schemas retain their original field contract, including their optional forward fields.
     private static readonly string[] Format6PreferenceNames = ["showUnavailableControls", "defaultTileSize", "defaultIconFitPercent",
-        "hiddenWallMenuActions", "hiddenMemberMenuActions"];
+        "hiddenWallMenuActions", "hiddenMemberMenuActions", "defaultTileBackground", "defaultTileBackgroundColor"];
     private static readonly JsonSerializerOptions V1Options = CreateHistoricalOptions(1);
     private static readonly JsonSerializerOptions V2Options = CreateHistoricalOptions(2);
     private static readonly JsonSerializerOptions V3Options = CreateHistoricalOptions(3);

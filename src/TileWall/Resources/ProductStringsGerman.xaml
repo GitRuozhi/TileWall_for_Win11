@@ -899,4 +899,8 @@ Fortfahren?</x:String>
   <x:String x:Key="WindowsStartImport.Invalid">Das exportierte Windows-Startlayout hat ein ungültiges Format.</x:String>
   <x:String x:Key="WindowsStartImport.Failed">Die angehefteten Einträge aus dem Windows-Startmenü konnten nicht importiert werden.</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">Auf der Kachelwand ist nicht genügend Platz für alle Einträge. {0}</x:String>
+    <x:String x:Key="Settings.InitialTileBackground">Anfänglicher Kachelhintergrund</x:String>
+    <x:String x:Key="Settings.LogDirectory">Protokollordner</x:String>
+    <x:String x:Key="Settings.OpenLogDirectory">Protokollordner öffnen</x:String>
+    <x:String x:Key="Settings.OpenLogDirectoryFailed">Der Protokollordner konnte nicht geöffnet werden: {0}</x:String>
 </ResourceDictionary>

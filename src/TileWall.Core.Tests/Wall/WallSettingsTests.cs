@@ -126,6 +126,40 @@ public sealed class WallSettingsTests
     }
 
     [Theory]
+    [InlineData(MemberBackgroundMode.Default, null)]
+    [InlineData(MemberBackgroundMode.Color, "#12A4CF")]
+    [InlineData(MemberBackgroundMode.Blur, null)]
+    [InlineData(MemberBackgroundMode.None, "#12A4CF")]
+    public void InitialTileBackgroundRoundTripsAsAnOptionalSnapshotPreference(MemberBackgroundMode mode, string? color)
+    {
+        var document = WallDocument.Empty(1, 1) with
+        {
+            Settings = new() { DefaultTileBackground = mode, DefaultTileBackgroundColor = color },
+        };
+        var snapshot = UserDataSnapshotJson.Prepare(document);
+        var saved = JsonNode.Parse(snapshot.Files["settings.json"])!["value"]!.AsObject();
+        Assert.Equal(mode != MemberBackgroundMode.Default, saved.ContainsKey("defaultTileBackground"));
+        Assert.Equal(color is not null, saved.ContainsKey("defaultTileBackgroundColor"));
+        var restored = UserDataSnapshotJson.Read(snapshot.Manifest, name => snapshot.Files[name],
+            _ => throw new InvalidOperationException());
+        Assert.Equal(mode, restored.Settings.DefaultTileBackground);
+        Assert.Equal(color, restored.Settings.DefaultTileBackgroundColor);
+        Assert.Empty(WallLayoutEngine.Validate(restored));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("#12345Q")]
+    public void ChosenInitialTileColorMustBeValid(string? color)
+    {
+        var document = WallDocument.Empty(1, 1) with
+        {
+            Settings = new() { DefaultTileBackground = MemberBackgroundMode.Color, DefaultTileBackgroundColor = color },
+        };
+        Assert.Contains("SETTINGS_TILE_BACKGROUND_COLOR", WallLayoutEngine.Validate(document));
+    }
+
+    [Theory]
     [InlineData(WallThemeMode.System, WallBackgroundMode.Acrylic, WallLanguageMode.System, 0)]
     [InlineData(WallThemeMode.System, WallBackgroundMode.Acrylic, WallLanguageMode.System, 10)]
     [InlineData(WallThemeMode.Light, WallBackgroundMode.Mica, WallLanguageMode.Chinese, 15)]
@@ -144,6 +178,7 @@ public sealed class WallSettingsTests
     [InlineData("themeMode")]
     [InlineData("backgroundMode")]
     [InlineData("languageMode")]
+    [InlineData("defaultTileBackground")]
     public void UnknownSettingsEnumsAreRejectedAfterPersistence(string field)
     {
         var json = JsonNode.Parse(WallJson.Serialize(WallDocument.Empty(1, 1)))!;

@@ -108,6 +108,10 @@ public sealed record WallSettings
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public WallContextMenuActions HiddenMemberMenuActions { get; init; }
     public TileSizePreset DefaultTileSize { get; init; } = TileSizePreset.Medium;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public MemberBackgroundMode DefaultTileBackground { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DefaultTileBackgroundColor { get; init; }
     public int DefaultIconFitPercent { get; init; } = 100;
     public WallLanguageMode LanguageMode { get; init; } = WallLanguageMode.System;
     public string? HotKey { get; init; } = "Win+Oem3";

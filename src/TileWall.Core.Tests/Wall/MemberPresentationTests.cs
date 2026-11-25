@@ -11,6 +11,25 @@ namespace TileWall.Core.Tests.Wall;
 
 public sealed class MemberPresentationTests
 {
+    [Theory]
+    [InlineData(MemberImageSourceKind.Automatic)]
+    [InlineData(MemberImageSourceKind.Single)]
+    [InlineData(MemberImageSourceKind.Folder)]
+    public void InitialBackgroundAppliesOnlyToAnOrdinaryTileWithAutomaticImages(MemberImageSourceKind source)
+    {
+        var settings = new WallSettings { DefaultTileBackground = MemberBackgroundMode.Color, DefaultTileBackgroundColor = "#8012BC" };
+        var imageSource = new MemberImageSource { Kind = source };
+        var tile = MemberPresentationRules.ApplyImageSource(new TileMember { Id = "new-tile", LocalBounds = new(0, 0, 2, 2) }, imageSource);
+        var puzzle = MemberPresentationRules.ApplyImageSource(new PuzzleMember
+            { Id = "new-puzzle", LocalBounds = new(0, 0, 2, 2), Partitions = [new(0, 0, 2, 2)] }, imageSource);
+        var result = MemberPresentationRules.ApplyInitialTileBackground(tile, settings);
+
+        Assert.Equal(source == MemberImageSourceKind.Automatic ? MemberBackgroundMode.Color : MemberBackgroundMode.Blur,
+            result.Visual.BackgroundMode);
+        Assert.Equal(source == MemberImageSourceKind.Automatic ? "#8012BC" : null, result.Visual.BackgroundColor);
+        Assert.Equal(tile.Visual.BackgroundTransparency, result.Visual.BackgroundTransparency);
+        Assert.Same(puzzle, MemberPresentationRules.ApplyInitialTileBackground(puzzle, settings));
+    }
     private static TileMember Tile() => new() { Id = "tile", LocalBounds = new GridRect(0, 0, 2, 2) };
 
     [Theory]

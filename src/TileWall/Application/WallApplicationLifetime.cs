@@ -92,6 +92,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _window.WindowsStartInvitationReady += QueueWindowsStartInvitation;
         _window.ImportReadinessChanged += () =>
         {
+            NoteHiddenMemoryActivity();
             QueueWindowsStartInvitation();
             if (_window.CanProcessExternalImport) QueueAddDrain();
             if (_started && _window.SettingsPersistenceBlocked)
@@ -100,7 +101,11 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
                 SuspendTaskbarForBlockedPersistence();
             }
         };
-        _window.DialogOpened += () => _show.Request(WallShowTrigger.Show);
+        _window.DialogOpened += () =>
+        {
+            CancelHiddenMemoryCollection();
+            _show.Request(WallShowTrigger.Show);
+        };
         _window.AppWindow.Closing += (sender, e) =>
         {
             if (_tearingDown) return;
@@ -201,6 +206,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private void Request(WallShowTrigger trigger)
     {
         if (_tearingDown || _exitPending) return;
+        if (trigger != WallShowTrigger.Hide) CancelHiddenMemoryCollection();
         if (!_started) { if (trigger != WallShowTrigger.Hide) _showWhenStarted = true; return; }
         if (_window.ModalActive)
         {
@@ -251,6 +257,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             return false;
         }
         _pendingAdds.Enqueue(message);
+        NoteHiddenMemoryActivity();
         _queuedPaths += message.Paths.Count;
         QueueAddDrain();
         return true;
@@ -304,6 +311,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             _queuedPaths -= message.Paths.Count;
             if (ReferenceEquals(_addPreparation, preparation)) _addPreparation = null;
             _addDrain = null;
+            NoteHiddenMemoryActivity();
         }
         if (result.Succeeded) { _addSucceeded++; _addCount += result.AddedCount; }
         else { _addFailed++; _lastAddFailure = result.Message; }
@@ -332,6 +340,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         if (_exitPending || _tearingDown) return;
         _exitPending = true;
+        CancelHiddenMemoryCollection();
         CancelTaskbarStartReplacementRecovery();
         _window.CancelWelcomeInitialization();
         _addPreparation?.Cancel();
@@ -390,6 +399,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             BeginTaskbarShutdown();
             CancelAnimations(); // Cancel a pending backdrop fence before appearance drains it.
             SnapHide();
+            if (_hiddenMemoryWork is { } hiddenMemoryWork) await hiddenMemoryWork;
             await ShutdownTaskbarAsync();
             try { await _window.ShutdownPersistenceAsync(); }
             catch (Exception ex) { AppLog.Warn("Exit", $"Storage worker shutdown: {ex.Message}"); }
@@ -495,6 +505,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _window.HideWall();
         TaskbarWallHidden();
         _window.CompleteBackdropAnimation(visible: false);
+        ScheduleHiddenMemoryCollection();
     }
     public void FocusWall()
     {

@@ -22,6 +22,12 @@ internal sealed class StartMenuImportCoordinator
     private Task? _initialize, _refresh, _startup, _stop;
     private bool _stopping, _startupScheduled, _refreshAgain, _refreshActive;
     private long _refreshEpoch;
+    private long _lastActivity;
+
+    internal (bool Busy, long LastActivity) MemoryCollectionActivity
+    {
+        get { lock (_sync) return (_refresh is { IsCompleted: false } || _initialize is { IsCompleted: false }, _lastActivity); }
+    }
 
     public StartMenuImportCoordinator(string dataRoot, IWallStorageExecutor executor,
         LaunchIdentityService identities, ILnkFileService links)
@@ -60,7 +66,11 @@ internal sealed class StartMenuImportCoordinator
         lock (_sync)
         {
             if (_stopping) return Task.CompletedTask;
-            return _initialize ??= Task.Run(ReadCache, _lifetime.Token);
+            return _initialize ??= Task.Run(() =>
+            {
+                try { ReadCache(); }
+                finally { lock (_sync) _lastActivity = Stopwatch.GetTimestamp(); }
+            }, _lifetime.Token);
         }
     }
 
@@ -91,7 +101,14 @@ internal sealed class StartMenuImportCoordinator
                         }
                     } while (true);
                 }
-                finally { lock (_sync) { if (_refreshEpoch == epoch) _refreshActive = false; } }
+                finally
+                {
+                    lock (_sync)
+                    {
+                        if (_refreshEpoch == epoch) _refreshActive = false;
+                        _lastActivity = Stopwatch.GetTimestamp();
+                    }
+                }
             });
         }
     }

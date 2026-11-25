@@ -28,6 +28,10 @@ public static class WallJson
             if (document.SchemaVersion < WallDocument.CurrentSchemaVersion && settingsJson.EnumerateObject().Any(property =>
                 property.Name.Equals("activateTaskbar", StringComparison.OrdinalIgnoreCase)))
                 throw new JsonException("Taskbar activation requires the current wall schema.");
+            if (document.SchemaVersion < WallDocument.CurrentSchemaVersion && settingsJson.EnumerateObject().Any(property =>
+                property.Name.Equals("defaultTileBackground", StringComparison.OrdinalIgnoreCase) ||
+                property.Name.Equals("defaultTileBackgroundColor", StringComparison.OrdinalIgnoreCase)))
+                throw new JsonException("Initial tile background requires the current wall schema.");
             document = document with { Settings = ReadStartInputPreferences(document.Settings, settingsJson, caseInsensitive: true) };
         }
         return ValidateAndFreeze(document);

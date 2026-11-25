@@ -899,4 +899,8 @@ Nuevo destino:
   <x:String x:Key="WindowsStartImport.Invalid">El diseño exportado de Inicio de Windows tiene un formato no válido.</x:String>
   <x:String x:Key="WindowsStartImport.Failed">No se pudieron importar los elementos anclados a Inicio de Windows.</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">No hay espacio en el muro de mosaicos para todos los elementos anclados. {0}</x:String>
+    <x:String x:Key="Settings.InitialTileBackground">Fondo inicial del mosaico</x:String>
+    <x:String x:Key="Settings.LogDirectory">Carpeta de registros</x:String>
+    <x:String x:Key="Settings.OpenLogDirectory">Abrir la carpeta de registros</x:String>
+    <x:String x:Key="Settings.OpenLogDirectoryFailed">No se pudo abrir la carpeta de registros: {0}</x:String>
 </ResourceDictionary>

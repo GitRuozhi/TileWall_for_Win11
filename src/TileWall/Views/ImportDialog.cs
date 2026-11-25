@@ -1245,6 +1245,7 @@ internal sealed class ImportDialog : IWallDialogSession
         if (item.Member is not { } member || member is ClockMember || member.Images.Kind == MemberImageSourceKind.None) return null;
         var candidate = source.Candidates.FirstOrDefault(item => item.SourceKey == projected.Source.SourceKey);
         if (candidate is null) return null;
+        if ((_context ?? _projectedContext)?.Document.Settings is not { } settings) return null;
         var scale = _dialog.XamlRoot?.RasterizationScale ?? 1;
         var width = Math.Clamp((int)Math.Ceiling(_metrics.WidthOf(member.LocalBounds.Width) * scale), 1, 4096);
         var height = Math.Clamp((int)Math.Ceiling(_metrics.HeightOf(member.LocalBounds.Height) * scale), 1, 4096);
@@ -1255,10 +1256,11 @@ internal sealed class ImportDialog : IWallDialogSession
             Version = 2, CandidateKey = projected.SelectionKey, candidate.SourceKind, candidate.SourceKey,
             candidate.SelectionIdentity, SourceFact = sourceFact, Stamp = IconStamp(projected),
             member.Images, member.ImageDisplay, member.Visual.BackgroundMode,
+            InitialBackground = candidate.Policy == ImportSourcePolicy.Attributed ? null : (MemberBackgroundMode?)settings.DefaultTileBackground,
             CurrentImage = member.Carousel?.CurrentImageId, Width = width, Height = height, DpiScale = scale,
             InferTarget = inferTarget,
         });
-        return new(workKey, sourceFact, projected, item, candidate, source, width, height, scale, inferTarget);
+        return new(workKey, sourceFact, projected, item, candidate, source, settings, width, height, scale, inferTarget);
     }
 
     private WallMember PreviewMemberFor(PreviewImageDescriptor descriptor, WallMember member)
@@ -1272,8 +1274,12 @@ internal sealed class ImportDialog : IWallDialogSession
         if (UsesNewAutomaticPreviewDefaults(descriptor, member) &&
             _previewImageCompletions.TryGetValue(descriptor.WorkKey, out var completion) && completion.AutomaticDisplay is { } display)
             member = member with { ImageDisplay = display };
-        return member;
+        return WithPreviewInitialBackground(descriptor, member);
     }
+
+    private static WallMember WithPreviewInitialBackground(PreviewImageDescriptor descriptor, WallMember member) =>
+        descriptor.SourceCandidate.Policy == ImportSourcePolicy.Attributed ? member :
+            MemberPresentationRules.ApplyInitialTileBackground(member, descriptor.Settings);
 
     private static bool UsesNewAutomaticPreviewDefaults(PreviewImageDescriptor descriptor, WallMember member) =>
         descriptor.SourceCandidate.Policy != ImportSourcePolicy.Attributed &&
@@ -1566,6 +1572,7 @@ internal sealed class ImportDialog : IWallDialogSession
             member = inferred.ApplyTo(member); targetRecognized = true;
         }
 
+        member = WithPreviewInitialBackground(descriptor, member);
         var frameKey = PreviewFrameKey(descriptor.Projected, candidate, descriptor.Source, member,
             descriptor.Width, descriptor.Height, descriptor.DpiScale);
         var automaticCachePath = descriptor.Source.Package is null && member.Images.Kind == MemberImageSourceKind.Automatic
@@ -1663,7 +1670,7 @@ internal sealed class ImportDialog : IWallDialogSession
                 // The image service applies CustomScale once and returns the Q1 display plane.
                 work.Stage = "automatic-icon-load";
                 if (work.DetailTraceEnabled) work.FirstIconStartedAt = Stopwatch.GetTimestamp();
-                result = await _loadIcon(candidate, width, height, token);
+                result = await _loadIcon(candidate with { Member = member }, width, height, token);
                 if (work.DetailTraceEnabled)
                 {
                     work.FirstIconElapsedMs = Stopwatch.GetElapsedTime(work.FirstIconStartedAt).TotalMilliseconds;
@@ -1784,7 +1791,22 @@ internal sealed class ImportDialog : IWallDialogSession
     {
         if (_closed || _dismissRequested || _adding || _reading || _picking || _context is null || _projection is null ||
             _sourceData is null || _sourceData.Refreshing || !_prepared || _preparing || !_projection.Candidates.Any(IsSelected)) return;
-        if (!_contextCurrent(_context)) { ShowSourceChanged(); BeginRead(resetSelection: true); return; }
+        var importing = Mode == ImportPageMode.Import && !IsRecycle;
+        var diagnostic = importing ? new ImportOperation(SourceKind) : null;
+        var selectedSourceKeys = importing ? FilteredSelectedSourceKeys() : [];
+        if (diagnostic is not null)
+        {
+            var stats = _projection.Statistics;
+            diagnostic.ObserveSource(stats.AcquiredCount, stats.CandidateCount, stats.FilteredCount, selectedSourceKeys.Length,
+                stats.PrimaryFilterCounts.GetValueOrDefault(ImportFilterReason.DuplicateTarget),
+                stats.PrimaryFilterCounts.GetValueOrDefault(ImportFilterReason.MissingTarget),
+                stats.PrimaryFilterCounts.GetValueOrDefault(ImportFilterReason.NonPrimaryEntry), _sourceData.ReadErrors);
+        }
+        if (!_contextCurrent(_context))
+        {
+            diagnostic?.Finish(ImportOutcome.Rejected, "ContextChanged");
+            ShowSourceChanged(); BeginRead(resetSelection: true); return;
+        }
         var epoch = _sourceEpoch; var source = _sourceData; var projection = _projection;
         Func<Task<ImportPageResult>> operation;
         if (IsRecycle)
@@ -1808,20 +1830,35 @@ internal sealed class ImportDialog : IWallDialogSession
         }
         else
         {
-            _plan = ImportSourcePlanner.TryPlan(_context.Document, _context.Document.Generation, projection,
-                FilteredSelectedSourceKeys(), new GridSize(_tileSize, _tileSize), _position.SelectedIndex == 1 ? ImportInsertionPosition.Tail : ImportInsertionPosition.Head,
-                _metrics, _context.Budget);
-            if (_plan.Status != ImportPlanStatus.Ready) { UpdateStatus(); return; }
+            try
+            {
+                _plan = ImportSourcePlanner.TryPlan(_context.Document, _context.Document.Generation, projection,
+                    selectedSourceKeys, new GridSize(_tileSize, _tileSize), _position.SelectedIndex == 1 ? ImportInsertionPosition.Tail : ImportInsertionPosition.Head,
+                    _metrics, _context.Budget);
+            }
+            catch (Exception ex)
+            {
+                diagnostic!.Finish(ImportOutcome.Failed, "PlanningException");
+                _error = string.Format(ProductStrings.Get("Import.Failed"), ex.Message);
+                UpdateStatus(); return;
+            }
             var plan = _plan;
+            diagnostic!.Plan(_context.Document, plan.Proposal, plan.AddedCount, plan.Status.ToString());
+            if (plan.Status != ImportPlanStatus.Ready)
+            {
+                diagnostic.Finish(plan.Status == ImportPlanStatus.NoChange ? ImportOutcome.NoChange : ImportOutcome.Rejected,
+                    plan.Status == ImportPlanStatus.NoChange ? "NoAddableItems" : plan.Rejection.ToString());
+                UpdateStatus(); return;
+            }
             var request = new ImportPageRequest(_context, source, projection, plan,
-                () => epoch == _sourceEpoch && ReferenceEquals(_plan, plan) && ReferenceEquals(_sourceData, source))
+                () => epoch == _sourceEpoch && ReferenceEquals(_plan, plan) && ReferenceEquals(_sourceData, source), diagnostic)
             { RecognizedTargets = new Dictionary<string, ImportTargetRecognition>(_recognizedTargets, StringComparer.Ordinal) };
             operation = () => _save(request);
         }
         _adding = true; _error = null; CancelPreview(); UpdateAvailability(); UpdateStatus();
         // Registration precedes preview drain, snapshot/commit or export publication.
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _addTask = completed.Task; Track(_addTask); _ = ExecuteOperationAsync(operation, completed);
+        _addTask = completed.Task; Track(_addTask); _ = ExecuteOperationAsync(operation, completed, diagnostic);
     }
 
     private async Task ConfirmDefaultExportPathAsync()
@@ -1830,7 +1867,8 @@ internal sealed class ImportDialog : IWallDialogSession
         if (_exportPathPicked) StartOperation();
     }
 
-    private async Task ExecuteOperationAsync(Func<Task<ImportPageResult>> operation, TaskCompletionSource completed)
+    private async Task ExecuteOperationAsync(Func<Task<ImportPageResult>> operation, TaskCompletionSource completed,
+        ImportOperation? diagnostic)
     {
         try
         {
@@ -1846,7 +1884,12 @@ internal sealed class ImportDialog : IWallDialogSession
             if (!_dismissRequested && !_readsSuspended && result.RefreshRequired) BeginRead(resetSelection: true);
             UpdateAvailability(); UpdateStatus();
         }
-        catch (Exception ex) { _error = ex.Message; _adding = false; UpdateAvailability(); UpdateStatus(); }
+        catch (Exception ex)
+        {
+            diagnostic?.Finish(ex is OperationCanceledException ? ImportOutcome.Canceled : ImportOutcome.Failed,
+                ex is OperationCanceledException ? "OperationCanceled" : "PageOperationFailed");
+            _error = ex.Message; _adding = false; UpdateAvailability(); UpdateStatus();
+        }
         finally { _adding = false; if (_dismissRequested) FinishDismiss(); completed.TrySetResult(); }
     }
 
@@ -2223,7 +2266,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private static void Id(DependencyObject element, string id) => AutomationProperties.SetAutomationId(element, "import-" + id);
     private sealed record PreviewItem(string Key, DipRect Bounds, StartGroup? Group, WallMember? Member, ImportProjectedCandidate? Candidate);
     private sealed record PreviewImageDescriptor(string WorkKey, string SourceFact, ImportProjectedCandidate Projected,
-        PreviewItem Item, ImportSourceCandidate SourceCandidate, ImportPageSource Source,
+        PreviewItem Item, ImportSourceCandidate SourceCandidate, ImportPageSource Source, WallSettings Settings,
         int Width, int Height, double DpiScale, bool InferTarget);
     private sealed class PreviewImageWork(PreviewImageDescriptor descriptor, CancellationTokenSource request)
     {

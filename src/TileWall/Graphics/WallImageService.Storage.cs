@@ -238,9 +238,23 @@ public sealed partial class WallImageService
     private Task TrackCacheWork(Task task)
     {
         lock (_workGate) _cacheWork.Add(task);
-        _ = task.ContinueWith(completed => { lock (_workGate) _cacheWork.Remove(completed); },
+        _ = task.ContinueWith(completed =>
+        {
+            lock (_workGate)
+            {
+                _cacheWork.Remove(completed);
+                _lastCacheActivity = System.Diagnostics.Stopwatch.GetTimestamp();
+            }
+        },
             CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         return task;
+    }
+
+    private long _lastCacheActivity;
+
+    internal (bool Busy, long LastActivity) MemoryCollectionActivity
+    {
+        get { lock (_workGate) return (_cacheWork.Count != 0, _lastCacheActivity); }
     }
     private async Task PublishCacheAsync(Action action, CancellationToken ct)
     {

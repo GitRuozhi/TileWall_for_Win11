@@ -316,7 +316,8 @@ public static partial class WallLayoutEngine
         if (document.Settings is null) errors.Add("SETTINGS_NULL");
         else if (!Enum.IsDefined(document.Settings.AnchorCorner) || !Enum.IsDefined(document.Settings.LanguageMode)
             || !Enum.IsDefined(document.Settings.VisualStyle) || !Enum.IsDefined(document.Settings.DefaultTileSize) ||
-            !Enum.IsDefined(document.Settings.ThemeMode) || !Enum.IsDefined(document.Settings.BackgroundMode))
+            !Enum.IsDefined(document.Settings.ThemeMode) || !Enum.IsDefined(document.Settings.BackgroundMode) ||
+            !Enum.IsDefined(document.Settings.DefaultTileBackground))
             errors.Add("SETTINGS_ENUM");
         else
         {
@@ -330,6 +331,10 @@ public static partial class WallLayoutEngine
                 errors.Add("SETTINGS_WINDOWED_VIEWPORT_WIDTH");
             if (document.Settings.DefaultIconFitPercent is < 20 or > 200)
                 errors.Add("SETTINGS_ICON_FIT");
+            if ((document.Settings.DefaultTileBackground == MemberBackgroundMode.Color ||
+                 document.Settings.DefaultTileBackgroundColor is not null) &&
+                !MemberPresentationRules.IsColor(document.Settings.DefaultTileBackgroundColor))
+                errors.Add("SETTINGS_TILE_BACKGROUND_COLOR");
             if (document.Settings.BackgroundTransparency is < 0 or > 100)
                 errors.Add("SETTINGS_TRANSPARENCY");
             if (document.Settings.BackgroundMode == WallBackgroundMode.Custom && document.Settings.BackgroundMedia is null &&

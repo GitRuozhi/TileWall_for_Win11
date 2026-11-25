@@ -896,4 +896,8 @@
   <x:String x:Key="WindowsStartImport.Invalid">Windows 開始畫面的匯出版面配置格式無效。</x:String>
   <x:String x:Key="WindowsStartImport.Failed">無法匯入 Windows 開始畫面上已釘選的項目。</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">釘選項目無法全部放入磚牆。{0}</x:String>
+    <x:String x:Key="Settings.InitialTileBackground">初始後景</x:String>
+    <x:String x:Key="Settings.LogDirectory">記錄資料夾</x:String>
+    <x:String x:Key="Settings.OpenLogDirectory">開啟記錄資料夾</x:String>
+    <x:String x:Key="Settings.OpenLogDirectoryFailed">無法開啟記錄資料夾：{0}</x:String>
 </ResourceDictionary>

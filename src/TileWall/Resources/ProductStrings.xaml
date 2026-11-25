@@ -896,4 +896,8 @@
   <x:String x:Key="WindowsStartImport.Invalid">Windows 开始屏幕的导出布局格式无效。</x:String>
   <x:String x:Key="WindowsStartImport.Failed">无法导入 Windows 开始屏幕上的固定项。</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">固定项无法全部放入磁贴墙。{0}</x:String>
+    <x:String x:Key="Settings.InitialTileBackground">初始后景</x:String>
+    <x:String x:Key="Settings.LogDirectory">日志目录</x:String>
+    <x:String x:Key="Settings.OpenLogDirectory">打开日志目录</x:String>
+    <x:String x:Key="Settings.OpenLogDirectoryFailed">无法打开日志目录：{0}</x:String>
 </ResourceDictionary>

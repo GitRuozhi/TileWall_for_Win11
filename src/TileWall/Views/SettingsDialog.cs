@@ -72,6 +72,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly ToggleSwitch _expandColumns = new(), _menuStart = new();
     private static readonly WallLanguageMode[] LanguageModes = [WallLanguageMode.System, .. WallLanguages.Supported];
     private readonly ComboBox _language = new(), _visualStyle = new(), _theme = new(), _background = new();
+    private readonly MemberBackgroundPicker _initialBackground = new();
     private readonly Grid _menuActionTables = new() { ColumnSpacing = 8, RowSpacing = 8 };
     private readonly List<(CheckBox Check, TextBlock Label, bool Wall, MenuAction Action, string ResourceKey)> _menuActions = [];
     private readonly List<(ToggleButton Button, TileSizePreset Preset, string Glyph)> _initialSizeButtons = [];
@@ -102,6 +103,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly Button _reset = new();
     private readonly Button _initialize = new();
     private readonly Button _importStart = new();
+    private readonly Button _openLogs = new() { HorizontalAlignment = HorizontalAlignment.Left };
     private readonly ToggleSwitch _contextMenu = new();
     private readonly List<(Button Button, string LabelKey)> _linkButtons = [];
     private readonly TextBlock _version = new();
@@ -130,7 +132,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         Func<WallSettings, bool, PreparedMediaAsset?, Task<SettingsDialogState>> applyAsync, Func<int, bool, Task>? hotKeyRecordingChanged = null,
         Func<bool, Task<SettingsDialogState>>? retryStartReplacement = null,
         Func<CancellationToken, Task<string?>>? initializeWall = null,
-        Func<CancellationToken, Task<WindowsStartImportResult>>? importWindowsStart = null)
+        Func<CancellationToken, Task<WindowsStartImportResult>>? importWindowsStart = null,
+        Action? openLogs = null)
     {
         _contextMenuController = contextMenuController;
         _owner = owner; _images = images; _readState = readState; _apply = applyAsync; _state = readState();
@@ -184,7 +187,6 @@ internal sealed class SettingsDialog : IWallDialogSession
         backgroundRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         backgroundRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         backgroundRow.Children.Add(_background); Grid.SetColumn(_backgroundPath, 1); backgroundRow.Children.Add(_backgroundPath);
-        AddRow(appearance, "Settings.Background", backgroundRow);
         // The inner TextBox otherwise retains its theme's 64 DIP minimum.
         _transparencyInput.Resources["TextControlThemeMinWidth"] = 0d;
         _transparencyInput.Resources["NumberBoxMinWidth"] = 0d;
@@ -196,8 +198,6 @@ internal sealed class SettingsDialog : IWallDialogSession
         var percent = new TextBlock { Text = "%", VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(percent, 1); transparencyRow.Children.Add(percent);
         Grid.SetColumn(_transparency, 2); transparencyRow.Children.Add(_transparency);
-        AddRow(appearance, "Settings.Transparency", transparencyRow);
-        AddRow(appearance, "Settings.ShowGrid", _showGrid);
         var invocation = AddGroup("Settings.Invocation", "invocation", compact);
         var taskbarStartReplacementRow = new StackPanel { Spacing = 8 };
         taskbarStartReplacementRow.Children.Add(ExperimentalToggleRow(_redirectTaskbarStartButton, _taskbarExperimental));
@@ -228,12 +228,6 @@ internal sealed class SettingsDialog : IWallDialogSession
             BeginApply(s => s with { SecondaryHotKey = new WallSettings().SecondaryHotKey });
         };
         AddRow(invocation, "Settings.KeyBehavior", KeyBehaviorTable());
-        var general = AddGroup("Settings.Wall", "wall", compact);
-        AddRow(general, "Settings.LayoutLocked", _layoutLocked);
-        AddRow(general, "Settings.Anchor", _anchor);
-        AddRow(general, "Settings.MenuStart", _menuStart);
-        AddRow(general, "Settings.FullScreen", _fullScreen);
-        AddRow(general, "Settings.ExpandColumns", _expandColumns);
         var integration = AddGroup("Settings.System", "system", compact);
         AddRow(integration, "Settings.Topmost", _topmost);
         AddRow(integration, "Settings.StayVisible", _stayVisible);
@@ -247,9 +241,21 @@ internal sealed class SettingsDialog : IWallDialogSession
         initializationActions.Children.Add(_reset); initializationActions.Children.Add(_initialize);
         AddRow(integration, "Settings.Initialization", initializationActions);
         AddRow(integration, "WindowsStartImport.SettingsLabel", _importStart);
+        var general = AddGroup("Settings.Wall", "wall", compact);
+        AddRow(general, "Settings.LayoutLocked", _layoutLocked);
+        AddRow(general, "Settings.Anchor", _anchor);
+        AddRow(general, "Settings.MenuStart", _menuStart);
+        AddRow(general, "Settings.FullScreen", _fullScreen);
+        AddRow(general, "Settings.ExpandColumns", _expandColumns);
         var personalization = AddGroup("Settings.Personalization", "personalization", compact);
+        AddRow(personalization, "Settings.Background", backgroundRow);
+        AddRow(personalization, "Settings.Transparency", transparencyRow);
+        AddRow(personalization, "Settings.ShowGrid", _showGrid);
         AddRow(personalization, "Settings.ShowUnavailableControls", _showUnavailableControls);
         Id(_showUnavailableControls, "show-unavailable-controls");
+        AddRow(personalization, "Settings.InitialTileBackground", _initialBackground.Row);
+        Id(_initialBackground.Mode, "initial-tile-background");
+        Id(_initialBackground.ColorButton, "initial-tile-background-color");
         AddRow(personalization, "Settings.InitialTileSize", InitialTileSizeRow());
         var iconFit = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         iconFit.Children.Add(_resetInitialIconFit);
@@ -278,6 +284,18 @@ internal sealed class SettingsDialog : IWallDialogSession
         Id(discussionLink, "feedback-discussion"); Id(communityLink, "community");
         feedbackLinks.Children.Add(discussionLink); feedbackLinks.Children.Add(communityLink);
         AddRow(about, "Settings.Feedback", feedbackLinks);
+        AddRow(about, "Settings.LogDirectory", _openLogs);
+        Id(_openLogs, "open-log-directory");
+        _openLogs.Click += (_, _) =>
+        {
+            try { openLogs?.Invoke(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException or
+                System.Security.SecurityException or InvalidOperationException)
+            {
+                ShowLinkOpenFailure("Settings.OpenLogDirectoryFailed", ex.Message);
+            }
+        };
         var aboutCard = _groups[^1].Card;
         // Add the scroll extent below the card, where it leaves the material visible.
         _formHost.SizeChanged += (_, _) => UpdateEndPadding();
@@ -376,6 +394,12 @@ internal sealed class SettingsDialog : IWallDialogSession
             }
         }
         RefreshStrings(); RestoreState();
+        _initialBackground.Mode.SelectionChanged += (_, _) => _ = ApplyInitialBackgroundModeAsync();
+        _initialBackground.ColorFlyout.Closing += (_, _) =>
+        {
+            if (_state.Settings.DefaultTileBackground == MemberBackgroundMode.Color)
+                BeginApply(s => s with { DefaultTileBackgroundColor = MemberBackgroundPicker.ColorText(_initialBackground.Color.Color) });
+        };
         _theme.SelectionChanged += (_, _) => BeginChoiceApply(_theme, s => s with { ThemeMode = (WallThemeMode)_theme.SelectedIndex });
         _language.SelectionChanged += (_, _) => BeginChoiceApply(_language, s => s with { LanguageMode = LanguageModes[_language.SelectedIndex] });
         _visualStyle.SelectionChanged += (_, _) => BeginChoiceApply(_visualStyle, s => s with { VisualStyle = (WallVisualStyle)_visualStyle.SelectedIndex });
@@ -559,6 +583,9 @@ internal sealed class SettingsDialog : IWallDialogSession
             ? ProductStrings.Get("Settings.SystemLanguage") : WallLanguages.NativeName(mode)).ToArray(), localized: false);
         SetChoices(_visualStyle, "Settings.VisualStyle", ["Settings.Win10Style", "Settings.Win11Style"]);
         SetChoices(_background, "Settings.Background", ["Settings.Acrylic", "Settings.Mica", "Settings.Custom"]);
+        _initialBackground.RefreshStrings();
+        ActionIcon.SetIcon(_initialBackground.ColorButton, ProductStrings.Get("Tile.CustomColor"), ActionIcon.Color);
+        ActionIcon.Set(_openLogs, ProductStrings.Get("Settings.OpenLogDirectory"), ActionIcon.OpenFolderHorizontal);
         foreach (var (key, label) in _labels) label.Text = ProductStrings.Get(key);
         RefreshMenuActionStrings();
         foreach (var (button, preset, glyph) in _initialSizeButtons)
@@ -647,6 +674,9 @@ internal sealed class SettingsDialog : IWallDialogSession
         RefreshTaskbarActivationPresentation();
         _showGrid.IsOn = _state.Settings.ShowGrid; _runAtLogin.IsOn = _state.Settings.RunAtLogin;
         _showUnavailableControls.IsOn = _state.Settings.ShowUnavailableControls;
+        _initialBackground.Mode.SelectedIndex = (int)_state.Settings.DefaultTileBackground;
+        _initialBackground.ColorButton.IsEnabled = _state.Settings.DefaultTileBackground == MemberBackgroundMode.Color;
+        _initialBackground.Color.Color = MemberBackgroundPicker.ParseColor(_state.Settings.DefaultTileBackgroundColor);
         foreach (var (check, _, wall, action, _) in _menuActions)
         {
             var hidden = wall ? _state.Settings.HiddenWallMenuActions : _state.Settings.HiddenMemberMenuActions;
@@ -1275,6 +1305,23 @@ internal sealed class SettingsDialog : IWallDialogSession
         _pending = ApplyAsync(candidate, focusAfterSave: source?.FocusState == FocusState.Keyboard ? source : null);
     }
 
+    private async Task ApplyInitialBackgroundModeAsync()
+    {
+        if (_refreshing || _busy || _closeRequested || _initialBackground.Mode.SelectedIndex < 0) return;
+        var mode = (MemberBackgroundMode)_initialBackground.Mode.SelectedIndex;
+        BeginApply(s => s with
+        {
+            DefaultTileBackground = mode,
+            DefaultTileBackgroundColor = mode == MemberBackgroundMode.Color
+                ? s.DefaultTileBackgroundColor ?? MemberBackgroundPicker.ColorText(_initialBackground.Color.Color)
+                : s.DefaultTileBackgroundColor,
+        });
+        await _pending;
+        if (mode == MemberBackgroundMode.Color && _state.Settings.DefaultTileBackground == mode &&
+            _state.Error is null && !_closeRequested)
+            _initialBackground.ColorFlyout.ShowAt(_initialBackground.ColorButton);
+    }
+
     private async Task ApplyAsync(WallSettings candidate, bool restoreDefaults = false,
         PreparedMediaAsset? preparedBackground = null, CancellationToken candidateToken = default, Control? focusAfterSave = null)
     {
@@ -1335,6 +1382,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         if (before.ShowUnavailableControls != after.ShowUnavailableControls) return "Settings.ShowUnavailableControls";
         if (before.HiddenWallMenuActions != after.HiddenWallMenuActions) return "Settings.WallMenuTitle";
         if (before.HiddenMemberMenuActions != after.HiddenMemberMenuActions) return "Settings.MemberMenuTitle";
+        if (before.DefaultTileBackground != after.DefaultTileBackground ||
+            before.DefaultTileBackgroundColor != after.DefaultTileBackgroundColor) return "Settings.InitialTileBackground";
         if (before.DefaultTileSize != after.DefaultTileSize) return "Settings.InitialTileSize";
         if (before.DefaultIconFitPercent != after.DefaultIconFitPercent) return "Settings.InitialIconFit";
         if (before.RunAtLogin != after.RunAtLogin) return "Settings.RunAtLogin";

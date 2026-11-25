@@ -895,4 +895,8 @@
   <x:String x:Key="WindowsStartImport.Invalid">La disposition exportée du menu Démarrer de Windows a un format non valide.</x:String>
   <x:String x:Key="WindowsStartImport.Failed">Impossible d’importer les éléments épinglés au menu Démarrer de Windows.</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">Le mur de tuiles ne peut pas contenir tous les éléments épinglés. {0}</x:String>
+    <x:String x:Key="Settings.InitialTileBackground">Arrière-plan initial de la vignette</x:String>
+    <x:String x:Key="Settings.LogDirectory">Dossier des journaux</x:String>
+    <x:String x:Key="Settings.OpenLogDirectory">Ouvrir le dossier des journaux</x:String>
+    <x:String x:Key="Settings.OpenLogDirectoryFailed">Impossible d’ouvrir le dossier des journaux : {0}</x:String>
 </ResourceDictionary>

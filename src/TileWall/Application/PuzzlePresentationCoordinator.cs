@@ -1153,6 +1153,8 @@ internal sealed class PuzzlePresentationCoordinator : IDisposable
         Trace($"Residency members={memory.Members} frames={memory.Frames} bitmaps={memory.Bitmaps} xamlBitmapBytes={memory.PixelBytes}");
     }
 
+    internal bool HasPendingPresentationWork => _work.Any(task => !task.IsCompleted);
+
     private void TrackWork(Task task)
     {
         // Includes each request's generation checks, publishing and persisted flip,

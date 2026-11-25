@@ -26,6 +26,7 @@ public sealed partial class MainWindow : Window
 {
     private const uint SpiGetWorkArea = 0x0030;
     private readonly WallSession _session;
+    private readonly RuntimeScope _runtimeScope;
     internal ExplorerContextMenuController ExplorerContextMenu { get; }
     internal event Action? TrustedWallOpened;
     private readonly EntryLauncher _launcher = new();
@@ -60,6 +61,7 @@ public sealed partial class MainWindow : Window
 
     internal MainWindow(RuntimeScope scope)
     {
+        _runtimeScope = scope;
         _traceInput = scope.IsTest || Environment.GetEnvironmentVariable("TILEWALL_TRACE_INPUT") == "1";
         _session = new WallSession(scope.DataRoot);
         ExplorerContextMenu = ExplorerContextMenuController.Create(scope.DataRoot);
@@ -493,6 +495,19 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void OpenLogDirectory()
+    {
+        var files = new TileWall.Core.Configuration.LocalFileStore();
+        var paths = new WallStoragePaths(files, _runtimeScope.DataRoot);
+        var logs = _runtimeScope.LogRoot;
+        paths.Guard(logs);
+        var directory = files.GetPathInfo(logs);
+        if (!directory.Exists || !directory.IsDirectory) throw new DirectoryNotFoundException(logs);
+        paths.Guard(logs);
+        using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(logs)
+            { UseShellExecute = true });
+    }
+
     private static string WithDiagnostic(string summary, string detail) =>
         string.IsNullOrWhiteSpace(detail) || string.Equals(detail, summary, StringComparison.Ordinal)
             ? summary : summary + "\n" + detail;
@@ -709,8 +724,11 @@ public sealed partial class MainWindow : Window
         {
             if (!await BeginModalAsync()) return;
             var settings = Document.Settings;
-            var tile = new TileMember { Id = $"member-{Guid.NewGuid():N}", LocalBounds = MemberSizeRules.TileBounds(settings.DefaultTileSize),
-                RotationInterval = MemberPresentationRules.NewRotationInterval };
+            var tile = MemberPresentationRules.ApplyInitialTileBackground(new TileMember
+            {
+                Id = $"member-{Guid.NewGuid():N}", LocalBounds = MemberSizeRules.TileBounds(settings.DefaultTileSize),
+                RotationInterval = MemberPresentationRules.NewRotationInterval,
+            }, settings);
             var destinationLane = Math.Clamp(WallViewportPolicy.MapCreationLane(Document, lane), 0, 63);
             var dialog = new SharedMemberEditorDialog(DialogOwner, tile, _images, null, _session.LinkFiles, MaxMemberRows(),
                 (member, changes, assets, _) =>
@@ -727,7 +745,7 @@ public sealed partial class MainWindow : Window
                         groupId is null ? $"group-{Guid.NewGuid():N}" : null);
                     return Apply(action, changes, assets);
                 }, settings.VisualStyle, isNew: true, defaultIconFitPercent: settings.DefaultIconFitPercent,
-                showUnavailableControls: settings.ShowUnavailableControls, wallRasterizationScale: () => Scale);
+                showUnavailableControls: settings.ShowUnavailableControls, wallRasterizationScale: () => Scale, creationSettings: settings);
             ActiveDialog = dialog;
             AttachGalleryEditor(dialog);
             await dialog.ShowAsync();

@@ -899,4 +899,8 @@
   <x:String x:Key="WindowsStartImport.Invalid">エクスポートされた Windows のスタート レイアウトの形式が無効です。</x:String>
   <x:String x:Key="WindowsStartImport.Failed">Windows のスタートにピン留めされた項目をインポートできませんでした。</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">ピン留めされた項目をすべて配置できません。{0}</x:String>
+    <x:String x:Key="Settings.InitialTileBackground">タイルの初期背景</x:String>
+    <x:String x:Key="Settings.LogDirectory">ログ フォルダー</x:String>
+    <x:String x:Key="Settings.OpenLogDirectory">ログ フォルダーを開く</x:String>
+    <x:String x:Key="Settings.OpenLogDirectoryFailed">ログ フォルダーを開けませんでした: {0}</x:String>
 </ResourceDictionary>

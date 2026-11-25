@@ -51,15 +51,17 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private string? _error, _sourceStatus, _previewError;
     private long? _sourceReadGeneration;
     private readonly Button _saveButton = new(), _cancelButton = new();
-    private readonly IconSelector _source = new(ActionIcon.Reset, ActionIcon.Photo2, ActionIcon.GallerySet),
-        _background = new(ActionIcon.Reset, ActionIcon.Color, ActionIcon.BackgroundBlur, ActionIcon.Checkbox);
+    private readonly IconSelector _source = new(ActionIcon.Reset, ActionIcon.Photo2, ActionIcon.GallerySet);
+    private readonly MemberBackgroundPicker _backgroundPicker = new();
+    private IconSelector _background => _backgroundPicker.Mode;
+    private Button _colorButton => _backgroundPicker.ColorButton;
+    private ColorPicker _color => _backgroundPicker.Color;
     private readonly ComboBox _interval = new();
     private readonly IntegerStepper _width = new() { Minimum = 1, Maximum = 8 }, _height = new() { Minimum = 1, Maximum = 256 };
     private readonly NumberBox _transparencyInput = Number(0, 100);
     private readonly Slider _transparency = new() { Minimum = 0, Maximum = 100, StepFrequency = 1, MaxWidth = 140, MinWidth = 0,
         HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly Button _autoTitle = new(), _targetBrowse = new(), _targetConfirm = new(), _titleConfirm = new(), _colorButton = new(), _undo = new(), _redo = new();
-    private readonly ColorPicker _color = new() { IsAlphaEnabled = false, IsMoreButtonVisible = false, Width = 240 };
+    private readonly Button _autoTitle = new(), _targetBrowse = new(), _targetConfirm = new(), _titleConfirm = new(), _undo = new(), _redo = new();
     private readonly ToggleButton _draw = new(), _erase = new();
     private readonly List<(ToggleButton Button, string Key, string Glyph)> _actions = [];
     private readonly List<(ToggleButton Button, string Key, int Width, int Height)> _puzzlePresetActions = [];
@@ -77,6 +79,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
     private readonly ImageRotationInterval[] _intervals = Enum.GetValues<ImageRotationInterval>();
     private PartitionEditSession? _layout;
     private readonly bool _isNew;
+    private readonly WallSettings? _creationSettings;
+    private bool _backgroundExplicit;
     private readonly IconSelector _memberType = new(ActionIcon.Tiles, ActionIcon.GallerySet, ActionIcon.Clock);
     private Task<bool>? _targetConfirmation;
     private TaskCompletionSource? _targetFeedbackFrame;
@@ -148,10 +152,11 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         WallVisualStyle visualStyle = WallVisualStyle.Win10, PuzzleFrame? initialFrame = null,
         PreparedAutomaticIconSeries? initialAutomaticSeries = null, bool isNew = false,
         (LinkFields? Link, string? Url, string Sha256)? managedEntry = null, int defaultIconFitPercent = 100,
-        bool showUnavailableControls = true, Func<double>? wallRasterizationScale = null)
+        bool showUnavailableControls = true, Func<double>? wallRasterizationScale = null, WallSettings? creationSettings = null)
     {
         if (original is not (TileMember or PuzzleMember)) throw new ArgumentException("A tile or puzzle is required.", nameof(original));
         _owner = owner; _original = original; _draft = original; _images = images; _isNew = isNew;
+        _creationSettings = creationSettings;
         _defaultIconFitPercent = defaultIconFitPercent;
         _wallRasterizationScale = wallRasterizationScale;
         _showUnavailableControls = showUnavailableControls;
@@ -191,8 +196,6 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         sourceValue.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         sourceValue.Children.Add(_source); Grid.SetColumn(_sourcePath, 1); sourceValue.Children.Add(_sourcePath);
         _sourcePath.VerticalAlignment = VerticalAlignment.Center;
-        var colorFlyout = new Flyout { Content = _color }; _colorButton.Flyout = colorFlyout;
-        var backgroundValue = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; backgroundValue.Children.Add(_background); backgroundValue.Children.Add(_colorButton);
         var transparency = new Grid { ColumnSpacing = 8 };
         transparency.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         transparency.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -202,7 +205,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         transparency.Children.Add(_transparencyInput); transparency.Children.Add(percent); transparency.Children.Add(_transparency);
         var right = Form();
         AddRow(right, "Editor.Target", targetValue); AddRow(right, "Editor.Title", titleValue);
-        AddRow(right, "Editor.Foreground", sourceValue); AddRow(right, "Tile.Background", backgroundValue);
+        AddRow(right, "Editor.Foreground", sourceValue); AddRow(right, "Tile.Background", _backgroundPicker.Row);
         AddRow(right, "Editor.Opacity", transparency); AddRow(right, "Editor.Interval", _interval);
 
         var tools = Form();
@@ -377,10 +380,11 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _background.SelectionChanged += (_, _) =>
         {
             if (_refreshing) return;
+            _backgroundExplicit = true;
             _appearanceRevision++;
             var neededBlur = _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur;
             _draft = _draft with { Visual = _draft.Visual with { BackgroundMode = (MemberBackgroundMode)_background.SelectedIndex,
-                BackgroundColor = _background.SelectedIndex == (int)MemberBackgroundMode.Color ? ColorText(_color.Color) : _draft.Visual.BackgroundColor } };
+                BackgroundColor = _background.SelectedIndex == (int)MemberBackgroundMode.Color ? MemberBackgroundPicker.ColorText(_color.Color) : _draft.Visual.BackgroundColor } };
             var needsBlur = _draft.Visual.BackgroundMode == MemberBackgroundMode.Blur;
             Changed(); RefreshFields();
             // The first folder enumeration owns this generation. Cancelling it
@@ -392,14 +396,14 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                 _pending = LoadPreviewAsync();
                 RestartThumbnailBatch();
             }
-            if (_draft.Visual.BackgroundMode == MemberBackgroundMode.Color) colorFlyout.ShowAt(_colorButton);
+            if (_draft.Visual.BackgroundMode == MemberBackgroundMode.Color) _backgroundPicker.ColorFlyout.ShowAt(_colorButton);
             ShowOperationReminder(string.Format(T("Editor.BackgroundApplied"), T(_draft.Visual.BackgroundMode switch
             {
                 MemberBackgroundMode.Color => "Tile.CustomColor", MemberBackgroundMode.Blur => "Editor.Blur",
                 MemberBackgroundMode.None => "Editor.None", _ => "Editor.Initial",
             })));
         };
-        _color.ColorChanged += (_, e) => { if (!_refreshing) { _appearanceRevision++; _draft = _draft with { Visual = _draft.Visual with { BackgroundColor = ColorText(e.NewColor) } }; Changed(); RefreshPreview(); } };
+        _color.ColorChanged += (_, e) => { if (!_refreshing) { _backgroundExplicit = true; _appearanceRevision++; _draft = _draft with { Visual = _draft.Visual with { BackgroundColor = MemberBackgroundPicker.ColorText(e.NewColor) } }; Changed(); RefreshPreview(); } };
         _transparencyInput.ValueChanged += (_, e) => { if (!_refreshing && !double.IsNaN(e.NewValue)) SetTransparency(e.NewValue); };
         _transparency.ValueChanged += (_, e) => { if (!_refreshing) SetTransparency(e.NewValue); };
         _interval.SelectionChanged += (_, _) => { if (!_refreshing && _interval.SelectedIndex >= 0) { _draft = _draft with { RotationInterval = _intervals[_interval.SelectedIndex] }; Changed(); ShowOperationReminder(string.Format(T("Editor.IntervalApplied"), _interval.SelectedItem)); } };
@@ -567,7 +571,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         ActionIcon.SetIcon(_colorButton, T("Tile.CustomColor"), ActionIcon.Color);
         ActionIcon.SetIcon(_undo, T("Layout.Undo"), ActionIcon.Undo); ActionIcon.SetIcon(_redo, T("Layout.Redo"), ActionIcon.Redo);
         ActionIcon.SetIcon(_draw, T("Layout.Draw"), ActionIcon.Draw); ActionIcon.SetIcon(_erase, T("Layout.Erase"), ActionIcon.Erase);
-        _source.SetItems(new[] { "Editor.AutomaticIcon", "Editor.Picture", "Editor.Gallery" }.Select(T)); _background.SetItems(new[] { "Editor.Initial", "Tile.CustomColor", "Editor.Blur", "Editor.None" }.Select(T));
+        _source.SetItems(new[] { "Editor.AutomaticIcon", "Editor.Picture", "Editor.Gallery" }.Select(T));
+        _backgroundPicker.RefreshStrings();
         var componentType = T("Editor.TypeComponent");
         _memberType.SetItems(new[] { T("Editor.TypeTile"), T("Editor.TypePuzzle"), componentType.Split(['(', '（'])[0].TrimEnd() },
             showLabels: true, notifyOnReselect: false, iconFactoryIndex: 1, iconFactory: CreatePuzzleTypeIcon);
@@ -604,7 +609,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         ActionIcon.SetTip(_sourcePath, string.IsNullOrWhiteSpace(_sourcePath.Text) ? null : _sourcePath.Text);
         _background.SelectedIndex = (int)_draft.Visual.BackgroundMode; _colorButton.IsEnabled = _draft.Visual.BackgroundMode == MemberBackgroundMode.Color;
         ActionIcon.SetTip(_colorButton, T(_colorButton.IsEnabled ? "Tile.CustomColor" : "Editor.RequiresColor"));
-        _color.Color = WallSurface.ParseColor(_draft.Visual.BackgroundColor, Windows.UI.Color.FromArgb(255, 64, 64, 64));
+        _color.Color = MemberBackgroundPicker.ParseColor(_draft.Visual.BackgroundColor);
         _transparencyInput.Value = _transparency.Value = _draft.Visual.BackgroundTransparency;
         _interval.SelectedIndex = Array.IndexOf(_intervals, _draft.RotationInterval); _interval.IsEnabled = _draft.Images.Kind == MemberImageSourceKind.Folder;
         _thumbnails.IsEnabled = _draft.Images.Kind == MemberImageSourceKind.Folder;
@@ -847,6 +852,10 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             Images = _draft.Images, ImageDisplay = _draft.ImageDisplay, RotationInterval = _draft.RotationInterval,
             Carousel = _draft.Carousel, ResourceOrigin = _draft.ResourceOrigin, Entry = _draft.Entry,
             ImportSource = _draft.ImportSource, UserClaimed = _draft.UserClaimed, ExtensionData = _draft.ExtensionData };
+        if (_creationSettings is { } settings && !_backgroundExplicit && _draft.Images.Kind == MemberImageSourceKind.Automatic)
+            _draft = puzzle
+                ? _draft with { Visual = _draft.Visual with { BackgroundMode = MemberBackgroundMode.Default, BackgroundColor = null } }
+                : MemberPresentationRules.ApplyInitialTileBackground(_draft, settings);
         _layout = _draft is PuzzleMember p ? new PartitionEditSession(p.LocalBounds.Size, p.Partitions) : null;
         _draw.IsChecked = _erase.IsChecked = false; _preview.Tool = null;
         _width.ResetPendingInput(); _height.ResetPendingInput();
@@ -984,7 +993,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         {
             MarkExplicitImageSource();
             _sourceDirty = false;
-            _draft = MemberPresentationRules.ApplyImageSource(_draft, new MemberImageSource(), applyDefaults: true);
+            _draft = ApplyDraftImageSource(new MemberImageSource(), applyDefaults: true);
             var revision = _sourceRevision;
             _previewPath = null; Changed(); RefreshFields(); GallerySourceChanged?.Invoke(); await ReloadCandidatesAsync();
             if (!_closed && !_previewClosing && revision == _sourceRevision && _loadedSourceRevision == revision &&
@@ -1511,7 +1520,6 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             return fallback;
         }
     }
-    private static string ColorText(Windows.UI.Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
     private static string T(string key) => ProductStrings.Get(key);
     private static FrameworkElement CreatePuzzleTypeIcon()
     {
@@ -1881,7 +1889,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             revision = _sourceRevision = ++_inputRevision;
         }
         _sourceDirty = false;
-        _draft = MemberPresentationRules.ApplyImageSource(_draft,
+        _draft = ApplyDraftImageSource(
             new MemberImageSource { Kind = kind, Path = path },
             applyDefaults: kind != originalKind || _appearanceRevision == _recognitionAppearanceRevision);
         _targetRecognition = proof with { Source = _draft.Images };
@@ -1952,7 +1960,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _targetRecognitionRequired = false;
         _sourceDirty = false; _previewPath = null; _frame = null;
         if (result.Source.Kind != MemberImageSourceKind.Automatic) RestoreDisplayBeforeDefaultFit();
-        _draft = result.ApplyTo(_draft, applyDefaults: _appearanceRevision == _recognitionAppearanceRevision);
+        _draft = ApplyDraftImageSource(result.Source, applyDefaults: _appearanceRevision == _recognitionAppearanceRevision);
         RefreshFields(); GallerySourceChanged?.Invoke(); await ReloadCandidatesAsync(result.Source.Kind == MemberImageSourceKind.Automatic ? null : result.Candidates);
     }
 
@@ -1967,6 +1975,17 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _verifiedRecognition = null; _preparedSourceAsset = null;
         _preparedAutomaticSeries = null;
         _targetSourceError = null;
+    }
+
+    private WallMember ApplyDraftImageSource(MemberImageSource source, bool applyDefaults)
+    {
+        if (_creationSettings is not { } settings)
+            return MemberPresentationRules.ApplyImageSource(_draft, source, applyDefaults);
+        var member = MemberPresentationRules.ApplyImageSource(_draft, source, applyDefaults: !_backgroundExplicit);
+        if (_backgroundExplicit) return member;
+        member = member with { Visual = member.Visual with { BackgroundColor = null,
+            BackgroundTransparency = _draft.Visual.BackgroundTransparency } };
+        return MemberPresentationRules.ApplyInitialTileBackground(member, settings);
     }
 
     private async Task VerifyRecognizedTargetAsync()

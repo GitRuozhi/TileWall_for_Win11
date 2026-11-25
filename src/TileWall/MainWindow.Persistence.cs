@@ -78,15 +78,22 @@ public sealed partial class MainWindow
         Action<string?>? settle = null, IReadOnlyList<PreparedMediaAsset>? preparedMedia = null,
         IReadOnlyDictionary<string, string>? expectedEntrySha256 = null,
         IReadOnlyList<PreparedManagedGallery>? managedGalleries = null, bool background = false,
-        bool useWelcomeIconDefaults = false, bool allowInteraction = false, bool layoutDrop = false)
+        bool useWelcomeIconDefaults = false, bool allowInteraction = false, bool layoutDrop = false,
+        ImportOperation? importOperation = null)
     {
-        Task<string?> Reject(string error) { settle?.Invoke(error); return Task.FromResult<string?>(error); }
-        if (PersistenceWriteBlocked || background && !CanAcceptBackgroundWrite) return Reject(ProductStrings.Get("Wall.SettingsSaving"));
-        if (_viewBlocked) return Reject(ProductStrings.Get("Wall.ViewBlocked"));
+        Task<string?> Reject(string error, string reason)
+        {
+            importOperation?.Finish(ImportOutcome.Rejected, reason);
+            settle?.Invoke(error);
+            return Task.FromResult<string?>(error);
+        }
+        if (PersistenceWriteBlocked || background && !CanAcceptBackgroundWrite) return Reject(ProductStrings.Get("Wall.SettingsSaving"), "Admission");
+        if (_viewBlocked) return Reject(ProductStrings.Get("Wall.ViewBlocked"), "ViewBlocked");
         var fit = WallViewportPolicy.Validate(proposal, RecoverableViewportBudget(proposal.Document.Settings), _metrics);
-        if (fit.Proposal is null) return Reject(ViewportFailure(fit));
+        if (fit.Proposal is null) return Reject(ViewportFailure(fit), fit.Rejection.ToString());
         if (WallLayoutEngine.ValidateLockedChange(Document, fit.Proposal.Document, _metrics) is not null)
-            return Reject(ProductStrings.Get("Wall.LayoutLocked"));
+            return Reject(ProductStrings.Get("Wall.LayoutLocked"), "LayoutLocked");
+        importOperation?.Stage("committing");
         _persistencePending = true;
         _backgroundPersistencePending = background;
         _interactivePersistencePending = allowInteraction;
@@ -97,7 +104,7 @@ public sealed partial class MainWindow
         Surface.IsHitTestVisible = !_viewBlocked && !PersistenceInteractionBlocked;
         UpdateResizeZones();
         var operation = CommitProposalAsyncCore(proposal, changes, settle, preparedMedia, expectedEntrySha256, managedGalleries,
-            useWelcomeIconDefaults, layoutDrop);
+            useWelcomeIconDefaults, layoutDrop, importOperation);
         _pendingPersistence = operation.IsCompleted ? null : operation;
         return operation;
     }
@@ -105,10 +112,11 @@ public sealed partial class MainWindow
     private async Task<string?> CommitProposalAsyncCore(WallProposal proposal,
         IReadOnlyList<EntryChange>? changes, Action<string?>? settle, IReadOnlyList<PreparedMediaAsset>? preparedMedia,
         IReadOnlyDictionary<string, string>? expectedEntrySha256, IReadOnlyList<PreparedManagedGallery>? managedGalleries,
-        bool useWelcomeIconDefaults, bool layoutDrop)
+        bool useWelcomeIconDefaults, bool layoutDrop, ImportOperation? importOperation)
     {
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         string? error = null;
+        WallSessionResult? result = null;
         try
         {
             var prepareMedia = !layoutDrop || DropNeedsMediaPreparation(proposal.Document);
@@ -116,7 +124,7 @@ public sealed partial class MainWindow
                 ? await PrepareFormalMediaAsync(proposal, changes, Scale, useWelcomeIconDefaults)
                 : (Proposal: proposal, Assets: Array.Empty<PreparedMediaAsset>());
             var assets = prepareMedia ? AcceptedMediaAssets(media.Proposal.Document, media.Assets, preparedMedia) : null;
-            var result = await _session.CommitAsync(media.Proposal, changes, assets, expectedEntrySha256, managedGalleries,
+            result = await _session.CommitAsync(media.Proposal, changes, assets, expectedEntrySha256, managedGalleries,
                 deferResourceReclamation: layoutDrop);
             if (layoutDrop && result.Committed && !result.NeedsCleanup) _reclamationRequested = true;
             if (!layoutDrop) _performance.Commit(System.Diagnostics.Stopwatch.GetTimestamp() - started);
@@ -131,6 +139,7 @@ public sealed partial class MainWindow
         }
         finally
         {
+            if (importOperation is not null) FinishImportCommit(importOperation, result);
             try
             {
                 // Drain includes release diagnostics and failed-preview restoration.
@@ -166,6 +175,19 @@ public sealed partial class MainWindow
             }
         }
         return error;
+    }
+
+    private void FinishImportCommit(ImportOperation operation, WallSessionResult? result)
+    {
+        if (_session.ResultUnknown) operation.Finish(ImportOutcome.ResultUnknown, "StoreResultUnknown");
+        else if (_session.RequiresReopen) operation.Finish(ImportOutcome.RequiresReopen, "SessionNotAccepted");
+        else if (_session.RecoveryBlocked) operation.Finish(ImportOutcome.RecoveryBlocked, "StoreRecoveryBlocked");
+        else if (result is { Committed: true })
+            operation.Finish(ImportOutcome.Committed, result.ViewFailed ? "ViewRefreshFailed" :
+                result.NeedsCleanup ? "CleanupPending" : "Accepted", Document);
+        else if (result?.Diagnostics.Any(detail => detail.Contains(WallStore.ImportDestinationChanged, StringComparison.Ordinal)) == true)
+            operation.Finish(ImportOutcome.Rejected, "DestinationChanged");
+        else operation.Finish(ImportOutcome.Failed, "CommitFailed");
     }
 
     private void SettleReleasePersistence(string? error, bool automaticHeight = false)

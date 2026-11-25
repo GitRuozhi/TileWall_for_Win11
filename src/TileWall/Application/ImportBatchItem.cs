@@ -77,7 +77,7 @@ internal sealed record ImportPageSource(IReadOnlyList<ImportSourceCandidate> Can
 internal sealed record ImportPagePreparation(ImportPageContext Context, ImportPageSource Source);
 
 internal sealed record ImportPageRequest(ImportPageContext Context, ImportPageSource Source,
-    ImportSourceProjection Projection, ImportSourcePlan Plan, Func<bool> IsCurrent)
+    ImportSourceProjection Projection, ImportSourcePlan Plan, Func<bool> IsCurrent, ImportOperation Operation)
 {
     public IReadOnlyDictionary<string, ImportTargetRecognition> RecognizedTargets { get; init; } =
         new Dictionary<string, ImportTargetRecognition>(StringComparer.Ordinal);

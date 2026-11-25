@@ -60,6 +60,13 @@ public static class MemberPresentationRules
         };
     }
 
+    /// <summary>Apply the user's creation preference after resolving a new ordinary tile's image source.</summary>
+    internal static WallMember ApplyInitialTileBackground(WallMember member, WallSettings settings) =>
+        member is TileMember && member.Images.Kind == MemberImageSourceKind.Automatic
+            ? member with { Visual = member.Visual with
+                { BackgroundMode = settings.DefaultTileBackground, BackgroundColor = settings.DefaultTileBackgroundColor } }
+            : member;
+
     /// <summary>Bind a newly prepared icon; only an unmodified creation default may change its display policy.</summary>
     public static WallMember ApplyAutomaticImageDefaults(WallMember member, AutomaticIconSeries series,
         int physicalWidth, int physicalHeight, bool applyDefaults = true, int fitPercent = 100)
@@ -172,7 +179,7 @@ public static class MemberPresentationRules
         return dot > 0 ? leaf[..dot] : leaf;
     }
 
-    private static bool IsColor(string? value) => value is not null && value.Length is 7 or 9 &&
+    internal static bool IsColor(string? value) => value is not null && value.Length is 7 or 9 &&
         value[0] == '#' && value.AsSpan(1).IndexOfAnyExcept("0123456789abcdefABCDEF") < 0;
 
     private static bool LooksLikeWindowsDrivePath(string value) =>
