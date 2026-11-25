@@ -1,18 +1,18 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/tilewall-logo.png" width="112" height="112" alt="TileWall 图标">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/tilewall-logo.png" width="112" height="112" alt="TileWall 图标">
 </p>
 
 <h1 align="center">TileWall</h1>
 
 <p align="center">
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md"><strong>简体中文</strong></a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md">Español</a>
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/README.md">English</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/README.zh-CN.md"><strong>简体中文</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.es-ES.md">Español</a>
 </p>
 
 <p align="center">
@@ -23,14 +23,14 @@
   <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8 种界面语言">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="免费">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="微软商店"></a>
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square" alt="MIT License"></a>
+  <a href="https://github.com/GitRuozhi/TileWall/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square" alt="MIT License"></a>
 </p>
 
 <p align="center">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><strong>官方安装</strong></a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest">离线安装包</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/discussions">反馈</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/releases/latest">离线安装包</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/discussions">反馈</a> ·
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">聊天</a>
 </p>
 
@@ -46,20 +46,20 @@ https://github.com/user-attachments/assets/0b544816-0753-48cb-a88a-ce454d780772
 
 官方安装：[**打开微软商店**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
 
-离线安装包：[下载 EXE 离线安装包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+离线安装包：[下载 EXE 离线安装包](https://github.com/GitRuozhi/TileWall/releases/latest)
 
-便携压缩包：[下载 便携压缩包](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+便携压缩包：[下载 便携压缩包](https://github.com/GitRuozhi/TileWall/releases/latest)
 
 数据位置： `%LOCALAPPDATA%\TileWall`
 
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="呼出、缩放与全屏">
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/hero-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/hero-zh.gif" width="1280" alt="呼出、缩放与全屏">
   </picture>
 </p>
-<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/hero-zh.gif">GIF</a>。</sub></p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/hero-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/hero-zh.gif">GIF</a>。</sub></p>
 
 ## 拼图、图片与图集
 
@@ -75,11 +75,11 @@ https://github.com/user-attachments/assets/0b544816-0753-48cb-a88a-ce454d780772
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif" width="476" alt="拼图分割、合并与缩放">
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/puzzle-edit-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/puzzle-edit-zh.gif" width="476" alt="拼图分割、合并与缩放">
   </picture>
 </p>
-<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/puzzle-edit-zh.gif">GIF</a>。</sub></p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/puzzle-edit-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/puzzle-edit-zh.gif">GIF</a>。</sub></p>
 
 ## 复刻 Windows 10 开始菜单体验
 
@@ -99,11 +99,11 @@ https://github.com/user-attachments/assets/0b544816-0753-48cb-a88a-ce454d780772
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif" width="1012" alt="磁贴与分组拖动">
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/wall-drag-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/wall-drag-zh.gif" width="1012" alt="磁贴与分组拖动">
   </picture>
 </p>
-<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/wall-drag-zh.gif">GIF</a>。</sub></p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/wall-drag-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/wall-drag-zh.gif">GIF</a>。</sub></p>
 
 ## 更强的功能
 
@@ -125,21 +125,21 @@ https://github.com/user-attachments/assets/0b544816-0753-48cb-a88a-ce454d780772
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif" width="1012" alt="批量选择与导入结果">
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/start-import-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/start-import-zh.gif" width="1012" alt="批量选择与导入结果">
   </picture>
 </p>
-<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/start-import-zh.gif">GIF</a>。</sub></p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/start-import-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/start-import-zh.gif">GIF</a>。</sub></p>
 
 资源管理器中右键任意文件，选择“添加到 TileWall”，即可生成磁贴。
 
 <p align="center">
   <picture>
-    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">
-    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="资源管理器右键添加磁贴">
+    <source type="image/webp" srcset="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/desktop-add-zh.webp">
+    <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/desktop-add-zh.gif" width="1280" alt="资源管理器右键添加磁贴">
   </picture>
 </p>
-<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a>。</sub></p>
+<p align="center"><sub>这是一张动态图，如果不动请单独查看 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/desktop-add-zh.webp">WebP</a> 和 <a href="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/desktop-add-zh.gif">GIF</a>。</sub></p>
 
 
 ## 即将
@@ -187,7 +187,7 @@ https://github.com/user-attachments/assets/0b544816-0753-48cb-a88a-ce454d780772
 
 ## 交流和反馈
 
-点击 [Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions) 留下反馈、问题、新想法、晒晒磁贴墙。
+点击 [Discussions](https://github.com/GitRuozhi/TileWall/discussions) 留下反馈、问题、新想法、晒晒磁贴墙。
 
 点击 [轻松交流](https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT) 加入 QQ 群，欢迎聊天吹水。
 

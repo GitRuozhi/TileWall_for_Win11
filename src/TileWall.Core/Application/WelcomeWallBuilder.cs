@@ -14,7 +14,7 @@ internal static class WelcomeWallBuilder
 {
     internal const string SettingsUrl = "ms-settings:";
     internal const string SearchUrl = "ms-search://search/";
-    internal const string ProjectUrl = "https://github.com/GitRuozhi/TileWall_for_Win11";
+    internal const string ProjectUrl = "https://github.com/GitRuozhi/TileWall";
     internal const string DiscussionsUrl = ProjectUrl + "/discussions";
     internal static readonly string[] NativeTargetKeys =
         ["ThisPC", "ControlPanel", "RecycleBin", "Network", "Desktop", "Downloads", "Videos", "Pictures", "Documents", "Music", "Calculator", "Notepad", "RegistryEditor", "CMD", "PowerShell", "Store", "Edge"];

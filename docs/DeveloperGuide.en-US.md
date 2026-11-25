@@ -4,7 +4,7 @@
 
 TileWall is an editable tile launcher for programs, folders, files, websites, and application protocols. You can arrange ordinary tiles, continuous-image puzzles, and image albums on the same wall. It uses C#, .NET 10, and WinUI 3 and runs independently of Windows Shell. The optional Windows-key and taskbar Start-button integration is experimental.
 
-This guide helps developers build the public source, follow a user action through the code, and understand the behavior their changes need to preserve. Product instructions are in the [English README](../README.md) and [Chinese README](../README.zh-CN.md). Version changes are recorded in the [changelog, in Chinese](CHANGELOG.md). Published releases and downloads are listed on [GitHub Releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases).
+This guide helps developers build the public source, follow a user action through the code, and understand the behavior their changes need to preserve. Product instructions are in the [English README](../README.md) and [Chinese README](../README.zh-CN.md). Version changes are recorded in the [changelog, in Chinese](CHANGELOG.md). Published releases and downloads are listed on [GitHub Releases](https://github.com/GitRuozhi/TileWall/releases).
 
 - To run the app, start with [getting the source and building](#build-from-public-source).
 - To find an implementation, follow [a tile edit through the code](#follow-a-tile-edit-through-the-code), then use the [responsibility index](#window-shell-and-data-responsibilities).
@@ -34,8 +34,8 @@ The first build restores dependencies from the configured NuGet feeds and needs 
 Open PowerShell in the directory where you want to keep the project. Clone the public repository and enter its root. Run subsequent commands from this directory.
 
 ```powershell
-git clone https://github.com/GitRuozhi/TileWall_for_Win11.git
-Set-Location TileWall_for_Win11
+git clone https://github.com/GitRuozhi/TileWall.git
+Set-Location TileWall
 ```
 
 ### Build and run the development app
@@ -165,7 +165,7 @@ Choose validation to match the change. Model, layout, identity, and transaction 
 
 For tile editing, check saved properties and that cancellation and save failures preserve the previous data. For import changes, check success, destination-group duplicates, source changes, and cancellation. For shutdown changes, check that unfinished work reaches a consistent outcome. Tests should exercise observable contracts while keeping production validation intact. Operate a shared desktop and app instance serially, use disposable samples, and record the environments and paths actually covered.
 
-Use [Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions) for problems, suggestions, and contribution ideas. Include the version or source commit, distribution type, Windows build, display scale, clear steps, expected and actual results, reproducibility, and relevant logs or a small sample. Logs and wall packages can contain paths, URLs, usernames, and launch arguments. Review them and remove sensitive information before sharing.
+Use [Discussions](https://github.com/GitRuozhi/TileWall/discussions) for problems, suggestions, and contribution ideas. Include the version or source commit, distribution type, Windows build, display scale, clear steps, expected and actual results, reproducibility, and relevant logs or a small sample. Logs and wall packages can contain paths, URLs, usernames, and launch arguments. Review them and remove sensitive information before sharing.
 
 When submitting a contribution, explain the problem and scope, and include targeted validation and uncovered areas. For interaction, layout, compatibility, and data-format decisions, discussing the approach with the maintainer first can help. Keep patches focused and retain source attribution, licenses, and historical compatibility samples.
 
@@ -173,7 +173,7 @@ When submitting a contribution, explain the problem and scope, and include targe
 
 The public repository is open to everyone, and anyone is welcome to submit issues and pull requests. If you would like to get more involved and explore the full product design, development history, lessons learned, and showcase work, you are welcome to join the development team.
 
-Contact me by email, [Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions), the [QQ group](../README.md#chat-and-feedback), or any other way you can reach me, and let me know you would like to join the TileWall development team. I will invite you to become a developer in the private repository. I look forward to welcoming you.
+Contact me by email, [Discussions](https://github.com/GitRuozhi/TileWall/discussions), the [QQ group](../README.md#chat-and-feedback), or any other way you can reach me, and let me know you would like to join the TileWall development team. I will invite you to become a developer in the private repository. I look forward to welcoming you.
 
 ## License and asset attribution
 

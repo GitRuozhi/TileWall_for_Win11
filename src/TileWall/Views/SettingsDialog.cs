@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
+using TileWall.Core.Application;
 using TileWall.Core.Settings;
 using TileWall.Core.Shell;
 using TileWall.Core.Storage;
@@ -265,13 +266,13 @@ internal sealed class SettingsDialog : IWallDialogSession
         AddRow(about, "Settings.VersionLabel", _version);
         var visitLinks = new StackPanel { Orientation = actionsOrientation, Spacing = 8 };
         var storeLink = Link("Settings.MicrosoftStore", "https://apps.microsoft.com/detail/9NZZN35FDB0C");
-        var sourceLink = Link("Settings.OpenSource", "https://github.com/GitRuozhi/TileWall_for_Win11");
+        var sourceLink = Link("Settings.OpenSource", WelcomeWallBuilder.ProjectUrl);
         var developerLink = Link("Settings.Developer", "https://github.com/GitRuozhi");
         Id(storeLink, "visit-store"); Id(sourceLink, "visit-source"); Id(developerLink, "visit-developer");
         visitLinks.Children.Add(storeLink); visitLinks.Children.Add(sourceLink); visitLinks.Children.Add(developerLink);
         AddRow(about, "Settings.Visit", visitLinks);
         var feedbackLinks = new StackPanel { Orientation = actionsOrientation, Spacing = 8 };
-        var discussionLink = Link("Settings.Discussion", "https://github.com/GitRuozhi/TileWall_for_Win11/discussions");
+        var discussionLink = Link("Settings.Discussion", WelcomeWallBuilder.DiscussionsUrl);
         var communityLink = Link("Settings.QQGroup", CommunityGroupUrl,
             "Settings.CommunityOpenFailed");
         Id(discussionLink, "feedback-discussion"); Id(communityLink, "community");

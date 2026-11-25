@@ -1,18 +1,18 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/tilewall-logo.png" width="112" height="112" alt="TileWall-Symbol">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/tilewall-logo.png" width="112" height="112" alt="TileWall-Symbol">
 </p>
 
 <h1 align="center">TileWall</h1>
 
 <p align="center">
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md">简体中文</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md"><strong>Deutsch</strong></a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md">Español</a>
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/README.md">English</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/README.zh-CN.md">简体中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.ko-KR.md">한국어</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.de-DE.md"><strong>Deutsch</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.es-ES.md">Español</a>
 </p>
 
 <p align="center">
@@ -23,14 +23,14 @@
   <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8 UI-Sprachen">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="Kostenlos">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square" alt="MIT License"></a>
+  <a href="https://github.com/GitRuozhi/TileWall/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square" alt="MIT License"></a>
 </p>
 
 <p align="center">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><strong>Offizielle Installation</strong></a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest">Offline-Installationspaket</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/discussions">Feedback</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/releases/latest">Offline-Installationspaket</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/discussions">Feedback</a> ·
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">Chat</a>
 </p>
 
@@ -48,9 +48,9 @@ Auf dem nativen WinUI-3-Framework von Microsoft gebaut, für Windows 10 und 11 a
 
 Offizielle Installation: [**Microsoft Store öffnen**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
 
-Offline-Installationspaket: [EXE-Offline-Installationspaket herunterladen](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+Offline-Installationspaket: [EXE-Offline-Installationspaket herunterladen](https://github.com/GitRuozhi/TileWall/releases/latest)
 
-Portables Archiv: [Portables Archiv herunterladen](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+Portables Archiv: [Portables Archiv herunterladen](https://github.com/GitRuozhi/TileWall/releases/latest)
 
 Datenpfad: `%LOCALAPPDATA%\TileWall`
 
@@ -189,7 +189,7 @@ Diese Wünsche sind bereits erfüllt:
 
 ## Austausch und Feedback
 
-Hinterlasse in [Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions) Feedback, Fragen oder neue Ideen – oder zeig dort deine Kachelwand.
+Hinterlasse in [Discussions](https://github.com/GitRuozhi/TileWall/discussions) Feedback, Fragen oder neue Ideen – oder zeig dort deine Kachelwand.
 
 Tritt der QQ-Gruppe bei, indem du auf [Locker austauschen](https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT) klickst. Plaudern ist willkommen!
 

@@ -4,7 +4,7 @@
 
 TileWall 是一款可编辑的图片磁贴启动墙：把程序、文件夹、文件、网页与应用协议入口放在同一面墙上，用普通磁贴、连续图片拼图和图集表达自己的布置。它使用 C#、.NET 10 与 WinUI 3，独立于 Windows Shell；可选的键盘 Win 键与任务栏开始按钮接管仍是实验功能。
 
-本文面向第一次取得公开源码的开发者，介绍怎样构建、怎样沿一次操作找到实现，以及修改时需要保留的行为。产品使用说明见[中文 README](../README.zh-CN.md)或[英文 README](../README.md)，版本变化见[更新日志](CHANGELOG.md)。已发布版本和附件以 [GitHub Releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases) 为准。
+本文面向第一次取得公开源码的开发者，介绍怎样构建、怎样沿一次操作找到实现，以及修改时需要保留的行为。产品使用说明见[中文 README](../README.zh-CN.md)或[英文 README](../README.md)，版本变化见[更新日志](CHANGELOG.md)。已发布版本和附件以 [GitHub Releases](https://github.com/GitRuozhi/TileWall/releases) 为准。
 
 - 想先运行起来，从[取得源码和构建](#从公开源码构建)开始。
 - 想定位实现，先看[一次磁贴编辑的调用路径](#沿一次磁贴编辑找到代码)，再查[职责索引](#窗口shell-与数据职责)。
@@ -34,8 +34,8 @@ NuGet 在首次构建时还原依赖，需要访问配置的软件包源。应�
 在准备存放工程的目录打开 PowerShell，克隆公开仓并进入仓库根目录。后续命令均从这里执行。
 
 ```powershell
-git clone https://github.com/GitRuozhi/TileWall_for_Win11.git
-Set-Location TileWall_for_Win11
+git clone https://github.com/GitRuozhi/TileWall.git
+Set-Location TileWall
 ```
 
 ### 构建可直接运行的开发程序
@@ -165,7 +165,7 @@ pwsh -NoProfile -File tools/BuildUninstallBroker.ps1 -OutputDirectory artifacts/
 
 例如修改磁贴编辑，既检查保存后的属性，也检查取消与保存失败保留原数据；修改导入，要覆盖成功、目的组重复、来源变化与取消；修改退出，要验证有未完成任务时仍能正确结算。测试应验证可观察合同，不能删掉正式校验来让模拟输入通过。共享桌面与实例串行操作，使用可丢弃样本，并记录本次真正覆盖的环境和分支。
 
-在 [Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions) 提交问题、建议或贡献意向。反馈时提供版本／来源提交、分发方式、Windows build、显示比例、明确步骤、预期与实际结果、能否稳定复现，以及相关日志或小样本。日志和墙包可能含路径、网址、用户名及入口参数，分享前自行检查并去除敏感内容。
+在 [Discussions](https://github.com/GitRuozhi/TileWall/discussions) 提交问题、建议或贡献意向。反馈时提供版本／来源提交、分发方式、Windows build、显示比例、明确步骤、预期与实际结果、能否稳定复现，以及相关日志或小样本。日志和墙包可能含路径、网址、用户名及入口参数，分享前自行检查并去除敏感内容。
 
 提交贡献时，请说明问题与改动范围，附针对性的验证结果和未覆盖项。涉及交互、布局、兼容或数据格式的取舍，建议先与维护者沟通。补丁保持集中，保留来源、许可及历史兼容样本。
 
@@ -173,7 +173,7 @@ pwsh -NoProfile -File tools/BuildUninstallBroker.ps1 -OutputDirectory artifacts/
 
 公开仓库不设参与门槛，欢迎任何人提交 Issue 和 PR。如果您希望更进一步，了解完整的产品设计、开发历史、踩坑经验和展示线工作等，欢迎加入正式开发。
 
-您可以通过邮箱、[Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions)、[QQ 群](../README.zh-CN.md#交流和反馈)，或其他任何能联系到我的方式，告诉我您想加入 TileWall 正式开发，我会邀请您成为私有仓库的开发者。期待您的加入。
+您可以通过邮箱、[Discussions](https://github.com/GitRuozhi/TileWall/discussions)、[QQ 群](../README.zh-CN.md#交流和反馈)，或其他任何能联系到我的方式，告诉我您想加入 TileWall 正式开发，我会邀请您成为私有仓库的开发者。期待您的加入。
 
 ## 许可证与素材来源
 

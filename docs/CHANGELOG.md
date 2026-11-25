@@ -1,6 +1,6 @@
 # 更新日志
 
-本页记录对外版本状态、功能变化、兼容性、已知限制和必要验证范围。[GitHub Releases](https://github.com/GitRuozhi/TileWall_for_Win11/releases)提供正式下载；源码与构建说明见[开发者指南](DeveloperGuide.zh-CN.md)。GitHub发行与Microsoft Store上架状态分别以对应页面为准。
+本页记录对外版本状态、功能变化、兼容性、已知限制和必要验证范围。[GitHub Releases](https://github.com/GitRuozhi/TileWall/releases)提供正式下载；源码与构建说明见[开发者指南](DeveloperGuide.zh-CN.md)。GitHub发行与Microsoft Store上架状态分别以对应页面为准。
 
 ## V1.58（1.5.8，本地候选）
 
@@ -22,7 +22,7 @@
 
 背景优化另经 x64 Release 构建与 24 组新旧像素逐字节对照，4 组取消检查通过。物理 Win10 22H2 连续两轮显示、失焦和收墙时，冻结图仍可重新上传，收墙后设备和绘制表面引用已释放，79 张磁贴图像帧保持齐全。普通数据的设置弹窗开闭与收墙、数据快照不变均已核对。显存和 RAM 对照、归因边界由私有仓库的调查记录维护。
 
-## [V1.56](https://github.com/GitRuozhi/TileWall_for_Win11/releases/tag/V1.56)（1.5.6）
+## [V1.56](https://github.com/GitRuozhi/TileWall/releases/tag/V1.56)（1.5.6）
 
 GitHub 于 2026-11-24 正式发布 x64 和 ARM64 的便携 ZIP 和 EXE 安装器。两架构的商店 MSIX 已构建并保存到 Microsoft Store 提交草稿。
 
@@ -47,7 +47,7 @@ GitHub 于 2026-11-24 正式发布 x64 和 ARM64 的便携 ZIP 和 EXE 安装器
 
 显示适配验证：x64 开发构建、14 项相关 Core 用例及包规则与八语资源检查通过。物理 Win10 22H2 x64 使用超出当前容量的已存墙，后台启动和热键收墙均保持原代次。等待时更改组名保留 5 栏 220 行及手动宽度，稳定后只提交一次，保存为 5 栏 24 行，退出重开读回同一快照。实际息屏跨过原期限时零写入，亮屏通知后经过新的稳定窗口才提交一代。显示拓扑和显示参数的变化分类、计时和取消规则使用受控样本验证。物理显示器插拔及实际 DPI、分辨率和旋转切换未实测。
 
-## [V1.55](https://github.com/GitRuozhi/TileWall_for_Win11/releases/tag/V1.55)（1.5.5）——2026-11-21
+## [V1.55](https://github.com/GitRuozhi/TileWall/releases/tag/V1.55)（1.5.5）——2026-11-21
 
 GitHub 正式发布，提供 x64 和 ARM64 的便携 ZIP 与 EXE 安装器。Microsoft Store 于 2026-11-22 上架。
 

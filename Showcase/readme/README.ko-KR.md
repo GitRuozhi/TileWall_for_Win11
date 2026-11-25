@@ -1,18 +1,18 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall_for_Win11/main/Showcase/readme/images/tilewall-logo.png" width="112" height="112" alt="TileWall 아이콘">
+  <img src="https://raw.githubusercontent.com/GitRuozhi/TileWall/main/Showcase/readme/images/tilewall-logo.png" width="112" height="112" alt="TileWall 아이콘">
 </p>
 
 <h1 align="center">TileWall</h1>
 
 <p align="center">
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.md">English</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/README.zh-CN.md">简体中文</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.ko-KR.md"><strong>한국어</strong></a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/Showcase/readme/README.es-ES.md">Español</a>
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/README.md">English</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/README.zh-CN.md">简体中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.zh-TW.md">繁體中文</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.ja-JP.md">日本語</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.ko-KR.md"><strong>한국어</strong></a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.de-DE.md">Deutsch</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.fr-FR.md">Français</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/Showcase/readme/README.es-ES.md">Español</a>
 </p>
 
 <p align="center">
@@ -23,14 +23,14 @@
   <img src="https://img.shields.io/badge/Languages-8-0078D4?style=flat-square" alt="8개 UI 언어">
   <img src="https://img.shields.io/badge/Price-Free-2EA44F?style=flat-square" alt="무료">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><img src="https://img.shields.io/badge/Microsoft_Store-Install-0078D4?style=flat-square" alt="Microsoft Store"></a>
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square" alt="MIT License"></a>
+  <a href="https://github.com/GitRuozhi/TileWall/releases/latest"><img src="https://img.shields.io/badge/Package-ZIP%20%2F%20EXE-009688?style=flat-square" alt="ZIP / EXE"></a>
+  <a href="https://github.com/GitRuozhi/TileWall/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-2EA44F?style=flat-square" alt="MIT License"></a>
 </p>
 
 <p align="center">
   <a href="https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS"><strong>공식 설치</strong></a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest">오프라인 설치 패키지</a> ·
-  <a href="https://github.com/GitRuozhi/TileWall_for_Win11/discussions">피드백</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/releases/latest">오프라인 설치 패키지</a> ·
+  <a href="https://github.com/GitRuozhi/TileWall/discussions">피드백</a> ·
   <a href="https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT">대화하기</a>
 </p>
 
@@ -46,9 +46,9 @@ https://github.com/user-attachments/assets/038fa1cd-2f04-4475-9ab2-fd45a4b84c9f
 
 공식 설치: [**Microsoft Store 열기**](https://apps.microsoft.com/store/detail/9NZZN35FDB0C?cid=DevShareMCLPCS)
 
-오프라인 설치 패키지: [EXE 오프라인 설치 패키지 다운로드](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+오프라인 설치 패키지: [EXE 오프라인 설치 패키지 다운로드](https://github.com/GitRuozhi/TileWall/releases/latest)
 
-포터블 압축 파일: [포터블 압축 파일 다운로드](https://github.com/GitRuozhi/TileWall_for_Win11/releases/latest)
+포터블 압축 파일: [포터블 압축 파일 다운로드](https://github.com/GitRuozhi/TileWall/releases/latest)
 
 데이터 위치: `%LOCALAPPDATA%\TileWall`
 
@@ -188,7 +188,7 @@ https://github.com/user-attachments/assets/038fa1cd-2f04-4475-9ab2-fd45a4b84c9f
 
 ## 소통과 피드백
 
-[Discussions](https://github.com/GitRuozhi/TileWall_for_Win11/discussions)에 피드백, 문제, 새로운 아이디어를 남기거나 타일 벽을 자랑해 보세요.
+[Discussions](https://github.com/GitRuozhi/TileWall/discussions)에 피드백, 문제, 새로운 아이디어를 남기거나 타일 벽을 자랑해 보세요.
 
 [편하게 대화하기](https://qm.qq.com/cgi-bin/qm/qr?k=iw0LxnFaHE8JdUr5z937pFuagFxOtFOo&jump_from=webapi&authKey=JvkcK/IIaFg5e1ymzhP41yxcAiTVURjvhrNtDziZZSGj3ZD2byZhqX2lj48L9jkT)를 눌러 QQ 그룹에 참여해 보세요. 편하게 이야기 나눠요!
 
