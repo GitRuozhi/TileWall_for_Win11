@@ -135,7 +135,8 @@ internal static class WallPackageJson
         var frames = content.Members.SelectMany(member => member.Images.IconSeries?.Frames ?? [])
             .Where(frame => frame.Media.Sha256 == reference.Sha256).ToArray();
         if (frames.Length == 0) return;
-        if (reference.Extension != ".png" || bytes.Length < 33 ||
+        // A gallery may reference the same validated PNG payload using another file suffix.
+        if (bytes.Length < 33 ||
             !bytes[..8].SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }) ||
             BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(8, 4)) != 13 ||
             !bytes.Slice(12, 4).SequenceEqual("IHDR"u8))

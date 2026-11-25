@@ -48,6 +48,38 @@ public sealed class WallLayoutLockTests
     }
 
     [Fact]
+    public void LockedTitleEditDoesNotLeaveAnEmptyGroupAfterUnlockAndUnpin()
+    {
+        var member = Tile("editing");
+        var source = Locked(5, new WallLane { Groups = [Group("edited", member), Group("other", Tile("other-tile"))] });
+        var edit = Apply(source, new ReplaceMemberAction(0, member.Id, member with { Visual = member.Visual with { Title = "Edited" } }));
+        Assert.True(edit.Success, edit.Detail);
+        var edited = edit.Proposal!.Document;
+        Assert.Null(edited.Lanes[0].Groups[0].ReservedRows);
+        var unlocked = edited with { Settings = edited.Settings with { LayoutLocked = false } };
+
+        var unpin = Apply(unlocked, new UnpinMemberAction(unlocked.Generation, member.Id));
+
+        Assert.True(unpin.Success, unpin.Detail);
+        Assert.Equal("other", Assert.Single(unpin.Proposal!.Document.Lanes[0].Groups).Id);
+        Assert.Equal(member.Id, Assert.Single(unpin.Proposal.Document.InactiveMembers).Id);
+    }
+
+    [Fact]
+    public void LockedUnpinKeepsOnlyTheRowsActuallyLost()
+    {
+        var source = Locked(6, new WallLane { Groups = [Group("group", Tile("top"), Tile("bottom", row: 2)), Group("other", Tile("other-tile"))] });
+        var top = Apply(source, new UnpinMemberAction(0, "top"));
+        var bottom = Apply(source, new UnpinMemberAction(0, "bottom"));
+
+        Assert.True(top.Success, top.Detail);
+        Assert.True(bottom.Success, bottom.Detail);
+        Assert.Null(top.Proposal!.Document.Lanes[0].Groups[0].ReservedRows);
+        Assert.Equal(3, bottom.Proposal!.Document.Lanes[0].Groups[0].ReservedRows);
+        Assert.Equal(Position(source, "other-tile"), Position(bottom.Proposal.Document, "other-tile"));
+    }
+
+    [Fact]
     public void MovingLastMemberAfterUnlockKeepsThePreviouslyReservedSourceGroup()
     {
         var source = Locked(9, new WallLane { Groups = [Group("source", Tile("stays"), Tile("moving", row: 4)),

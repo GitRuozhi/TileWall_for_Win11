@@ -363,25 +363,15 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         {
             if (_refreshing) return;
             var kind = (MemberImageSourceKind)_source.SelectedIndex;
-            if (kind == _draft.Images.Kind && kind != MemberImageSourceKind.Automatic)
+            if (kind is MemberImageSourceKind.Single or MemberImageSourceKind.Folder)
             {
                 _pending = PickSourceAsync(kind);
                 return;
             }
-            if (kind != MemberImageSourceKind.Automatic) RestoreDisplayBeforeDefaultFit();
             MarkExplicitImageSource();
             _sourceRevision = ++_inputRevision; CancelRequest();
             TraceImage($"SelectSource kind={kind}");
             CancelThumbnailRequests();
-            if (kind == MemberImageSourceKind.Automatic) { _pending = PickSourceAsync(kind); return; }
-            _draft = _draft with { Images = new MemberImageSource { Kind = kind, Path = string.Empty }, Carousel = null,
-                Visual = _draft.Visual with { BackgroundMode = MemberBackgroundMode.Blur } };
-            _sourceDirty = true; _frame = null; _previewPath = null;
-            _candidates.Clear(); _thumbnailStrip.Children.Clear(); _selectedThumbnail = null;
-            SetSourceStatus(null); RefreshThumbnailSelection(center: false);
-            _thumbnails.ChangeView(0, null, null, true);
-            _refreshing = true; _sourcePath.Text = string.Empty; _refreshing = false;
-            Changed(); RefreshFields(); GallerySourceChanged?.Invoke();
             _pending = PickSourceAsync(kind);
         };
         _background.SelectionChanged += (_, _) =>
@@ -612,7 +602,6 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         if (!_sourceDirty) _sourcePath.Text = _draft.Images.Path ?? string.Empty;
         _sourcePath.Foreground = _sourceMissing ? new SolidColorBrush(Microsoft.UI.Colors.OrangeRed) : null;
         ActionIcon.SetTip(_sourcePath, string.IsNullOrWhiteSpace(_sourcePath.Text) ? null : _sourcePath.Text);
-        _sourcePath.IsEnabled = _draft.Images.Kind is MemberImageSourceKind.Single or MemberImageSourceKind.Folder;
         _background.SelectedIndex = (int)_draft.Visual.BackgroundMode; _colorButton.IsEnabled = _draft.Visual.BackgroundMode == MemberBackgroundMode.Color;
         ActionIcon.SetTip(_colorButton, T(_colorButton.IsEnabled ? "Tile.CustomColor" : "Editor.RequiresColor"));
         _color.Color = WallSurface.ParseColor(_draft.Visual.BackgroundColor, Windows.UI.Color.FromArgb(255, 64, 64, 64));
@@ -651,7 +640,6 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         DialogActionFeedback.SetReason(_erase, () => T("Editor.RequiresPuzzle"));
         DialogActionFeedback.SetReason(_undo, () => T(_layout is null ? "Editor.RequiresPuzzle" : "Editor.NoUndo"));
         DialogActionFeedback.SetReason(_redo, () => T(_layout is null ? "Editor.RequiresPuzzle" : "Editor.NoRedo"));
-        DialogActionFeedback.SetReason(_sourcePath, () => T("Editor.AutomaticSource"));
         DialogActionFeedback.SetReason(_colorButton, () => T("Editor.RequiresColor"));
         DialogActionFeedback.SetReason(_interval, () => T("Editor.RequiresGallery"));
         DialogActionFeedback.SetReason(_thumbnails, () => T("Editor.RequiresGallery"));
@@ -1024,8 +1012,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                 picker.FileTypeFilter.Add("*");
                 path = (await picker.PickSingleFileAsync())?.Path;
             }
-            if (!_closed && !_previewClosing && path is not null && _draft.Images.Kind == kind)
-                await ConfirmSourceWithFeedbackAsync(path);
+            if (!_closed && !_previewClosing && path is not null)
+                await ConfirmSourceWithFeedbackAsync(path, kind);
         }
         catch (Exception ex) { if (!_closed && !_previewClosing) ShowOperationReminder(string.Format(T("Puzzle.PickerFailed"), ex.Message)); }
         finally
@@ -1319,9 +1307,10 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
                     if (_original.Entry?.Kind == ManagedEntryKind.Lnk)
                     {
                         if (_originalLink is null || _originalLinkSha256 is null) return ShowError(T("Editor.InvalidTarget"));
-                        if (_originalLink.HasIdList) return ShowError(T("Entry.IdListTarget"));
                         expectedEntrySha256 = _originalLinkSha256;
-                        changes.Add(new EntryChange.ChangeTarget(_draft.Id, target, argumentsChanged ? _targetArguments : null));
+                        changes.Add(_originalLink.HasIdList
+                            ? new EntryChange.CreateLink(_draft.Id, target, _targetArguments)
+                            : new EntryChange.ChangeTarget(_draft.Id, target, argumentsChanged ? _targetArguments : null));
                     }
                     else changes.Add(new EntryChange.CreateLink(_draft.Id, target, _targetArguments));
                 }
@@ -1850,10 +1839,11 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _thumbnails.ChangeView(Math.Max(0, index * 52), null, null, !animate);
         SyncGalleryScrollBar();
     }
-    private async Task<bool> ConfirmSourceAsync(string? pickedPath = null)
+    private async Task<bool> ConfirmSourceAsync(string? pickedPath = null, MemberImageSourceKind? pickedKind = null)
     {
         if (_closed || _previewClosing) return false;
-        var kind = _draft.Images.Kind; if (kind == MemberImageSourceKind.Automatic) { _sourceDirty = false; return true; }
+        var originalKind = _draft.Images.Kind;
+        var kind = pickedKind ?? originalKind;
         if (pickedPath is null) CancelThumbnailRequests();
         var path = pickedPath ?? _sourcePath.Text.Trim(); var revision = _sourceRevision;
         var request = BeginRequest(readSource: true);
@@ -1863,6 +1853,8 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         try
         {
             proof = await _images.ResolveTargetSourceAsync(path, request.Token) ?? throw new OperationCanceledException(request.Token);
+            if (kind is MemberImageSourceKind.Automatic or MemberImageSourceKind.None)
+                kind = proof.TargetIsDirectory == true ? MemberImageSourceKind.Folder : MemberImageSourceKind.Single;
             if (proof.Candidates is not { } candidates ||
                 (kind == MemberImageSourceKind.Folder ? proof.TargetIsDirectory != true : proof.TargetIsDirectory != false))
                 throw new IOException(T("Puzzle.UnavailableImage"));
@@ -1872,7 +1864,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         { if (Active(request.Generation)) { SetSourceStatus(ex.Message); ShowError(ex.Message); } return false; }
         finally { EndSourceRead(request.Generation); }
-        var current = Active(request.Generation) && revision == _sourceRevision && kind == _draft.Images.Kind;
+        var current = Active(request.Generation) && revision == _sourceRevision && originalKind == _draft.Images.Kind;
         TraceImage($"ConfirmSourceResult requestedRevision={revision} status={result.Status} complete={result.IsComplete} count={result.Paths.Count} current={current}");
         if (!current) return false;
         var emptyGallery = kind == MemberImageSourceKind.Folder && result.IsComplete && result.Status == WallImageStatus.Loaded;
@@ -1881,6 +1873,7 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
             SetSourceStatus(WallImageService.DescribeCandidateDiagnostic(result) ?? T("Puzzle.UnavailableImage"));
             ShowError(T("Puzzle.UnavailableImage")); return false;
         }
+        if (kind != originalKind) RestoreDisplayBeforeDefaultFit();
         if (pickedPath is not null)
         {
             CancelThumbnailRequests();
@@ -1890,19 +1883,19 @@ internal sealed class SharedMemberEditorDialog : IWallDialogSession
         _sourceDirty = false;
         _draft = MemberPresentationRules.ApplyImageSource(_draft,
             new MemberImageSource { Kind = kind, Path = path },
-            applyDefaults: _appearanceRevision == _recognitionAppearanceRevision);
+            applyDefaults: kind != originalKind || _appearanceRevision == _recognitionAppearanceRevision);
         _targetRecognition = proof with { Source = _draft.Images };
         _targetRecognitionRevision = revision; _verifiedRecognition = null; _preparedSourceAsset = null;
         TraceImage("ConfirmSourceAccepted");
         _previewPath = null; Changed(); RefreshFields(); GallerySourceChanged?.Invoke(); await ReloadCandidatesAsync(result); return true;
     }
 
-    private async Task<bool> ConfirmSourceWithFeedbackAsync(string? pickedPath = null)
+    private async Task<bool> ConfirmSourceWithFeedbackAsync(string? pickedPath = null, MemberImageSourceKind? pickedKind = null)
     {
-        var kind = _draft.Images.Kind;
         var confirmedPath = pickedPath ?? _sourcePath.Text.Trim();
-        var confirmed = await ConfirmSourceAsync(pickedPath);
-        if (confirmed && !_closed && !_previewClosing && kind == _draft.Images.Kind &&
+        var confirmed = await ConfirmSourceAsync(pickedPath, pickedKind);
+        var kind = _draft.Images.Kind;
+        if (confirmed && !_closed && !_previewClosing &&
             string.Equals(_draft.Images.Path, confirmedPath, StringComparison.OrdinalIgnoreCase) &&
             _loadedSourceRevision == _sourceRevision && _previewError is null &&
             kind is MemberImageSourceKind.Single or MemberImageSourceKind.Folder)

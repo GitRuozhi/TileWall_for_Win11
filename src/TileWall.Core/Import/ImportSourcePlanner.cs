@@ -58,15 +58,15 @@ public static class ImportSourcePlanner
             row.Source.Company, row.Source.SelectionIdentity, row.Source.Policy)).ToArray(), recognizeGroups);
         var currentGroups = current.Lanes.SelectMany(lane => lane.Groups).ToArray();
         var destinations = currentGroups.Where(group => !string.IsNullOrWhiteSpace(group.Title))
-            .ToDictionary(group => StartMenuSourceCache.GroupNameKey(group.Title), StringComparer.Ordinal);
+            .ToDictionary(group => group.Title!.Trim(), StringComparer.OrdinalIgnoreCase);
         var packageDestinations = currentGroups.ToDictionary(group => group.Id, StringComparer.Ordinal);
         var rows = remaining.Select((row, index) => (Row: row, Group: assigned[index])).ToArray();
+        var byTitle = rows.ToLookup(item => !item.Group.PreserveStableKey && !string.IsNullOrWhiteSpace(item.Group.Title));
+        var groupedRows = byTitle[true].GroupBy(item => "name:" + item.Group.Title!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Concat(byTitle[false].GroupBy(item => (item.Group.PreserveStableKey ? "stable:" : "unnamed:") + item.Group.Key,
+                StringComparer.Ordinal));
         var projectedGroups = new List<ImportProjectedGroup>();
-        foreach (var merged in rows.GroupBy(item => item.Group.PreserveStableKey
-                     ? "stable:" + item.Group.Key
-                     : string.IsNullOrWhiteSpace(item.Group.Title)
-                         ? "unnamed:" + item.Group.Key : "name:" + StartMenuSourceCache.GroupNameKey(item.Group.Title), StringComparer.Ordinal)
-                     .OrderBy(group => group.Min(item => (item.Group.Category,
+        foreach (var merged in groupedRows.OrderBy(group => group.Min(item => (item.Group.Category,
                          item.Row.Source.Policy == ImportSourcePolicy.Attributed ? item.Row.Source.SourceGroup?.LaneIndex ?? 0 : 0,
                          item.Group.Order)))
                      .ThenBy(group => group.First().Group.Title, StringComparer.OrdinalIgnoreCase))
@@ -78,8 +78,8 @@ public static class ImportSourcePlanner
                     ? item.Row.Source.SourceGroup?.LaneIndex ?? 0 : 0)
                 .ThenBy(item => item.Group.Order).First();
             var first = firstRow.Group;
-            var name = StartMenuSourceCache.GroupNameKey(first.Title);
-            var destination = name.Length == 0 || merged.All(item => item.Row.Source.SourceKind == ImportPageSourceKind.RecycleBin)
+            var name = first.Title?.Trim();
+            var destination = string.IsNullOrEmpty(name) || merged.All(item => item.Row.Source.SourceKind == ImportPageSourceKind.RecycleBin)
                 ? null : destinations.GetValueOrDefault(name);
             var package = merged.All(item => item.Row.Source.SourceKind == ImportPageSourceKind.WallPackage);
             IReadOnlyDictionary<string, WallMember>? packageMembers = null;
@@ -106,6 +106,11 @@ public static class ImportSourcePlanner
                 }
             }
             var groupKey = first.PreserveStableKey ? first.Key : merged.Key;
+            if (!first.PreserveStableKey && groupKey.StartsWith("name:", StringComparison.Ordinal))
+            {
+                var previousKey = "name:" + StartMenuSourceCache.GroupNameKey(first.Title);
+                if (StringComparer.OrdinalIgnoreCase.Equals(previousKey, groupKey)) groupKey = previousKey;
+            }
             var projected = merged.GroupBy(item => item.Row.Error is null
                     ? item.Row.Source.SelectionIdentity : "invalid:" + item.Row.Source.SourceKey, StringComparer.Ordinal)
                 .Select(group =>
@@ -245,8 +250,7 @@ public static class ImportSourcePlanner
             if (completeSourceGroup && sourceGroup is not null)
                 incoming.AddRange(sourceGroup.TrailingEmptyGroups.Select(group => RemapEmpty(group)));
         }
-        var preserveExistingGroups = rows.All(candidate => candidate.Source.SourceKind == ImportPageSourceKind.WallPackage) &&
-            current.Lanes.Any(lane => lane.Groups.Count != 0);
+        var preserveExistingGroups = rows.All(candidate => candidate.Source.SourceKind == ImportPageSourceKind.WallPackage);
         var preferCurrentHeight = rows.All(candidate =>
             candidate.Source.Policy != ImportSourcePolicy.Attributed && !candidate.Source.HasRecordedPosition);
         var layout = StartMenuImportPlanner.TryPlan(current, expectedGeneration, incoming, metrics, budget, insertionPosition,
@@ -378,13 +382,18 @@ public static class ImportSourcePlanner
             }
         }
         var metadata = rows.Select(candidate => candidate.Source.Member.ImportSource).FirstOrDefault(source => source is not null);
+        var metadataKey = group.Key;
+        if (!group.PreserveSourceGroup && metadata is not null && old?.ImportSource is { } prior && prior.BatchId == metadata.BatchId &&
+            prior.OriginGroupId == groupId && group.Key.StartsWith("name:", StringComparison.Ordinal) &&
+            prior.GroupBucketKey == "name:" + StartMenuSourceCache.GroupNameKey(group.Title))
+            metadataKey = prior.GroupBucketKey;
         return new((old ?? new StartGroup { Id = groupId, Title = group.Title, Members = [] }) with
         {
             Members = members.ToArray(),
             ReservedRows = old?.ReservedRows ?? (rows.Count == (rows.FirstOrDefault()?.Source.SourceGroup?.MemberCount ?? group.Candidates.Count)
                 ? rows.Select(candidate => candidate.Source.SourceGroup?.ReservedRows).FirstOrDefault(value => value is not null) : null),
             ImportSource = metadata is null ? old?.ImportSource : metadata with
-                { OriginGroupId = groupId, GroupBucketKey = group.Key, SourceRoot = null, RelativePath = null },
+                { OriginGroupId = groupId, GroupBucketKey = metadataKey, SourceRoot = null, RelativePath = null },
         }, accepted.ToArray());
 
         bool IsFree(GridRect bounds)

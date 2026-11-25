@@ -87,10 +87,13 @@ public static class RecycleBinRules
         {
             Generation = current.Generation + 1,
             InactiveMembers = retained,
-            Lanes = current.Lanes.Select(lane => lane with { Groups = lane.Groups.Select(group => group with
-                { Members = group.Members.Where(member => !selected.Contains(member.Id)).ToArray(),
-                    ReservedRows = current.Settings.LayoutLocked && group.Members.Any(member => selected.Contains(member.Id))
-                        ? WallLayoutEngine.EffectiveGroupRows(group) : group.ReservedRows })
+            Lanes = current.Lanes.Select(lane => lane with { Groups = lane.Groups.Select(group =>
+                {
+                    var remaining = group.Members.Where(member => !selected.Contains(member.Id)).ToArray();
+                    if (remaining.Length == group.Members.Count) return group;
+                    var updated = group with { Members = remaining };
+                    return current.Settings.LayoutLocked ? WallLayoutEngine.PreserveGroupFootprint(group, updated) : updated;
+                })
                 .Where(group => group.Members.Count != 0 || group.ReservedRows is not null).ToArray() }).ToArray(),
         };
         return WallLayoutEngine.FinishContentChange(next, width, height, metrics);

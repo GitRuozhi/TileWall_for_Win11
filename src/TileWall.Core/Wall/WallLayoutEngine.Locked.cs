@@ -6,7 +6,16 @@ public static partial class WallLayoutEngine
 {
     /// <summary>The persisted group footprint includes both content and explicitly retained blank rows.</summary>
     public static int EffectiveGroupRows(StartGroup group) => Math.Max(group.ReservedRows ?? 0,
-        group.Members.Select(member => member.LocalBounds.Bottom).DefaultIfEmpty(0).Max());
+        GroupContentRows(group.Members));
+
+    private static int GroupContentRows(IReadOnlyList<WallMember> members) =>
+        members.Select(member => member.LocalBounds.Bottom).DefaultIfEmpty(0).Max();
+
+    internal static StartGroup PreserveGroupFootprint(StartGroup original, StartGroup updated)
+    {
+        var previousRows = EffectiveGroupRows(original);
+        return EffectiveGroupRows(updated) < previousRows ? updated with { ReservedRows = previousRows } : updated;
+    }
 
     private static int ContentColumnCount(WallDocument document) =>
         document.Settings.LayoutLocked || document.Lanes.SelectMany(lane => lane.Groups).Any(group => group.ReservedRows is not null)
@@ -74,7 +83,7 @@ public static partial class WallLayoutEngine
                 if (location is null) return Reject(WallRejection.ObjectNotFound);
                 var original = location.Value.Member;
                 if (move.TargetBounds.Size != original.LocalBounds.Size) return Reject(WallRejection.InvalidAction);
-                DetachKeepingFootprint(lanes, location.Value);
+                DetachLockedMember(lanes, location.Value);
                 var moved = WithBounds(original, move.TargetBounds) with
                 { UserClaimed = original.UserClaimed || original.ImportSource is not null };
                 rejection = PlaceWithoutAvoidance(lanes, moved, move.TargetGroupId, move.LaneIndex,
@@ -98,7 +107,7 @@ public static partial class WallLayoutEngine
                          MemberPresentationRules.HasUserPropertyChanges(original, replace.Replacement)),
                 };
                 var sourceId = lanes[location.Value.Lane][location.Value.Group].Id;
-                DetachKeepingFootprint(lanes, location.Value);
+                DetachLockedMember(lanes, location.Value);
                 // Resize is anchored at the old cell. Caller-supplied row/column cannot smuggle in a move.
                 replacement = WithBounds(replacement, replacement.LocalBounds with
                 { Column = original.LocalBounds.Column, Row = original.LocalBounds.Row });
@@ -154,7 +163,7 @@ public static partial class WallLayoutEngine
             {
                 var location = FindMember(lanes, remove.MemberId);
                 if (location is null) return Reject(WallRejection.ObjectNotFound);
-                DetachKeepingFootprint(lanes, location.Value);
+                DetachLockedMember(lanes, location.Value);
                 rejection = WallRejection.None;
                 break;
             }
@@ -171,16 +180,13 @@ public static partial class WallLayoutEngine
             : Reject(rejection, rejection == WallRejection.NoSpace ? "LAYOUT_LOCKED_NO_SPACE" : null);
     }
 
-    private static void DetachKeepingFootprint(List<List<StartGroup>> lanes,
+    private static void DetachLockedMember(List<List<StartGroup>> lanes,
         (int Lane, int Group, WallMember Member) location)
     {
         var group = lanes[location.Lane][location.Group];
-        var remaining = group.Members.Where(member => member.Id != location.Member.Id).ToArray();
         lanes[location.Lane][location.Group] = group with
         {
-            ReservedRows = remaining.Select(member => member.LocalBounds.Bottom).DefaultIfEmpty(0).Max() < EffectiveGroupRows(group)
-                ? EffectiveGroupRows(group) : group.ReservedRows,
-            Members = remaining,
+            Members = group.Members.Where(member => member.Id != location.Member.Id).ToArray(),
         };
     }
 
@@ -239,6 +245,15 @@ public static partial class WallLayoutEngine
     private static WallLayoutResult FinishLocked(WallDocument current, List<List<StartGroup>> lanes,
         double width, double height, WallMetrics metrics, string? detail = null)
     {
+        // Locked placement keeps existing group indices and only appends groups.
+        // Reserve lost rows from the final placement, after any temporary detachment.
+        for (var lane = 0; lane < current.Lanes.Count; lane++)
+        {
+            var originalGroups = current.Lanes[lane].Groups;
+            for (var group = 0; group < originalGroups.Count; group++)
+                if (!ReferenceEquals(originalGroups[group], lanes[lane][group]))
+                    lanes[lane][group] = PreserveGroupFootprint(originalGroups[group], lanes[lane][group]);
+        }
         var next = current with
         {
             Generation = current.Generation + 1, Columns = lanes.Count,

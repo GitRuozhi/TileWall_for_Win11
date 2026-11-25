@@ -205,7 +205,7 @@ public sealed partial class WallImageService
         if (string.IsNullOrWhiteSpace(source)) return result;
         using var trace = ImageCandidateTrace.Start("collect", source, width, height);
         var entry = NormalizePath(source);
-        var extension = entry is null ? string.Empty : Path.GetExtension(entry);
+        var extension = entry is null || Directory.Exists(entry) ? string.Empty : Path.GetExtension(entry);
         string? target = entry ?? source, explicitIcon = null;
         int? explicitIndex = null;
         var nativeLink = false;

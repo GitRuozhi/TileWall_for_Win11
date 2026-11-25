@@ -614,6 +614,58 @@ public sealed class ImportSourcePlannerTests
     }
 
     [Fact]
+    public void GroupTitlesUseTheSameCaseComparisonForImportAndRename()
+    {
+        var wall = WallDocument.Empty(1, 8) with
+        {
+            Lanes = [new() { Groups = [Group("plain", "Tools", Tile("one")), Group("long-s", "Toolſ", Tile("two"))] }],
+        };
+        var plain = Item("plain-entry", "Plain", new("source-one", "tools", 0));
+        var longS = Item("long-s-entry", "Long S", new("source-two", "Toolſ", 1));
+
+        var projected = ImportSourcePlanner.Project(wall, [plain, longS], recognizeGroups: false);
+
+        Assert.Equal(new[] { "plain", "long-s" }, projected.Groups.Select(group => group.DestinationGroupId));
+    }
+
+    [Fact]
+    public void WallPackageTailDoesNotCompressRecordedRowsInAnEmptyWall()
+    {
+        var wall = WallDocument.Empty(1, 8);
+        var source = Item("sparse", "Sparse", new("source", "Source", 0),
+            bounds: new(3, 30, 2, 2), position: true, size: true) with
+        {
+            SourceKind = ImportPageSourceKind.WallPackage,
+            Policy = ImportSourcePolicy.Attributed,
+        };
+        var projection = ImportSourcePlanner.Project(wall, [source], recognizeGroups: false);
+
+        var result = Plan(wall, projection, [source.SourceKey], position: ImportInsertionPosition.Tail);
+
+        Assert.Equal(ImportPlanStatus.Rejected, result.Status);
+        Assert.Empty(result.Accepted);
+    }
+
+    [Fact]
+    public void WallPackageFitsAnEmptySavedViewportThatNowExceedsTheScreen()
+    {
+        var wall = WallDocument.Empty(6, 30);
+        var member = Item("fits", "Fits", new("source", "Source", 0),
+            bounds: new(3, 6, 2, 2), position: true, size: true) with
+        {
+            SourceKind = ImportPageSourceKind.WallPackage,
+            Policy = ImportSourcePolicy.Attributed,
+        };
+        var projection = ImportSourcePlanner.Project(wall, [member], recognizeGroups: false);
+
+        var result = Plan(wall, projection, [member.SourceKey], position: ImportInsertionPosition.Tail);
+
+        Assert.Equal(ImportPlanStatus.Ready, result.Status);
+        Assert.False(result.Proposal!.Document.Settings.ExpandColumns);
+        Assert.Equal(new GridRect(3, 6, 2, 2), Assert.Single(Destination(result).Members).LocalBounds);
+    }
+
+    [Fact]
     public void TailMovesTheCompleteMergedDestinationAfterUntouchedContent()
     {
         var destination = Group("destination", "Merge", Tile("existing"));

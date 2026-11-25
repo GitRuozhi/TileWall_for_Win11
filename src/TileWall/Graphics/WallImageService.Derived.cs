@@ -139,7 +139,7 @@ public sealed partial class WallImageService
             Interlocked.Increment(ref _displayDiskHits);
             return new(sharp ?? new DecodedImageFrame(identity, 0, DateTime.MinValue, sourceWidth, sourceHeight, 0, 0, ReadOnlyMemory<byte>.Empty), blur);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or OverflowException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or OverflowException)
         { return null; }
     }
 

@@ -123,12 +123,15 @@ public static class StartMenuImportPlanner
         var locked = current.Settings.LayoutLocked;
         var expanded = current.Settings.ExpandColumns;
         var contentColumns = maxColumns - (expanded ? 1 : 0);
+        var resizeEmptyWall = !locked && firstOccupied < 0 && position == ImportInsertionPosition.Tail;
+        var startingRows = resizeEmptyWall ? Math.Min(current.Rows, maxRows) : current.Rows;
         if (locked) maxRows = Math.Min(maxRows, current.Rows);
-        if (current.Rows > maxRows || height > metrics.WallHeight(maxRows))
+        if (startingRows > maxRows || maxRows < 1 || height > metrics.WallHeight(maxRows))
             return Reject(WallRejection.NoSpace, locked ? "LAYOUT_LOCKED_NO_SPACE" : "PACKAGE_HEIGHT_LIMIT");
+        if (resizeEmptyWall && lanes.Length > maxColumns) lanes = lanes.Take(maxColumns).ToArray();
 
         var widthLimited = false;
-        for (var rows = current.Rows; rows <= maxRows; rows++)
+        for (var rows = startingRows; rows <= maxRows; rows++)
         {
             var rowHeight = metrics.WallHeight(rows);
             if (height > rowHeight) continue;

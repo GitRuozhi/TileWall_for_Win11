@@ -246,14 +246,20 @@ public sealed class WallPackageGalleryTests : IDisposable
         Assert.Equal(WallPackageReadStatus.InvalidPackage, (await reader.ReadPreviewAsync(path, limits)).Status);
     }
 
-    [Fact]
-    public async Task SharedDigestAcrossGalleryNamesAndExtensionsStillHasOnePayloadAndOnePreparationBudget()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SharedDigestAcrossGalleryNamesAndExtensionsStillHasOnePayloadAndOnePreparationBudget(bool galleryOnly)
     {
         var asset = PreparedMediaAsset.FromVerifiedImage(Png, ".png");
-        var gallery = PreparedManagedGallery.FromVerifiedFiles([new("one.png", asset), new("two.image", asset.WithExtension(".image"))]);
+        var gallery = PreparedManagedGallery.FromVerifiedFiles(galleryOnly
+            ? [new("two.image", asset.WithExtension(".image"))]
+            : [new("one.png", asset), new("two.image", asset.WithExtension(".image"))]);
         var document = WallDocument.Empty(1, 8) with { Lanes = [new WallLane { Groups = [new StartGroup { Id = "group", Members =
         [new TileMember { Id = "gallery", LocalBounds = new(0, 0, 1, 1), Images = new() { Kind = MemberImageSourceKind.Folder, ManagedGallery = gallery.Reference } },
-         new TileMember { Id = "single", LocalBounds = new(1, 0, 1, 1), Images = new() { Kind = MemberImageSourceKind.Single, Media = asset.Reference } }] }] }] };
+         new TileMember { Id = "single", LocalBounds = new(1, 0, 1, 1), Images = galleryOnly
+             ? new() { IconSeries = new("native-png", [new(asset.Reference, 1, 1)], 0, 1, 1) }
+             : new() { Kind = MemberImageSourceKind.Single, Media = asset.Reference } }] }] }] };
         var content = WallPackageContent.FromSelection(document, ["gallery", "single"]);
         using var snapshot = new WallPackageSnapshot(Path.Combine(_directory, "data"), 0, content,
             new Dictionary<string, WallPackageSnapshotEntry>(), new Dictionary<string, Stream> { [asset.Reference.Sha256] = new MemoryStream(Png, writable: false) }, [],
@@ -264,10 +270,12 @@ public sealed class WallPackageGalleryTests : IDisposable
         var preview = (await reader.ReadPreviewAsync(path)).Preview!;
         Assert.Single(preview.Manifest.Files, file => file.Purpose == "media");
         using var batch = await reader.OpenImportAsync(preview);
-        var prepared = await batch.PrepareResourcesAsync([asset.Reference], [gallery.Reference], limits: new() { MaximumPreparedMediaBytes = Png.Length });
-        Assert.Single(prepared.MediaAssets);
+        var prepared = await batch.PrepareResourcesAsync(galleryOnly ? [] : [asset.Reference], [gallery.Reference],
+            limits: new() { MaximumPreparedMediaBytes = Png.Length });
+        Assert.Equal(galleryOnly ? 0 : 1, prepared.MediaAssets.Count);
         Assert.Equal(gallery.Reference, Assert.Single(prepared.ManagedGalleries).Reference);
-        Assert.Equal(new[] { ".png", ".image" }, prepared.ManagedGalleries[0].Files.Select(file => file.Asset.Reference.Extension));
+        Assert.Equal(galleryOnly ? [".image"] : new[] { ".png", ".image" },
+            prepared.ManagedGalleries[0].Files.Select(file => file.Asset.Reference.Extension));
     }
 
     private static void Rewrite(string path, Action<Dictionary<string, byte[]>> mutate)
