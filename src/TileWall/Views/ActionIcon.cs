@@ -22,7 +22,8 @@ internal static class ActionIcon
         OpenFile = "\uE8E5", Folder = "\uE8B7", Picture = "\uE8B9", Confirm = "\uE73E",
         PresetSmall = "\uE743", PresetMedium = "\uE744", PresetWide = "\uE745", PresetLarge = "\uE747", Tiles = "\uECA5",
         Fit = "\uE799", Fill = "\uE9A6", Original = "\uE91B", Custom = "\uE932",
-        Photo2 = "\uEB9F", GallerySet = "\uF5ED", Checkbox = "\uE739", OpenFolderHorizontal = "\uED25", Share = "\uE72D",
+        Photo2 = "\uEB9F", GallerySet = "\uF5ED", Checkbox = "\uE739", CheckedBox = "\uE73A",
+        OpenFolderHorizontal = "\uED25", Share = "\uE72D",
         ImportAllMirrored = "\uEA53", PreviousItem = "\uE892", NextItem = "\uE893",
         BackgroundBlur = "\uED5B", Color = "\uE790", Draw = "\uEC87", Erase = "\uE75C", Clock = "\uE121";
 
@@ -47,9 +48,19 @@ internal static class ActionIcon
         SetTip(button, text);
     }
 
-    internal static void SetIcon(ButtonBase button, string text, string glyph)
+    internal static void SetIcon(ButtonBase button, string text, string glyph, string? overlayGlyph = null)
     {
-        button.Content = Glyph(glyph);
+        var icon = Glyph(glyph);
+        if (overlayGlyph is null) button.Content = icon;
+        else
+        {
+            var overlay = Glyph(overlayGlyph, 10);
+            overlay.HorizontalAlignment = HorizontalAlignment.Center;
+            var layers = new Grid { IsHitTestVisible = false };
+            layers.Children.Add(icon);
+            layers.Children.Add(overlay);
+            button.Content = layers;
+        }
         button.MinWidth = 32; button.Padding = new Thickness(7);
         SetTip(button, text);
         AutomationProperties.SetName(button, text);

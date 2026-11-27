@@ -107,6 +107,8 @@ public sealed record WallSettings
     public WallContextMenuActions HiddenWallMenuActions { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public WallContextMenuActions HiddenMemberMenuActions { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public WallContextMenuActions HiddenGroupMenuActions { get; init; }
     public TileSizePreset DefaultTileSize { get; init; } = TileSizePreset.Medium;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public MemberBackgroundMode DefaultTileBackground { get; init; }

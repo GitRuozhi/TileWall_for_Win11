@@ -22,4 +22,7 @@ public enum WallContextMenuActions : uint
     Edit = 1 << 14,
     Remove = 1 << 15,
     MenuHidden = 1 << 16,
+    RenameGroup = 1 << 17,
+    EditGroup = 1 << 18,
+    UnpinGroup = 1 << 19,
 }

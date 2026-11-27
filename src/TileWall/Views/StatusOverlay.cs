@@ -15,13 +15,16 @@ internal sealed class StatusOverlay : Panel
     private readonly TextBlock _text;
     private readonly DispatcherQueueTimer _timer;
     private readonly bool _top;
+    private readonly bool _inline;
     private readonly FrameworkElement? _actions;
     private string? _lastTransient;
     private long _expiresAt;
 
-    internal StatusOverlay(VerticalAlignment alignment = VerticalAlignment.Bottom, FrameworkElement? actions = null)
+    internal StatusOverlay(VerticalAlignment alignment = VerticalAlignment.Bottom, FrameworkElement? actions = null, bool inline = false)
     {
         _top = alignment == VerticalAlignment.Top;
+        _inline = inline;
+        if (inline) Visibility = Visibility.Collapsed;
         _actions = actions;
         _card = (Border)XamlReader.Load("""
             <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -73,6 +76,7 @@ internal sealed class StatusOverlay : Panel
         _expiresAt = transient ? Environment.TickCount64 + DisplayMilliseconds : 0;
         _text.Text = message;
         _card.Visibility = Visibility.Visible;
+        if (_inline) Visibility = Visibility.Visible;
         if (transient)
         {
             _timer.Interval = TimeSpan.FromMilliseconds(DisplayMilliseconds);
@@ -92,6 +96,7 @@ internal sealed class StatusOverlay : Panel
         _expiresAt = 0;
         _text.Text = string.Empty;
         _card.Visibility = Visibility.Collapsed;
+        if (_inline) Visibility = Visibility.Collapsed;
     }
 
     private void OnTick(DispatcherQueueTimer sender, object args)
@@ -110,6 +115,11 @@ internal sealed class StatusOverlay : Panel
 
     protected override Size MeasureOverride(Size availableSize)
     {
+        if (_inline)
+        {
+            _card.Measure(availableSize);
+            return _card.DesiredSize;
+        }
         _card.Measure(new Size(Math.Min(560, Math.Max(0, availableSize.Width - 2 * Inset)),
             Math.Max(0, availableSize.Height - 2 * Inset)));
         return default;
@@ -117,6 +127,11 @@ internal sealed class StatusOverlay : Panel
 
     protected override Size ArrangeOverride(Size finalSize)
     {
+        if (_inline)
+        {
+            _card.Arrange(new Rect(0, 0, Math.Min(_card.DesiredSize.Width, finalSize.Width), finalSize.Height));
+            return finalSize;
+        }
         var width = Math.Min(_card.DesiredSize.Width, Math.Max(0, finalSize.Width - 2 * Inset));
         var height = Math.Min(_card.DesiredSize.Height, Math.Max(0, finalSize.Height - 2 * Inset));
         _card.Arrange(new Rect(_top ? Inset : (finalSize.Width - width) / 2,

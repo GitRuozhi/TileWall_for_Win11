@@ -298,14 +298,15 @@ public sealed partial class MainWindow
     internal async Task OpenSettingsAsync(Func<SettingsDialogState> read,
         Func<WallSettings, bool, PreparedMediaAsset?, Task<SettingsDialogState>> apply,
         Func<int, bool, Task>? hotKeyRecordingChanged = null,
-        Func<bool, Task<SettingsDialogState>>? retryStartReplacement = null)
+        Func<bool, Task<SettingsDialogState>>? retryStartReplacement = null, Action? resetData = null)
     {
         if (PersistenceInteractionBlocked || _modal || !_hasDocument) return;
         try
         {
             if (!await BeginModalAsync()) return;
             var dialog = new SettingsDialog(DialogOwner, _images, ExplorerContextMenu, read, apply, hotKeyRecordingChanged, retryStartReplacement,
-                token => InitializeWelcomeWallAsync(fresh: false, token), ImportWindowsStartAsync, OpenLogDirectory);
+                token => InitializeWelcomeWallAsync(fresh: false, token), ImportWindowsStartAsync, OpenLogDirectory,
+                OpenUserDataDirectory, resetData);
             ActiveDialog = dialog;
             await dialog.ShowAsync();
         }

@@ -900,7 +900,22 @@
   <x:String x:Key="WindowsStartImport.Failed">Windows のスタートにピン留めされた項目をインポートできませんでした。</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">ピン留めされた項目をすべて配置できません。{0}</x:String>
     <x:String x:Key="Settings.InitialTileBackground">タイルの初期背景</x:String>
-    <x:String x:Key="Settings.LogDirectory">ログ フォルダー</x:String>
+    <x:String x:Key="Settings.Data">データ</x:String>
+    <x:String x:Key="Settings.Logs">ログ</x:String>
+    <x:String x:Key="Settings.UserData">ユーザー データ</x:String>
+    <x:String x:Key="Settings.ResetData">完全リセット</x:String>
+    <x:String x:Key="Settings.ResetDataWarning">現在の Windows ユーザーの TileWall のウォール、設定、ごみ箱、ログを消去します。ポータブル版、EXE インストール版、Store 版はこのデータを共有します。確認すると現在の版を終了して再起動します。</x:String>
+    <x:String x:Key="Settings.OpenUserDataFailed">ユーザー データ フォルダーを開けませんでした: {0}</x:String>
+    <x:String x:Key="Settings.ResetDataFailed">TileWall のデータを消去できませんでした: {0}</x:String>
+    <x:String x:Key="Settings.ResetRestartFailed">データを消去しましたが、TileWall を再起動できませんでした: {0}</x:String>
     <x:String x:Key="Settings.OpenLogDirectory">ログ フォルダーを開く</x:String>
     <x:String x:Key="Settings.OpenLogDirectoryFailed">ログ フォルダーを開けませんでした: {0}</x:String>
+  <x:String x:Key="Settings.GroupMenuTitle">グループ</x:String>
+  <x:String x:Key="Batch.Rename">名前の変更</x:String>
+  <x:String x:Key="Batch.Edit">一括編集</x:String>
+  <x:String x:Key="Batch.UnpinAll">すべてピン留め解除</x:String>
+  <x:String x:Key="Batch.UnpinConfirm">以下のすべてのタイルのピン留めを外しますか？</x:String>
+  <x:String x:Key="Batch.SelectionCount">全{0}件、{1}件を選択中</x:String>
+  <x:String x:Key="Batch.SelectNone">すべて選択解除</x:String>
+  <x:String x:Key="Batch.Mixed">混在</x:String>
 </ResourceDictionary>

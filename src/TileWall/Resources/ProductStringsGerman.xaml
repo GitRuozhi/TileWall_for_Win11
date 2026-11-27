@@ -900,7 +900,22 @@ Fortfahren?</x:String>
   <x:String x:Key="WindowsStartImport.Failed">Die angehefteten Einträge aus dem Windows-Startmenü konnten nicht importiert werden.</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">Auf der Kachelwand ist nicht genügend Platz für alle Einträge. {0}</x:String>
     <x:String x:Key="Settings.InitialTileBackground">Anfänglicher Kachelhintergrund</x:String>
-    <x:String x:Key="Settings.LogDirectory">Protokollordner</x:String>
+    <x:String x:Key="Settings.Data">Daten</x:String>
+    <x:String x:Key="Settings.Logs">Protokolle</x:String>
+    <x:String x:Key="Settings.UserData">Benutzerdaten</x:String>
+    <x:String x:Key="Settings.ResetData">Alle Daten zurücksetzen</x:String>
+    <x:String x:Key="Settings.ResetDataWarning">Damit werden die TileWall-Wand, die Einstellungen, der Papierkorb und die Protokolle des aktuellen Windows-Benutzers gelöscht. Die portable Version, die EXE-Installation und die Store-Version teilen diese Daten. Nach der Bestätigung wird die aktuelle Version beendet und neu gestartet.</x:String>
+    <x:String x:Key="Settings.OpenUserDataFailed">Der Benutzerdatenordner konnte nicht geöffnet werden: {0}</x:String>
+    <x:String x:Key="Settings.ResetDataFailed">Die TileWall-Daten konnten nicht vollständig gelöscht werden: {0}</x:String>
+    <x:String x:Key="Settings.ResetRestartFailed">Die Daten wurden gelöscht, aber TileWall konnte nicht neu gestartet werden: {0}</x:String>
     <x:String x:Key="Settings.OpenLogDirectory">Protokollordner öffnen</x:String>
     <x:String x:Key="Settings.OpenLogDirectoryFailed">Der Protokollordner konnte nicht geöffnet werden: {0}</x:String>
+  <x:String x:Key="Settings.GroupMenuTitle">Gruppe</x:String>
+  <x:String x:Key="Batch.Rename">Umbenennen</x:String>
+  <x:String x:Key="Batch.Edit">Stapelbearbeitung</x:String>
+  <x:String x:Key="Batch.UnpinAll">Alle lösen</x:String>
+  <x:String x:Key="Batch.UnpinConfirm">Alle folgenden Kacheln lösen?</x:String>
+  <x:String x:Key="Batch.SelectionCount">{0} insgesamt, {1} ausgewählt</x:String>
+  <x:String x:Key="Batch.SelectNone">Auswahl aufheben</x:String>
+  <x:String x:Key="Batch.Mixed">Gemischt</x:String>
 </ResourceDictionary>

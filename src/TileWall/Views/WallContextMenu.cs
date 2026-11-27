@@ -48,6 +48,13 @@ internal static class WallContextMenu
         new(MenuAction.Remove, "Wall.Remove", ActionIcon.Delete),
     ];
 
+    internal static IReadOnlyList<WallMenuItemDefinition> GroupActions { get; } =
+    [
+        new(MenuAction.RenameGroup, "Batch.Rename", ActionIcon.Edit),
+        new(MenuAction.EditGroup, "Batch.Edit", ActionIcon.Edit),
+        new(MenuAction.UnpinGroup, "Batch.UnpinAll", ActionIcon.Delete),
+    ];
+
     internal static void AddItems(IList<MenuFlyoutItemBase> items, IReadOnlyList<WallMenuItemDefinition> definitions,
         MenuAction hidden, bool showUnavailable, Func<WallMenuItemDefinition, WallMenuCommand?> resolve)
     {

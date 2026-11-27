@@ -9,20 +9,31 @@ namespace TileWall.Views;
 /// <summary>Fixed page surfaces, independent of the wall's tile corner preference.</summary>
 internal static class VisualStyles
 {
+    private const double DefaultPreviewPageWidth = 930;
+    private const double DefaultPreviewFormWidth = 460;
+
+    internal static Grid ResizablePreviewPage(FrameworkElement previewPane, StackPanel cards, Size budget,
+        double preferredHeight, Button primary, Button cancel) =>
+        PreviewPage(previewPane, cards, budget, DefaultPreviewPageWidth, DefaultPreviewFormWidth,
+            preferredHeight, (primary, cancel));
+
     internal static Grid PreviewPage(FrameworkElement previewPane, StackPanel cards, Size budget,
-        double preferredWidth, double preferredRightWidth, double? preferredLeftWidth = null,
-        FrameworkElement? resizingFooter = null)
+        double preferredWidth, double preferredRightWidth, double? preferredHeight = null,
+        (Button Primary, Button Cancel)? footer = null)
     {
         const double gap = 24;
-        var stretchRight = resizingFooter is not null;
+        var stretchRight = preferredHeight.HasValue;
         var width = Math.Min(preferredWidth, budget.Width);
         var columnSpace = Math.Max(2, width - gap);
         var minRight = Math.Min(preferredRightWidth, Math.Min(340, columnSpace * .75));
         var minLeft = Math.Min(220, columnSpace - minRight);
         var right = Math.Min(preferredRightWidth, columnSpace - minLeft);
-        if (preferredLeftWidth is { } left)
-            right = Math.Clamp(columnSpace - left, minRight, columnSpace - minLeft);
-        var page = new Grid { Width = width, MinWidth = Math.Min(680, width), MaxHeight = budget.Height, ColumnSpacing = gap };
+        var page = new Grid
+        {
+            Width = width, MinWidth = Math.Min(680, width), ColumnSpacing = gap,
+            Height = preferredHeight is { } height ? Math.Min(height, budget.Height) : double.NaN,
+            MaxHeight = budget.Height,
+        };
         page.ColumnDefinitions.Add(new ColumnDefinition
         {
             Width = new GridLength(stretchRight ? Math.Max(1, columnSpace - right) : 1, GridUnitType.Star),
@@ -35,22 +46,21 @@ internal static class VisualStyles
         });
         var controls = new ScrollViewer { Content = cards, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Disabled };
-        if (resizingFooter is not null)
+        FrameworkElement rightPane = controls;
+        if (footer is { } buttons)
         {
-            // Keep the action card at the bottom when the enlarged viewport has room.
-            // The same content scrolls together when it exceeds the viewport.
+            var actions = ActionCard(buttons.Primary, buttons.Cancel, stacked: right < 370);
             var form = new Grid { RowSpacing = cards.Spacing };
             form.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
             form.RowDefinitions.Add(new() { Height = GridLength.Auto });
-            controls.Content = form;
-            form.Children.Add(cards);
-            Grid.SetRow(resizingFooter, 1);
-            form.Children.Add(resizingFooter);
-            controls.SizeChanged += (_, e) => form.MinHeight = e.NewSize.Height;
+            form.Children.Add(controls);
+            Grid.SetRow(actions, 1);
+            form.Children.Add(actions);
+            rightPane = form;
         }
         page.Children.Add(previewPane);
-        Grid.SetColumn(controls, 1);
-        page.Children.Add(controls);
+        Grid.SetColumn(rightPane, 1);
+        page.Children.Add(rightPane);
         return page;
     }
 

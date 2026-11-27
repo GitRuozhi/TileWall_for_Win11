@@ -28,6 +28,7 @@ internal sealed partial class IconSelector(params string[] glyphs) : StackPanel
     {
         foreach (var button in _buttons) button.IsEnabled = enabled;
     }
+    internal void SetItemEnabled(int index, bool enabled) => _buttons[index].IsEnabled = enabled;
     internal void SetItems(IEnumerable<string> names, bool showLabels = false, bool notifyOnReselect = true)
         => SetItemsCore(names, showLabels, notifyOnReselect, -1, null);
 

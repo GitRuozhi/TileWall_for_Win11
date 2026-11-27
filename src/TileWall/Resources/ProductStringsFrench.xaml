@@ -896,7 +896,22 @@
   <x:String x:Key="WindowsStartImport.Failed">Impossible d’importer les éléments épinglés au menu Démarrer de Windows.</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">Le mur de tuiles ne peut pas contenir tous les éléments épinglés. {0}</x:String>
     <x:String x:Key="Settings.InitialTileBackground">Arrière-plan initial de la vignette</x:String>
-    <x:String x:Key="Settings.LogDirectory">Dossier des journaux</x:String>
+    <x:String x:Key="Settings.Data">Données</x:String>
+    <x:String x:Key="Settings.Logs">Journaux</x:String>
+    <x:String x:Key="Settings.UserData">Données utilisateur</x:String>
+    <x:String x:Key="Settings.ResetData">Réinitialisation complète</x:String>
+    <x:String x:Key="Settings.ResetDataWarning">Cette action efface le mur TileWall, les paramètres, la corbeille et les journaux de l’utilisateur Windows actuel. Les versions portable, EXE et Store partagent ces données. Après confirmation, la version actuelle se ferme et redémarre.</x:String>
+    <x:String x:Key="Settings.OpenUserDataFailed">Impossible d’ouvrir le dossier des données utilisateur : {0}</x:String>
+    <x:String x:Key="Settings.ResetDataFailed">Impossible de terminer l’effacement des données TileWall : {0}</x:String>
+    <x:String x:Key="Settings.ResetRestartFailed">Les données ont été effacées, mais TileWall n’a pas pu redémarrer : {0}</x:String>
     <x:String x:Key="Settings.OpenLogDirectory">Ouvrir le dossier des journaux</x:String>
     <x:String x:Key="Settings.OpenLogDirectoryFailed">Impossible d’ouvrir le dossier des journaux : {0}</x:String>
+  <x:String x:Key="Settings.GroupMenuTitle">Groupe</x:String>
+  <x:String x:Key="Batch.Rename">Renommer</x:String>
+  <x:String x:Key="Batch.Edit">Modification par lot</x:String>
+  <x:String x:Key="Batch.UnpinAll">Tout détacher</x:String>
+  <x:String x:Key="Batch.UnpinConfirm">Désépingler toutes les vignettes suivantes ?</x:String>
+  <x:String x:Key="Batch.SelectionCount">{0} au total, {1} sélectionnés</x:String>
+  <x:String x:Key="Batch.SelectNone">Tout désélectionner</x:String>
+  <x:String x:Key="Batch.Mixed">Mixte</x:String>
 </ResourceDictionary>

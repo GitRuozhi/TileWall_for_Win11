@@ -15,6 +15,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private readonly MainWindow _window;
     private readonly ShellMessageHost _host;
     private readonly SingleInstanceGate _instance;
+    private readonly RuntimeScope _scope;
     private readonly ShellNotifyIconHost _tray;
     private readonly ExplorerAddNotification _notifications;
     private readonly GlobalHotKeyRegistrar _hotKey;
@@ -33,6 +34,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private bool _hotKeyRecording => _hotKeyRecordingSlots != 0;
     private string? _hotKeyError, _secondaryHotKeyError;
     private bool _exitPending;
+    private bool _resetRequested;
     private bool _tearingDown;
     private bool _started;
     private Task? _startup;
@@ -52,6 +54,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         Microsoft.UI.Xaml.Application application)
     {
         _instance = instance;
+        _scope = scope;
         _application = application;
         _host = new ShellMessageHost(scope.ShellWindowName);
         _host.ActivateRequested += () => Request(WallShowTrigger.Show);
@@ -222,7 +225,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         if (_window.ModalActive) { _window.FocusTopSession(); return; }
         Request(WallShowTrigger.Show);
         _ = _window.OpenSettingsAsync(CurrentSettingsState, ApplySettingsAsync,
-            SetHotKeyRecordingAsync, RetryStartReplacementAsync);
+            SetHotKeyRecordingAsync, RetryStartReplacementAsync, RequestDataReset);
     }
 
     private void QueueWindowsStartInvitation()
@@ -336,6 +339,18 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _tray.UpdateTooltip($"TileWall · {(combinations.Length != 0 ? combinations : ProductStrings.Get("Wall.HotKeyUnavailable"))}");
     }
 
+    private void RequestDataReset()
+    {
+        if (_exitPending || _tearingDown)
+            throw new InvalidOperationException(ProductStrings.Get("Wall.SettingsBlocked"));
+        RuntimeDataReset.Validate(_scope);
+        _resetRequested = true;
+        RequestExit();
+        if (_exitPending) return;
+        _resetRequested = false;
+        throw new InvalidOperationException(ProductStrings.Get("Wall.SettingsBlocked"));
+    }
+
     private void RequestExit()
     {
         if (_exitPending || _tearingDown) return;
@@ -400,9 +415,18 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             CancelAnimations(); // Cancel a pending backdrop fence before appearance drains it.
             SnapHide();
             if (_hiddenMemoryWork is { } hiddenMemoryWork) await hiddenMemoryWork;
-            await ShutdownTaskbarAsync();
+            var resetBlock = await ShutdownTaskbarAsync();
             try { await _window.ShutdownPersistenceAsync(); }
-            catch (Exception ex) { AppLog.Warn("Exit", $"Storage worker shutdown: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Exit", $"Storage worker shutdown: {ex.Message}");
+                resetBlock ??= ex.Message;
+            }
+            if (_resetRequested && resetBlock is not null)
+            {
+                _resetRequested = false;
+                RuntimeDataReset.ReportFailure("Settings.ResetDataFailed", resetBlock);
+            }
             _tearingDown = true;
             _window.TraceExit("teardown");
             _exit.RunTeardown();
@@ -410,7 +434,11 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         catch (Exception ex) { _window.ShowStatus(string.Format(ProductStrings.Get("Wall.OperationFailed"), ex.Message)); }
         finally
         {
-            if (!_tearingDown) _window.ResumePersistenceAdmission();
+            if (!_tearingDown)
+            {
+                _resetRequested = false;
+                _window.ResumePersistenceAdmission();
+            }
             _exitPending = false;
             if (!_tearingDown) await RestoreInputAfterCanceledExitAsync();
             QueueAddDrain();
@@ -533,7 +561,11 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         // The next owner must never acquire the gate while this process still
         // owns the rolling file handle.
-        try { AppLog.Shutdown(); }
+        try
+        {
+            AppLog.Shutdown();
+            if (_resetRequested) RuntimeDataReset.ClearAndRestart(_scope);
+        }
         finally { _instance.Dispose(); }
     }
     // Application.Exit closes the XAML windows and raises their Closed cleanup

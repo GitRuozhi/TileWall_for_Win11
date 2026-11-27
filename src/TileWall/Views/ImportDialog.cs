@@ -134,7 +134,7 @@ internal sealed class ImportDialog : IWallDialogSession
     private ImportSourcePlan? _plan;
     private string? _packagePath, _exportPath, _error;
     private string? _statisticLayoutKey;
-    private readonly double _rightWidth;
+    private double _rightWidth;
     private readonly Stopwatch _previewPreparationStopwatch = new();
     private bool _shown, _closed, _dismissRequested, _reading, _adding, _picking, _refreshingStrings, _readsSuspended,
         _preparing, _prepared, _synchronizingSelection, _exportPathPicked, _updatingPreviewItems;
@@ -181,7 +181,6 @@ internal sealed class ImportDialog : IWallDialogSession
             TracePreviewPreparationProgress();
         };
         var budget = OwnedDialogWindow.ContentBudget(owner, previewPage: true);
-        var previewWidth = _metrics.WallWidth(1);
         var pathRow = new Grid { ColumnSpacing = 6 };
         pathRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         pathRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -223,8 +222,8 @@ internal sealed class ImportDialog : IWallDialogSession
             if (_previewRoot is not null || _repeater.XamlRoot is not { } root) return;
             _previewRoot = root; _previewScale = root.RasterizationScale; root.Changed += OnPreviewRootChanged;
         };
-        _preview = new ScrollViewer { Content = _repeater, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Disabled, VerticalScrollMode = ScrollMode.Enabled };
+        _preview = new ScrollViewer { Content = _repeater, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Auto, VerticalScrollMode = ScrollMode.Enabled };
         _preview.SizeChanged += (_, _) => RefreshPreview();
         _previewTip = (Border)XamlReader.Load("""
             <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Visibility="Collapsed"
@@ -252,24 +251,19 @@ internal sealed class ImportDialog : IWallDialogSession
         previewPane.Children.Add(_status);
         previewPane.Children.Add(_feedback);
         previewPane.Children.Add(_previewTips);
-        var page = VisualStyles.PreviewPage(previewPane, rightBody, budget, preferredWidth: previewWidth + 24 + 420,
-            preferredRightWidth: 420, preferredLeftWidth: previewWidth);
-        page.Height = Math.Min(560, budget.Height);
+        var page = VisualStyles.ResizablePreviewPage(previewPane, rightBody, budget, 620, _primary, _cancel);
+        _rightWidth = page.ColumnDefinitions[1].Width.Value;
         rightBody.SizeChanged += (_, e) =>
         {
-            if (e.NewSize.Height > 0) page.Height = Math.Min(budget.Height, Math.Max(480, Math.Ceiling(e.NewSize.Height)));
+            if (e.NewSize.Width <= 0 || Math.Abs(_rightWidth - e.NewSize.Width) < .5) return;
+            _rightWidth = e.NewSize.Width;
+            UpdateStatisticLayout();
         };
-        _rightWidth = page.ColumnDefinitions[1].Width.Value;
-        if (page.Width - page.ColumnSpacing - _rightWidth < previewWidth)
-        {
-            _preview.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
-            _preview.HorizontalScrollMode = ScrollMode.Auto;
-        }
         for (var index = 0; index < values.Length; index++) AddOption(index, values[index]);
-        rightBody.Children.Add(VisualStyles.ActionCard(_primary, _cancel, stacked: _rightWidth < 370));
         _dialog = new ContentDialog { XamlRoot = (owner.Content as FrameworkElement)?.XamlRoot, Content = page, DefaultButton = ContentDialogButton.None };
         _dialog.Resources["ContentDialogMaxWidth"] = budget.Width + 48; _dialog.Resources["ContentDialogMaxHeight"] = budget.Height + 180;
         OwnedDialogWindow.EnablePageChrome(_dialog, page);
+        OwnedDialogWindow.EnableUserResize(_dialog);
         DialogActionFeedback.Attach(page, ShowFeedback, () => InteractionBlockedReason() ?? _error ?? ProductStrings.Get("Import.SourceUnavailable"));
         ConfigureActionFeedback();
         Id(_dialog, "dialog"); Id(_mode, "mode"); Id(_source, "source"); Id(_path, "path"); Id(_chooseFile, "choose-wall-file");

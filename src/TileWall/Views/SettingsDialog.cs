@@ -39,6 +39,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly Func<int, bool, Task>? _hotKeyRecordingChanged;
     private readonly Func<bool, Task<SettingsDialogState>>? _retryStartReplacement;
     private readonly Func<CancellationToken, Task<string?>> _initializeWall;
+    private readonly Action _resetData;
     private readonly Func<CancellationToken, Task<WindowsStartImportResult>> _importWindowsStart;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _startReplacementWatch;
     private readonly ContentDialog _dialog;
@@ -74,7 +75,8 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly ComboBox _language = new(), _visualStyle = new(), _theme = new(), _background = new();
     private readonly MemberBackgroundPicker _initialBackground = new();
     private readonly Grid _menuActionTables = new() { ColumnSpacing = 8, RowSpacing = 8 };
-    private readonly List<(CheckBox Check, TextBlock Label, bool Wall, MenuAction Action, string ResourceKey)> _menuActions = [];
+    private enum MenuSection { Wall, Member, Group }
+    private readonly List<(CheckBox Check, TextBlock Label, MenuSection Section, MenuAction Action, string ResourceKey)> _menuActions = [];
     private readonly List<(ToggleButton Button, TileSizePreset Preset, string Glyph)> _initialSizeButtons = [];
     private readonly ToggleSwitch _showUnavailableControls = new();
     private readonly Button _resetInitialIconFit = new() { AllowFocusOnInteraction = false };
@@ -104,6 +106,8 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly Button _initialize = new();
     private readonly Button _importStart = new();
     private readonly Button _openLogs = new() { HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Button _openData = new() { HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Button _resetDataButton = new() { HorizontalAlignment = HorizontalAlignment.Left };
     private readonly ToggleSwitch _contextMenu = new();
     private readonly List<(Button Button, string LabelKey)> _linkButtons = [];
     private readonly TextBlock _version = new();
@@ -133,13 +137,14 @@ internal sealed class SettingsDialog : IWallDialogSession
         Func<bool, Task<SettingsDialogState>>? retryStartReplacement = null,
         Func<CancellationToken, Task<string?>>? initializeWall = null,
         Func<CancellationToken, Task<WindowsStartImportResult>>? importWindowsStart = null,
-        Action? openLogs = null)
+        Action? openLogs = null, Action? openData = null, Action? resetData = null)
     {
         _contextMenuController = contextMenuController;
         _owner = owner; _images = images; _readState = readState; _apply = applyAsync; _state = readState();
         _hotKeyRecordingChanged = hotKeyRecordingChanged;
         _retryStartReplacement = retryStartReplacement;
         _initializeWall = initializeWall ?? (_ => Task.FromResult<string?>(ProductStrings.Get("Wall.SettingsBlocked")));
+        _resetData = resetData ?? (() => throw new InvalidOperationException(ProductStrings.Get("Wall.SettingsBlocked")));
         _importWindowsStart = importWindowsStart ?? (_ => Task.FromResult(
             new WindowsStartImportResult(ProductStrings.Get("Wall.SettingsBlocked"), Failed: true)));
         _startReplacementWatch = _form.DispatcherQueue.CreateTimer();
@@ -239,7 +244,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         AddRow(integration, "Settings.ExplorerMenu", _contextMenu);
         var initializationActions = new StackPanel { Orientation = actionsOrientation, Spacing = 8 };
         initializationActions.Children.Add(_reset); initializationActions.Children.Add(_initialize);
-        AddRow(integration, "Settings.Initialization", initializationActions);
+        AddRow(integration, "Settings.ShowUnavailableControls", _showUnavailableControls);
         AddRow(integration, "WindowsStartImport.SettingsLabel", _importStart);
         var general = AddGroup("Settings.Wall", "wall", compact);
         AddRow(general, "Settings.LayoutLocked", _layoutLocked);
@@ -251,7 +256,6 @@ internal sealed class SettingsDialog : IWallDialogSession
         AddRow(personalization, "Settings.Background", backgroundRow);
         AddRow(personalization, "Settings.Transparency", transparencyRow);
         AddRow(personalization, "Settings.ShowGrid", _showGrid);
-        AddRow(personalization, "Settings.ShowUnavailableControls", _showUnavailableControls);
         Id(_showUnavailableControls, "show-unavailable-controls");
         AddRow(personalization, "Settings.InitialTileBackground", _initialBackground.Row);
         Id(_initialBackground.Mode, "initial-tile-background");
@@ -284,18 +288,18 @@ internal sealed class SettingsDialog : IWallDialogSession
         Id(discussionLink, "feedback-discussion"); Id(communityLink, "community");
         feedbackLinks.Children.Add(discussionLink); feedbackLinks.Children.Add(communityLink);
         AddRow(about, "Settings.Feedback", feedbackLinks);
-        AddRow(about, "Settings.LogDirectory", _openLogs);
+        AddRow(about, "Settings.Initialization", initializationActions);
+        var dataActions = new StackPanel { Orientation = actionsOrientation, Spacing = 8 };
+        dataActions.Children.Add(_openLogs);
+        dataActions.Children.Add(_openData);
+        dataActions.Children.Add(_resetDataButton);
+        AddRow(about, "Settings.Data", dataActions);
         Id(_openLogs, "open-log-directory");
-        _openLogs.Click += (_, _) =>
-        {
-            try { openLogs?.Invoke(); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
-                System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException or
-                System.Security.SecurityException or InvalidOperationException)
-            {
-                ShowLinkOpenFailure("Settings.OpenLogDirectoryFailed", ex.Message);
-            }
-        };
+        Id(_openData, "open-user-data");
+        Id(_resetDataButton, "reset-user-data");
+        _openLogs.Click += (_, _) => OpenDataDirectory(openLogs, "Settings.OpenLogDirectoryFailed");
+        _openData.Click += (_, _) => OpenDataDirectory(openData, "Settings.OpenUserDataFailed");
+        _resetDataButton.Click += (_, _) => BeginInitializeWall(resetData: true);
         var aboutCard = _groups[^1].Card;
         // Add the scroll extent below the card, where it leaves the material visible.
         _formHost.SizeChanged += (_, _) => UpdateEndPadding();
@@ -585,7 +589,10 @@ internal sealed class SettingsDialog : IWallDialogSession
         SetChoices(_background, "Settings.Background", ["Settings.Acrylic", "Settings.Mica", "Settings.Custom"]);
         _initialBackground.RefreshStrings();
         ActionIcon.SetIcon(_initialBackground.ColorButton, ProductStrings.Get("Tile.CustomColor"), ActionIcon.Color);
-        ActionIcon.Set(_openLogs, ProductStrings.Get("Settings.OpenLogDirectory"), ActionIcon.OpenFolderHorizontal);
+        ActionIcon.Set(_openLogs, ProductStrings.Get("Settings.Logs"), ActionIcon.OpenFolderHorizontal);
+        ActionIcon.Set(_openData, ProductStrings.Get("Settings.UserData"), ActionIcon.OpenFolderHorizontal);
+        ActionIcon.Set(_resetDataButton, ProductStrings.Get("Settings.ResetData"), ActionIcon.Reset);
+        ToolTipService.SetToolTip(_openLogs, ProductStrings.Get("Settings.OpenLogDirectory"));
         foreach (var (key, label) in _labels) label.Text = ProductStrings.Get(key);
         RefreshMenuActionStrings();
         foreach (var (button, preset, glyph) in _initialSizeButtons)
@@ -677,9 +684,9 @@ internal sealed class SettingsDialog : IWallDialogSession
         _initialBackground.Mode.SelectedIndex = (int)_state.Settings.DefaultTileBackground;
         _initialBackground.ColorButton.IsEnabled = _state.Settings.DefaultTileBackground == MemberBackgroundMode.Color;
         _initialBackground.Color.Color = MemberBackgroundPicker.ParseColor(_state.Settings.DefaultTileBackgroundColor);
-        foreach (var (check, _, wall, action, _) in _menuActions)
+        foreach (var (check, _, section, action, _) in _menuActions)
         {
-            var hidden = wall ? _state.Settings.HiddenWallMenuActions : _state.Settings.HiddenMemberMenuActions;
+            var hidden = ReadMenuActions(_state.Settings, section);
             check.IsChecked = (hidden & action) == 0;
         }
         SelectInitialSize(_state.Settings.DefaultTileSize);
@@ -1142,7 +1149,18 @@ internal sealed class SettingsDialog : IWallDialogSession
         else FinishPending();
     }
 
-    private void BeginInitializeWall()
+    private void OpenDataDirectory(Action? open, string errorKey)
+    {
+        try { open?.Invoke(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+            System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException or
+            System.Security.SecurityException or InvalidOperationException)
+        {
+            ShowLinkOpenFailure(errorKey, ex.Message);
+        }
+    }
+
+    private void BeginInitializeWall(bool resetData = false)
     {
         if (_refreshing || _busy || !_contextPageOpen) return;
         // A NumberBox may start an ordinary settings apply when its text settles.
@@ -1152,7 +1170,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         var cancellation = new CancellationTokenSource();
         _initialization = cancellation;
         _busy = true; SetFormEnabled(false);
-        _pending = InitializeWallCoreAsync(cancellation);
+        _pending = InitializeWallCoreAsync(cancellation, resetData);
     }
 
     private void CancelPagePreparation()
@@ -1212,7 +1230,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         }
     }
 
-    private async Task InitializeWallCoreAsync(CancellationTokenSource cancellation)
+    private async Task InitializeWallCoreAsync(CancellationTokenSource cancellation, bool resetData)
     {
         var completed = false;
         try
@@ -1225,13 +1243,15 @@ internal sealed class SettingsDialog : IWallDialogSession
             _initializationConfirmation = confirmation;
             try
             {
-                _dialog.Title = ProductStrings.Get("Settings.InitializeWall");
+                var title = ProductStrings.Get(resetData ? "Settings.ResetData" : "Settings.InitializeWall");
+                _dialog.Title = title;
                 _dialog.Content = new TextBlock
                 {
-                    Text = ProductStrings.Get("Settings.InitializeWallWarning"), TextWrapping = TextWrapping.Wrap,
+                    Text = ProductStrings.Get(resetData ? "Settings.ResetDataWarning" : "Settings.InitializeWallWarning"),
+                    TextWrapping = TextWrapping.Wrap,
                     Width = Math.Min(460, _settingsBody.Width),
                 };
-                _dialog.PrimaryButtonText = ProductStrings.Get("Settings.InitializeWall");
+                _dialog.PrimaryButtonText = title;
                 _dialog.CloseButtonText = ProductStrings.Get("Common.Cancel");
                 _dialog.DefaultButton = ContentDialogButton.Close;
                 ActionIcon.DecorateDialog(_dialog, ActionIcon.Reset, ActionIcon.Delete, ActionIcon.Cancel);
@@ -1255,6 +1275,11 @@ internal sealed class SettingsDialog : IWallDialogSession
             }
             cancellation.Token.ThrowIfCancellationRequested();
             if (!_contextPageOpen || _closeRequested) return;
+            if (resetData)
+            {
+                _resetData();
+                return;
+            }
             _progressKey = "Settings.InitializingWall";
             RefreshStatus();
             var error = await _initializeWall(cancellation.Token);
@@ -1264,7 +1289,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            _state = _readState() with { Error = string.Format(ProductStrings.Get("Welcome.Failed"), ex.Message) };
+            _state = _readState() with { Error = string.Format(ProductStrings.Get(
+                resetData ? "Settings.ResetDataFailed" : "Welcome.Failed"), ex.Message) };
         }
         finally
         {
@@ -1382,6 +1408,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         if (before.ShowUnavailableControls != after.ShowUnavailableControls) return "Settings.ShowUnavailableControls";
         if (before.HiddenWallMenuActions != after.HiddenWallMenuActions) return "Settings.WallMenuTitle";
         if (before.HiddenMemberMenuActions != after.HiddenMemberMenuActions) return "Settings.MemberMenuTitle";
+        if (before.HiddenGroupMenuActions != after.HiddenGroupMenuActions) return "Settings.GroupMenuTitle";
         if (before.DefaultTileBackground != after.DefaultTileBackground ||
             before.DefaultTileBackgroundColor != after.DefaultTileBackgroundColor) return "Settings.InitialTileBackground";
         if (before.DefaultTileSize != after.DefaultTileSize) return "Settings.InitialTileSize";
@@ -1568,36 +1595,57 @@ internal sealed class SettingsDialog : IWallDialogSession
 
     private Grid MenuActionTables(bool stack)
     {
-        var wall = MenuActionTable("Settings.WallMenuTitle", WallContextMenu.WallActions, wall: true);
-        var member = MenuActionTable("Settings.MemberMenuTitle", WallContextMenu.MemberActions, wall: false);
+        var wall = MenuActionTable(WallContextMenu.WallActions, MenuSection.Wall);
+        var member = MenuActionTable(WallContextMenu.MemberActions, MenuSection.Member);
+        var group = MenuActionTable(WallContextMenu.GroupActions, MenuSection.Group);
         if (stack)
         {
             _menuActionTables.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             _menuActionTables.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             Grid.SetRow(member, 1);
+            _menuActionTables.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(group, 2);
         }
         else
         {
             _menuActionTables.ColumnDefinitions.Add(new ColumnDefinition());
             _menuActionTables.ColumnDefinitions.Add(new ColumnDefinition());
             Grid.SetColumn(member, 1);
+            _menuActionTables.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            _menuActionTables.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(group, 1);
         }
         _menuActionTables.Children.Add(wall);
         _menuActionTables.Children.Add(member);
+        _menuActionTables.Children.Add(group);
         return _menuActionTables;
     }
 
-    private Border MenuActionTable(string titleKey, IReadOnlyList<WallMenuItemDefinition> items, bool wall)
+    private static string MenuTitleKey(MenuSection section) => section switch
+    {
+        MenuSection.Wall => "Settings.WallMenuTitle",
+        MenuSection.Member => "Settings.MemberMenuTitle",
+        _ => "Settings.GroupMenuTitle",
+    };
+
+    private static MenuAction ReadMenuActions(WallSettings settings, MenuSection section) => section switch
+    {
+        MenuSection.Wall => settings.HiddenWallMenuActions,
+        MenuSection.Member => settings.HiddenMemberMenuActions,
+        _ => settings.HiddenGroupMenuActions,
+    };
+
+    private Border MenuActionTable(IReadOnlyList<WallMenuItemDefinition> items, MenuSection section)
     {
         var table = new StackPanel();
-        var id = wall ? "wall-menu-" : "member-menu-";
+        var id = section.ToString().ToLowerInvariant() + "-menu-";
         var heading = (Border)XamlReader.Load("""
             <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                 Background="{ThemeResource LayerFillColorDefaultBrush}" Padding="0,4" />
             """);
         var title = new TextBlock { TextWrapping = TextWrapping.Wrap, FontWeight = new Windows.UI.Text.FontWeight { Weight = 600 } };
         AutomationProperties.SetHeadingLevel(title, AutomationHeadingLevel.Level2);
-        heading.Child = Check(title, titleKey, MenuAction.MenuHidden, "enabled");
+        heading.Child = Check(title, MenuTitleKey(section), MenuAction.MenuHidden, "enabled");
         table.Children.Add(heading);
         foreach (var item in items)
         {
@@ -1620,12 +1668,17 @@ internal sealed class SettingsDialog : IWallDialogSession
                 HorizontalAlignment = HorizontalAlignment.Stretch,
             };
             Id(check, id + suffix);
-            _menuActions.Add((check, label, wall, action, resourceKey));
+            _menuActions.Add((check, label, section, action, resourceKey));
             RoutedEventHandler changed = (_, _) => BeginApply(settings =>
             {
-                var hidden = wall ? settings.HiddenWallMenuActions : settings.HiddenMemberMenuActions;
+                var hidden = ReadMenuActions(settings, section);
                 hidden = check.IsChecked == true ? hidden & ~action : hidden | action;
-                return wall ? settings with { HiddenWallMenuActions = hidden } : settings with { HiddenMemberMenuActions = hidden };
+                return section switch
+                {
+                    MenuSection.Wall => settings with { HiddenWallMenuActions = hidden },
+                    MenuSection.Member => settings with { HiddenMemberMenuActions = hidden },
+                    _ => settings with { HiddenGroupMenuActions = hidden },
+                };
             }, check);
             check.Checked += changed;
             check.Unchecked += changed;
@@ -1635,16 +1688,14 @@ internal sealed class SettingsDialog : IWallDialogSession
 
     private void RefreshMenuActionStrings()
     {
-        var wallTitle = ProductStrings.Get("Settings.WallMenuTitle");
-        var memberTitle = ProductStrings.Get("Settings.MemberMenuTitle");
         var nameFormat = ProductStrings.Get("Settings.MenuActionName");
         var help = ProductStrings.Get("Settings.MenuVisibilityHelp");
         SetHelp("Settings.MenuVisibility", _menuActionTables, help);
-        foreach (var (check, label, wall, action, resourceKey) in _menuActions)
+        foreach (var (check, label, section, action, resourceKey) in _menuActions)
         {
             label.Text = ProductStrings.Get(resourceKey);
             AutomationProperties.SetName(check, action == MenuAction.MenuHidden ? label.Text :
-                string.Format(nameFormat, wall ? wallTitle : memberTitle, label.Text));
+                string.Format(nameFormat, ProductStrings.Get(MenuTitleKey(section)), label.Text));
             AutomationProperties.SetHelpText(check, help);
         }
     }

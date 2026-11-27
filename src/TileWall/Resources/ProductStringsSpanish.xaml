@@ -900,7 +900,22 @@ Nuevo destino:
   <x:String x:Key="WindowsStartImport.Failed">No se pudieron importar los elementos anclados a Inicio de Windows.</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">No hay espacio en el muro de mosaicos para todos los elementos anclados. {0}</x:String>
     <x:String x:Key="Settings.InitialTileBackground">Fondo inicial del mosaico</x:String>
-    <x:String x:Key="Settings.LogDirectory">Carpeta de registros</x:String>
+    <x:String x:Key="Settings.Data">Datos</x:String>
+    <x:String x:Key="Settings.Logs">Registros</x:String>
+    <x:String x:Key="Settings.UserData">Datos de usuario</x:String>
+    <x:String x:Key="Settings.ResetData">Restablecer todos los datos</x:String>
+    <x:String x:Key="Settings.ResetDataWarning">Se borrarán el panel de TileWall, la configuración, la papelera y los registros del usuario actual de Windows. Las versiones portátil, EXE y de la Store comparten estos datos. Tras confirmar, la versión actual se cerrará y volverá a iniciarse.</x:String>
+    <x:String x:Key="Settings.OpenUserDataFailed">No se pudo abrir la carpeta de datos de usuario: {0}</x:String>
+    <x:String x:Key="Settings.ResetDataFailed">No se pudieron borrar por completo los datos de TileWall: {0}</x:String>
+    <x:String x:Key="Settings.ResetRestartFailed">Se borraron los datos, pero TileWall no pudo reiniciarse: {0}</x:String>
     <x:String x:Key="Settings.OpenLogDirectory">Abrir la carpeta de registros</x:String>
     <x:String x:Key="Settings.OpenLogDirectoryFailed">No se pudo abrir la carpeta de registros: {0}</x:String>
+  <x:String x:Key="Settings.GroupMenuTitle">Grupo</x:String>
+  <x:String x:Key="Batch.Rename">Cambiar nombre</x:String>
+  <x:String x:Key="Batch.Edit">Edición por lotes</x:String>
+  <x:String x:Key="Batch.UnpinAll">Desanclar todo</x:String>
+  <x:String x:Key="Batch.UnpinConfirm">¿Desanclar todos los mosaicos siguientes?</x:String>
+  <x:String x:Key="Batch.SelectionCount">{0} en total, {1} seleccionados</x:String>
+  <x:String x:Key="Batch.SelectNone">Deseleccionar todo</x:String>
+  <x:String x:Key="Batch.Mixed">Mixto</x:String>
 </ResourceDictionary>

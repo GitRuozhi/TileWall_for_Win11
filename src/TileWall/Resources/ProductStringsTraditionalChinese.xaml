@@ -897,7 +897,22 @@
   <x:String x:Key="WindowsStartImport.Failed">無法匯入 Windows 開始畫面上已釘選的項目。</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">釘選項目無法全部放入磚牆。{0}</x:String>
     <x:String x:Key="Settings.InitialTileBackground">初始後景</x:String>
-    <x:String x:Key="Settings.LogDirectory">記錄資料夾</x:String>
+    <x:String x:Key="Settings.Data">資料</x:String>
+    <x:String x:Key="Settings.Logs">記錄</x:String>
+    <x:String x:Key="Settings.UserData">使用者資料</x:String>
+    <x:String x:Key="Settings.ResetData">完全重設</x:String>
+    <x:String x:Key="Settings.ResetDataWarning">這將清除目前 Windows 使用者的 TileWall 牆面、設定、資源回收筒與記錄。可攜版、EXE 安裝版與商店版共用這些資料。確認後會結束並重新啟動目前版本。</x:String>
+    <x:String x:Key="Settings.OpenUserDataFailed">無法開啟使用者資料夾：{0}</x:String>
+    <x:String x:Key="Settings.ResetDataFailed">無法完成資料清除：{0}</x:String>
+    <x:String x:Key="Settings.ResetRestartFailed">資料已清除，但無法重新啟動 TileWall：{0}</x:String>
     <x:String x:Key="Settings.OpenLogDirectory">開啟記錄資料夾</x:String>
     <x:String x:Key="Settings.OpenLogDirectoryFailed">無法開啟記錄資料夾：{0}</x:String>
+  <x:String x:Key="Settings.GroupMenuTitle">群組</x:String>
+  <x:String x:Key="Batch.Rename">重新命名</x:String>
+  <x:String x:Key="Batch.Edit">批次編輯</x:String>
+  <x:String x:Key="Batch.UnpinAll">全部取消釘選</x:String>
+  <x:String x:Key="Batch.UnpinConfirm">是否取消釘選以下所有磚塊？</x:String>
+  <x:String x:Key="Batch.SelectionCount">共{0}，已選取{1}</x:String>
+  <x:String x:Key="Batch.SelectNone">全部取消選取</x:String>
+  <x:String x:Key="Batch.Mixed">混合</x:String>
 </ResourceDictionary>

@@ -79,6 +79,8 @@ public sealed class WallSurface : Canvas
     public event Action<string>? MemberLocationRequested;
     public event Action<string, GridSize>? MemberSizeRequested;
     public event Func<string, string?, string?>? GroupRenameRequested;
+    public event Action<string>? GroupEditRequested;
+    public event Action<string>? GroupUnpinRequested;
     public event Action<string?, int>? NewTileRequested;
     public event Action<string>? MemberNextImageRequested;
     public event Action<string?, int>? NewClockRequested;
@@ -761,6 +763,34 @@ public sealed class WallSurface : Canvas
             }
         }), true);
         title.Click += (_, _) => { if (!pointerActivation) BeginGroupTitleEdit(group.Id); };
+        MenuFlyout? groupMenu = null;
+        title.ContextRequested += (sender, args) =>
+        {
+            args.Handled = true;
+            var settings = ReadCommittedMenuSettings?.Invoke() ?? _document?.Settings;
+            var menu = CreateContextMenu();
+            WallContextMenu.AddItems(menu.Items, WallContextMenu.GroupActions,
+                settings?.HiddenGroupMenuActions ?? MenuAction.None, settings?.ShowUnavailableControls != false,
+                item => item.Id switch
+                {
+                    MenuAction.RenameGroup => new(() => RunAfterMenu(() => BeginGroupTitleEdit(group.Id))),
+                    MenuAction.EditGroup => new(() => RunAfterMenu(() => GroupEditRequested?.Invoke(group.Id)), group.Members.Count > 0),
+                    MenuAction.UnpinGroup => new(() => RunAfterMenu(() => GroupUnpinRequested?.Invoke(group.Id)), group.Members.Count > 0),
+                    _ => null,
+                });
+            if (menu.Items.Count == 0) return;
+            groupMenu = menu;
+            menu.Closed += (_, _) => groupMenu = null;
+            if (args.TryGetPosition(sender, out var position)) menu.ShowAt(sender, position);
+            else menu.ShowAt(title);
+
+            void RunAfterMenu(Action action)
+            {
+                menu.Hide();
+                title.DispatcherQueue.TryEnqueue(() => action());
+            }
+        };
+        title.ContextCanceled += (_, _) => groupMenu?.Hide();
         var hovering = false;
         var focused = false;
         void UpdateGroupFeedback()

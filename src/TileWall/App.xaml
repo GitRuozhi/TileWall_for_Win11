@@ -78,6 +78,20 @@
                 <Setter Property="Padding" Value="8,4" />
                 <Setter Property="UseSystemFocusVisuals" Value="True" />
             </Style>
+            <Style x:Key="TileWallSectionHeadingStyle" TargetType="ToggleButton">
+                <Setter Property="MinHeight" Value="32" />
+                <Setter Property="UseSystemFocusVisuals" Value="True" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ToggleButton">
+                            <Grid Background="Transparent">
+                                <ContentPresenter Content="{TemplateBinding Content}"
+                                                  HorizontalAlignment="Left" VerticalAlignment="Center" />
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
             <Style TargetType="RepeatButton">
                 <Setter Property="CornerRadius" Value="0" />
                 <Setter Property="UseSystemFocusVisuals" Value="True" />

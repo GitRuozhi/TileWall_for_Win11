@@ -128,6 +128,8 @@ public sealed partial class MainWindow : Window
         Surface.MemberLocationRequested += ShowMemberLocation;
         Surface.MemberSizeRequested += ResizeMemberPreset;
         Surface.GroupRenameRequested += RenameGroup;
+        Surface.GroupEditRequested += id => _ = EditGroupAsync(id);
+        Surface.GroupUnpinRequested += id => _ = UnpinGroupAsync(id);
         Surface.NewTileRequested += (groupId, lane) => _ = CreateTileAsync(groupId, lane);
         Surface.MemberNextImageRequested += id =>
         {
@@ -484,9 +486,7 @@ public sealed partial class MainWindow : Window
         {
             // This path comes only from the session's fixed application root;
             // recheck every existing component immediately before Shell dispatch.
-            var root = _session.ValidatedDataRoot();
-            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(root)
-                { UseShellExecute = true });
+            OpenUserDataDirectory();
         }
         catch (Exception ex)
         {
@@ -495,16 +495,19 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OpenLogDirectory()
+    private void OpenUserDataDirectory() => OpenRuntimeDirectory(_session.ValidatedDataRoot());
+
+    private void OpenLogDirectory() => OpenRuntimeDirectory(_runtimeScope.LogRoot);
+
+    private void OpenRuntimeDirectory(string path)
     {
         var files = new TileWall.Core.Configuration.LocalFileStore();
         var paths = new WallStoragePaths(files, _runtimeScope.DataRoot);
-        var logs = _runtimeScope.LogRoot;
-        paths.Guard(logs);
-        var directory = files.GetPathInfo(logs);
-        if (!directory.Exists || !directory.IsDirectory) throw new DirectoryNotFoundException(logs);
-        paths.Guard(logs);
-        using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(logs)
+        paths.Guard(path);
+        var directory = files.GetPathInfo(path);
+        if (!directory.Exists || !directory.IsDirectory) throw new DirectoryNotFoundException(path);
+        paths.Guard(path);
+        using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path)
             { UseShellExecute = true });
     }
 

@@ -897,7 +897,22 @@
   <x:String x:Key="WindowsStartImport.Failed">无法导入 Windows 开始屏幕上的固定项。</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">固定项无法全部放入磁贴墙。{0}</x:String>
     <x:String x:Key="Settings.InitialTileBackground">初始后景</x:String>
-    <x:String x:Key="Settings.LogDirectory">日志目录</x:String>
+    <x:String x:Key="Settings.Data">数据</x:String>
+    <x:String x:Key="Settings.Logs">日志</x:String>
+    <x:String x:Key="Settings.UserData">用户数据</x:String>
+    <x:String x:Key="Settings.ResetData">完全重置</x:String>
+    <x:String x:Key="Settings.ResetDataWarning">将清空当前 Windows 用户的 TileWall 墙面、设置、回收站和日志。同一用户的便携版、EXE 安装版和商店版共用这些数据。确认后将退出并重新启动当前版本。</x:String>
+    <x:String x:Key="Settings.OpenUserDataFailed">无法打开用户数据目录：{0}</x:String>
+    <x:String x:Key="Settings.ResetDataFailed">无法完成数据清空：{0}</x:String>
+    <x:String x:Key="Settings.ResetRestartFailed">数据已清空，无法重新启动 TileWall：{0}</x:String>
     <x:String x:Key="Settings.OpenLogDirectory">打开日志目录</x:String>
     <x:String x:Key="Settings.OpenLogDirectoryFailed">无法打开日志目录：{0}</x:String>
+  <x:String x:Key="Settings.GroupMenuTitle">分组</x:String>
+  <x:String x:Key="Batch.Rename">重命名</x:String>
+  <x:String x:Key="Batch.Edit">批量编辑</x:String>
+  <x:String x:Key="Batch.UnpinAll">全部取消固定</x:String>
+  <x:String x:Key="Batch.UnpinConfirm">是否取消固定以下所有磁贴？</x:String>
+  <x:String x:Key="Batch.SelectionCount">共{0}，已选中{1}</x:String>
+  <x:String x:Key="Batch.SelectNone">全不选</x:String>
+  <x:String x:Key="Batch.Mixed">混合</x:String>
 </ResourceDictionary>

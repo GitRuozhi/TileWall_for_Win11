@@ -204,7 +204,7 @@ internal sealed partial class WallApplicationLifetime
         Interlocked.Increment(ref _taskbarRequestVersion);
     }
 
-    private async Task ShutdownTaskbarAsync()
+    private async Task<string?> ShutdownTaskbarAsync()
     {
         try
         {
@@ -212,12 +212,14 @@ internal sealed partial class WallApplicationLifetime
             var result = await _taskbarActivation.StopAsync();
             if (result.Failure is not null) AppLog.Warn("TaskbarActivation", result.Failure);
             await _taskbarActivation.DisposeAsync();
+            return result.Failure;
         }
         catch (Exception ex)
         {
             // An owned, durable pending record remains the helper's obligation.
             // Never terminate that helper or delete its record during teardown.
             AppLog.Warn("TaskbarActivation", $"Shutdown recovery retained: {ex.Message}");
+            return ex.Message;
         }
     }
 }

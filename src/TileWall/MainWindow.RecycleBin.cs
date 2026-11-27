@@ -33,7 +33,21 @@ public sealed partial class MainWindow
         catch (Exception ex) { if (!_windowClosing) Status(string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message)); }
     }
 
-    private async Task<bool> UnpinMembersAsync(IReadOnlyList<string> ids, bool confirmOverflow)
+    private async Task UnpinGroupAsync(string id)
+    {
+        if (_modal || _viewBlocked || !_hasDocument || PersistenceInteractionBlocked) return;
+        try
+        {
+            if (!await BeginModalAsync()) return;
+            if (FindEditedGroup(id) is { Members.Count: > 0 } group)
+                await UnpinMembersAsync(group.Members.Select(member => member.Id).ToArray(),
+                    confirmOverflow: true, confirmGroup: true);
+        }
+        catch (Exception ex) { Status(string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message)); }
+        finally { EndModal(); }
+    }
+
+    private async Task<bool> UnpinMembersAsync(IReadOnlyList<string> ids, bool confirmOverflow, bool confirmGroup = false)
     {
         var timing = Environment.GetEnvironmentVariable("TILEWALL_PERF") == "1" ? System.Diagnostics.Stopwatch.StartNew() : null;
         void Trace(string stage) { if (timing is not null) Core.Shell.AppLog.Info("UnpinTiming", $"stage={stage} elapsedMs={timing.Elapsed.TotalMilliseconds:F3}"); }
@@ -42,14 +56,15 @@ public sealed partial class MainWindow
         Trace("recycle-read");
         if (!ReferenceEquals(before, Document) || PersistenceInteractionBlocked || ShutdownStarted) return false;
         var overflow = RecycleBinRules.Overflow(before, recycle, ids);
-        if (overflow.Count != 0)
+        if (overflow.Count != 0 || confirmGroup)
         {
             if (!confirmOverflow) return true;
-            var body = string.Format(ProductStrings.Get("Recycle.OverflowConfirm"), overflow.Count,
+            var selected = MemberList(RecycleBinRules.OrderedActive(before, ids));
+            var title = ProductStrings.Get(confirmGroup ? "Batch.UnpinConfirm" : "Recycle.Title");
+            var body = confirmGroup ? selected : string.Format(ProductStrings.Get("Recycle.OverflowConfirm"), overflow.Count,
                 RecycleBinRules.Capacity) + "\n\n" + MemberList(overflow) + "\n\n" +
-                ProductStrings.Get("Recycle.UnpinBatch") + "\n" + MemberList(RecycleBinRules.OrderedActive(before, ids)) +
-                "\n\n" + ProductStrings.Get("Recycle.PhysicalRetention");
-            var confirmation = new RecycleBinConfirmationDialog(DialogOwner, ProductStrings.Get("Recycle.Title"), body);
+                ProductStrings.Get("Recycle.UnpinBatch") + "\n" + selected + "\n\n" + ProductStrings.Get("Recycle.PhysicalRetention");
+            var confirmation = new RecycleBinConfirmationDialog(DialogOwner, title, body);
             ActiveDialog = confirmation;
             if (!await confirmation.ShowAsync()) return false;
         }

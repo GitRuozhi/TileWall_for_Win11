@@ -896,7 +896,22 @@
   <x:String x:Key="WindowsStartImport.Failed">Could not import the pinned items from Windows Start.</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">The pinned items cannot fit on the wall. {0}</x:String>
     <x:String x:Key="Settings.InitialTileBackground">Initial tile background</x:String>
-    <x:String x:Key="Settings.LogDirectory">Log directory</x:String>
+    <x:String x:Key="Settings.Data">Data</x:String>
+    <x:String x:Key="Settings.Logs">Logs</x:String>
+    <x:String x:Key="Settings.UserData">User data</x:String>
+    <x:String x:Key="Settings.ResetData">Reset all data</x:String>
+    <x:String x:Key="Settings.ResetDataWarning">This clears the TileWall wall, settings, Recycle Bin, and logs for the current Windows user. The portable, EXE, and Store versions share this data. TileWall will close and restart the current edition after you confirm.</x:String>
+    <x:String x:Key="Settings.OpenUserDataFailed">Could not open the user data directory: {0}</x:String>
+    <x:String x:Key="Settings.ResetDataFailed">Could not finish clearing TileWall data: {0}</x:String>
+    <x:String x:Key="Settings.ResetRestartFailed">The data was cleared, but TileWall could not restart: {0}</x:String>
     <x:String x:Key="Settings.OpenLogDirectory">Open log directory</x:String>
     <x:String x:Key="Settings.OpenLogDirectoryFailed">Could not open the log directory: {0}</x:String>
+  <x:String x:Key="Settings.GroupMenuTitle">Group</x:String>
+  <x:String x:Key="Batch.Rename">Rename</x:String>
+  <x:String x:Key="Batch.Edit">Batch edit</x:String>
+  <x:String x:Key="Batch.UnpinAll">Unpin all</x:String>
+  <x:String x:Key="Batch.UnpinConfirm">Unpin all of the following tiles?</x:String>
+  <x:String x:Key="Batch.SelectionCount">{0} total, {1} selected</x:String>
+  <x:String x:Key="Batch.SelectNone">Deselect all</x:String>
+  <x:String x:Key="Batch.Mixed">Mixed</x:String>
 </ResourceDictionary>

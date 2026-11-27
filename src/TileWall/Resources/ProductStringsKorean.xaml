@@ -900,7 +900,22 @@
   <x:String x:Key="WindowsStartImport.Failed">Windows 시작에 고정된 항목을 가져올 수 없습니다.</x:String>
   <x:String x:Key="WindowsStartImport.Capacity">고정된 항목을 모두 배치할 수 없습니다. {0}</x:String>
     <x:String x:Key="Settings.InitialTileBackground">타일 초기 배경</x:String>
-    <x:String x:Key="Settings.LogDirectory">로그 폴더</x:String>
+    <x:String x:Key="Settings.Data">데이터</x:String>
+    <x:String x:Key="Settings.Logs">로그</x:String>
+    <x:String x:Key="Settings.UserData">사용자 데이터</x:String>
+    <x:String x:Key="Settings.ResetData">완전 초기화</x:String>
+    <x:String x:Key="Settings.ResetDataWarning">현재 Windows 사용자의 TileWall 타일 벽, 설정, 휴지통 및 로그를 지웁니다. 휴대용, EXE 설치 및 스토어 버전은 이 데이터를 공유합니다. 확인하면 현재 버전이 종료되고 다시 시작됩니다.</x:String>
+    <x:String x:Key="Settings.OpenUserDataFailed">사용자 데이터 폴더를 열 수 없습니다: {0}</x:String>
+    <x:String x:Key="Settings.ResetDataFailed">TileWall 데이터를 모두 지우지 못했습니다: {0}</x:String>
+    <x:String x:Key="Settings.ResetRestartFailed">데이터를 지웠지만 TileWall을 다시 시작하지 못했습니다: {0}</x:String>
     <x:String x:Key="Settings.OpenLogDirectory">로그 폴더 열기</x:String>
     <x:String x:Key="Settings.OpenLogDirectoryFailed">로그 폴더를 열 수 없습니다: {0}</x:String>
+  <x:String x:Key="Settings.GroupMenuTitle">그룹</x:String>
+  <x:String x:Key="Batch.Rename">이름 바꾸기</x:String>
+  <x:String x:Key="Batch.Edit">일괄 편집</x:String>
+  <x:String x:Key="Batch.UnpinAll">모두 고정 해제</x:String>
+  <x:String x:Key="Batch.UnpinConfirm">다음 타일을 모두 고정 해제하시겠습니까?</x:String>
+  <x:String x:Key="Batch.SelectionCount">전체 {0}개, 선택 {1}개</x:String>
+  <x:String x:Key="Batch.SelectNone">모두 선택 해제</x:String>
+  <x:String x:Key="Batch.Mixed">혼합</x:String>
 </ResourceDictionary>
