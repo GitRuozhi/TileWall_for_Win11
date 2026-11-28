@@ -1,6 +1,9 @@
 using System.Runtime.InteropServices;
+using Windows.Graphics;
 
 namespace TileWall.Shell.Interop;
+
+internal sealed record DisplayMonitor(nint Id, bool IsPrimary, RectInt32 OuterBounds, RectInt32 WorkArea);
 
 internal static class DisplayTopology
 {
@@ -8,6 +11,53 @@ internal static class DisplayTopology
     private const int InsufficientBuffer = 122;
     private const uint SourceMode = 1;
     private const uint GetTargetName = 2;
+
+    internal static nint? MonitorAt(PointInt32 point)
+    {
+        var monitor = MonitorFromPoint(new Win32Api.InteropPoint { X = point.X, Y = point.Y }, 1);
+        return monitor == 0 ? null : monitor;
+    }
+
+    internal static IReadOnlyList<DisplayMonitor> ReadMonitors()
+    {
+        var result = new List<DisplayMonitor>();
+        bool Add(nint monitor, nint dc, nint clip, nint context)
+        {
+            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            if (GetMonitorInfoW(monitor, ref info) && info.Screen.Right > info.Screen.Left && info.Screen.Bottom > info.Screen.Top)
+                result.Add(new(monitor, (info.Flags & 1) != 0, info.Screen.Bounds, info.Work.Bounds));
+            return true;
+        }
+        return EnumDisplayMonitors(0, 0, Add, 0) ? result : [];
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorRect
+    {
+        internal int Left, Top, Right, Bottom;
+        internal readonly RectInt32 Bounds => new(Left, Top, Right - Left, Bottom - Top);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        internal int Size;
+        internal MonitorRect Screen, Work;
+        internal uint Flags;
+    }
+
+    private delegate bool MonitorCallback(nint monitor, nint dc, nint clip, nint context);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern nint MonitorFromPoint(Win32Api.InteropPoint point, uint flags);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfoW(nint monitor, ref MonitorInfo info);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumDisplayMonitors(nint dc, nint clip, MonitorCallback callback, nint context);
 
     internal static bool TryRead(int primaryWidth, int primaryHeight, out string topology, out string primaryRotation)
     {

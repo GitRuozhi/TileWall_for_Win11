@@ -7,6 +7,25 @@ namespace TileWall.Core.Tests.Shell;
 public sealed class TaskbarActivationContractTests
 {
     [Fact]
+    public void CaptureOnlyIncludesTheRequestedTaskbarHandlesOnTheirOwnDisplays()
+    {
+        var primary = new TaskbarWindowState(1, 8, 3, true, true, new(0, 0, 2560, 1440),
+            new(0, 1438, 2560, 40), new(0, 1400, 2560, 40), HoldAutoHide: true);
+        var secondary = new TaskbarWindowState(2, 8, 3, true, true, new(-1600, 0, 1600, 1200),
+            new(-1600, 1198, 1600, 40), new(-1600, 1160, 1600, 40));
+        var backend = new TaskbarActivationBackend(() => [primary, secondary])
+            { Targets = [new(secondary.Monitor, 2, 12)] };
+
+        Assert.Equal(secondary, Assert.Single(backend.Capture(TaskbarLeaseMode.Reveal)!.Windows));
+        backend.Targets = [new(primary.Monitor, 1, 11)];
+        Assert.True(Assert.Single(backend.Capture(TaskbarLeaseMode.Reveal)!.Windows).HoldAutoHide);
+        backend.Targets = [new(primary.Monitor, 1, 11), new(secondary.Monitor, 2, 12)];
+        Assert.Equal(new[] { primary, secondary }, backend.Capture(TaskbarLeaseMode.Reveal)!.Windows);
+        backend.Targets = [new(secondary.Monitor, 1, 12)];
+        Assert.Null(backend.Capture(TaskbarLeaseMode.Reveal));
+    }
+
+    [Fact]
     public void NativeRevealMayReplaceTheOwnedHiddenStripWithAFullRegion()
     {
         var monitor = new TaskbarBounds(0, 0, 2560, 1440);
@@ -15,7 +34,7 @@ public sealed class TaskbarActivationContractTests
         var saved = new TaskbarWindowState(1, 2, 3, true, true, monitor,
             new(0, 1438, 2560, 40), target, Clip: hiddenStrip, HoldAutoHide: true);
         var observed = saved;
-        var backend = new TaskbarActivationBackend(() => [observed]) { Scope = monitor };
+        var backend = new TaskbarActivationBackend(() => [observed]) { Targets = [new(monitor, 1, 3)] };
         var state = backend.Capture(TaskbarLeaseMode.Reveal)!;
 
         observed = saved with { Original = target, Clip = new(true, [new(0, 0, 2560, 40)]) };

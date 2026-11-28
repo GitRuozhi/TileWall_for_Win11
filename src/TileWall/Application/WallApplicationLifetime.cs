@@ -6,6 +6,7 @@ using TileWall.Resources;
 using TileWall.Shell;
 using TileWall.Shell.Interop;
 using TileWall.Views;
+using Windows.Graphics;
 
 namespace TileWall.ApplicationModel;
 
@@ -23,7 +24,6 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private readonly LoginStartupController _login;
     private readonly Microsoft.UI.Xaml.Application _application;
     private readonly WallShowMachine _show;
-    private readonly ShowHideAnimator _animation;
     private readonly ExitCoordinator _exit;
     private readonly Queue<ExplorerAddMessage> _pendingAdds = new();
     private int _queuedPaths;
@@ -46,8 +46,6 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     private int _addSucceeded, _addFailed, _addCount;
     private string? _lastAddFailure;
     private bool _addTruncated;
-    private CancellationTokenSource? _animationPreparation;
-    private long _animationGeneration;
     private bool _displayPowerSubscribed;
 
     public WallApplicationLifetime(RuntimeScope scope, SingleInstanceGate instance,
@@ -64,21 +62,16 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _login = new LoginStartupController(scope);
         _window = new MainWindow(scope);
         _isTest = scope.IsTest;
-        _taskbarActivation = new TaskbarActivationService(scope.DataRoot, scope.IsTest,
-            WinRT.Interop.WindowNative.GetWindowHandle(_window));
+        _taskbarActivation = new TaskbarActivationService(scope.DataRoot, scope.IsTest);
         _taskbarActivation.StateChanged += QueueTaskbarActivationState;
         _startReplacement = new StartReplacementService(generation => QueueStartReplacementToggle(generation), StartReplacementChannel.WindowsKey);
-        _taskbarStartReplacement = new StartReplacementService(generation => QueueStartReplacementToggle(generation, taskbar: true), StartReplacementChannel.TaskbarButton);
+        _taskbarStartReplacement = new StartReplacementService(generation => QueueStartReplacementToggle(generation, taskbar: true), StartReplacementChannel.TaskbarButton)
+        {
+            TaskbarToggle = (generation, x, y) => QueueStartReplacementToggle(generation, new PointInt32(x, y), taskbar: true),
+        };
         _startReplacement.Faulted += failure => QueueStartReplacementFault(failure);
         _taskbarStartReplacement.Faulted += failure => QueueStartReplacementFault(failure, taskbar: true);
         _show = new WallShowMachine(WallShowState.Hidden, this);
-        _animation = new ShowHideAnimator(_window.WallContent);
-        _animation.ShowCompleted += () =>
-        {
-            _show.ShowAnimationCompleted();
-            CompleteWallShow();
-        };
-        _animation.HideCompleted += _show.HideAnimationCompleted;
         _exit = new ExitCoordinator(this);
         _window.HideRequested += () => Request(WallShowTrigger.Hide);
         _window.AutomaticHideRequested += () =>
@@ -107,6 +100,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         _window.DialogOpened += () =>
         {
             CancelHiddenMemoryCollection();
+            CancelDisplaySummon();
             _show.Request(WallShowTrigger.Show);
         };
         _window.AppWindow.Closing += (sender, e) =>
@@ -124,10 +118,12 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             _taskbarStartReplacement.InvalidateButtons();
             _window.QueueEnvironmentRefresh(observeDisplay: true);
             QueueTaskbarEnvironmentRefresh();
+            _window.DispatcherQueue.TryEnqueue(RefreshOpenedDisplays);
         };
-        _host.TaskbarCreated += QueueTaskbarEnvironmentRefresh;
+        _host.TaskbarCreated += TaskbarExplorerRecreated;
         _host.TaskbarCreated += QueueTaskbarStartReplacementRecovery;
         _host.AcceptPaths = ReceiveAdd;
+        _host.ExitRequested += RequestExit;
         _window.AcceptDroppedPaths = ReceiveAdd;
         _hotKey.RegistrationChanged += UpdateTray;
         _secondaryHotKey.RegistrationChanged += UpdateTray;
@@ -173,6 +169,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             // No Activate/Show is needed to open the committed session or register process resources.
             await _window.InitializeSessionAsync(_showWhenStarted || !intent.Background && intent.Add is null);
             if (_exitPending || _tearingDown) return;
+            QueueTaskbarEnvironmentRefresh();
             _window.ScheduleStartMenuStartupRefresh();
             ProductStrings.ApplyLanguage(_window.Settings.LanguageMode);
             await QueueExplorerMenuSynchronization();
@@ -206,7 +203,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         }
     }
 
-    private void Request(WallShowTrigger trigger)
+    private void Request(WallShowTrigger trigger, PointInt32? point = null)
     {
         if (_tearingDown || _exitPending) return;
         if (trigger != WallShowTrigger.Hide) CancelHiddenMemoryCollection();
@@ -216,34 +213,45 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             if (trigger != WallShowTrigger.Hide) _window.FocusTopSession();
             return;
         }
+        if (trigger != WallShowTrigger.Hide)
+        {
+            var display = DisplayAt(point);
+            if (trigger == WallShowTrigger.Toggle && !_window.Settings.MultiDisplaySummon &&
+                _show.State == WallShowState.Visible && display != _requestedDisplay)
+                trigger = WallShowTrigger.Show;
+            _requestedDisplay = display;
+        }
         _show.Request(trigger);
     }
 
-    private void OpenSettings()
+    private async void OpenSettings()
     {
         if (!_started || _tearingDown || _exitPending || _window.PersistenceBusy) return;
         if (_window.ModalActive) { _window.FocusTopSession(); return; }
-        Request(WallShowTrigger.Show);
-        _ = _window.OpenSettingsAsync(CurrentSettingsState, ApplySettingsAsync,
+        CancelDisplaySummon();
+        while (_displaySummonWork is { IsCompleted: false } pending)
+        {
+            await pending;
+            CancelDisplaySummon();
+        }
+        if (_exitPending || _tearingDown || _window.PersistenceBusy) return;
+        if (_window.ModalActive) { _window.FocusTopSession(); return; }
+        CancelHiddenMemoryCollection();
+        _requestedDisplay = DisplayAt(null);
+        await _window.OpenSettingsAsync(CurrentSettingsState, ApplySettingsAsync,
             SetHotKeyRecordingAsync, RetryStartReplacementAsync, RequestDataReset);
     }
 
     private void QueueWindowsStartInvitation()
     {
-        bool CanOffer() => _started && !_exitPending && !_tearingDown && _show.State == WallShowState.Visible &&
+        bool CanOffer() => _started && !_exitPending && !_tearingDown && _displaySummonRequest is null &&
+            _show.State == WallShowState.Visible && _window.AppWindow.IsVisible &&
             _window.HasPendingWindowsStartInvitation && !_window.ModalActive;
         if (!CanOffer()) return;
         _window.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             if (CanOffer()) _ = _window.OfferWindowsStartImportAsync();
         });
-    }
-
-    private void CompleteWallShow()
-    {
-        if (_show.State != WallShowState.Visible) return;
-        _window.CompleteBackdropAnimation(visible: true);
-        QueueWindowsStartInvitation();
     }
 
     private bool ReceiveAdd(ExplorerAddMessage message)
@@ -355,6 +363,7 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
     {
         if (_exitPending || _tearingDown) return;
         _exitPending = true;
+        CancelDisplaySummon();
         CancelHiddenMemoryCollection();
         CancelTaskbarStartReplacementRecovery();
         _window.CancelWelcomeInitialization();
@@ -412,8 +421,8 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
             if (!await StopInputForExitAsync()) return;
             _window.TraceExit("shutdown-workers");
             BeginTaskbarShutdown();
-            CancelAnimations(); // Cancel a pending backdrop fence before appearance drains it.
             SnapHide();
+            if (_displaySummonWork is { } displaySummonWork) await displaySummonWork;
             if (_hiddenMemoryWork is { } hiddenMemoryWork) await hiddenMemoryWork;
             var resetBlock = await ShutdownTaskbarAsync();
             try { await _window.ShutdownPersistenceAsync(); }
@@ -445,99 +454,26 @@ internal sealed partial class WallApplicationLifetime : IWallShowHost, IExitHost
         }
     }
 
-    public void BeginShowAnimation() => BeginWallAnimation(show: true);
-    public void BeginHideAnimation()
-    {
-        _window.PauseEnvironmentForHide();
-        BeginWallAnimation(show: false);
-    }
-
-    private void BeginWallAnimation(bool show)
-    {
-        CancelAnimationPreparation();
-        var request = new CancellationTokenSource();
-        _animationPreparation = request;
-        _ = BeginWallAnimationAsync(show, _animationGeneration, request);
-    }
-
-    private async Task BeginWallAnimationAsync(bool show, long generation, CancellationTokenSource request)
-    {
-        bool IsCurrent() => !request.IsCancellationRequested && generation == _animationGeneration &&
-            _show.State == (show ? WallShowState.Showing : WallShowState.Hiding) && !_tearingDown;
-        try
-        {
-            var ready = await _window.PrepareBackdropForAnimationAsync(request.Token);
-            if (!IsCurrent()) return;
-            if (ready)
-            {
-                _window.BeginBackgroundAnimation(show);
-                if (show) _animation.BeginShow();
-                else _animation.BeginHide();
-            }
-            else FinishWithoutAnimation();
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            AppLog.Warn("BackdropCommit", $"Animation preparation unavailable: {ex.GetType().Name}");
-            if (IsCurrent()) FinishWithoutAnimation();
-        }
-        finally
-        {
-            if (ReferenceEquals(_animationPreparation, request)) _animationPreparation = null;
-            request.Dispose();
-        }
-
-        void FinishWithoutAnimation()
-        {
-            // A failed detach must never fade a snapshot over live native alpha.
-            // Use the existing physical terminal operation for this transition.
-            if (show)
-            {
-                _animation.ResetVisual();
-                _show.ShowAnimationCompleted();
-                CompleteWallShow();
-            }
-            else _show.HideAnimationCompleted();
-        }
-    }
-
-    private void CancelAnimationPreparation()
-    {
-        _animationGeneration++;
-        _animationPreparation?.Cancel();
-        _animationPreparation = null; // The owning async finally disposes it.
-    }
-
-    public void CancelAnimations()
-    {
-        CancelAnimationPreparation();
-        _animation.Cancel();
-        _window.ResetBackgroundAnimation();
-    }
     public void SnapShow()
     {
-        CancelAnimationPreparation();
-        _animation.ResetVisual();
-        _window.ResetBackgroundAnimation();
-        PrepareTaskbarPlacement();
-        _window.ShowWall();
-        TaskbarWallShown();
-        CompleteWallShow();
+        PresentRequestedDisplays(activate: true);
+        if (_show.State != WallShowState.Visible) return;
+        if (_window.AppWindow.IsVisible) _window.SetBackdropVisibility(visible: true);
+        QueueWindowsStartInvitation();
     }
     public void SnapHide()
     {
-        CancelAnimationPreparation();
-        _animation.ResetVisual();
-        _window.ResetBackgroundAnimation();
-        _window.HideWall();
-        TaskbarWallHidden();
-        _window.CompleteBackdropAnimation(visible: false);
+        CancelDisplaySummon();
+        _sharedDisplaySession = false;
+        if (_window.AppWindow.IsVisible) _window.HideWall();
+        _window.HideSecondaryWalls();
+        TaskbarWallsChanged();
+        _window.SetBackdropVisibility(visible: false);
         ScheduleHiddenMemoryCollection();
     }
     public void FocusWall()
     {
-        _window.FocusTopSession();
+        PresentRequestedDisplays(activate: true);
         QueueWindowsStartInvitation();
     }
     public IExitParticipant? TopParticipant => _window.ActiveDialog;

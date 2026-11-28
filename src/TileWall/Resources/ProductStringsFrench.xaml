@@ -36,6 +36,7 @@
   <x:String x:Key="Settings.System">Système</x:String>
   <x:String x:Key="Settings.Invocation">Afficher TileWall</x:String>
   <x:String x:Key="Settings.ExperimentalFeature">Cette fonctionnalité est expérimentale.</x:String>
+  <x:String x:Key="Settings.MultiDisplaySummon">Afficher sur tous les écrans</x:String>
   <x:String x:Key="Settings.KeyBehavior">Actions des touches</x:String>
   <x:String x:Key="Settings.KeyBehaviorKey">Touche</x:String>
   <x:String x:Key="Settings.KeyBehaviorAction">Action</x:String>
@@ -914,4 +915,10 @@
   <x:String x:Key="Batch.SelectionCount">{0} au total, {1} sélectionnés</x:String>
   <x:String x:Key="Batch.SelectNone">Tout désélectionner</x:String>
   <x:String x:Key="Batch.Mixed">Mixte</x:String>
+    <x:String x:Key="Wall.MultiDisplayCaptureFailed">Les arrière-plans statiques sont indisponibles pour cette ouverture sur plusieurs écrans. {0}</x:String>
+    <x:String x:Key="Wall.CaptureGeometry">Les limites de l’écran sont invalides.</x:String>
+    <x:String x:Key="Wall.CaptureAllocation">La mémoire de capture n’a pas pu être allouée.</x:String>
+    <x:String x:Key="Wall.CaptureRead">L’image du bureau n’a pas pu être lue.</x:String>
+    <x:String x:Key="Wall.CaptureCrop">Les arrière-plans des écrans n’ont pas pu être recadrés.</x:String>
+    <x:String x:Key="Wall.CapturePresentation">Impossible de préparer l’arrière-plan acrylique simulé.</x:String>
 </ResourceDictionary>

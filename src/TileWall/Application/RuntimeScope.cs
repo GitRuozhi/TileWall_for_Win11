@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 
 namespace TileWall.ApplicationModel;
@@ -16,6 +17,12 @@ internal sealed class RuntimeScope
         LogRoot = Path.Combine(dataRoot, "logs");
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(dataRoot.ToUpperInvariant())))[..24];
         InstanceMutexName = $@"Local\TileWall.Instance.{hash}";
+        if (!isTest)
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            var sid = identity.User?.Value ?? throw new IOException("The Windows user SID is unavailable.");
+            DataMutexName = $@"Global\TileWall.Data.{sid}.v1";
+        }
         ShellWindowName = $"TileWall.ShellHost.{hash}";
         LoginValueName = isTest ? $"TileWall.Test.{hash}" : "TileWall";
     }
@@ -23,6 +30,7 @@ internal sealed class RuntimeScope
     public string DataRoot { get; }
     public string LogRoot { get; }
     public string InstanceMutexName { get; }
+    public string? DataMutexName { get; }
     public string ShellWindowName { get; }
     public string LoginValueName { get; }
     public bool IsTest { get; }

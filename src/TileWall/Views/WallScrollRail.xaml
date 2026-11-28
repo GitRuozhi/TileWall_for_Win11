@@ -1,0 +1,9 @@
+<UserControl
+    x:Class="TileWall.Views.WallScrollRail"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Height="16" HorizontalAlignment="Left" VerticalAlignment="Top"
+    HorizontalContentAlignment="Stretch" Visibility="Collapsed">
+    <ScrollBar x:Name="Rail" Orientation="Horizontal" IndicatorMode="MouseIndicator"
+               AutomationProperties.AutomationId="wall-horizontal-scrollbar" />
+</UserControl>

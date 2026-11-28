@@ -33,7 +33,6 @@ public sealed partial class MainWindow
     private TaskCompletionSource? _modalClosed;
     private Window DialogOwner => _dialogHost ?? throw new InvalidOperationException("No modal host is active.");
 
-    internal FrameworkElement WallContent => WallRoot;
     internal bool ModalActive => _modal;
     internal IWallDialogSession? ActiveDialog { get; private set; }
     internal WallSettings Settings => _hasDocument ? Document.Settings : _openingDocument?.Settings ?? new();
@@ -56,16 +55,19 @@ public sealed partial class MainWindow
     internal void ShowStatus(string message) => PersistentStatus(message);
     internal void ShowTransientStatus(string message) => TransientStatus(message);
 
-    internal void ShowWall()
+    internal void PrepareWallBeforeShow(bool captureBackdrop)
     {
         RefreshEnvironment(force: true);
         RefreshAppearance();
-        CaptureBackdropBeforeShow();
-        AppWindow.Show();
+        if (captureBackdrop) CaptureBackdropBeforeShow();
+    }
+
+    internal void ShowWall()
+    {
+        AppWindow.Show(activateWindow: false);
         _environmentWallShown = true;
         QueueEnvironmentAdaptation(observeDisplay: true);
         QueueExpansionReveal();
-        FocusTopSession();
         UpdatePuzzleGate();
     }
 
@@ -97,7 +99,7 @@ public sealed partial class MainWindow
         _focusCheckQueued = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             _focusCheckQueued = false;
-            if (_windowClosing || !AppWindow.IsVisible) return;
+            if (_windowClosing || ShutdownStarted || !AppWindow.IsVisible && !HasVisibleSecondaryWalls) return;
             // XAML popup HWND activation can precede its MenuFlyoutItem.Click route.
             // Let that route finish, then decide from the actual foreground session.
             var foreground = GetForegroundWindow();
@@ -132,7 +134,7 @@ public sealed partial class MainWindow
                 UpdateWindowZOrder(foregroundInSession: true);
                 RefreshAppearance();
             }
-            if (_modal || _contextMenuOpen)
+            if (_modal || _contextMenuOpen || SecondaryContextMenuOpen)
             {
                 if (!inSession) UpdateWindowZOrder(foregroundInSession: false);
                 return;
@@ -194,8 +196,8 @@ public sealed partial class MainWindow
             // Inserting after an ordinary taskbar would move the wall out of the
             // topmost band. The effective work area already reserves that taskbar.
             var behindTaskbar = Settings.ActivateTaskbar && AppWindow.IsVisible &&
-                TaskbarActivationBackend.IsCurrentTaskbar(_taskbarWindow) && IsTopmostWindow(_taskbarWindow);
-            if (behindTaskbar && !Win32Api.SetWindowPos(hwnd, _taskbarWindow, 0, 0, 0, 0, flags))
+                TaskbarActivationBackend.IsCurrentPlacementAnchor(_taskbarAnchor, isPrimary: true) && IsTopmostWindow(_taskbarAnchor.Window);
+            if (behindTaskbar && !Win32Api.SetWindowPos(hwnd, _taskbarAnchor.Window, 0, 0, 0, 0, flags))
                 AppLog.Warn("WindowFocus", "Could not settle the wall behind the taskbar.");
             // Explorer can change bands between the style read and SetWindowPos.
             // Read the actual HWND rather than trusting the presenter's cached state.
@@ -247,7 +249,8 @@ public sealed partial class MainWindow
         // Refresh its text explicitly, including while the settings dialog is open.
         _windowsSidebar?.RefreshStrings();
         RefreshMenuStartStrings();
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(WallHorizontalScrollBar, ProductStrings.Get("Settings.ExpandColumns"));
+        RefreshSecondaryProductStrings();
+        HorizontalRail.RefreshStrings();
         ActionIcon.Set(RetryViewButton, ProductStrings.Get("Wall.Retry"), ActionIcon.Refresh);
         foreach (var zone in new[] { ResizeGrip, ResizeHorizontalEdge, ResizeVerticalEdge, ResizeTopLeft, ResizeTopRight, ResizeBottomLeft, ResizeBottomRight })
         {

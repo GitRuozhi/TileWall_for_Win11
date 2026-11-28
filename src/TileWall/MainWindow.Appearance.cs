@@ -32,7 +32,7 @@ public sealed partial class MainWindow
     private long _backgroundCommitRevision = -1;
     private readonly HashSet<Task> _appearanceWork = [];
     private bool _appearanceStopping;
-    private bool _backdropAnimationSuspended;
+    private bool _preparingSharedBackdrop;
     private bool _backdropTransitionCover;
     private bool _backgroundCoverFailed;
     private string? _backgroundPath;
@@ -47,9 +47,8 @@ public sealed partial class MainWindow
         if (BackdropTrace.Enabled)
             BackdropTrace.Write($"Session frequency={System.Diagnostics.Stopwatch.Frequency} pid={Environment.ProcessId}");
         _wallBackdrop.WaitForFallbackCommit = EnsureBackgroundCommittedAsync;
-        _wallBackdrop.HasOpaqueSnapshotCover = () => !_backdropAnimationSuspended && HasValidSnapshot &&
-            _nativeBackground.HasOpaqueSnapshotCover && WallRoot.Opacity == 1 &&
-            (WallRoot.RenderTransform is not TranslateTransform translate || translate.Y == 0);
+        _wallBackdrop.HasOpaqueSnapshotCover = () => AppWindow.IsVisible && HasValidSnapshot &&
+            _nativeBackground.HasOpaqueSnapshotCover;
         _appearanceSettings.ColorValuesChanged += OnSystemColorsChanged;
         _appearanceSettings.AdvancedEffectsEnabledChanged += OnAdvancedEffectsChanged;
         // Some unpackaged desktop hosts expose HighContrast but reject this optional
@@ -67,36 +66,9 @@ public sealed partial class MainWindow
         RefreshAppearance();
     }
 
-    internal Task<bool> PrepareBackdropForAnimationAsync(CancellationToken token)
+    internal void SetBackdropVisibility(bool visible)
     {
-        var work = PrepareBackdropForAnimationCoreAsync(token);
-        TrackAppearanceWork(work);
-        return work;
-    }
-
-    private async Task<bool> PrepareBackdropForAnimationCoreAsync(CancellationToken token)
-    {
-        token.ThrowIfCancellationRequested();
-        _backdropAnimationSuspended = true;
-        // Preserve the independent hidden-before-show preparation and F fence.
-        var shield = HasValidSnapshot && _nativeBackground.HasOpaqueSnapshotCover;
-        _wallBackdrop.SuspendSnapshotResidence(shield);
-        if (!shield) return true; // Preserve the existing active-native animation path.
-        RefreshAppearance();
-        if (!await EnsureBackgroundCommittedAsync().WaitAsync(token)) return false;
-        token.ThrowIfCancellationRequested();
-        if (!await _wallBackdrop.DetachSnapshotForAnimationAsync(token)) return false;
-        if (BackdropTrace.Enabled) BackdropTrace.Write("Animation snapshot shield detached native");
-        return true;
-    }
-
-    internal void BeginBackgroundAnimation(bool showing) => _nativeBackground.BeginCoverAnimation(showing, Scale);
-    internal void ResetBackgroundAnimation() => _nativeBackground.ResetCoverAnimation();
-
-    internal void CompleteBackdropAnimation(bool visible)
-    {
-        ResetBackgroundAnimation();
-        _backdropAnimationSuspended = !visible;
+        if (visible) _preparingSharedBackdrop = false;
         _wallBackdrop.ResumeSnapshotResidence(visible);
         if (visible && !_windowClosing && !_appearanceStopping)
         {
@@ -143,6 +115,7 @@ public sealed partial class MainWindow
         }
         UpdateBackgroundLayer();
         RefreshDialogAppearance();
+        RefreshSecondaryAppearance();
     }
 
     private void RefreshDialogAppearance()
@@ -359,6 +332,7 @@ public sealed partial class MainWindow
         CancelSnapshotRequest();
         if (releaseCapture)
         {
+            _preparingSharedBackdrop = false;
             _snapshotCapture = null;
             _snapshotCaptureGeometry = null;
             CancelDialogSnapshot();
@@ -373,44 +347,92 @@ public sealed partial class MainWindow
         RefreshDialogAppearance();
     }
 
+    private DesktopBackdropSnapshot.CaptureRequest? HiddenBackdropRequest()
+    {
+        if (_appearanceStopping || _windowClosing || AppWindow.IsVisible || _modal || _accessibilitySettings.HighContrast) return null;
+        var key = CurrentSnapshotKey;
+        return new(new RectInt32(key.X, key.Y, key.W, key.H), key.Scale);
+    }
+
+    internal bool NeedsSharedDesktopCapture => CanUseWallSnapshot;
+
+    internal DesktopBackdropSnapshot.CaptureRequest? SharedPrimaryBackdropRequest() =>
+        NeedsSharedDesktopCapture ? HiddenBackdropRequest() : null;
+
+    internal async Task<bool> PrepareSharedPrimaryBackdropAsync(DesktopBackdropSnapshot.CaptureRequest request,
+        DesktopBackdropSnapshot.CapturedFrame captured, CancellationToken token)
+    {
+        if (token.IsCancellationRequested || SharedPrimaryBackdropRequest() != request) return false;
+        ReleaseBackdropSnapshot();
+        SetBackdropActive(false);
+        if (_wallBackdrop.PrepareHiddenSnapshotRecipe(_themeDark) is null) return false;
+
+        _preparingSharedBackdrop = true;
+        var derive = UseHiddenBackdrop(request, captured, token);
+        if (derive is null) return false;
+        await derive;
+
+        bool IsCurrent() => !token.IsCancellationRequested && _preparingSharedBackdrop &&
+            SharedPrimaryBackdropRequest() == request && ReferenceEquals(_snapshotCapture, captured) &&
+            HasValidSnapshot && !_backgroundCoverFailed && _nativeBackground.HasOpaqueSnapshotCover;
+        return IsCurrent() && await CommitBackgroundAsync(token) && IsCurrent();
+    }
+
+    internal void CancelSharedPrimaryBackdrop()
+    {
+        if (!_preparingSharedBackdrop || AppWindow.IsVisible) return;
+        ReleaseBackdropSnapshot();
+        _nativeBackground.ReleaseIdleUploadDevice();
+    }
+
     private void CaptureBackdropBeforeShow()
     {
-        if (_appearanceStopping || _windowClosing || AppWindow.IsVisible || _modal || _accessibilitySettings.HighContrast) return;
-        var key = CurrentSnapshotKey;
-        var geometry = (key.X, key.Y, key.W, key.H, key.Scale);
+        if (HasVisibleSecondaryWalls) return;
+        if (HiddenBackdropRequest() is not { } request) return;
+        var region = request.Region;
+        var geometry = (region.X, region.Y, region.Width, region.Height, request.Scale);
         if (_snapshotCapture is not null && _snapshotCaptureGeometry == geometry)
         {
             PrepareCachedBackdropIfNeeded();
             return;
         }
         ReleaseBackdropSnapshot();
-        TraceInput($"BackdropSnapshot capture source=hidden-before-show x={key.X} y={key.Y} width={key.W} height={key.H} scale={key.Scale}");
+        TraceInput($"BackdropSnapshot capture source=hidden-before-show x={region.X} y={region.Y} width={region.Width} height={region.Height} scale={request.Scale}");
         DesktopBackdropSnapshot.CapturedFrame? captured;
-        try { captured = DesktopBackdropSnapshot.Capture(new RectInt32(key.X, key.Y, key.W, key.H), key.Scale); }
+        try { captured = DesktopBackdropSnapshot.Capture(region, request.Scale); }
         catch (Exception ex) when (ex is OutOfMemoryException or System.Runtime.InteropServices.COMException or
             ArgumentException or InvalidOperationException)
         {
             AppLog.Warn("BackdropSnapshot", $"Hidden capture unavailable: {ex.GetType().Name}");
             return;
         }
-        if (captured is null) return;
-        _snapshotCapture = captured;
-        _snapshotCaptureGeometry = geometry;
-        PrepareCachedBackdropIfNeeded();
+        if (captured is not null) UseHiddenBackdrop(request, captured);
     }
 
-    private void PrepareCachedBackdropIfNeeded()
+    private Task? UseHiddenBackdrop(DesktopBackdropSnapshot.CaptureRequest request,
+        DesktopBackdropSnapshot.CapturedFrame captured, CancellationToken token = default)
+    {
+        if (HiddenBackdropRequest() != request) return null;
+        var region = request.Region;
+        _snapshotCapture = captured;
+        _snapshotCaptureGeometry = (region.X, region.Y, region.Width, region.Height, request.Scale);
+        return PrepareCachedBackdropIfNeeded(token);
+    }
+
+    private Task? PrepareCachedBackdropIfNeeded(CancellationToken token = default)
     {
         if (_appearanceStopping || _windowClosing || ShutdownStarted || !CanUseWallSnapshot ||
-            _snapshotCapture is not { } capture) return;
+            _snapshotCapture is not { } capture) return null;
         var key = CurrentSnapshotKey;
         if (key.Recipe is null || _snapshotCaptureGeometry != (key.X, key.Y, key.W, key.H, key.Scale) ||
-            _snapshotKey == key || _snapshotRequestKey == key) return;
+            _snapshotKey == key || _snapshotRequestKey == key) return null;
         CancelSnapshotRequest();
-        _snapshotRequest = new();
+        _snapshotRequest = token.CanBeCanceled ? CancellationTokenSource.CreateLinkedTokenSource(token) : new();
         _snapshotRequestKey = key;
         TraceInput($"BackdropSnapshot derive source=hidden-capture generation={_snapshotGeneration} bakedAlpha={key.Recipe.Value.EffectiveOpacity:F3}");
-        TrackAppearanceWork(PrepareSnapshotAsync(capture, key, _snapshotGeneration, _snapshotRequest.Token));
+        var derive = PrepareSnapshotAsync(capture, key, _snapshotGeneration, _snapshotRequest.Token);
+        TrackAppearanceWork(derive);
+        return derive;
     }
 
     private void CancelSnapshotRequest()
@@ -443,7 +465,7 @@ public sealed partial class MainWindow
             _nativeBackground.ForgetImage(previous);
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or IOException or ArgumentException)
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or IOException or ArgumentException or OutOfMemoryException)
         { AppLog.Warn("BackdropSnapshot", ex.GetType().Name); }
     }
     private void OnSystemColorsChanged(UISettings sender, object args) => QueueAppearanceRefresh();
@@ -517,6 +539,7 @@ public sealed partial class MainWindow
         _backgroundRequest = null;
         ReleaseBackdropSnapshot();
         SystemBackdrop = null;
+        _wallBackdrop.ReleaseDetachedMaterials();
         _nativeBackground.Dispose();
     }
 }

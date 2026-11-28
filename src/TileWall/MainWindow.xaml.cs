@@ -82,15 +82,24 @@ public sealed partial class MainWindow : Window
         {
             if (_windowClosing || ShutdownStarted) return;
             if (_traceInput) AppLog.Info("ClockTimer", $"Tick visible={AppWindow.IsVisible} utc={_clock.UtcNow:O}");
-            Surface.RefreshClocks(_clock.UtcNow);
+            RefreshWallClocks();
         };
         _puzzles = new PuzzlePresentationCoordinator(_images, DispatcherQueue, () => Scale,
             PersistPuzzleCarousel, Status, _traceInput);
         _puzzles.ResolveEntryPath = _session.ManagedEntryPath;
         _puzzles.PersistAutomaticSeries = PersistAutomaticIconSeries;
-        _puzzles.FrameChanged += Surface.UpdatePuzzleFrame;
+        _puzzles.FrameChanged += (id, frame, progress) =>
+        {
+            Surface.UpdatePuzzleFrame(id, frame, progress);
+            foreach (var wall in _secondaryWalls.Values)
+                if (wall.IsVisible) wall.Surface.UpdatePuzzleFrame(id, frame, progress);
+        };
         WallScroll.ViewChanged += (_, _) => UpdateVisibleWallFrames();
-        InitializeWallScrollRail();
+        HorizontalRail.Connect(WallScroll, _metrics, () =>
+        {
+            _pendingExpansionLane = null;
+            _pendingCommittedScrollAnchor = null;
+        });
         InitializeMenuStart();
         _session.SetViewRefresh(RenderCommitted);
         InitializePersistence();
@@ -227,7 +236,7 @@ public sealed partial class MainWindow : Window
         _backdropActive = active;
         if (wasActive != active && Settings.BackgroundMode == WallBackgroundMode.Acrylic &&
             !_accessibilitySettings.HighContrast && _appearanceSettings.AdvancedEffectsEnabled &&
-            AppWindow.IsVisible && !_backdropAnimationSuspended && (active || Settings.StayVisibleOnFocusLoss))
+            AppWindow.IsVisible && (active || Settings.StayVisibleOnFocusLoss))
         {
             // Only hand off the already prepared background. Focus changes must
             // not capture the visible wall or alter its capture policy/styles.
@@ -390,8 +399,9 @@ public sealed partial class MainWindow : Window
             (_environmentWallShown || _userDataUpgradeInProgress && AppWindow.IsVisible)) PlaceWall();
         RefreshEnvironmentStatus();
         if (!keepDropPresentation) RestoreCommittedScrollAnchor(document, scrollAnchor);
+        OnSecondaryCommit(document);
         UpdatePuzzleGate();
-        Surface.RefreshClocks(_clock.UtcNow);
+        RefreshWallClocks();
         QueueEnvironmentAdaptation();
     }
 
@@ -688,10 +698,11 @@ public sealed partial class MainWindow : Window
 
     private void UpdatePuzzleGate()
     {
-        var hidden = !AppWindow.IsVisible || AppWindow.Presenter is OverlappedPresenter
+        var primaryHidden = !AppWindow.IsVisible || AppWindow.Presenter is OverlappedPresenter
             { State: OverlappedPresenterState.Minimized };
+        var hidden = primaryHidden && !HasVisibleSecondaryWalls;
         var imagesWereActive = Surface.ImagesActive;
-        Surface.ImagesActive = !hidden && !_viewBlocked;
+        Surface.ImagesActive = !primaryHidden && !_viewBlocked;
         if (!Surface.ImagesActive) Surface.ClearTransientInteraction();
         else if (!imagesWereActive && _hasDocument)
         {
@@ -699,11 +710,13 @@ public sealed partial class MainWindow : Window
             _needsVisualRefresh = false;
         }
         UpdateVisibleWallFrames();
-        SetMenuImagesActive(!hidden && !_viewBlocked);
+        SetMenuImagesActive(!primaryHidden && !_viewBlocked);
+        foreach (var wall in _secondaryWalls.Values)
+            wall.SetInteractionEnabled(!_viewBlocked && !_modal && !PersistenceInteractionBlocked);
         _puzzles.SetGate(hidden || _viewBlocked ? MemberCarouselGate.Hidden
             : _modal ? MemberCarouselGate.Modal
             : _resizing || _gesture.Phase != GesturePhase.Idle ? MemberCarouselGate.Gesture : MemberCarouselGate.Ready);
-        if (hidden || _viewBlocked || !Surface.HasClocks)
+        if (hidden || _viewBlocked || !(Surface.HasClocks || _secondaryWalls.Values.Any(wall => wall.IsVisible && wall.Surface.HasClocks)))
         {
             if (_traceInput && _clockTimer.IsRunning) AppLog.Info("ClockTimer", $"Stop visible={!hidden} utc={_clock.UtcNow:O}");
             _clockTimer.Stop();
@@ -711,8 +724,9 @@ public sealed partial class MainWindow : Window
         else
         {
             if (_traceInput && !_clockTimer.IsRunning) AppLog.Info("ClockTimer", $"Start immediate-refresh utc={_clock.UtcNow:O}");
-            Surface.RefreshClocks(_clock.UtcNow); _clockTimer.Start();
+            RefreshWallClocks(); _clockTimer.Start();
         }
+        QueueSecondaryPresentation();
         ImportReadinessChanged?.Invoke();
         QueueDeferredReclamation();
     }
@@ -941,7 +955,7 @@ public sealed partial class MainWindow : Window
 
     private void LaunchMember(string id) => LaunchMember(id, elevated: false);
 
-    private void LaunchMember(string id, bool elevated)
+    private void LaunchMember(string id, bool elevated, Action<string>? reportFailure = null)
     {
         TraceInput($"LaunchRequested member={id} elevated={elevated} phase={_gesture.Phase} modal={_modal} blocked={_viewBlocked} suppressed={_suppressClickMember == id}");
         if (PersistenceInteractionBlocked || _modal || _viewBlocked || _suppressClickMember == id ||
@@ -960,7 +974,7 @@ public sealed partial class MainWindow : Window
         if (result.Outcome != LaunchOutcome.Launched)
         {
             AppLog.Warn("EntryLaunch", $"outcome={result.Outcome} reason={result.FailureReason}");
-            Status(result.Outcome switch
+            (reportFailure ?? Status)(result.Outcome switch
             {
                 LaunchOutcome.EntryMissing => ProductStrings.Get("Wall.EntryMissing"),
                 LaunchOutcome.ElevatedDeclined => ProductStrings.Get("Wall.ElevationDeclined"),

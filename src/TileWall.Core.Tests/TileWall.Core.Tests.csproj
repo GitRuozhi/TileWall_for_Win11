@@ -19,6 +19,9 @@
     <Compile Include="..\TileWall\Application\FullscreenResizeGesture.cs" Link="Application\FullscreenResizeGesture.cs" />
     <Compile Include="..\TileWall\Application\WallPresentationGeometry.cs" Link="Application\WallPresentationGeometry.cs" />
     <Compile Include="..\TileWall\Shell\Interop\ExplorerContextMenuRegistration.cs" Link="Shell\ExplorerContextMenuRegistration.cs" />
+    <Compile Include="..\TileWall\Shell\Interop\ExplorerContextMenuController.cs" Link="Shell\ExplorerContextMenuController.cs" />
+    <Compile Include="..\TileWall\Shell\Interop\ExplorerContextMenuHandoff.cs" Link="Shell\ExplorerContextMenuHandoff.cs" />
+    <Compile Include="..\TileWall\Shell\Interop\ExplorerContextMenuRegistry.cs" Link="Shell\ExplorerContextMenuRegistry.cs" />
     <Compile Include="..\TileWall\Application\ContextMenuUserCommand.cs" Link="Application\ContextMenuUserCommand.cs" />
     <Compile Include="..\TileWall\Application\CurrentUserUninstallCommand.cs" Link="Application\CurrentUserUninstallCommand.cs" />
     <Compile Include="..\TileWall\Shell\Interop\DesktopUserUninstallLauncher.cs" Link="Shell\DesktopUserUninstallLauncher.cs" />

@@ -47,6 +47,13 @@ public partial class App : Application
                 Exit();
                 return;
             }
+            if (!gate.TryReserveData(_scope.DataMutexName))
+            {
+                Shell.AppLogSetup.WriteWindowsEventLogError("TileWall：用户数据正在由另一会话或卸载程序使用。");
+                gate.Dispose();
+                Exit();
+                return;
+            }
             _ownsInstance = true;
             Shell.AppLogSetup.InitializeForCurrentProcess(_scope.LogRoot);
             _lifetime = new WallApplicationLifetime(_scope, gate, this);

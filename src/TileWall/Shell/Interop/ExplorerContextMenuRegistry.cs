@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using Microsoft.Win32;
 
 namespace TileWall.Shell.Interop;
@@ -65,6 +66,7 @@ internal abstract class ExplorerContextMenuRegistry : IDisposable
     protected abstract void SetString(string path, string name, string value);
     public abstract void Dispose();
 
+    [SupportedOSPlatform("windows")]
     internal sealed class CurrentUser : ExplorerContextMenuRegistry
     {
         private readonly RegistryKey _root = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, RegistryView.Registry64);
@@ -84,8 +86,11 @@ internal abstract class ExplorerContextMenuRegistry : IDisposable
             return new(children, values);
         }
 
-        protected override void DeleteVerb(string path, string commandPath) =>
-            _root.DeleteSubKeyTree(path, throwOnMissingSubKey: false);
+        protected override void DeleteVerb(string path, string commandPath)
+        {
+            _root.DeleteSubKey(commandPath, throwOnMissingSubKey: false);
+            _root.DeleteSubKey(path, throwOnMissingSubKey: false);
+        }
 
         protected override void CreateKey(string path)
         {

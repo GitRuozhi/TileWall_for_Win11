@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using TileWall.ApplicationModel;
 using TileWall.Core.Configuration;
 using TileWall.Core.Shell;
@@ -19,6 +20,7 @@ internal sealed record ExplorerContextMenuChange(ExplorerContextMenuState State,
 }
 
 /// <summary>Owns the current instance's menu actions and the language projected to Explorer.</summary>
+[SupportedOSPlatform("windows")]
 internal sealed class ExplorerContextMenuController
 {
     private readonly ExplorerMenuPreference _preference;

@@ -10,11 +10,14 @@ internal sealed partial class WallApplicationLifetime
     private readonly TaskbarActivationService _taskbarActivation;
     private volatile bool _taskbarWallVisible, _taskbarEnabled, _taskbarClosing;
     private volatile bool _taskbarSettingsDisablePending;
-    private bool _taskbarEnvironmentQueued;
+    private bool _taskbarPlacementRefreshing;
+    private long _taskbarPlacementVersion;
     private long _taskbarRequestVersion;
     private int _taskbarOpeningId;
     private Task _taskbarWork = Task.CompletedTask;
-    private TaskbarActivationObservation? _taskbarObservation;
+    private Dictionary<DisplayMonitor, TaskbarActivationObservation> _cachedTaskbarPlacements = [];
+    private Dictionary<nint, TaskbarActivationObservation> _taskbarObservations = [];
+    private TaskbarTarget[] _taskbarTargets = [];
     private string? _taskbarActivationFailure;
 
     private string? TaskbarActivationError => _taskbarActivationFailure is null
@@ -30,81 +33,134 @@ internal sealed partial class WallApplicationLifetime
         catch (Exception ex) { RecordTaskbarFailure(ex.Message); }
     }
 
-    // This observation does not send messages or change Explorer. In particular,
-    // it cannot wait for the recovery helper on the synchronous Show path.
-    private void PrepareTaskbarPlacement()
+    private bool CanActivateTaskbar => !_isTest && !_taskbarClosing && !_taskbarSettingsDisablePending &&
+        _window.Settings.ActivateTaskbar && !_window.SettingsPersistenceBlocked;
+
+    // A wall can open before the first observation or after its display changed.
+    // Use the monitor's work area until a matching placement is available.
+    private bool ApplyTaskbarPlacement(IReadOnlyList<DisplayMonitor> displays)
     {
-        if (_isTest || !_window.Settings.ActivateTaskbar || _window.SettingsPersistenceBlocked || _taskbarClosing)
+        var previous = _taskbarObservations;
+        _taskbarObservations = [];
+        TaskbarActivationObservation? primary = null;
+        if (CanActivateTaskbar)
         {
-            _taskbarObservation = null;
-            _window.SetTaskbarPlacement(null, 0);
-            return;
+            foreach (var display in displays)
+            {
+                var screen = display.OuterBounds;
+                var work = display.WorkArea;
+                var observed = _cachedTaskbarPlacements.TryGetValue(display, out var cached) ? cached :
+                    new TaskbarActivationObservation(false, false, default, new(screen.X, screen.Y, screen.Width, screen.Height),
+                        new(work.X, work.Y, work.Width, work.Height), new(work.X, work.Y, work.Width, work.Height));
+                _taskbarObservations.Add(display.Id, observed);
+                if (display.IsPrimary) primary = observed;
+                else _window.SetSecondaryTaskbarPlacement(display.Id, TaskbarPlacement(observed), observed.Anchor);
+            }
         }
-        try
-        {
-            var observed = _taskbarActivation.ObservePrimary();
-            _taskbarObservation = observed;
-            _window.SetTaskbarPlacement(observed.Available
-                ? new RectInt32(observed.EffectiveArea.X, observed.EffectiveArea.Y,
-                    observed.EffectiveArea.Width, observed.EffectiveArea.Height) : null,
-                observed.Available ? observed.Window : 0);
-            if (observed.Failure is not null) RecordTaskbarFailure(observed.Failure);
-        }
-        catch (Exception ex)
-        {
-            _taskbarObservation = null;
-            _window.SetTaskbarPlacement(null, 0);
-            RecordTaskbarFailure(ex.Message);
-        }
+        foreach (var id in previous.Keys)
+            if (!_taskbarObservations.ContainsKey(id)) _window.SetSecondaryTaskbarPlacement(id, null, default);
+        _window.SetTaskbarPlacement(TaskbarPlacement(primary), primary?.Anchor ?? default);
+        return previous.Count != _taskbarObservations.Count || previous.Any(entry =>
+            !_taskbarObservations.TryGetValue(entry.Key, out var current) || current != entry.Value);
     }
 
-    private void TaskbarWallShown()
-    {
-        var firstShow = !_taskbarWallVisible;
-        _taskbarWallVisible = _window.AppWindow.IsVisible;
-        if (firstShow && _taskbarWallVisible) _taskbarOpeningId++;
-        QueueTaskbarActivationUpdate();
-    }
+    private static RectInt32? TaskbarPlacement(TaskbarActivationObservation? observation) => observation is { EffectiveArea: var area }
+        ? new RectInt32(area.X, area.Y, area.Width, area.Height) : null;
 
-    private void TaskbarWallHidden()
+    private bool ApplyVisibleTaskbarPlacement()
     {
-        _taskbarWallVisible = false;
-        QueueTaskbarActivationUpdate();
+        var secondary = _window.VisibleSecondaryTaskbarTargets();
+        return ApplyTaskbarPlacement(DisplayTopology.ReadMonitors().Where(display => display.IsPrimary
+            ? _window.AppWindow.IsVisible : secondary.Any(target => target.DisplayId == display.Id)).ToArray());
     }
 
     private void QueueTaskbarEnvironmentRefresh()
     {
-        if (_taskbarClosing || _taskbarEnvironmentQueued) return;
-        _taskbarEnvironmentQueued = _window.DispatcherQueue.TryEnqueue(() =>
-        {
-            _taskbarEnvironmentQueued = false;
-            if (_taskbarClosing || !_started) return;
-            var previous = _taskbarObservation;
-            PrepareTaskbarPlacement();
-            // Ignore our reveal's position/animation notifications. A genuinely
-            // different scope or Windows preference starts a new bounded request.
-            if (SameTaskbarScope(previous, _taskbarObservation)) return;
-            _taskbarOpeningId++;
-            QueueTaskbarActivationUpdate();
-        });
+        if (!CanActivateTaskbar) return;
+        _taskbarPlacementVersion++;
+        if (_taskbarPlacementRefreshing) return;
+        _taskbarPlacementRefreshing = true;
+        _ = RefreshTaskbarPlacementsAsync();
     }
 
-    private static bool SameTaskbarScope(TaskbarActivationObservation? left, TaskbarActivationObservation? right)
+    private void TaskbarExplorerRecreated()
     {
-        if (left is null || right is null) return left is null && right is null;
-        return left.Available == right.Available && left.Window == right.Window && left.AutoHide == right.AutoHide &&
-            left.Screen == right.Screen && left.WorkArea == right.WorkArea && left.EffectiveArea == right.EffectiveArea;
+        _cachedTaskbarPlacements.Clear();
+        QueueTaskbarEnvironmentRefresh();
+    }
+
+    private async Task RefreshTaskbarPlacementsAsync()
+    {
+        try
+        {
+            while (CanActivateTaskbar)
+            {
+                var version = _taskbarPlacementVersion;
+                var displays = DisplayTopology.ReadMonitors();
+                var placements = await Task.Run(() => ObserveTaskbarPlacements(displays));
+                if (!CanActivateTaskbar) return;
+                if (version != _taskbarPlacementVersion) continue;
+                _cachedTaskbarPlacements = placements;
+                if (_taskbarWallVisible && ApplyVisibleTaskbarPlacement()) TaskbarWallsChanged(force: true);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!_taskbarClosing) AppLog.Warn("TaskbarActivation", $"Placement observation failed: {ex.Message}");
+        }
+        finally { _taskbarPlacementRefreshing = false; }
+    }
+
+    private static Dictionary<DisplayMonitor, TaskbarActivationObservation> ObserveTaskbarPlacements(
+        IReadOnlyList<DisplayMonitor> displays)
+    {
+        var autoHide = TaskbarActivationBackend.AutoHideEnabled;
+        var placements = new Dictionary<DisplayMonitor, TaskbarActivationObservation>(displays.Count);
+        foreach (var display in displays)
+        {
+            var screen = display.OuterBounds;
+            var work = display.WorkArea;
+            placements.Add(display, TaskbarActivationBackend.ObserveDisplay(new(screen.X, screen.Y, screen.Width, screen.Height),
+                new(work.X, work.Y, work.Width, work.Height), display.IsPrimary, autoHide));
+        }
+        return placements;
+    }
+
+    private void TaskbarWallsChanged(bool force = false)
+    {
+        var secondary = _window.VisibleSecondaryTaskbarTargets();
+        var launchers = secondary.ToDictionary(target => target.DisplayId, target => target.LauncherWindow);
+        var primaryVisible = _window.AppWindow.IsVisible;
+        if (primaryVisible && DisplayTopology.MonitorAt(default) is { } primaryId)
+            launchers[primaryId] = WinRT.Interop.WindowNative.GetWindowHandle(_window);
+        var targets = new List<TaskbarTarget>();
+        foreach (var (display, launcher) in launchers)
+        {
+            if (!_taskbarObservations.TryGetValue(display, out var observation) ||
+                observation is not { Available: true, AutoHide: true }) continue;
+            var screen = observation.Screen;
+            targets.Add(new(new(screen.X, screen.Y, screen.Width, screen.Height), observation.Anchor.Window, launcher));
+        }
+        var visible = primaryVisible || secondary.Length != 0;
+        var requested = targets.OrderBy(target => target.LauncherWindow).ToArray();
+        if (!force && _taskbarWallVisible == visible && _taskbarTargets.SequenceEqual(requested)) return;
+        _taskbarWallVisible = visible;
+        _taskbarTargets = requested;
+        _taskbarOpeningId++;
+        QueueTaskbarActivationUpdate();
     }
 
     private void QueueTaskbarActivationUpdate()
     {
-        _taskbarEnabled = !_isTest && !_taskbarClosing && !_taskbarSettingsDisablePending && _window.Settings.ActivateTaskbar &&
-            !_window.SettingsPersistenceBlocked;
+        _taskbarEnabled = CanActivateTaskbar;
         var version = Interlocked.Increment(ref _taskbarRequestVersion);
         if (_taskbarClosing) return;
-        var requested = _taskbarEnabled && _taskbarWallVisible;
+        var requested = _taskbarEnabled && _taskbarWallVisible ? _taskbarTargets : [];
+        var observationFailure = _taskbarEnabled && _taskbarWallVisible
+            ? _taskbarObservations.Values.FirstOrDefault(observation => observation.Failure is not null)?.Failure : null;
         var previous = _taskbarWork;
-        _taskbarWork = UpdateTaskbarAsync(previous, version, _taskbarOpeningId, requested);
+        _taskbarWork = UpdateTaskbarAsync(previous, version, _taskbarOpeningId, requested, observationFailure);
     }
 
     private void QueueTaskbarActivationState(int openingId, Func<bool> stillRequested, TaskbarActivationResult result)
@@ -113,10 +169,10 @@ internal sealed partial class WallApplicationLifetime
             if (_taskbarClosing || openingId != _taskbarOpeningId || !_taskbarEnabled ||
                 !_taskbarWallVisible || !stillRequested()) return;
             RecordTaskbarFailure(result.Failure);
-            if (result.Active) PrepareTaskbarPlacement();
+            if (result.Active) ApplyVisibleTaskbarPlacement();
         });
 
-    private async Task UpdateTaskbarAsync(Task previous, long version, int openingId, bool requested)
+    private async Task UpdateTaskbarAsync(Task previous, long version, int openingId, TaskbarTarget[] targets, string? observationFailure)
     {
         bool Current() => Interlocked.Read(ref _taskbarRequestVersion) == version && !_taskbarClosing;
         bool StillRequested() => Current() && _taskbarEnabled && _taskbarWallVisible;
@@ -124,14 +180,14 @@ internal sealed partial class WallApplicationLifetime
         {
             await previous;
             if (!Current()) return;
-            var result = requested
-                ? await _taskbarActivation.ApplyAsync(openingId, StillRequested)
+            var result = targets.Length != 0
+                ? await _taskbarActivation.ApplyAsync(targets, openingId, StillRequested)
                 : await _taskbarActivation.RestoreAsync();
             if (!Current()) return;
-            RecordTaskbarFailure(result.Failure);
+            RecordTaskbarFailure(result.Failure ?? observationFailure);
             // Native completion is never an activation request. Geometry can be
             // refreshed only for this still-current, already visible wall.
-            if (requested && StillRequested()) PrepareTaskbarPlacement();
+            if (targets.Length != 0 && StillRequested()) ApplyVisibleTaskbarPlacement();
         }
         catch (Exception ex)
         {
@@ -152,19 +208,7 @@ internal sealed partial class WallApplicationLifetime
 
     private async Task<string?> PrepareTaskbarSettingsAsync(bool enabled)
     {
-        if (_isTest) return null;
-        if (enabled)
-        {
-            // A preparation failure is a runtime availability failure. The user's
-            // enabling preference may still be saved and retried on the next show.
-            try
-            {
-                var prepared = await _taskbarActivation.PrepareAsync();
-                RecordTaskbarFailure(prepared.Failure);
-            }
-            catch (Exception ex) { RecordTaskbarFailure(ex.Message); }
-            return null;
-        }
+        if (_isTest || enabled) return null;
         _taskbarSettingsDisablePending = true;
         _taskbarEnabled = false;
         Interlocked.Increment(ref _taskbarRequestVersion);
@@ -178,17 +222,22 @@ internal sealed partial class WallApplicationLifetime
     {
         if (!changed) return;
         _taskbarSettingsDisablePending = false;
-        _taskbarOpeningId++;
-        if (!_window.Settings.ActivateTaskbar) RecordTaskbarFailure(null);
-        PrepareTaskbarPlacement();
-        QueueTaskbarActivationUpdate();
+        if (_window.Settings.ActivateTaskbar) QueueTaskbarEnvironmentRefresh();
+        else
+        {
+            _cachedTaskbarPlacements.Clear();
+            RecordTaskbarFailure(null);
+        }
+        ApplyVisibleTaskbarPlacement();
+        TaskbarWallsChanged(force: true);
     }
 
     private void RestoreTaskbarAfterRejectedSettings()
     {
         _taskbarSettingsDisablePending = false;
-        PrepareTaskbarPlacement();
-        QueueTaskbarActivationUpdate();
+        QueueTaskbarEnvironmentRefresh();
+        ApplyVisibleTaskbarPlacement();
+        TaskbarWallsChanged(force: true);
     }
 
     private void SuspendTaskbarForBlockedPersistence()

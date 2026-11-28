@@ -219,6 +219,7 @@ public sealed partial class MainWindow
             _viewportTransition = null;
             Surface.EndAutomaticHeightPresentation();
             SetScrollRegion(transition.FullScreen, transition.ToClip, presentationSettings: transition.Settings);
+            QueueSecondaryPresentation();
         }
     }
 
@@ -230,5 +231,6 @@ public sealed partial class MainWindow
         SetScrollRegion(transition.FullScreen, transition.ToClip, presentationSettings: transition.Settings);
         MoveWindowIfChanged(transition.To);
         StopFrameSubscriptionIfIdle();
+        QueueSecondaryPresentation();
     }
 }

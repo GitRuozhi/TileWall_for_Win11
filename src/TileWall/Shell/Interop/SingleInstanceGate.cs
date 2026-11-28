@@ -23,6 +23,7 @@ public sealed class SingleInstanceGate : IDisposable
     private static readonly TimeSpan LocateWaitBudget = TimeSpan.FromSeconds(2);
 
     private IntPtr _mutex;
+    private IntPtr _dataMutex;
 
     private bool _owned;
 
@@ -118,6 +119,24 @@ public sealed class SingleInstanceGate : IDisposable
         return Win32Api.PostMessageW(hwnd, message, IntPtr.Zero, IntPtr.Zero);
     }
 
+    /// <summary>Reserve the ordinary user's data across logon sessions before opening it.</summary>
+    internal bool TryReserveData(string? mutexName)
+    {
+        if (mutexName is null) return true;
+        if (!_owned || _dataMutex != IntPtr.Zero) return false;
+        var mutex = Win32Api.CreateMutexW(IntPtr.Zero, bInitialOwner: true, mutexName);
+        var error = Marshal.GetLastWin32Error();
+        if (mutex == IntPtr.Zero) return false;
+        if (error != Win32Api.ErrorAlreadyExists)
+        {
+            _dataMutex = mutex;
+            return true;
+        }
+
+        _ = Win32Api.CloseHandle(mutex);
+        return false;
+    }
+
     public bool PostPaths(ExplorerAddMessage message) =>
         ExplorerAddChannel.TryFindHostWindow(_windowName, out var hwnd) &&
         ExplorerAddChannel.TryPostPaths(hwnd, message.Paths, message.Truncated);
@@ -125,6 +144,13 @@ public sealed class SingleInstanceGate : IDisposable
     /// <summary>显式释放互斥体（ExitCoordinator 释放序的成对收口；异常/超时路径由内核兜底）。</summary>
     public void Release()
     {
+        if (_dataMutex != IntPtr.Zero)
+        {
+            _ = Win32Api.ReleaseMutex(_dataMutex);
+            _ = Win32Api.CloseHandle(_dataMutex);
+            _dataMutex = IntPtr.Zero;
+        }
+
         if (_owned && _mutex != IntPtr.Zero)
         {
             _ = Win32Api.ReleaseMutex(_mutex);

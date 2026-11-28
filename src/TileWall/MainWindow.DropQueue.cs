@@ -59,6 +59,7 @@ public sealed partial class MainWindow
         {
             RejectDrops(string.Format(ProductStrings.Get("Common.SaveFailed"), ex.Message));
         }
+        finally { QueueSecondaryPresentation(); }
     }
 
     private void RejectDrops(string? error)

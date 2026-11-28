@@ -37,6 +37,7 @@
     <x:String x:Key="Settings.System">系统</x:String>
     <x:String x:Key="Settings.Invocation">唤出</x:String>
     <x:String x:Key="Settings.ExperimentalFeature">这是一个试验性功能</x:String>
+    <x:String x:Key="Settings.MultiDisplaySummon">多屏同时唤出</x:String>
     <x:String x:Key="Settings.KeyBehavior">按键对应行为</x:String>
     <x:String x:Key="Settings.KeyBehaviorKey">按键</x:String>
     <x:String x:Key="Settings.KeyBehaviorAction">行为</x:String>
@@ -915,4 +916,10 @@
   <x:String x:Key="Batch.SelectionCount">共{0}，已选中{1}</x:String>
   <x:String x:Key="Batch.SelectNone">全不选</x:String>
   <x:String x:Key="Batch.Mixed">混合</x:String>
+    <x:String x:Key="Wall.MultiDisplayCaptureFailed">多屏静态背景不可用。{0}</x:String>
+    <x:String x:Key="Wall.CaptureGeometry">屏幕范围无法读取。</x:String>
+    <x:String x:Key="Wall.CaptureAllocation">无法分配截图缓冲。</x:String>
+    <x:String x:Key="Wall.CaptureRead">无法读取桌面画面。</x:String>
+    <x:String x:Key="Wall.CaptureCrop">无法裁切各屏背景。</x:String>
+    <x:String x:Key="Wall.CapturePresentation">无法准备模拟毛玻璃背景。</x:String>
 </ResourceDictionary>

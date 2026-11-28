@@ -1,5 +1,5 @@
-// TileWall's one-shot, unelevated registry cleanup broker. No .NET/WinUI dependency.
-// The Inno native uninstaller owns confirmation, file removal and the final exit code.
+// TileWall's native uninstall entry points. Inno owns the EXE package's confirmation
+// and program files. The portable entry point owns its own confirmation and payload.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
@@ -8,14 +8,21 @@
 #include <exdisp.h>
 #include <servprov.h>
 #include <sddl.h>
+#include <ntsecapi.h>
+#include <wtsapi32.h>
+#include <tlhelp32.h>
 #include <bcrypt.h>
 #include <wrl/client.h>
 #include <string>
 #include <vector>
 #include <memory>
+#include <optional>
+#include <set>
 #include <stdexcept>
+#include <string_view>
 #include <algorithm>
 #include <cwchar>
+#include <utility>
 #ifdef TILEWALL_UNINSTALL_BROKER_TESTS
 #include <cstdio>
 #endif
@@ -36,6 +43,8 @@ struct Handle {
     explicit Handle(HANDLE h = nullptr) : value(h) {}
     ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
     Handle(const Handle&) = delete; Handle& operator=(const Handle&) = delete;
+    Handle(Handle&& other) noexcept : value(std::exchange(other.value, nullptr)) {}
+    bool valid() const { return value && value != INVALID_HANDLE_VALUE; }
 };
 struct Key {
     HKEY value = nullptr;
@@ -86,6 +95,9 @@ static wstring StringValue(HKEY key, const wchar_t* name) {
     Require(value.back() == 0 && wcslen(value.data()) + 1 == value.size()); return value.data();
 }
 struct Installation { wstring Self, Directory, Executable, Uninstaller; };
+
+#include "RemovalFiles.h"
+
 static Installation ReadInstallation() {
     Installation result; result.Self = Image(GetCurrentProcess()); result.Directory = Parent(result.Self);
     Require(Same(result.Self, result.Directory + L"\\TileWall.UninstallBroker.exe")); SafePath(result.Self, true);
@@ -308,13 +320,11 @@ static void NotificationCleanup(const Installation& install, const wstring& nonc
         Require(WaitForSingleObject(process.value, 5000) == WAIT_OBJECT_0);
     }
 }
-static int Cleanup(HANDLE pipe, HANDLE parent, const Installation& install, const wstring& nonce = L"", HKEY userRoot = HKEY_CURRENT_USER) {
-    BYTE request = 0; if (!ReadByte(pipe, parent, request, 120000)) return Failed; Require(request == 0x44);
-    if (userRoot == HKEY_CURRENT_USER) AuthenticatePipeClient(pipe);
-    NotificationCleanup(install, nonce);
+template<class Acknowledge>
+static int CleanupRegistry(const Installation& install, const Acknowledge& acknowledge, HKEY userRoot) {
     auto mutexName = L"Global\\TileWall.ContextMenu.Write." + Sid(GetCurrentProcess()) + L".v1";
-    Handle mutex(CreateMutexW(nullptr, FALSE, mutexName.c_str())); Require(mutex.value != nullptr);
-    auto waited = WaitForSingleObject(mutex.value, 5000); Require(waited == WAIT_OBJECT_0 || waited == WAIT_ABANDONED);
+    OwnedMutex mutex(mutexName);
+    Require(mutex.TryLock(5000));
     struct Saved { wstring Path; Node Data; }; std::vector<Saved> before; std::vector<size_t> changed;
     Value startup{}; bool startupOwned = false, startupChanged = false; int result = Failed;
     try {
@@ -338,7 +348,8 @@ static int Cleanup(HANDLE pipe, HANDLE parent, const Installation& install, cons
         for (size_t i = 0; i < before.size(); ++i) { changed.push_back(i); DeleteTree(before[i].Path, userRoot); }
         if (startupOwned) { Key key; Win(RegOpenKeyExW(userRoot, RunKey, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, &key.value));
             startupChanged = true; auto status = RegDeleteValueW(key.value, L"TileWall"); if (status != ERROR_FILE_NOT_FOUND) Win(status); }
-        WriteByte(pipe, 0x4F); Require(ReadByte(pipe, parent, request, 5000) && request == 0x41); result = 0;
+        acknowledge();
+        result = 0;
     } catch (const std::exception& error) {
 #ifdef TILEWALL_UNINSTALL_BROKER_TESTS
         std::fprintf(stderr, "Native cleanup transaction failed: %s (lastError=%lu)\n", error.what(), GetLastError());
@@ -353,9 +364,62 @@ static int Cleanup(HANDLE pipe, HANDLE parent, const Installation& install, cons
             auto& saved = before[*it]; DeleteTree(saved.Path, userRoot); Key key;
             Win(RegCreateKeyExW(userRoot, saved.Path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS | KEY_WOW64_64KEY, nullptr, &key.value, nullptr)); Restore(key.value, saved.Data);
         } catch (...) { restored = false; }
-        result = restored ? Failed : RollbackFailed; try { WriteByte(pipe, 0x45); } catch (...) {}
+        result = restored ? Failed : RollbackFailed;
     }
-    ReleaseMutex(mutex.value); if (!changed.empty()) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr); return result;
+    if (!changed.empty()) SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return result;
+}
+
+struct CleanupOptions {
+    bool Data = false;
+    bool Registry = true;
+};
+
+template<class Acknowledge>
+static int CleanupSelected(const Installation& install, CleanupOptions options, BYTE& dataStatus,
+    const Acknowledge& acknowledge, const wstring& nonce = L"", HKEY userRoot = HKEY_CURRENT_USER) {
+    dataStatus = options.Data ? 'B' : 'O';
+    try {
+        std::unique_ptr<SharedDataRemoval> data;
+        if (options.Data) data = std::make_unique<SharedDataRemoval>(install.Executable);
+        auto finish = [&]() {
+            if (data) {
+                dataStatus = data->Remove();
+                Require(dataStatus == 'W' || dataStatus == 'N');
+            }
+            if (options.Registry) NotificationCleanup(install, nonce);
+            acknowledge(dataStatus);
+        };
+        if (options.Registry) {
+            return CleanupRegistry(install, finish, userRoot);
+        }
+        finish();
+        return 0;
+    } catch (...) { return Failed; }
+}
+
+static int Cleanup(HANDLE pipe, HANDLE parent, const Installation& install, const wstring& nonce = L"", HKEY userRoot = HKEY_CURRENT_USER) {
+    BYTE request = 0;
+    if (!ReadByte(pipe, parent, request, 120000)) return Failed;
+    Require(request == 'D' || request == 'F' || request == 'U' || request == 'P');
+    if (userRoot == HKEY_CURRENT_USER) AuthenticatePipeClient(pipe);
+    CleanupOptions options{request == 'F' || request == 'U', request == 'D' || request == 'F'};
+    BYTE dataStatus = 0;
+    bool acknowledged = false;
+    auto result = CleanupSelected(install, options, dataStatus, [&](BYTE receipt) {
+        WriteByte(pipe, receipt);
+        Require(ReadByte(pipe, parent, request, 5000) && request == 'A');
+        acknowledged = true;
+    }, nonce, userRoot);
+    if (!acknowledged && result != 0) {
+        auto failedReceipt = dataStatus == 'B' || dataStatus == 'I' ? dataStatus : static_cast<BYTE>('E');
+        try { WriteByte(pipe, failedReceipt); } catch (...) {}
+        // A broken connection may lose the data receipt, so record irreversible
+        // work in the exit status as well as the registry rollback result.
+        if (dataStatus == 'W') return result == RollbackFailed ? 53 : 51;
+        if (dataStatus == 'I') return result == RollbackFailed ? 54 : 52;
+    }
+    return result;
 }
 static int Serve(const Installation& install, const wstring& nonce, DWORD parentPid) {
     FailureStage = 40;
@@ -383,6 +447,9 @@ static int Serve(const Installation& install, const wstring& nonce, DWORD parent
     FailureStage = 45;
     return Cleanup(pipe.value, parent.value, install, nonce);
 }
+#ifdef TILEWALL_PORTABLE_UNINSTALL
+#include "PortableUninstall.h"
+#endif
 #ifndef TILEWALL_UNINSTALL_BROKER_TESTS
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // Process-wide mode is deliberate: CreateProcess children inherit it;
@@ -393,11 +460,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     try {
         int count = 0; auto arguments = CommandLineToArgvW(GetCommandLineW(), &count); Require(arguments != nullptr);
         struct Args { LPWSTR* Value; ~Args() { LocalFree(Value); } } release{arguments};
+#ifdef TILEWALL_PORTABLE_UNINSTALL
+        if (count == 1) return RunPortableUninstall();
+#endif
         Require(count == 4); wstring mode(arguments[1]), nonce(arguments[2]), pidText(arguments[3]);
-        Require((mode == L"--handoff" || mode == L"--broker") && nonce.size() == 32 &&
+        Require(nonce.size() == 32 &&
             std::all_of(nonce.begin(), nonce.end(), [](wchar_t c) { return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'); }) &&
             !pidText.empty() && pidText.size() <= 10 && std::all_of(pidText.begin(), pidText.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }));
         auto parsed = std::stoull(pidText); Require(parsed > 0 && parsed <= MAXDWORD); DWORD pid = static_cast<DWORD>(parsed);
+#ifdef TILEWALL_PORTABLE_UNINSTALL
+        if (mode == L"--portable-finish") return FinishPortableUninstall(nonce, pid);
+#endif
+        Require(mode == L"--handoff" || mode == L"--broker");
         FailureStage = 30;
         auto install = ReadInstallation();
         if (mode == L"--handoff") {

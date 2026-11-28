@@ -2,7 +2,6 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using TileWall.Core.Shell;
 using TileWall.Graphics;
-using TileWall.Shell;
 using Windows.Graphics;
 using Windows.UI;
 using Windows.UI.Composition;
@@ -110,35 +109,6 @@ internal sealed class NativeWallBackground(IntPtr hwnd) : ICompositionSupportsSy
         await projection.Compositor.RequestCommitAsync().AsTask(token);
         token.ThrowIfCancellationRequested();
         return !_disposed && projection.IsAttached && ReferenceEquals(projection, _projection) && CoverRevision == revision;
-    }
-
-    internal void BeginCoverAnimation(bool show, double scale)
-    {
-        if (_projection is not { } projection) return;
-        ResetCoverAnimation();
-        var compositor = projection.Compositor;
-        using var ease = compositor.CreateCubicBezierEasingFunction(
-            new(1f / 3, show ? 1 : 0), new(2f / 3, show ? 1 : 0));
-        using var opacity = compositor.CreateScalarKeyFrameAnimation();
-        opacity.Duration = TimeSpan.FromMilliseconds(show ? ShowHideAnimator.ShowDurationMs : ShowHideAnimator.HideDurationMs);
-        opacity.InsertKeyFrame(0, show ? 0 : 1);
-        opacity.InsertKeyFrame(1, show ? 1 : 0, ease);
-        projection.CoverRoot.StartAnimation(nameof(Visual.Opacity), opacity);
-        if (!show) return;
-        using var slide = compositor.CreateVector3KeyFrameAnimation();
-        slide.Duration = opacity.Duration;
-        slide.InsertKeyFrame(0, new(0, (float)(ShowHideAnimator.ShowSlideDistanceDip * scale), 0));
-        slide.InsertKeyFrame(1, Vector3.Zero, ease);
-        projection.CoverRoot.StartAnimation(nameof(Visual.Offset), slide);
-    }
-
-    internal void ResetCoverAnimation()
-    {
-        if (_projection is not { } projection) return;
-        projection.CoverRoot.StopAnimation(nameof(Visual.Opacity));
-        projection.CoverRoot.StopAnimation(nameof(Visual.Offset));
-        projection.CoverRoot.Opacity = 1;
-        projection.CoverRoot.Offset = Vector3.Zero;
     }
 
     private void EnsureProjection(Compositor compositor)

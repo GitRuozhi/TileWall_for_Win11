@@ -11,6 +11,8 @@ internal readonly record struct PhysicalRect(int Left, int Top, int Right, int B
     public bool Contains(int x, int y) => IsValid && x >= Left && x < Right && y >= Top && y < Bottom;
     public bool Contains(PhysicalRect other) => IsValid && other.IsValid && other.Left >= Left && other.Top >= Top
         && other.Right <= Right && other.Bottom <= Bottom;
+    internal PhysicalRect Intersect(PhysicalRect other) => new(Math.Max(Left, other.Left), Math.Max(Top, other.Top),
+        Math.Min(Right, other.Right), Math.Min(Bottom, other.Bottom));
 }
 
 internal sealed record StartButtonTarget(StartButtonIdentity Identity, string AutomationId, string ClassName,
@@ -124,7 +126,8 @@ internal sealed class StartButtonLocator : IAsyncDisposable
 
         foreach (var candidate in snapshot.Targets)
         {
-            if (!candidate.ButtonBounds.Contains(physicalX, physicalY)) continue;
+            if (!candidate.ButtonBounds.Contains(physicalX, physicalY) ||
+                !candidate.TaskbarBounds.Contains(physicalX, physicalY)) continue;
             using var dpi = new Native.PhysicalDpiScope();
             if (!dpi.IsSet) return false;
             if (target is not null || !Native.ValidateHit(candidate, physicalX, physicalY))
@@ -246,13 +249,18 @@ internal sealed class StartButtonLocator : IAsyncDisposable
                             context: $"Taskbar 0x{taskbar.Window:X}; UIA buttons={automation.LastReadElementCount}; bounds={current.Bounds}.");
                         if (buttons.Count != 1) throw new StartButtonLocatorException(StartButtonLocatorFailure.AmbiguousButton);
                         var button = buttons[0];
-                        // Recognize a hidden auto-hide button, but never turn its remaining screen-edge pixels into a target.
-                        var canCapture = button.IsEnabled && !button.IsOffscreen && taskbar.Bounds.Contains(button.Bounds)
-                            && Native.IsFullyOnMonitor(taskbar.Window, taskbar.Bounds) && Native.IsWindowVisible(taskbar.Window);
                         // Only a UIA-confirmed whole, unique native Start child can bypass later COM scans.
-                        // Windowless controls and HWNDs whose UIA element covers only a subregion stay on UIA.
-                        var nativeWholeButton = nativeRefresh || Native.TryRefreshStartChild(taskbar, button, out var nativeButton)
-                            && nativeButton.Bounds == button.Bounds;
+                        // UIA may report the child clipped to the parent taskbar. Preserve its full HWND bounds for hit revalidation.
+                        var nativeWholeButton = nativeRefresh;
+                        if (!nativeRefresh && Native.TryRefreshStartChild(taskbar, button, out var nativeButton) &&
+                            (nativeButton.Bounds == button.Bounds || nativeButton.Bounds.Intersect(taskbar.Bounds) == button.Bounds))
+                        {
+                            nativeWholeButton = true;
+                            button = button with { Bounds = nativeButton.Bounds };
+                        }
+                        // The button can extend past the tray. Capture only their overlap on a fully revealed taskbar.
+                        var canCapture = button.IsEnabled && !button.IsOffscreen && taskbar.Bounds.Intersect(button.Bounds).IsValid
+                            && Native.IsFullyOnMonitor(taskbar.Window, taskbar.Bounds) && Native.IsWindowVisible(taskbar.Window);
                         candidates.Add(new(taskbar.Window, taskbar.ProcessId, button, taskbar.Bounds, canCapture, nativeWholeButton));
                     }
 

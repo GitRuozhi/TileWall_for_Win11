@@ -37,6 +37,7 @@
     <x:String x:Key="Settings.System">系統</x:String>
     <x:String x:Key="Settings.Invocation">喚出</x:String>
     <x:String x:Key="Settings.ExperimentalFeature">這是一個試驗性功能</x:String>
+    <x:String x:Key="Settings.MultiDisplaySummon">多螢幕同時喚出</x:String>
     <x:String x:Key="Settings.KeyBehavior">按鍵對應行為</x:String>
     <x:String x:Key="Settings.KeyBehaviorKey">按鍵</x:String>
     <x:String x:Key="Settings.KeyBehaviorAction">行為</x:String>
@@ -915,4 +916,10 @@
   <x:String x:Key="Batch.SelectionCount">共{0}，已選取{1}</x:String>
   <x:String x:Key="Batch.SelectNone">全部取消選取</x:String>
   <x:String x:Key="Batch.Mixed">混合</x:String>
+    <x:String x:Key="Wall.MultiDisplayCaptureFailed">多螢幕靜態背景無法使用。{0}</x:String>
+    <x:String x:Key="Wall.CaptureGeometry">無法取得有效的螢幕範圍。</x:String>
+    <x:String x:Key="Wall.CaptureAllocation">無法配置擷取緩衝區。</x:String>
+    <x:String x:Key="Wall.CaptureRead">無法讀取桌面畫面。</x:String>
+    <x:String x:Key="Wall.CaptureCrop">無法裁切各螢幕背景。</x:String>
+    <x:String x:Key="Wall.CapturePresentation">無法準備模擬毛玻璃背景。</x:String>
 </ResourceDictionary>

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using TileWall.Core.Shell;
@@ -7,10 +8,16 @@ using TileWall.Core.Shell;
 namespace TileWall.Shell.Interop;
 
 /// <summary>Coordinates both physical menu providers and recovers interrupted menu changes.</summary>
-internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preference, bool packaged, string executable)
+[SupportedOSPlatform("windows")]
+internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preference, bool packaged, string executable,
+    Func<ExplorerContextMenuRegistry> openRegistry, Func<bool> isPackageInstalled, Func<string, bool> recognizeTileWall,
+    Action notifyShell)
 {
     private const string PackageFamily = "Ruozhi.TileWall_k0yb5fxbm3zce";
     private const int InsufficientBuffer = 122;
+    private const int EnableVersion = 1;
+    private const int DisableVersion = 2;
+    private const int InstallVersion = 3;
     private static readonly IReadOnlyList<string> Paths = ExplorerContextMenuRegistration.HandoffPaths;
     private static readonly JsonSerializerOptions JournalOptions = new()
     {
@@ -18,11 +25,14 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
         AllowDuplicateProperties = false
     };
 
+    private enum EnableSource { Automatic, Settings, Installer }
+
     private sealed record Journal(int Version, string Target, bool PackageInstalled, bool? PackageBefore,
         ExplorerMenuVerb?[]? ClassicBefore, string? Label, string? Failure = null,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int Started = 0)
     {
-        internal bool DisablesAll => Version == 2;
+        internal bool DisablesAll => Version == DisableVersion;
+        internal bool IsInstall => Version == InstallVersion;
         internal bool StartedAt(int index) => (Started & (1 << index)) != 0;
     }
 
@@ -35,6 +45,10 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
 
     private string Target => packaged ? PackageFamily : executable;
 
+    internal ExplorerContextMenuHandoff(ExplorerMenuPreference preference, bool packaged, string executable) :
+        this(preference, packaged, executable, OpenPhysicalRegistry, IsPackageInstalled,
+            ExplorerContextMenuRegistration.IsRecognizedTileWall, ExplorerContextMenuRegistration.NotifyShell) { }
+
     internal string? ReadFailure()
     {
         var journal = ReadJournal();
@@ -44,7 +58,7 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
 
     internal ExplorerContextMenuState ReadState()
     {
-        using var registry = OpenPhysicalRegistry();
+        using var registry = openRegistry();
         var observed = Observe(registry);
         var complete = observed.PackageEnabled && observed.Classic.All(entry => entry is null);
         if (!packaged)
@@ -59,8 +73,20 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
         return new(observed.Enabled, complete, UnverifiedEntries: observed.Unverified);
     }
 
-    internal ContextMenuRegistrationResult Enable(string label, bool automatic)
+    internal ContextMenuRegistrationResult Enable(string label, bool automatic) =>
+        Enable(label, automatic ? EnableSource.Automatic : EnableSource.Settings);
+
+    internal static ContextMenuRegistrationResult EnableFromInstaller(ExplorerMenuPreference preference, string label) =>
+        ExplorerContextMenuRegistration.WithWriteLock(() =>
+            new ExplorerContextMenuHandoff(preference, false, ExplorerContextMenuRegistration.CurrentExecutable())
+                .EnableForInstallation(label));
+
+    internal ContextMenuRegistrationResult EnableForInstallation(string label) => Enable(label, EnableSource.Installer);
+
+    private ContextMenuRegistrationResult Enable(string label, EnableSource source)
     {
+        var automatic = source == EnableSource.Automatic;
+        var installer = source == EnableSource.Installer;
         ExplorerContextMenuRegistry? registry = null;
         Journal? before = null;
         try
@@ -68,16 +94,18 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
             var journal = ReadJournal();
             if (journal?.ClassicBefore is not null && (journal.Failure is null || !automatic))
             {
-                registry = OpenPhysicalRegistry();
+                registry = openRegistry();
                 var recovered = Recover(registry, journal);
-                if (!recovered.Success || automatic && SameTarget(journal.Target, Target)) return recovered;
+                if (recovered.RollbackIncomplete || (!installer && !recovered.Success) ||
+                    (automatic && SameTarget(journal.Target, Target))) return recovered;
                 journal = ReadJournal();
+                if (journal?.ClassicBefore is not null) return recovered;
             }
             if (automatic && journal?.Failure is not null &&
                 (journal.ClassicBefore is not null || SameTarget(journal.Target, Target)))
                 return new(true);
 
-            registry ??= OpenPhysicalRegistry();
+            registry ??= openRegistry();
             var observed = Observe(registry);
             var classic = observed.Classic;
             var packageInstalled = observed.PackageInstalled;
@@ -91,7 +119,7 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
             {
                 preference.WriteOverride(true);
                 ClearOwnFailure(journal);
-                ExplorerContextMenuRegistration.NotifyShell();
+                notifyShell();
                 return new(true);
             }
 
@@ -102,22 +130,35 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
                 return new(true);
             }
 
-            before = new(1, Target, packageInstalled, observed.PackageOverride, classic, label);
-            SaveJournal(before);
+            var prepared = new Journal(installer ? InstallVersion : EnableVersion, Target, packageInstalled,
+                observed.PackageOverride, classic, label);
+            if (!installer) before = prepared;
+            SaveJournal(prepared);
+            before = prepared;
             if (packageInstalled && (packaged || otherEnabled))
-                preference.WriteOverride(false);
-            SetClassic(registry, classic, desired);
+            {
+                if (!installer) preference.WriteOverride(false);
+                else if (before.PackageBefore != false)
+                {
+                    if (preference.ReadOverride() != before.PackageBefore)
+                        throw new IOException("The Store menu setting changed before it could be closed.");
+                    before = RecordStarted(before, Paths.Count);
+                    preference.WriteOverride(false);
+                }
+            }
+            SetClassic(registry, classic, desired, installer ? index => before = RecordStarted(before!, index) : null);
             if (packaged) preference.WriteOverride(true);
             if (!MatchesDestination(registry, before))
                 throw new IOException("Unable to verify the Explorer menu handoff.");
             SaveJournal(null);
-            ExplorerContextMenuRegistration.NotifyShell();
+            notifyShell();
             return new(true);
         }
         catch (Exception ex) when (IsOperationError(ex))
         {
             if (before is not null && registry is not null)
                 return RollBack(registry, before, ex.Message);
+            if (installer) return new(false, Error: ex.Message);
             return FailWithoutSnapshot(registry, ex.Message);
         }
         finally { registry?.Dispose(); }
@@ -127,7 +168,7 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
     {
         try
         {
-            using var registry = OpenPhysicalRegistry();
+            using var registry = openRegistry();
             var journal = ReadJournal();
             if (journal?.ClassicBefore is not null)
             {
@@ -146,7 +187,8 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
 
             // Version 1 is still the existing enable/transfer format. This operation
             // records only the keys whose complete snapshot we intend to remove.
-            var before = new Journal(2, Target, observed.PackageInstalled, observed.PackageOverride, observed.Owned, null);
+            var before = new Journal(DisableVersion, Target, observed.PackageInstalled,
+                observed.PackageOverride, observed.Owned, null);
             SaveJournal(before);
             try
             {
@@ -174,45 +216,12 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
                 if (!MatchesDisabled(registry, before))
                     throw new IOException("Unable to verify that every recognized Explorer menu was closed.");
                 SaveJournal(null);
-                ExplorerContextMenuRegistration.NotifyShell();
+                notifyShell();
                 return new(true);
             }
             catch (Exception ex) when (IsOperationError(ex)) { return RollBackDisable(registry, before, ex.Message); }
         }
         catch (Exception ex) when (IsOperationError(ex)) { return new(false, Error: ex.Message); }
-    }
-
-    // Installer actions never take over an active menu owned by another distribution.
-    internal static ContextMenuRegistrationResult EnableFromInstaller(ExplorerMenuPreference preference, string label)
-    {
-        return ExplorerContextMenuRegistration.WithCurrentUserWriteLock(root =>
-        {
-            try
-            {
-                var executable = ExplorerContextMenuRegistration.CurrentExecutable();
-                var handoff = new ExplorerContextMenuHandoff(preference, false, executable);
-                if (handoff.ReadJournal() is { ClassicBefore: not null } pending)
-                    return pending.Failure is null ? new(true, Deferred: true) :
-                        new(false, Error: "A menu transfer awaits recovery in TileWall.");
-                using var registry = new ExplorerContextMenuRegistry.CurrentUser();
-                var classic = ReadAll(registry);
-                var otherClassic = false;
-                for (var index = 0; index < Paths.Count; index++)
-                {
-                    if (classic[index] is not { } entry) continue;
-                    if (!handoff.TryRecognize(entry, Paths[index], out var target))
-                        return new(false, Error: $"Unrecognized Explorer menu registration: {Paths[index]}");
-                    otherClassic |= !SameTarget(target, executable);
-                }
-                if (otherClassic || IsPackageInstalled() && preference.ReadOverride() != false)
-                    return new(true, Deferred: true);
-                var result = ExplorerContextMenuRegistration.RegisterCurrentUser(label, root, executable,
-                    ExplorerContextMenuRegistration.NotifyShell, _ => false);
-                if (result.Success) handoff.ClearOwnFailure(handoff.ReadJournal());
-                return result;
-            }
-            catch (Exception ex) when (IsOperationError(ex)) { return new(false, Error: ex.Message); }
-        });
     }
 
     private ContextMenuRegistrationResult Recover(ExplorerContextMenuRegistry registry, Journal journal)
@@ -223,7 +232,7 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
                 ? MatchesDisabled(registry, journal) : MatchesDestination(registry, journal)))
             {
                 SaveJournal(null);
-                ExplorerContextMenuRegistration.NotifyShell();
+                notifyShell();
                 return new(true);
             }
         }
@@ -241,6 +250,8 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
 
     private ContextMenuRegistrationResult RollBack(ExplorerContextMenuRegistry registry, Journal journal, string failure)
     {
+        if (journal.IsInstall) return RollBackInstallation(registry, journal, failure);
+
         try
         {
             var destination = DesiredClassic(journal.Target, journal.Label!);
@@ -256,7 +267,7 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
             if (journal.Target != PackageFamily && journal.PackageInstalled)
                 preference.WriteOverride(journal.PackageBefore);
             RecordFailure(journal.Target, failure);
-            ExplorerContextMenuRegistration.NotifyShell();
+            notifyShell();
             return new(false, Error: failure);
         }
         catch (Exception ex) when (IsOperationError(ex))
@@ -274,15 +285,9 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
                 if (journal.StartedAt(index))
                     RestoreClassic(registry, Paths[index], journal.ClassicBefore![index]!);
 
-            if (journal.StartedAt(Paths.Count))
-            {
-                var actual = preference.ReadOverride();
-                if (actual != false && actual != journal.PackageBefore)
-                    throw new IOException("The Store menu setting changed before it could be restored.");
-                preference.WriteOverride(journal.PackageBefore);
-            }
+            if (journal.StartedAt(Paths.Count)) RestoreStoreMenu(journal);
             SaveJournal(null);
-            if (journal.Started != 0) ExplorerContextMenuRegistration.NotifyShell();
+            if (journal.Started != 0) notifyShell();
             return new(false, Error: failure);
         }
         catch (Exception ex) when (IsOperationError(ex))
@@ -291,18 +296,54 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
         }
     }
 
-    private void RestoreClassic(ExplorerContextMenuRegistry registry, string path, ExplorerMenuVerb original)
+    private ContextMenuRegistrationResult RollBackInstallation(ExplorerContextMenuRegistry registry, Journal journal,
+        string failure)
+    {
+        // Restore only providers this install began changing. A conflict at one key
+        // must not prevent restoration of other verifiable snapshots.
+        var desired = DesiredClassic(journal.Target, journal.Label!);
+        var errors = new List<string>();
+        for (var index = Paths.Count - 1; index >= 0; index--)
+        {
+            if (!journal.StartedAt(index)) continue;
+            try { RestoreClassic(registry, Paths[index], journal.ClassicBefore![index], desired[index]); }
+            catch (Exception ex) when (IsOperationError(ex)) { errors.Add(ex.Message); }
+        }
+        try
+        {
+            if (journal.StartedAt(Paths.Count)) RestoreStoreMenu(journal);
+            if (errors.Count == 0) SaveJournal(null);
+        }
+        catch (Exception ex) when (IsOperationError(ex)) { errors.Add(ex.Message); }
+        if (errors.Count != 0) return RecordIncompleteRollback(journal, failure, string.Join(" ", errors));
+        if (journal.Started != 0) notifyShell();
+        return new(false, Error: failure);
+    }
+
+    private void RestoreStoreMenu(Journal journal)
+    {
+        var actual = preference.ReadOverride();
+        if (actual != false && actual != journal.PackageBefore)
+            throw new IOException("The Store menu setting changed before it could be restored.");
+        preference.WriteOverride(journal.PackageBefore);
+    }
+
+    private void RestoreClassic(ExplorerContextMenuRegistry registry, string path, ExplorerMenuVerb? original,
+        ExplorerMenuVerb? attempted = null)
     {
         var actual = registry.Read(path);
         if (actual == original) return;
-        if (!TryRecognize(original, path, out _))
+        if (original is not null && !TryRecognize(original, path, out _))
             throw new IOException($"Previous Explorer menu ownership can no longer be verified: {path}");
         if (actual is not null)
         {
-            if (!actual.IsPartOf(original)) throw new IOException($"Explorer menu ownership changed: {path}");
+            if (!(original is not null && actual.IsPartOf(original)) &&
+                !(attempted is not null && actual.IsPartOf(attempted)))
+                throw new IOException($"Explorer menu ownership changed: {path}");
             registry.Delete(path);
+            if (registry.Read(path) is not null) throw new IOException($"Unable to close the Explorer menu: {path}");
         }
-        registry.Write(path, original);
+        if (original is not null) registry.Write(path, original);
         if (registry.Read(path) != original) throw new IOException($"Unable to restore the Explorer menu: {path}");
     }
 
@@ -311,12 +352,13 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
         var error = failure + " " + detail;
         try { SaveJournal(journal with { Failure = error }); }
         catch (Exception recordError) when (IsOperationError(recordError)) { error += " " + recordError.Message; }
-        ExplorerContextMenuRegistration.NotifyShell();
+        notifyShell();
         return new(false, RollbackIncomplete: true, Error: error);
     }
 
     private Journal RecordStarted(Journal journal, int index)
     {
+        if (journal.StartedAt(index)) return journal;
         var started = journal with { Started = journal.Started | (1 << index) };
         SaveJournal(started);
         return started;
@@ -330,17 +372,17 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
             else if (registry is not null) DisableTarget(registry, Target, null);
             else
             {
-                using var currentUser = new ExplorerContextMenuRegistry.CurrentUser();
+                using var currentUser = openRegistry();
                 DisableTarget(currentUser, Target, null);
             }
             var journal = ReadJournal();
             if (journal?.ClassicBefore is null) RecordFailure(Target, failure);
-            ExplorerContextMenuRegistration.NotifyShell();
+            notifyShell();
             return new(false, Error: failure);
         }
         catch (Exception ex) when (IsOperationError(ex))
         {
-            ExplorerContextMenuRegistration.NotifyShell();
+            notifyShell();
             return new(false, RollbackIncomplete: true, Error: failure + " " + ex.Message);
         }
     }
@@ -388,7 +430,8 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
             throw new IOException($"Unable to verify that the target menu is closed: {string.Join(", ", unverified.Distinct())}");
     }
 
-    private static void SetClassic(ExplorerContextMenuRegistry registry, ExplorerMenuVerb?[] previous, ExplorerMenuVerb?[] desired)
+    private static void SetClassic(ExplorerContextMenuRegistry registry, ExplorerMenuVerb?[] previous,
+        ExplorerMenuVerb?[] desired, Action<int>? startChange)
     {
         for (var index = 0; index < Paths.Count; index++)
         {
@@ -396,7 +439,11 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
             var path = Paths[index];
             if (registry.Read(path) != previous[index])
                 throw new IOException($"Explorer menu ownership changed: {path}");
-            if (previous[index] is not null) registry.Delete(path);
+            if (previous[index] is not null)
+            {
+                startChange?.Invoke(index);
+                registry.Delete(path);
+            }
             if (registry.Read(path) is not null)
                 throw new IOException($"Unable to remove the previous Explorer menu: {path}");
         }
@@ -405,6 +452,7 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
             if (previous[index] == desired[index] || desired[index] is not { } entry) continue;
             var path = Paths[index];
             if (registry.Read(path) is not null) throw new IOException($"Explorer menu ownership changed: {path}");
+            startChange?.Invoke(index);
             registry.Write(path, entry);
             if (registry.Read(path) != entry)
                 throw new IOException($"Unable to verify the current Explorer menu: {path}");
@@ -413,7 +461,8 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
 
     private bool MatchesDestination(ExplorerContextMenuRegistry registry, Journal journal) =>
         ReadAll(registry).SequenceEqual(DesiredClassic(journal.Target, journal.Label!)) &&
-        (!journal.PackageInstalled || preference.ReadOverride() == (journal.Target == PackageFamily));
+        (!(journal.PackageInstalled || journal.IsInstall && isPackageInstalled()) ||
+            preference.ReadOverride() == (journal.Target == PackageFamily));
 
     private bool MatchesDisabled(ExplorerContextMenuRegistry registry, Journal journal)
     {
@@ -444,7 +493,7 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
                 unverified.Add(detail);
             }
         }
-        var packageInstalled = packaged || IsPackageInstalled();
+        var packageInstalled = packaged || isPackageInstalled();
         return new(classic, owned, packageInstalled, packageInstalled ? preference.ReadOverride() : null,
             unverified.ToArray());
     }
@@ -462,7 +511,7 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
     private bool TryRecognize(ExplorerMenuVerb entry, string path, out string target)
     {
         if (!entry.Unknown && ExplorerContextMenuRegistration.TryParseCommand(entry.Command, out target) &&
-            (SameTarget(target, executable) || ExplorerContextMenuRegistration.IsRecognizedTileWall(target)) &&
+            (SameTarget(target, executable) || recognizeTileWall(target)) &&
             (entry.Icon is null || entry.Icon.Equals("\"" + target + "\"", StringComparison.OrdinalIgnoreCase)) &&
             (entry.Selection is null or "Single") &&
             (entry.AppliesTo is null || path == ExplorerContextMenuRegistration.UrlVerbPath &&
@@ -486,13 +535,14 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
     }
 
     private void RecordFailure(string target, string detail) =>
-        SaveJournal(new(1, target, false, null, null, null, detail));
+        SaveJournal(new(EnableVersion, target, false, null, null, null, detail));
 
     private Journal? ReadJournal()
     {
         if (preference.ReadHandoff() is not { } bytes) return null;
         var journal = JsonSerializer.Deserialize<Journal>(bytes, JournalOptions);
-        if (journal is null || journal.Version is not (1 or 2) || string.IsNullOrWhiteSpace(journal.Target) ||
+        if (journal is null || journal.Version is not (EnableVersion or DisableVersion or InstallVersion) ||
+            string.IsNullOrWhiteSpace(journal.Target) ||
             (journal.Target != PackageFamily && !Path.IsPathFullyQualified(journal.Target)) ||
             !HasValidSnapshot(journal))
             throw new IOException("Invalid Explorer menu handoff state.");
@@ -507,19 +557,28 @@ internal sealed class ExplorerContextMenuHandoff(ExplorerMenuPreference preferen
         var keys = journal.ClassicBefore;
         if (keys is not null && (keys.Length != Paths.Count || keys.Any(entry => entry?.Unknown == true)))
             return false;
-        if (!journal.DisablesAll)
+        if (journal.Version == EnableVersion)
             return journal.Started == 0 && (keys is null ? !string.IsNullOrWhiteSpace(journal.Failure) :
                 !string.IsNullOrWhiteSpace(journal.Label));
-        if (keys is null || journal.Label is not null || !journal.PackageInstalled && journal.PackageBefore is not null)
+        if (keys is null || !journal.PackageInstalled && journal.PackageBefore is not null)
             return false;
         var allowed = journal.PackageInstalled && journal.PackageBefore != false ? 1 << Paths.Count : 0;
+        if (journal.IsInstall)
+        {
+            if (journal.Target == PackageFamily || string.IsNullOrWhiteSpace(journal.Label)) return false;
+            var desired = DesiredClassic(journal.Target, journal.Label);
+            for (var index = 0; index < keys.Length; index++)
+                if (keys[index] != desired[index]) allowed |= 1 << index;
+            return (journal.Started & ~allowed) == 0;
+        }
+        if (journal.Label is not null) return false;
         for (var index = 0; index < keys.Length; index++)
             if (keys[index] is not null) allowed |= 1 << index;
         return (journal.Started & ~allowed) == 0;
     }
 
     private bool IsValidPendingTarget(string target) => SameTarget(target, executable) ||
-        ExplorerContextMenuRegistration.IsRecognizedTileWall(target);
+        recognizeTileWall(target);
 
     private void SaveJournal(Journal? value) =>
         preference.WriteHandoff(value is null ? null : JsonSerializer.SerializeToUtf8Bytes(value, JournalOptions));

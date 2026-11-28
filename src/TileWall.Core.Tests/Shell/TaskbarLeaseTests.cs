@@ -49,14 +49,44 @@ public sealed class TaskbarLeaseTests
         }
     }
 
-    private sealed class TimerBackend(Tray tray) : ITaskbarLeaseBackend
+    private sealed class TimerBackend(Tray tray, bool twoWindows = false) : ITaskbarLeaseBackend
     {
-        private readonly TaskbarActivationBackend _native = new(sendMessage: tray.Send, menuActive: _ => tray.MenuOpen) { LauncherWindow = 3 };
-        public TaskbarLeaseState Capture(TaskbarLeaseMode mode) => new(2, Guid.NewGuid().ToString("N"), 1, 1, mode,
-            [new(1, 2, 1, true, true, new(0, 0, 1280, 800), new(0, 798, 1280, 48), new(0, 752, 1280, 48), HoldAutoHide: true)]);
+        private readonly TaskbarActivationBackend _native = new(sendMessage: tray.Send, menuActive: _ => tray.MenuOpen);
+        public TaskbarLeaseState Capture(TaskbarLeaseMode mode)
+        {
+            var primary = new TaskbarWindowState(1, 2, 1, true, true, new(0, 0, 1280, 800),
+                new(0, 798, 1280, 48), new(0, 752, 1280, 48), HoldAutoHide: true);
+            var secondary = new TaskbarWindowState(4, 2, 1, true, true, new(1280, 0, 1280, 800),
+                new(1280, 798, 1280, 48), new(1280, 752, 1280, 48), HoldAutoHide: true);
+            return new(2, Guid.NewGuid().ToString("N"), 1, 1, mode, twoWindows ? [primary, secondary] : [primary]);
+        }
         public bool IsCurrent(TaskbarLeaseState state) => true;
-        public void Apply(TaskbarLeaseState state, Action armRecovery) => _native.HoldTimer(1, reveal: true, armRecovery);
+        public void Apply(TaskbarLeaseState state, Action<long> armRecovery) => _native.HoldTimer(1, 3, reveal: true, () => armRecovery(1));
         public void Restore(TaskbarLeaseState state) => _native.ReleaseTimer(1, interacting: false, foreground: 3);
+    }
+
+    [Fact]
+    public void PartialAcquisitionOnlyArmsTheTaskbarThatCouldHaveReceivedMessages()
+    {
+        var store = new Store();
+        var tray = new Tray();
+        var backend = new TimerBackend(tray, twoWindows: true);
+        using var lease = new TaskbarLease(store, backend, _ => new Guard(() => { }));
+        tray.Sending = (_, _) =>
+        {
+            tray.MenuOpen = true;
+            throw new Win32Exception(1460);
+        };
+
+        Assert.False(lease.Synchronize(TaskbarLeaseMode.Reveal));
+        var pending = Assert.IsType<TaskbarLeaseState>(store.State);
+        Assert.True(pending.IsValid());
+        Assert.Equal(2, pending.Windows.Length);
+        Assert.Equal(new long[] { 1 }, pending.ArmedWindows);
+        Assert.False((pending with { ArmedWindows = [123] }).IsValid());
+        tray.MenuOpen = false;
+        tray.Sending = null;
+        Assert.True(lease.Synchronize(null));
     }
 
     [Theory]

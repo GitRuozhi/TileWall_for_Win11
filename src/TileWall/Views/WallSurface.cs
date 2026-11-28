@@ -24,6 +24,7 @@ public sealed class WallSurface : Canvas
 {
     private const byte GridCellOpacity = 13;
     private readonly WallMetrics _metrics = new();
+    internal WallMetrics Metrics => _metrics;
     private readonly Dictionary<string, Button> _buttons = new(StringComparer.Ordinal);
     private readonly Dictionary<string, WallMemberVisualFactory.ButtonInteraction> _memberInteractions = new(StringComparer.Ordinal);
     private WallMemberVisualFactory.ButtonInteraction? _dropHover;
@@ -69,6 +70,7 @@ public sealed class WallSurface : Canvas
     public Func<string, bool>? CanAdvanceMemberImage { get; set; }
     internal Func<WallSettings>? ReadCommittedMenuSettings { get; set; }
     public bool ImagesActive { get; set; }
+    internal bool IsSecondaryView { get; init; }
     public bool HasClocks => _clocks.Count > 0;
 
     public WallGeometry? Geometry { get; private set; }
@@ -172,14 +174,14 @@ public sealed class WallSurface : Canvas
         RefreshGridBackground();
     }
 
-    public void Render(WallDocument document, WallGeometry? measuredGeometry = null)
+    public void Render(WallDocument document, WallGeometry? measuredGeometry = null, double? rasterizationScale = null)
     {
-        var scale = XamlRoot?.RasterizationScale ?? 1;
+        var scale = rasterizationScale ?? XamlRoot?.RasterizationScale ?? 1;
         var resetAppearance = _document is not null && (_document.Settings.VisualStyle != document.Settings.VisualStyle ||
             _document.Settings.LanguageMode != document.Settings.LanguageMode ||
             _renderLanguage != ProductStrings.Language || _renderScale != scale);
-        try { _animatePlacement = _document is not null && !resetAppearance && _motionSettings.AnimationsEnabled; }
-        catch { _animatePlacement = _document is not null && !resetAppearance; }
+        try { _animatePlacement = !IsSecondaryView && _document is not null && !resetAppearance && _motionSettings.AnimationsEnabled; }
+        catch { _animatePlacement = !IsSecondaryView && _document is not null && !resetAppearance; }
         if (resetAppearance) ResetProjection();
         _renderScale = scale;
         _renderLanguage = ProductStrings.Language;
@@ -371,6 +373,7 @@ public sealed class WallSurface : Canvas
 
     private void OnWallDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
+        if (IsSecondaryView) return;
         for (var node = e.OriginalSource as DependencyObject; node is not null && !ReferenceEquals(node, this);
             node = VisualTreeHelper.GetParent(node))
             if (node is TextBox) return;
@@ -407,7 +410,7 @@ public sealed class WallSurface : Canvas
 
     private bool ContainsPartition(GridRect partition, DipRect memberBounds, Point position)
     {
-        var scale = XamlRoot?.RasterizationScale ?? 1;
+        var scale = _renderScale;
         var pixels = PuzzleSceneGeometry.ToPixelRect(new DipRect(partition.Column * _metrics.Pitch,
             partition.Row * _metrics.Pitch, partition.Width * _metrics.Pitch - _metrics.Gap,
             partition.Height * _metrics.Pitch - _metrics.Gap), scale);
@@ -491,7 +494,7 @@ public sealed class WallSurface : Canvas
 
     public void BeginGroupTitleEdit(string groupId)
     {
-        if (!_titleEditors.TryGetValue(groupId, out var editor)) return;
+        if (IsSecondaryView || !_titleEditors.TryGetValue(groupId, out var editor)) return;
         editor.Visibility = Visibility.Visible;
         editor.Focus(FocusState.Programmatic);
         editor.SelectAll();
@@ -563,7 +566,7 @@ public sealed class WallSurface : Canvas
     {
         var frame = ResolvePuzzleFrame?.Invoke(member.Id);
         _puzzleFrames[member.Id] = frame;
-        var view = WallMemberVisualFactory.Create(member, frame, _metrics, XamlRoot?.RasterizationScale ?? 1,
+        var view = WallMemberVisualFactory.Create(member, frame, _metrics, _renderScale,
             _document!.Settings.VisualStyle, (button, _) =>
             {
                 button.Click += (_, _) => MemberInvoked?.Invoke(member.Id);
@@ -685,6 +688,7 @@ public sealed class WallSurface : Canvas
 
     private void OnBackgroundRightTapped(object sender, RightTappedRoutedEventArgs e)
     {
+        if (IsSecondaryView) return;
         for (var node = e.OriginalSource as DependencyObject; node is not null;
             node = VisualTreeHelper.GetParent(node))
         {
@@ -716,6 +720,16 @@ public sealed class WallSurface : Canvas
     private FrameworkElement CreateTitle(StartGroup group, DipRect bounds)
     {
         var controlBounds = WallGroupVisualFactory.TitleControlBounds(bounds, _metrics.TitleInteractionHeight);
+        if (IsSecondaryView)
+        {
+            var label = WallGroupVisualFactory.Label(group.Title, bounds.Width);
+            label.Height = controlBounds.Height;
+            label.VerticalAlignment = VerticalAlignment.Bottom;
+            label.HorizontalAlignment = HorizontalAlignment.Left;
+            label.Padding = new Thickness(5, 0, 0, 0);
+            AutomationProperties.SetAutomationId(label, $"group-title-{group.Id}");
+            return label;
+        }
         var grid = new Grid { CornerRadius = WallCorners };
         var titleContent = WallGroupVisualFactory.TitleContent(group.Title, bounds.Width);
         AutomationProperties.SetAutomationId(grid, $"group-title-{group.Id}");
@@ -885,7 +899,7 @@ public sealed class WallSurface : Canvas
     {
         // Tile/puzzle content uses CreatePuzzle; clocks share the same body with previews.
         var content = new ClockMemberView((ClockMember)member, _metrics,
-            XamlRoot?.RasterizationScale ?? 1, _document!.Settings.VisualStyle);
+            _renderScale, _document!.Settings.VisualStyle);
         _clocks[member.Id] = content;
         var cue = new Border { CornerRadius = WallCorners, BorderThickness = new Thickness(2),
             BorderBrush = new SolidColorBrush(Colors.Transparent), IsHitTestVisible = false };
@@ -955,12 +969,13 @@ public sealed class WallSurface : Canvas
         var menu = CreateContextMenu();
         bool? entryExists = null;
         WallContextMenu.AddItems(menu.Items, WallContextMenu.MemberActions,
-            settings?.HiddenMemberMenuActions ?? MenuAction.None, settings?.ShowUnavailableControls != false,
+            settings?.HiddenMemberMenuActions ?? MenuAction.None, !IsSecondaryView && settings?.ShowUnavailableControls != false,
             ResolveCommand);
         return menu;
 
         WallMenuCommand? ResolveCommand(WallMenuItemDefinition item)
         {
+            if (IsSecondaryView && (member is not TileMember || item.Id != MenuAction.Admin)) return null;
             if (item.Size is { } size)
                 return member is TileMember ? new(() => MemberSizeRequested?.Invoke(id, size)) : null;
             return item.Id switch

@@ -48,6 +48,13 @@ public static class Program
             return ApplicationModel.CurrentUserUninstallCommand.Run(args);
 #endif
         }
+        if (args is ["--open-after-install"])
+        {
+            // An already elevated installer may have no ordinary original-user token.
+            if (ApplicationModel.ContextMenuUserCommand.IsElevated())
+                return ApplicationModel.ContextMenuUserCommand.ElevatedContext;
+            args = Array.Empty<string>();
+        }
         try { return RunApplication(args); }
         catch (Exception ex)
         {

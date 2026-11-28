@@ -279,6 +279,7 @@ public sealed partial class MainWindow
     private async Task ShutdownPersistenceCoreAsync()
     {
         _shutdownStarted = true;
+        CloseSecondaryWalls();
         YieldDeferredReclamation();
         SuspendEnvironmentAdaptation();
         CancelWelcomeInitialization();

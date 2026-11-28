@@ -1,78 +1,180 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Microsoft.Win32.SafeHandles;
 using TileWall.Core.Shell;
 using TileWall.Shell.Interop;
 using Windows.Graphics;
 
 namespace TileWall.Graphics;
 
-/// <summary>One physical-resolution desktop capture; pixels never leave process memory.</summary>
+/// <summary>Physical desktop captures whose pixels stay in process memory.</summary>
 internal static class DesktopBackdropSnapshot
 {
     internal sealed record CapturedFrame(DecodedImageFrame Pixels, int Left, int Top, int Width, int Height,
         int ContentWidth, int ContentHeight, double SigmaX, double SigmaY);
+    internal readonly record struct CaptureRequest(RectInt32 Region, double Scale);
+    internal enum CaptureFailure { Geometry, Allocation, Read, Crop, Presentation }
+    private readonly record struct CapturePlan(RectInt32 Bounds, RectInt32 Content, double Sigma);
 
     internal static CapturedFrame? Capture(RectInt32 region, double rasterizationScale)
     {
+        var request = new CaptureRequest(region, rasterizationScale);
+        if (VirtualBounds() is not { } desktop ||
+            Plan(request, desktop) is not { } plan ||
+            ReadDesktop(plan.Bounds, out var capture) is not null || capture is null) return null;
+        using (capture)
+            return capture.Crop(request, out var frame) is null ? frame : null;
+    }
+
+    internal static CaptureFailure? CaptureDesktop(out DesktopCapture? capture)
+    {
+        capture = null;
+        if (VirtualBounds() is not { } desktop) return CaptureFailure.Geometry;
+        var failure = ReadDesktop(desktop, out capture);
+        if (failure is null && BackdropTrace.Enabled)
+            BackdropTrace.Write($"VirtualDesktop captured width={desktop.Width} height={desktop.Height}");
+        return failure;
+    }
+
+    internal sealed class DesktopCapture : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private readonly RectInt32 _bounds;
+        private readonly IntPtr _pixels;
+
+        internal DesktopCapture(RectInt32 bounds, IntPtr bitmap, IntPtr pixels) : base(ownsHandle: true)
+        {
+            _bounds = bounds;
+            _pixels = pixels;
+            SetHandle(bitmap);
+        }
+
+        internal CaptureFailure? Crop(CaptureRequest request, out CapturedFrame? frame)
+        {
+            frame = null;
+            if (Plan(request, _bounds) is not { } plan) return CaptureFailure.Geometry;
+            var referenced = false;
+            try
+            {
+                DangerousAddRef(ref referenced);
+                frame = MakeFrame(plan, CopyPixels(plan.Bounds, _bounds, _pixels));
+                return null;
+            }
+            catch (Exception ex) when (ex is OutOfMemoryException or ArgumentException or OverflowException or ObjectDisposedException)
+            {
+                return CaptureFailure.Crop;
+            }
+            finally { if (referenced) DangerousRelease(); }
+        }
+
+        protected override bool ReleaseHandle() => DeleteObject(handle);
+    }
+
+    private static RectInt32? VirtualBounds()
+    {
+        var x = Win32Api.GetSystemMetrics(76); // SM_XVIRTUALSCREEN
+        var y = Win32Api.GetSystemMetrics(77); // SM_YVIRTUALSCREEN
+        var width = Win32Api.GetSystemMetrics(78);
+        var height = Win32Api.GetSystemMetrics(79);
+        return width > 0 && height > 0 && (long)x + width <= int.MaxValue && (long)y + height <= int.MaxValue
+            ? new RectInt32(x, y, width, height) : null;
+    }
+
+    private static CapturePlan? Plan(CaptureRequest request, RectInt32 desktop)
+    {
+        var (region, rasterizationScale) = request;
         if (region.Width <= 0 || region.Height <= 0 || region.Width > 20000 || region.Height > 20000 ||
             !double.IsFinite(rasterizationScale) || rasterizationScale <= 0 || rasterizationScale > 8) return null;
         // Sample the blur's neighborhood before reducing/cropping. At the physical
         // desktop edge, the bounded Gaussian extends that edge rather than adding black.
         var sigma = AcrylicSnapshotRecipe.BlurSigmaDip * rasterizationScale;
         var padding = (int)Math.Ceiling(3 * sigma) + 2;
-        var desktopX = Win32Api.GetSystemMetrics(76); // SM_XVIRTUALSCREEN
-        var desktopY = Win32Api.GetSystemMetrics(77); // SM_YVIRTUALSCREEN
-        var desktopRight = (long)desktopX + Win32Api.GetSystemMetrics(78);
-        var desktopBottom = (long)desktopY + Win32Api.GetSystemMetrics(79);
-        var left = (int)Math.Max(desktopX, (long)region.X - padding);
-        var top = (int)Math.Max(desktopY, (long)region.Y - padding);
-        var right = (int)Math.Min(desktopRight, (long)region.X + region.Width + padding);
-        var bottom = (int)Math.Min(desktopBottom, (long)region.Y + region.Height + padding);
+        var left = (int)Math.Max(desktop.X, (long)region.X - padding);
+        var top = (int)Math.Max(desktop.Y, (long)region.Y - padding);
+        var right = (int)Math.Min((long)desktop.X + desktop.Width, (long)region.X + region.Width + padding);
+        var bottom = (int)Math.Min((long)desktop.Y + desktop.Height, (long)region.Y + region.Height + padding);
         if (left > region.X || top > region.Y || right < (long)region.X + region.Width ||
             bottom < (long)region.Y + region.Height) return null;
         var captureWidth = right - left;
         var captureHeight = bottom - top;
         if (captureWidth <= 0 || captureHeight <= 0) return null;
-        // S must retain the physical desktop detail. Only the later Gaussian work
-        // plane is reduced; both branches come from this single synchronous read.
         if ((long)captureWidth * captureHeight > 64L * 1024 * 1024) return null;
-        var width = captureWidth;
-        var height = captureHeight;
+        return new(new RectInt32(left, top, captureWidth, captureHeight), region, sigma);
+    }
+
+    private static CaptureFailure? ReadDesktop(RectInt32 bounds, out DesktopCapture? capture)
+    {
+        capture = null;
+        var width = bounds.Width;
+        var height = bounds.Height;
+        // An uncompressed DIB can leave SizeImage at zero. Check the address
+        // span separately from the per-display managed allocation.
+        if ((ulong)width * (ulong)height * 4 > (ulong)nint.MaxValue) return CaptureFailure.Geometry;
         var screen = GetDC(IntPtr.Zero);
-        if (screen == IntPtr.Zero) return null;
+        if (screen == IntPtr.Zero) return CaptureFailure.Read;
         IntPtr memory = IntPtr.Zero, bitmap = IntPtr.Zero, previous = IntPtr.Zero;
         try
         {
             memory = CreateCompatibleDC(screen);
-            if (memory == IntPtr.Zero) return null;
+            if (memory == IntPtr.Zero) return CaptureFailure.Allocation;
             var info = new BitmapInfo { Size = (uint)Marshal.SizeOf<BitmapInfo>(), Width = width, Height = -height,
-                Planes = 1, BitCount = 32, SizeImage = (uint)(width * height * 4) };
+                Planes = 1, BitCount = 32, SizeImage = 0 };
             bitmap = CreateDIBSection(screen, ref info, 0, out var pixels, IntPtr.Zero, 0);
-            if (bitmap == IntPtr.Zero || pixels == IntPtr.Zero) return null;
+            if (bitmap == IntPtr.Zero || pixels == IntPtr.Zero) return CaptureFailure.Allocation;
             previous = SelectObject(memory, bitmap);
-            if (previous == IntPtr.Zero || previous == new IntPtr(-1)) return null;
-            SetStretchBltMode(memory, 4);
-            if (!StretchBlt(memory, 0, 0, width, height, screen, left, top, captureWidth, captureHeight, 0x00CC0020)) return null;
-            var bytes = new byte[width * height * 4];
-            Marshal.Copy(pixels, bytes, 0, bytes.Length);
-            for (var index = 3; index < bytes.Length; index += 4) bytes[index] = 255;
-            var pixelsFrame = new DecodedImageFrame("memory:desktop", bytes.Length, DateTime.UtcNow,
-                captureWidth, captureHeight, width, height, bytes);
-            var cropLeft = region.X - left;
-            var cropTop = region.Y - top;
-            var cropWidth = region.Width;
-            var cropHeight = region.Height;
-            return new(pixelsFrame, cropLeft, cropTop, cropWidth, cropHeight, region.Width, region.Height,
-                sigma, sigma);
+            if (previous == IntPtr.Zero || previous == new IntPtr(-1)) return CaptureFailure.Allocation;
+            const uint sourceCopy = 0x00CC0020; // SRCCOPY
+            var readStarted = Stopwatch.GetTimestamp();
+            if (!BitBlt(memory, 0, 0, width, height, screen, bounds.X, bounds.Y, sourceCopy) ||
+                !GdiFlush())
+                return CaptureFailure.Read;
+            var readElapsed = Stopwatch.GetElapsedTime(readStarted).TotalMilliseconds;
+            if (readElapsed >= 500)
+                AppLog.Warn("BackdropSnapshot", $"Slow desktop read: width={width} height={height} elapsedMs={readElapsed:F0}");
+            // Release both DCs on this thread while retaining the DIB for later crops.
+            capture = new DesktopCapture(bounds, bitmap, pixels);
+            bitmap = IntPtr.Zero;
+            return null;
         }
+        catch (OutOfMemoryException) { return CaptureFailure.Allocation; }
         finally
         {
             if (previous != IntPtr.Zero && previous != new IntPtr(-1)) SelectObject(memory, previous);
-            if (bitmap != IntPtr.Zero) DeleteObject(bitmap);
             if (memory != IntPtr.Zero) DeleteDC(memory);
+            if (bitmap != IntPtr.Zero) DeleteObject(bitmap);
             ReleaseDC(IntPtr.Zero, screen);
         }
+    }
+
+    private static byte[] CopyPixels(RectInt32 bounds, RectInt32 source, IntPtr pixels)
+    {
+        var stride = checked(bounds.Width * 4);
+        var bytes = new byte[checked(stride * bounds.Height)];
+        if (bounds == source) Marshal.Copy(pixels, bytes, 0, bytes.Length);
+        else
+        {
+            var x = (long)bounds.X - source.X;
+            var y = (long)bounds.Y - source.Y;
+            var sourceStride = (long)source.Width * 4;
+            for (var row = 0; row < bounds.Height; row++)
+            {
+                var offset = checked((y + row) * sourceStride + x * 4);
+                Marshal.Copy(checked(pixels + (nint)offset), bytes, row * stride, stride);
+            }
+        }
+        return bytes;
+    }
+
+    private static CapturedFrame MakeFrame(CapturePlan plan, byte[] bytes)
+    {
+        var bounds = plan.Bounds;
+        for (var index = 3; index < bytes.Length; index += 4) bytes[index] = 255;
+        var frame = new DecodedImageFrame("memory:desktop", bytes.Length, DateTime.UtcNow,
+            bounds.Width, bounds.Height, bounds.Width, bounds.Height, bytes);
+        var region = plan.Content;
+        return new(frame, region.X - bounds.X, region.Y - bounds.Y, region.Width, region.Height,
+            region.Width, region.Height, plan.Sigma, plan.Sigma);
     }
 
     internal static DecodedImageFrame BlurAndTint(CapturedFrame captured, AcrylicSnapshotRecipe recipe,
@@ -192,8 +294,8 @@ internal static class DesktopBackdropSnapshot
     [DllImport("gdi32.dll", ExactSpelling = true)] private static extern IntPtr SelectObject(IntPtr dc, IntPtr value);
     [DllImport("gdi32.dll", ExactSpelling = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool DeleteObject(IntPtr value);
     [DllImport("gdi32.dll", ExactSpelling = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool DeleteDC(IntPtr dc);
-    [DllImport("gdi32.dll", ExactSpelling = true)] private static extern int SetStretchBltMode(IntPtr dc, int mode);
-    [DllImport("gdi32.dll", ExactSpelling = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool StretchBlt(IntPtr destination, int x, int y, int width, int height, IntPtr source, int sourceX, int sourceY, int sourceWidth, int sourceHeight, uint operation);
+    [DllImport("gdi32.dll", ExactSpelling = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GdiFlush();
+    [DllImport("gdi32.dll", ExactSpelling = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool BitBlt(IntPtr destination, int x, int y, int width, int height, IntPtr source, int sourceX, int sourceY, uint operation);
 }
 
 /// <summary>Optional transition markers using the existing buffered application log.</summary>
@@ -204,6 +306,6 @@ internal static class BackdropTrace
     internal static void Write(string message)
     {
         if (Enabled)
-            AppLog.Warn("BackdropTransition", $"qpc={System.Diagnostics.Stopwatch.GetTimestamp()} tid={Environment.CurrentManagedThreadId} {message}");
+            AppLog.Warn("BackdropTransition", $"qpc={Stopwatch.GetTimestamp()} tid={Environment.CurrentManagedThreadId} {message}");
     }
 }

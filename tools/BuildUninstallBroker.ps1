@@ -1,4 +1,9 @@
-param([Parameter(Mandatory)][string]$OutputDirectory, [switch]$Tests, [ValidateSet('x64', 'arm64')][string]$Architecture = 'x64')
+param(
+    [Parameter(Mandatory)][string]$OutputDirectory,
+    [switch]$Tests,
+    [ValidateSet('x64', 'arm64')][string]$Architecture = 'x64',
+    [string]$PortableManifest
+)
 
 $ErrorActionPreference = 'Stop'
 $Architecture = $Architecture.ToLowerInvariant()
@@ -11,6 +16,7 @@ $repository = Split-Path $PSScriptRoot -Parent
 $artifactsRoot = Join-Path $repository 'artifacts'
 $output = Assert-ContainedPath $OutputDirectory $artifactsRoot
 $source = Join-Path $repository 'src/TileWall.UninstallBroker'
+if ($Tests -and $PortableManifest) { throw 'PortableManifest is only used for a distributable portable uninstaller.' }
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
 if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw "Native uninstall broker requires installed Visual Studio C++ $Architecture build tools (vswhere.exe not found)." }
 $installations = @(& $vswhere -latest -products '*' -requires $component -property installationPath)
@@ -46,14 +52,50 @@ try {
     # Do not depend on a developer prompt or a globally installed rc.exe.
     $env:PATH = (Split-Path $rc -Parent) + ';' + $savedNativePath
     New-Item -ItemType Directory -Path $output -Force | Out-Null
+    $portableFlags = @()
+    if ($PortableManifest) {
+        $manifest = Assert-ContainedPath $PortableManifest $artifactsRoot
+        $digest = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash
+        $languages = [ordered]@{
+            English = 'Cancel'
+            ChineseSimplified = '取消'
+            ChineseTraditional = '取消'
+            Japanese = 'キャンセル'
+            Korean = '취소'
+            German = 'Abbrechen'
+            French = 'Annuler'
+            Spanish = 'Cancelar'
+        }
+        $keys = @('UninstallOptionsTitle', 'UninstallDataOption', 'UninstallRegistryOption', 'UninstallDataWarning',
+            'UninstallRegistryExplanation', 'UninstallContinue', 'UninstallApplicationStillRunning',
+            'CurrentUserUninstallCleanupFailed', 'UninstallDataRemoved', 'UninstallDataAbsent', 'UninstallDataBlocked',
+            'UninstallDataIncomplete', 'UninstallRegistryRollbackIncomplete', 'PortablePayloadUnsafe',
+            'PortablePayloadIncomplete', 'PortablePayloadRemoved')
+        $rows = foreach ($language in $languages.Keys) {
+            $localePath = Join-Path $PSScriptRoot "package/installer/Languages/$language.isl"
+            $locale = [IO.File]::ReadAllText($localePath)
+            $values = foreach ($key in $keys) {
+                $matchesByKey = [regex]::Matches($locale, "(?m)^$key=([^\r\n]*)")
+                if ($matchesByKey.Count -ne 1) { throw "Missing or duplicated $key in $localePath." }
+                'L"' + $matchesByKey[0].Groups[1].Value.Replace('\', '\\').Replace('"', '\"') + '"'
+            }
+            '    { ' + ($values -join ', ') + ', L"' + $languages[$language] + '" },'
+        }
+        $header = @(('static constexpr wchar_t PortableManifestDigest[] = L"' + $digest + '";'),
+            'static constexpr PortableText PortableMessages[] = {') + @($rows) + '};'
+        [IO.File]::WriteAllLines((Join-Path $output 'PortableUninstallBuild.h'), $header, [Text.UTF8Encoding]::new($false))
+        $portableFlags = @('/DTILEWALL_PORTABLE_UNINSTALL', "/I$output")
+    }
     Push-Location -LiteralPath $source
     try {
         $inputSource = if ($Tests) { Join-Path $repository 'tests/packaging/UninstallBroker.Tests.cpp' } else { 'UninstallBroker.cpp' }
-        $imageName = if ($Tests) { 'TileWall.UninstallBroker.Tests.exe' } else { 'TileWall.UninstallBroker.exe' }
+        $imageName = if ($Tests) { 'TileWall.UninstallBroker.Tests.exe' }
+            elseif ($PortableManifest) { 'TileWall.PortableUninstall.exe' }
+            else { 'TileWall.UninstallBroker.exe' }
         $subsystem = if ($Tests) { '/SUBSYSTEM:CONSOLE' } else { '/SUBSYSTEM:WINDOWS' }
-        & $cl /nologo /TP /std:c++20 /EHsc /W4 /WX /O1 /GS /guard:cf /MT /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /c $inputSource "/Fo:$output/UninstallBroker.obj"
+        & $cl /nologo /TP /std:c++20 /utf-8 /EHsc /W4 /WX /O1 /GS /guard:cf /MT /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 @portableFlags /c $inputSource "/Fo:$output/UninstallBroker.obj"
         if ($LASTEXITCODE -ne 0) { throw "Uninstall broker compilation failed: $LASTEXITCODE" }
-        & $link $subsystem /NOLOGO /WX "/MACHINE:$Architecture" /guard:cf /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /MANIFEST:EMBED "/MANIFESTUAC:level='asInvoker' uiAccess='false'" "/OUT:$output/$imageName" "$output/UninstallBroker.obj" kernel32.lib user32.lib shell32.lib ole32.lib oleaut32.lib advapi32.lib bcrypt.lib uuid.lib
+        & $link $subsystem /NOLOGO /WX "/MACHINE:$Architecture" /guard:cf /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /MANIFEST:EMBED "/MANIFESTUAC:level='asInvoker' uiAccess='false'" "/OUT:$output/$imageName" "$output/UninstallBroker.obj" kernel32.lib user32.lib shell32.lib ole32.lib oleaut32.lib advapi32.lib bcrypt.lib secur32.lib wtsapi32.lib uuid.lib
         if ($LASTEXITCODE -ne 0) { throw "Uninstall broker linking failed: $LASTEXITCODE" }
     }
     finally { Pop-Location }

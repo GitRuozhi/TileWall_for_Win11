@@ -101,6 +101,8 @@ public sealed record WallSettings
     public ManagedMediaReference? BackgroundMedia { get; init; }
     public bool AlwaysOnTop { get; init; } = true;
     public bool StayVisibleOnFocusLoss { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool MultiDisplaySummon { get; init; }
     public bool ShowGrid { get; init; }
     public bool ShowUnavailableControls { get; init; } = true;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]

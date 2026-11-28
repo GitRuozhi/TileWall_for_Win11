@@ -51,6 +51,7 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
         && (!_finished.Task.IsCompletedSuccessfully || _keyboardHook != 0 || _mouseHook != 0 || _desktopHook != 0);
     internal bool IsCurrentActivation(long generation) => IsActive && Interlocked.Read(ref _generation) == generation;
     internal event Action<StartReplacementFault>? Faulted;
+    internal Action<long, int, int>? TaskbarToggle { get; init; }
 
     internal async Task PrepareAsync(CancellationToken cancellationToken = default)
     {
@@ -368,7 +369,11 @@ internal sealed class StartReplacementService(Action<long> enqueueToggle, StartR
                 && _locator is { } locator && locator.TryHitTest(native.Point.X, native.Point.Y, out var target)) hit = target!.Identity;
             var decision = _mouse.Handle(kind, source, hit);
             suppress = decision.Suppress;
-            if (decision.Toggle && IsCurrentActivation(generation)) enqueueToggle(generation);
+            if (decision.Toggle && IsCurrentActivation(generation))
+            {
+                if (TaskbarToggle is { } deliver) deliver(generation, native.Point.X, native.Point.Y);
+                else enqueueToggle(generation);
+            }
         }
         catch (Exception) { SetFault("mouse-callback-failed"); }
         WakeForCleanup();

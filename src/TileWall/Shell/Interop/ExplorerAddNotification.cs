@@ -77,6 +77,22 @@ internal sealed class ExplorerAddNotification : IDisposable
         catch (Exception ex) { AppLog.Warn("ExternalAddNotification", $"Delivery unavailable: {ex.Message}"); }
     }
 
+    internal bool ShowFailure(string message)
+    {
+        if (_manager is not { } manager) return false;
+        try
+        {
+            if (manager.Setting != AppNotificationSetting.Enabled) return false;
+            manager.Show(new AppNotificationBuilder().AddText("TileWall").AddText(message).BuildNotification());
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("ExternalAddNotification", $"Failure notification unavailable: {ex.Message}");
+            return false;
+        }
+    }
+
     private void OnNotificationInvoked(AppNotificationManager sender, AppNotificationActivatedEventArgs args)
     {
         if (args.Arguments.TryGetValue(ActionKey, out var action) && action == ShowAction)

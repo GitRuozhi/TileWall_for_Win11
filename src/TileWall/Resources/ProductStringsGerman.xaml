@@ -36,6 +36,7 @@
   <x:String x:Key="Settings.System">System</x:String>
   <x:String x:Key="Settings.Invocation">TileWall anzeigen</x:String>
   <x:String x:Key="Settings.ExperimentalFeature">Dies ist eine experimentelle Funktion.</x:String>
+  <x:String x:Key="Settings.MultiDisplaySummon">Auf allen Bildschirmen anzeigen</x:String>
   <x:String x:Key="Settings.KeyBehavior">Tastenaktionen</x:String>
   <x:String x:Key="Settings.KeyBehaviorKey">Taste</x:String>
   <x:String x:Key="Settings.KeyBehaviorAction">Aktion</x:String>
@@ -918,4 +919,10 @@ Fortfahren?</x:String>
   <x:String x:Key="Batch.SelectionCount">{0} insgesamt, {1} ausgewählt</x:String>
   <x:String x:Key="Batch.SelectNone">Auswahl aufheben</x:String>
   <x:String x:Key="Batch.Mixed">Gemischt</x:String>
+    <x:String x:Key="Wall.MultiDisplayCaptureFailed">Beim Öffnen auf mehreren Bildschirmen sind keine statischen Hintergründe verfügbar. {0}</x:String>
+    <x:String x:Key="Wall.CaptureGeometry">Der Bildschirmbereich ist ungültig.</x:String>
+    <x:String x:Key="Wall.CaptureAllocation">Der Aufnahmepuffer konnte nicht zugewiesen werden.</x:String>
+    <x:String x:Key="Wall.CaptureRead">Das Desktopbild konnte nicht gelesen werden.</x:String>
+    <x:String x:Key="Wall.CaptureCrop">Die Bildschirmhintergründe konnten nicht zugeschnitten werden.</x:String>
+    <x:String x:Key="Wall.CapturePresentation">Der simulierte Acrylhintergrund konnte nicht vorbereitet werden.</x:String>
 </ResourceDictionary>

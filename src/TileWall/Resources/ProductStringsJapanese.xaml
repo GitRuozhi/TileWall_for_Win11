@@ -36,6 +36,7 @@
   <x:String x:Key="Settings.System">システム</x:String>
   <x:String x:Key="Settings.Invocation">TileWall を表示</x:String>
   <x:String x:Key="Settings.ExperimentalFeature">これは試験的な機能です。</x:String>
+  <x:String x:Key="Settings.MultiDisplaySummon">すべてのディスプレイに表示</x:String>
   <x:String x:Key="Settings.KeyBehavior">キーの動作</x:String>
   <x:String x:Key="Settings.KeyBehaviorKey">キー</x:String>
   <x:String x:Key="Settings.KeyBehaviorAction">動作</x:String>
@@ -918,4 +919,10 @@
   <x:String x:Key="Batch.SelectionCount">全{0}件、{1}件を選択中</x:String>
   <x:String x:Key="Batch.SelectNone">すべて選択解除</x:String>
   <x:String x:Key="Batch.Mixed">混在</x:String>
+    <x:String x:Key="Wall.MultiDisplayCaptureFailed">今回のマルチディスプレイ表示では静止背景を使用できません。{0}</x:String>
+    <x:String x:Key="Wall.CaptureGeometry">ディスプレイの範囲が無効です。</x:String>
+    <x:String x:Key="Wall.CaptureAllocation">キャプチャ用バッファーを確保できませんでした。</x:String>
+    <x:String x:Key="Wall.CaptureRead">デスクトップの画像を読み取れませんでした。</x:String>
+    <x:String x:Key="Wall.CaptureCrop">各ディスプレイの背景を切り出せませんでした。</x:String>
+    <x:String x:Key="Wall.CapturePresentation">擬似アクリル背景を準備できませんでした。</x:String>
 </ResourceDictionary>

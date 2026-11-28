@@ -2,7 +2,7 @@ using TileWall.Shell.Interop;
 
 namespace TileWall.ApplicationModel;
 
-/// <summary>Owns only TileWall's temporary primary-taskbar effect and its crash recovery.</summary>
+/// <summary>Owns TileWall's temporary taskbar effects and their shared crash recovery.</summary>
 internal sealed class TaskbarActivationService : IAsyncDisposable
 {
     private readonly bool _inert;
@@ -25,7 +25,7 @@ internal sealed class TaskbarActivationService : IAsyncDisposable
     private readonly object _retryLock = new();
     internal event Action<int, Func<bool>, TaskbarActivationResult>? StateChanged;
 
-    internal TaskbarActivationService(string dataRoot, bool isTest, nint launcherWindow)
+    internal TaskbarActivationService(string dataRoot, bool isTest)
     {
         _inert = isTest;
         if (_inert) return;
@@ -36,53 +36,27 @@ internal sealed class TaskbarActivationService : IAsyncDisposable
                 Path.TrimEndingDirectorySeparator(expected), StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Taskbar activation requires the normal application data root.", nameof(dataRoot));
         _store = TaskbarRecoveryCommand.CreateStore();
-        _backend = new() { LauncherWindow = launcherWindow };
+        _backend = new();
         _guard = new(_store);
         _lease = new(_store, _backend, _guard.Protect, () => _guard.IsReady);
     }
-
-    internal TaskbarActivationObservation ObservePrimary() => _inert
-        ? new(false, false, 0, default, default, default)
-        : TaskbarActivationBackend.ObservePrimary();
-
-    internal Task<TaskbarActivationResult> PrepareAsync() => RunAsync(() =>
-    {
-        var observation = ObservePrimary();
-        return new(false, observation.Failure);
-    });
 
     internal Task<TaskbarActivationResult> RecoverPreviousAsync() => RunAsync(() =>
         TaskbarRecovery.Run(_store!, _backend!, TaskbarRecoveryCommand.IsAlive)
             ? new(false) : new(false, "A previous taskbar effect still requires recovery."));
 
-    internal Task<TaskbarActivationResult> ApplyAsync(int openingId, Func<bool> stillRequested) => RunAsync(() =>
+    internal Task<TaskbarActivationResult> ApplyAsync(TaskbarTarget[] targets, int openingId, Func<bool> stillRequested) => RunAsync(() =>
     {
         if (Volatile.Read(ref _stopped) != 0 || !stillRequested()) return new(false);
         Volatile.Write(ref _desired, stillRequested);
         Interlocked.Exchange(ref _openingId, openingId);
-        var observation = ObservePrimary();
-        if (!observation.Available)
-        {
-            Volatile.Write(ref _desired, null);
-            var released = _lease!.Synchronize(null);
-            if (!released && _lease.RecoveryFailed) QueueRestoreRetry();
-            return new(false, observation.Failure ?? (released ? null : Failure()));
-        }
-        if (!observation.AutoHide)
-        {
-            Volatile.Write(ref _desired, null);
-            var restored = _lease!.Synchronize(null);
-            if (!restored && _lease.RecoveryFailed) QueueRestoreRetry();
-            return new(false, restored ? null : Failure());
-        }
         if (!TaskbarRecovery.Run(_store!, _backend!, TaskbarRecoveryCommand.IsAlive)
             && !_lease!.IsActive)
         {
             Volatile.Write(ref _desired, null);
             return new(false, "A previous taskbar effect still requires recovery.");
         }
-        var screen = observation.Screen;
-        _backend!.Scope = new(screen.X, screen.Y, screen.Width, screen.Height);
+        _backend!.Targets = targets;
         _backend.StillRequested = () => Volatile.Read(ref _stopped) == 0 && stillRequested();
         var applied = _lease!.Synchronize(TaskbarLeaseMode.Reveal,
             () => Volatile.Read(ref _stopped) == 0 && stillRequested(), openingId);

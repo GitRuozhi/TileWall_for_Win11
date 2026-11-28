@@ -26,8 +26,7 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
     private int _transparency = 10;
     private bool _active = true, _dark, _acrylicFailed, _updating, _disconnecting;
     private bool _snapshotAvailable;
-    private bool _snapshotResidenceSuspended, _snapshotAnimationShielded, _residentUnderSnapshot;
-    private AlphaBackdropTarget? _animationDetachSource;
+    private bool _snapshotResidenceSuspended, _residentUnderSnapshot;
     private long _intentGeneration;
     private bool _focusCommitRequired;
     private Task<bool>? _pendingCommit;
@@ -39,31 +38,9 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
     internal Func<bool>? HasOpaqueSnapshotCover { get; set; }
     internal bool NativeMaterialAttached => _selectedMaterial is not null;
 
-    internal void SuspendSnapshotResidence(bool shieldAnimation)
-    {
-        _snapshotResidenceSuspended = true;
-        _snapshotAnimationShielded = shieldAnimation;
-        _animationDetachSource = shieldAnimation ? _selectedMaterial?.Proxy : null;
-        _intentGeneration++;
-        _pendingCommit = null;
-        if (BackdropTrace.Enabled) TraceDiagnostic($"Residence suspended shieldAnimation={shieldAnimation}");
-    }
-
-    internal async Task<bool> DetachSnapshotForAnimationAsync(CancellationToken token)
-    {
-        token.ThrowIfCancellationRequested();
-        if (!_snapshotAnimationShielded) return true;
-        var outgoing = _selectedMaterial?.Proxy ?? _animationDetachSource;
-        DisableSelectedMaterial();
-        if (_target is not null) _target.SystemBackdrop = null!;
-        return outgoing is null || await outgoing.WaitForDetachCommitAsync(token);
-    }
-
     internal void ResumeSnapshotResidence(bool visible)
     {
         _snapshotResidenceSuspended = !visible;
-        _snapshotAnimationShielded = false;
-        _animationDetachSource = null;
         _intentGeneration++;
         _pendingCommit = null;
         if (!visible && _residentUnderSnapshot) DisableSelectedMaterial();
@@ -76,6 +53,19 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
         slot.Controller is DesktopAcrylicController acrylic
             ? new(acrylic.TintColor, acrylic.TintOpacity, acrylic.LuminosityOpacity,
                 Math.Round(slot.Proxy.Opacity * 255) / 255d) : null;
+
+    internal AcrylicSnapshotRecipe? PrepareHiddenSnapshotRecipe(bool dark)
+    {
+        if (_mode != WallBackgroundMode.Acrylic || !_uiSettings.AdvancedEffectsEnabled ||
+            _defaultConfiguration?.IsHighContrast == true || !DesktopAcrylicController.IsSupported()) return null;
+        // The disabled proxy gives a new hidden window the same native recipe
+        // even before its XAML backdrop target connects.
+        if (_target is null && nativeBackground is null) return null;
+        var slot = GetMaterial(WallBackgroundMode.Acrylic);
+        UpdateConfiguration(slot, active: true);
+        slot.Proxy.Opacity = (float)AcrylicSnapshotRecipe.BackgroundOpacity(_transparency);
+        return SnapshotRecipe(dark);
+    }
 
     private sealed class MaterialSlot(WallBackgroundMode mode, ISystemBackdropControllerWithTargets controller,
         AlphaBackdropTarget proxy)
@@ -202,10 +192,11 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
         var theme = _dark ? SystemBackdropTheme.Dark : SystemBackdropTheme.Light;
         if (configuration.IsInputActive != inputActive) configuration.IsInputActive = inputActive;
         if (configuration.Theme != theme) configuration.Theme = theme;
-        if (configuration.IsHighContrast != _defaultConfiguration!.IsHighContrast)
-            configuration.IsHighContrast = _defaultConfiguration.IsHighContrast;
-        if (configuration.HighContrastBackgroundColor != _defaultConfiguration.HighContrastBackgroundColor)
-            configuration.HighContrastBackgroundColor = _defaultConfiguration.HighContrastBackgroundColor;
+        if (_defaultConfiguration is not { } defaults) return;
+        if (configuration.IsHighContrast != defaults.IsHighContrast)
+            configuration.IsHighContrast = defaults.IsHighContrast;
+        if (configuration.HighContrastBackgroundColor != defaults.HighContrastBackgroundColor)
+            configuration.HighContrastBackgroundColor = defaults.HighContrastBackgroundColor;
     }
 
     private void DisableSelectedMaterial()
@@ -304,14 +295,13 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             // and the existing committed handoff still own that transition.
             if (!reduced && _mode == WallBackgroundMode.Acrylic && DesktopAcrylicController.IsSupported())
                 _ = GetMaterial(WallBackgroundMode.Acrylic);
-            var useSnapshot = !reduced && _snapshotAvailable && _mode == WallBackgroundMode.Acrylic &&
-                (!effectiveActive || _snapshotAnimationShielded);
-            var selected = useSnapshot || _snapshotAnimationShielded ? WallBackgroundMode.Custom : _mode == WallBackgroundMode.Acrylic &&
+            var useSnapshot = !reduced && _snapshotAvailable && _mode == WallBackgroundMode.Acrylic && !effectiveActive;
+            var selected = useSnapshot ? WallBackgroundMode.Custom : _mode == WallBackgroundMode.Acrylic &&
                 (!effectiveActive || _acrylicFailed || !DesktopAcrylicController.IsSupported())
                 ? WallBackgroundMode.Mica : _mode;
             var supported = selected == WallBackgroundMode.Acrylic ? DesktopAcrylicController.IsSupported()
                 : selected == WallBackgroundMode.Mica && MicaController.IsSupported();
-            var fallback = _snapshotAnimationShielded || useSnapshot || selected != WallBackgroundMode.Custom;
+            var fallback = useSnapshot || selected != WallBackgroundMode.Custom;
             // Prepare the replacement before any old target/source is detached.
             // A missing or invalid snapshot uses the existing readable solid plane.
             if (reduced || selected == WallBackgroundMode.Custom || _selectedMaterial?.Mode != selected)
@@ -429,6 +419,20 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
         _uiSettings.AdvancedEffectsEnabledChanged -= OnEffectsChanged;
         // Match the official backdrop lifecycle: Close controllers only at disconnect,
         // never on focus loss, a custom-image selection, or a theme change.
+        ReleaseMaterials();
+        _target = null;
+        _defaultConfiguration = null;
+        disconnectedTarget.SystemBackdrop = null!;
+        base.OnTargetDisconnected(disconnectedTarget);
+    }
+
+    internal void ReleaseDetachedMaterials()
+    {
+        if (_target is null && _materials.Count != 0) ReleaseMaterials();
+    }
+
+    private void ReleaseMaterials()
+    {
         foreach (var slot in _materials.Values)
         {
             slot.Controller.StateChanged -= OnControllerStateChanged;
@@ -444,10 +448,6 @@ internal sealed class WallBackdrop(DispatcherQueue queue, Action<bool, bool> fal
             (slot.Controller as IDisposable)?.Dispose();
         }
         _materials.Clear();
-        _target = null;
-        _defaultConfiguration = null;
-        disconnectedTarget.SystemBackdrop = null!;
-        base.OnTargetDisconnected(disconnectedTarget);
     }
 }
 /// <summary>Intercept every controller replacement, including asynchronous policy/theme changes.</summary>
@@ -488,27 +488,6 @@ internal sealed partial class AlphaBackdropTarget(ICompositionSupportsSystemBack
     }
 
     internal Task<bool> WaitForCommitAsync() => _commitWork ??= CommitAsync(_source, _revision, _commitLifetime.Token);
-
-    internal async Task<bool> WaitForDetachCommitAsync(CancellationToken token)
-    {
-        if (_enabled || _disposed) return false;
-        var source = _source;
-        var revision = _revision;
-        if (source is null) return true;
-        try
-        {
-            if (BackdropTrace.Enabled) TraceDiagnostic("Detach commit requested for snapshot animation");
-            await source.Compositor.RequestCommitAsync().AsTask(token);
-            token.ThrowIfCancellationRequested();
-            return !_enabled && !_disposed && revision == _revision;
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
-        {
-            AppLog.Warn("BackdropCommit", $"Native detach commit unavailable: {ex.GetType().Name}");
-            return false;
-        }
-    }
 
     private async Task<bool> CommitAsync(Windows.UI.Composition.CompositionBrush? source, long revision, CancellationToken token)
     {

@@ -5,6 +5,7 @@ using TileWall.Core.Wall;
 using TileWall.Resources;
 using TileWall.Shell.Interop;
 using TileWall.Views;
+using Windows.Graphics;
 
 namespace TileWall.ApplicationModel;
 
@@ -51,15 +52,16 @@ internal sealed partial class WallApplicationLifetime
                 _window.ShowStatus(ProductStrings.Get("Settings.StartReplacementUnavailable"));
             return;
         }
-        Request(_show.State == TileWall.Core.Shell.WallShowState.Hidden || !_window.IsForegroundWallSession()
-            ? TileWall.Core.Shell.WallShowTrigger.Show : TileWall.Core.Shell.WallShowTrigger.Toggle);
+        var reveal = _window.Settings.MultiDisplaySummon && !_window.IsForegroundWallSession() &&
+            (_displaySummonRequest is null || HasVisibleDisplay);
+        Request(reveal ? WallShowTrigger.Show : WallShowTrigger.Toggle);
     }
 
-    private void QueueStartReplacementToggle(long generation, bool taskbar = false) => _window.DispatcherQueue.TryEnqueue(() =>
+    private void QueueStartReplacementToggle(long generation, PointInt32? point = null, bool taskbar = false) => _window.DispatcherQueue.TryEnqueue(() =>
     {
         if (_hotKeyRecording || _settingsBusy || !StartInputEnabled(_window.Settings, taskbar) ||
             !StartInput(taskbar).IsCurrentActivation(generation)) return;
-        Request(TileWall.Core.Shell.WallShowTrigger.Toggle);
+        Request(WallShowTrigger.Toggle, point);
     });
 
     private void QueueStartReplacementFault(StartReplacementFault failure, bool taskbar = false)
@@ -588,6 +590,7 @@ internal sealed partial class WallApplicationLifetime
             if (_window.Settings.LanguageMode != old.LanguageMode) _ = QueueExplorerMenuSynchronization();
             _window.RefreshAppearance();
             _window.RefreshProductStrings();
+            if (old.MultiDisplaySummon != _window.Settings.MultiDisplaySummon) RefreshOpenedDisplays();
             UpdateTray();
             return CurrentSettingsState() with { Error = error };
         }

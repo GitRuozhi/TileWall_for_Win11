@@ -91,6 +91,7 @@ internal sealed class SettingsDialog : IWallDialogSession
     private readonly TextBlock _startReplacementStatus = new() { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
     private readonly Button _retryStart = new() { HorizontalAlignment = HorizontalAlignment.Left };
     private readonly ToggleSwitch _redirectTaskbarStartButton = new();
+    private readonly ToggleSwitch _multiDisplaySummon = new();
     private readonly TextBlock _taskbarStartReplacementStatus = new() { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
     private readonly Button _retryTaskbarStart = new() { HorizontalAlignment = HorizontalAlignment.Left };
     private readonly TextBlock _keyboardExperimental = new() { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Opacity = .75 };
@@ -204,6 +205,8 @@ internal sealed class SettingsDialog : IWallDialogSession
         Grid.SetColumn(percent, 1); transparencyRow.Children.Add(percent);
         Grid.SetColumn(_transparency, 2); transparencyRow.Children.Add(_transparency);
         var invocation = AddGroup("Settings.Invocation", "invocation", compact);
+        Id(_multiDisplaySummon, "multi-display-summon");
+        AddRow(invocation, "Settings.MultiDisplaySummon", _multiDisplaySummon);
         var taskbarStartReplacementRow = new StackPanel { Spacing = 8 };
         taskbarStartReplacementRow.Children.Add(ExperimentalToggleRow(_redirectTaskbarStartButton, _taskbarExperimental));
         taskbarStartReplacementRow.Children.Add(_taskbarStartReplacementStatus);
@@ -431,6 +434,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         _menuStart.Toggled += (_, _) => BeginApply(s => s with { MenuStart = _menuStart.IsOn });
         _topmost.Toggled += (_, _) => BeginApply(s => s with { AlwaysOnTop = _topmost.IsOn });
         _stayVisible.Toggled += (_, _) => BeginApply(s => s with { StayVisibleOnFocusLoss = _stayVisible.IsOn });
+        _multiDisplaySummon.Toggled += (_, _) => BeginApply(s => s with { MultiDisplaySummon = _multiDisplaySummon.IsOn });
         _layoutLocked.Toggled += (_, _) => BeginApply(s => s with { LayoutLocked = _layoutLocked.IsOn });
         _activateTaskbar.Toggled += (_, _) => BeginApply(s => s with { ActivateTaskbar = _activateTaskbar.IsOn });
         _showGrid.Toggled += (_, _) => BeginApply(s => s with { ShowGrid = _showGrid.IsOn });
@@ -677,6 +681,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         ToolTipService.SetToolTip(_backgroundPath, _backgroundPath.Text);
         _transparency.Value = _state.Settings.BackgroundTransparency; _transparencyInput.Value = _state.Settings.BackgroundTransparency;
         _topmost.IsOn = _state.Settings.AlwaysOnTop; _stayVisible.IsOn = _state.Settings.StayVisibleOnFocusLoss;
+        _multiDisplaySummon.IsOn = _state.Settings.MultiDisplaySummon;
         _layoutLocked.IsOn = _state.Settings.LayoutLocked;
         RefreshTaskbarActivationPresentation();
         _showGrid.IsOn = _state.Settings.ShowGrid; _runAtLogin.IsOn = _state.Settings.RunAtLogin;
@@ -1402,6 +1407,7 @@ internal sealed class SettingsDialog : IWallDialogSession
         if (before.MenuStart != after.MenuStart) return "Settings.MenuStart";
         if (before.AlwaysOnTop != after.AlwaysOnTop) return "Settings.Topmost";
         if (before.StayVisibleOnFocusLoss != after.StayVisibleOnFocusLoss) return "Settings.StayVisible";
+        if (before.MultiDisplaySummon != after.MultiDisplaySummon) return "Settings.MultiDisplaySummon";
         if (before.LayoutLocked != after.LayoutLocked) return "Settings.LayoutLocked";
         if (before.ActivateTaskbar != after.ActivateTaskbar) return "Settings.ActivateTaskbar";
         if (before.ShowGrid != after.ShowGrid) return "Settings.ShowGrid";

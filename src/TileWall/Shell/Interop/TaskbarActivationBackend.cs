@@ -11,8 +11,7 @@ namespace TileWall.Shell.Interop;
 internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowState>>? observe = null,
     Action<nint, uint, nint, nint>? sendMessage = null, Func<nint, bool>? menuActive = null) : ITaskbarLeaseBackend
 {
-    internal TaskbarBounds Scope { get; set; }
-    internal nint LauncherWindow { get; set; }
+    internal IReadOnlyList<TaskbarTarget> Targets { get; set; } = [];
     internal Func<bool>? StillRequested { get; set; }
     private void RequireRequest()
     {
@@ -20,48 +19,76 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
     }
     private string? _appliedToken;
     private string? _releasedToken;
+    private readonly HashSet<long> _releasedWindows = [];
     /// <summary>Gets the last anonymous native recovery decision for explicit local verification.</summary>
     internal string? LastRecoveryDecision { get; private set; }
 
     internal static bool IsCurrentTaskbar(nint window) => window != 0 && window == FindWindow("Shell_TrayWnd", null)
         && Identity(window, out _, out _);
 
-    internal bool MenuIsActive()
+    // The position probe already verified Explorer and display ownership.
+    // The UI checks only that the HWND still belongs to that process and class.
+    internal static bool IsCurrentPlacementAnchor(TaskbarWindowAnchor anchor, bool isPrimary)
     {
-        var window = FindWindow("Shell_TrayWnd", null);
-        return window != 0 && (menuActive ?? NativeMenuActive)(window);
+        if (anchor.Window == 0 || GetWindowThreadProcessId(anchor.Window, out var pid) == 0 || pid != anchor.ProcessId)
+            return false;
+        var name = new StringBuilder(64);
+        GetClassName(anchor.Window, name, name.Capacity);
+        return name.ToString() == (isPrimary ? "Shell_TrayWnd" : "Shell_SecondaryTrayWnd");
     }
 
-    /// <summary>Observes native primary-screen geometry only; no UIA or synchronous Explorer messages.</summary>
-    internal static TaskbarActivationObservation ObservePrimary()
+    internal bool MenuIsActive() => Targets.Any(target => Identity(target.Window, out _, out _) &&
+        (menuActive ?? NativeMenuActive)(target.Window));
+
+    /// <summary>Observes native taskbar placement without changing Explorer or sending lifecycle messages.</summary>
+    internal static TaskbarActivationObservation ObserveDisplay(TaskbarArea screen, TaskbarArea work, bool isPrimary, bool autoHide)
     {
         try
         {
-            var data = new MonitorData { Size = (uint)Marshal.SizeOf<MonitorData>() };
-            if (!GetMonitorInfo(MonitorFromPoint(new Point(), 1), ref data))
-                return new(false, false, 0, default, default, default, "The primary display is unavailable.");
-            var screen = new TaskbarArea(data.Monitor.Left, data.Monitor.Top,
-                data.Monitor.Right - data.Monitor.Left, data.Monitor.Bottom - data.Monitor.Top);
-            var work = new TaskbarArea(data.Work.Left, data.Work.Top,
-                data.Work.Right - data.Work.Left, data.Work.Bottom - data.Work.Top);
-            var window = FindWindow("Shell_TrayWnd", null);
-            if (!IsCurrentTaskbar(window) || !Bounds(window, out var original))
-                return new(false, false, 0, screen, work, screen, "The primary Explorer taskbar is unavailable.");
-            if (!AutoHideEnabled) return new(true, false, window, screen, work, work);
             var monitor = new TaskbarBounds(screen.X, screen.Y, screen.Width, screen.Height);
-            if (AutoHideEdge(window, monitor) is not { } edge)
-                return new(false, true, window, screen, work, screen, "The automatic taskbar edge could not be identified.");
+            int? secondaryEdge = null;
+            nint window;
+            if (isPrimary) window = FindWindow("Shell_TrayWnd", null);
+            else if (autoHide) (window, secondaryEdge) = FindAutoHideSecondaryForPlacement(monitor);
+            else window = SecondaryTaskbars().FirstOrDefault(candidate =>
+                OwnsDisplay(candidate, monitor, autoHide: false) && Identity(candidate, out _, out _));
+            if (window == 0 || !Identity(window, out var pid, out _) || !Bounds(window, out var original))
+                return new(false, false, default, screen, work, work, isPrimary ? "The primary Explorer taskbar is unavailable." : null);
+            var anchor = new TaskbarWindowAnchor(window, (uint)pid);
+            if (!autoHide) return new(true, false, anchor, screen, work, work);
+            if ((isPrimary ? AutoHideEdge(window, monitor, allowUnregisteredSecondary: false) : secondaryEdge) is not { } edge)
+                return new(false, true, default, screen, work, work, "The automatic taskbar edge could not be identified.");
             if (edge is 0 or 2 ? original.Width >= screen.Width / 2 : original.Height >= screen.Height / 2)
-                return new(false, true, window, screen, work, screen, "The automatic taskbar thickness is invalid.");
+                return new(false, true, default, screen, work, work, "The automatic taskbar thickness is invalid.");
             var target = VisibleBounds(monitor, original, edge);
             var effective = ExcludeEdge(work, target, edge);
             if (effective.Width <= 0 || effective.Height <= 0)
-                return new(false, true, window, screen, work, screen, "The automatic taskbar bounds are invalid.");
-            return new(true, true, window, screen, work, effective);
+                return new(false, true, default, screen, work, work, "The automatic taskbar bounds are invalid.");
+            return new(true, true, anchor, screen, work, effective);
         }
         catch (Exception error) when (TaskbarLease.Expected(error))
-        { return new(false, false, 0, default, default, default, error.Message); }
+        { return new(false, false, default, screen, work, work, error.Message); }
     }
+
+    private static (nint Window, int? Edge) FindAutoHideSecondaryForPlacement(TaskbarBounds monitor)
+    {
+        // The appbar registry maps a display edge to a window. Read each edge
+        // once for placement instead of asking Explorer again for every candidate.
+        Span<nint> registered = stackalloc nint[4];
+        for (var edge = 0; edge < registered.Length; edge++)
+            registered[edge] = RegisteredAutoHideWindow(monitor, edge);
+        foreach (var candidate in SecondaryTaskbars())
+        {
+            var index = registered.IndexOf(candidate);
+            int? edge = index >= 0 ? index : null;
+            if (edge is null && Bounds(candidate, out var bar)) edge = SecondaryEdge(monitor, bar);
+            if (edge is not null && Identity(candidate, out _, out _)) return (candidate, edge);
+        }
+        return (0, null);
+    }
+
+    private static bool OwnsDisplay(nint window, TaskbarBounds monitor, bool autoHide)
+        => autoHide ? AutoHideEdge(window, monitor) != null : Monitor(window, out var owner) && owner == monitor;
 
     internal static TaskbarArea ExcludeEdge(TaskbarArea work, TaskbarBounds bar, int edge)
     {
@@ -98,19 +125,18 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
 
     public TaskbarLeaseState? Capture(TaskbarLeaseMode mode)
     {
+        if (mode != TaskbarLeaseMode.Reveal || Targets.Count == 0) return null;
         var windows = new List<TaskbarWindowState>();
         foreach (var item in (observe ?? ObserveWindows)())
         {
-            // This preference never overrides a fixed taskbar or creates a new
-            // hide operation. Hide remains readable for recovery of old leases.
-            if (mode != TaskbarLeaseMode.Reveal || !item.AutoHide || item.Monitor != Scope) continue;
+            if (!item.AutoHide || !Targets.Any(target => target.Window == item.Window && target.Monitor == item.Monitor)) continue;
             windows.Add(item);
         }
-        return windows.Count == 0 ? null : new(windows.Any(item => item.HoldAutoHide) ? 2 : 1,
-            Guid.NewGuid().ToString("N"), ParentId, ParentStarted, mode, windows.ToArray());
+        return windows.Count != Targets.Count ? null : new(4, Guid.NewGuid().ToString("N"),
+            ParentId, ParentStarted, mode, windows.ToArray(), TaskbarRecoveryPhase.Prepared, []);
     }
 
-    private static IEnumerable<TaskbarWindowState> ObserveWindows()
+    private IEnumerable<TaskbarWindowState> ObserveWindows()
     {
         if (!AutoHideEnabled) yield break;
         var monitors = MonitorBounds();
@@ -124,8 +150,8 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
             var resolved = ResolveMonitor(monitor, monitors, bounds => AutoHideEdge(window, bounds));
             monitor = resolved.Monitor; var edge = resolved.Edge;
             var target = edge == null ? original : VisibleBounds(monitor, original, edge.Value);
-            yield return new(window, pid, started, IsWindowVisible(window), edge != null, monitor, original, target, IsTopmost(window), ContentWindows(window, pid), TaskbarNativeRegion.Read(window),
-                HoldAutoHide: window == FindWindow("Shell_TrayWnd", null));
+            yield return new(window, pid, started, IsWindowVisible(window), edge != null, monitor, original, target, IsTopmost(window),
+                ContentWindows(window, pid), TaskbarNativeRegion.Read(window), HoldAutoHide: IsCurrentTaskbar(window));
         }
     }
 
@@ -158,6 +184,7 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
         return current != null && current.Windows.Length == state.Windows.Length
             && state.Windows.All(saved => current.Windows.Any(observed => observed.Window == saved.Window && observed.ProcessId == saved.ProcessId
                 && observed.ProcessStarted == saved.ProcessStarted && observed.Monitor == saved.Monitor && observed.AutoHide == saved.AutoHide
+                && observed.HoldAutoHide == saved.HoldAutoHide
                 && (observed.Content ?? []).Select(child => child.Window).Order().SequenceEqual((saved.Content ?? []).Select(child => child.Window).Order())
                 && ClipCurrent(saved, observed)
                 && (state.Mode != TaskbarLeaseMode.Reveal || observed.Target == saved.Target)));
@@ -167,73 +194,124 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
         || TaskbarNativeRegion.Same(saved.Clip, current.Clip)
         || SecondaryEdge(saved.Monitor, saved.Target) is { } edge
             && TaskbarNativeRegion.AutoHideStrip(saved.Clip, saved.Target, edge)
-            && (current.Clip is { HasRegion: false }
-                || saved.HoldAutoHide && current.HoldAutoHide && TaskbarNativeRegion.FullSurface(current.Clip, current.Target));
+            && TaskbarNativeRegion.FullSurface(current.Clip, current.Target);
 
-    public void Apply(TaskbarLeaseState state, Action armRecovery)
+    public void Apply(TaskbarLeaseState state, Action<long> armRecovery)
     {
         RequireRequest();
+        if (state.Mode != TaskbarLeaseMode.Reveal) throw new InvalidOperationException("New taskbar hide leases are not supported.");
         var firstReveal = _appliedToken != state.Token;
+        var trays = new List<(TaskbarWindowState State, nint Window, int Edge, nint Launcher)>();
         foreach (var item in state.Windows)
         {
             if (!Matches(item)) throw new IOException("Taskbar identity changed.");
             var window = (nint)item.Window;
-            if (state.Mode == TaskbarLeaseMode.Hide) throw new InvalidOperationException("New taskbar hide leases are not supported.");
-            else
+            if (!item.AutoHide || !AutoHideEnabled || AutoHideEdge(window, item.Monitor) is not { } edge)
+                throw new IOException("Taskbar preference changed.");
+            var launcherWindow = Targets.FirstOrDefault(target => target.Window == window && target.Monitor == item.Monitor).LauncherWindow;
+            if (launcherWindow == 0 || !IsWindowVisible(launcherWindow)) throw new IOException("Taskbar reveal requires a visible launcher window.");
+            trays.Add((item, window, edge, launcherWindow));
+        }
+        // Start all of Explorer's native reveal transitions before waiting for any
+        // of them. Each HWND is durably armed before its first native message.
+        foreach (var (item, window, edge, launcherWindow) in trays)
+        {
+            if (!item.HoldAutoHide) continue;
+            if (!Matches(item)) throw new IOException("Taskbar identity changed before reveal.");
+            var reveal = firstReveal || Bounds(window, out var observed) && HiddenAtEdge(item.Monitor, observed, edge);
+            // On Win10 a launcher HWND can couple Explorer's native reveal to
+            // another display. Let the primary tray reveal itself and place
+            // the requested secondary trays separately below.
+            var activationSource = reveal && SecondaryTaskbars().Any() ? nint.Zero : launcherWindow;
+            HoldTimer(window, activationSource, reveal, () => armRecovery(item.Window));
+        }
+        foreach (var (item, window, edge, launcherWindow) in trays)
+        {
+            RequireRequest();
+            if (!Matches(item)) throw new IOException("Taskbar identity changed before placement.");
+            void Arm() => armRecovery(item.Window);
+            if (item.HoldAutoHide) WaitForNativeReveal(item, edge);
+            var changed = false;
+            if (TaskbarNativeRegion.AutoHideStrip(item.Clip, item.Target, edge))
             {
-                if (!item.AutoHide || !AutoHideEnabled || AutoHideEdge(window, item.Monitor) is not { } edge) throw new IOException("Taskbar preference changed.");
-                if (LauncherWindow == 0) throw new IOException("Taskbar reveal requires a launcher window.");
-                if (item.HoldAutoHide)
+                var currentClip = TaskbarNativeRegion.Read(window);
+                if (TaskbarNativeRegion.AutoHideStrip(currentClip, item.Target, edge))
                 {
-                    _releasedToken = null;
-                    // Moving the HWND alone leaves Explorer's hidden state intact.
-                    // Ask it to unhide first. The minimized notification flag
-                    // suppresses DefWindowProc's focus transfer; no window is minimized.
-                    HoldTimer(window, firstReveal || Bounds(window, out var observed) && HiddenAtEdge(item.Monitor, observed, edge), armRecovery);
-                    WaitForNativeReveal(item, edge);
-                }
-                else armRecovery();
-                var changed = false;
-                if (TaskbarNativeRegion.AutoHideStrip(item.Clip, item.Target, edge))
-                {
-                    var currentClip = TaskbarNativeRegion.Read(window);
-                    if (TaskbarNativeRegion.AutoHideStrip(currentClip, item.Target, edge))
-                    {
-                        // A secondary tray can retain its two-pixel region even
-                        // after its HWND and content are visible. Persisted
-                        // recovery precedes this scoped, reversible correction.
-                        RequireRequest();
-                        TaskbarNativeRegion.Write(window, new(false, []));
-                        changed = true;
-                    }
-                    else if (!TaskbarNativeRegion.FullSurface(currentClip, item.Target)) throw new IOException("Taskbar clipping changed.");
-                }
-                if (firstReveal && !item.HoldAutoHide || changed || !Bounds(window, out var current) || current != item.Target || !IsWindowVisible(window) || !IsAbove(window, LauncherWindow))
-                {
+                    // A secondary tray can retain its two-pixel region even
+                    // after its HWND and content are visible. Persisted
+                    // recovery precedes this scoped, reversible correction.
                     RequireRequest();
-                    Position(window, item.Target, show: true, topmost: true);
-                    if (item.HoldAutoHide) HoldTimer(window, reveal: false, armRecovery);
+                    Arm();
+                    TaskbarNativeRegion.Write(window, new(false, []));
                     changed = true;
                 }
-                // On Windows 11 the tray HWND can be visible and correctly
-                // positioned while its composition content is still hidden.
-                // Recoverable ownership of each exact child was saved before
-                // this point; only direct children of this Explorer tray qualify.
-                foreach (var child in item.Content ?? [])
-                {
-                    if (!MatchesContent(item, child)) throw new IOException("Taskbar content identity changed.");
-                    if (!IsWindowVisible((nint)child.Window)) { RequireRequest(); ShowWindow((nint)child.Window, 8); changed = true; }
-                    if (!IsWindowVisible((nint)child.Window)) throw new IOException("Taskbar content reveal failed.");
-                }
-                if (!Bounds(window, out var applied) || applied != item.Target) throw new IOException("Taskbar reveal geometry was not applied.");
-                if (!IsWindowVisible(window)) throw new IOException("Taskbar reveal visibility was not applied.");
-                if (!IsAbove(window, LauncherWindow)) throw new IOException("Taskbar reveal stacking was not applied.");
-                if (changed) RedrawWindow(window, 0, 0, 0x0585); // INVALIDATE | ERASE | ALLCHILDREN | UPDATENOW | FRAME.
-                if (TaskbarNativeRegion.AutoHideStrip(item.Clip, item.Target, edge) && !TaskbarNativeRegion.FullSurface(TaskbarNativeRegion.Read(window), item.Target))
-                    throw new IOException("Taskbar content remains clipped.");
+                else if (!TaskbarNativeRegion.FullSurface(currentClip, item.Target)) throw new IOException("Taskbar clipping changed.");
             }
+            if (changed || !Bounds(window, out var current) || current != item.Target ||
+                !IsWindowVisible(window) || NeedsStacking(window, launcherWindow, item.Target))
+            {
+                RequireMenuIdle(window);
+                RequireRequest();
+                Arm();
+                if (item.HoldAutoHide)
+                {
+                    Position(window, item.Target, show: true, topmost: true);
+                    HoldTimer(window, launcherWindow, reveal: false, Arm);
+                }
+                else PlaceScopedTray(item, edge);
+                changed = true;
+            }
+            // On Windows 11 the tray HWND can be visible and correctly
+            // positioned while its composition content is still hidden.
+            // Recoverable ownership of each exact child was saved before
+            // this point; only direct children of this Explorer tray qualify.
+            foreach (var child in item.Content ?? [])
+            {
+                if (!MatchesContent(item, child)) throw new IOException("Taskbar content identity changed.");
+                if (!IsWindowVisible((nint)child.Window))
+                {
+                    RequireRequest();
+                    Arm();
+                    ShowWindow((nint)child.Window, 8);
+                    changed = true;
+                }
+                if (!IsWindowVisible((nint)child.Window)) throw new IOException("Taskbar content reveal failed.");
+            }
+            if (!Bounds(window, out var applied) || applied != item.Target)
+                throw new IOException($"Taskbar reveal geometry was not applied at {item.Monitor.X},{item.Monitor.Y}. Expected {item.Target}; observed {applied}.");
+            if (!IsWindowVisible(window)) throw new IOException("Taskbar reveal visibility was not applied.");
+            if (NeedsStacking(window, launcherWindow, item.Target)) throw new IOException("Taskbar reveal stacking was not applied.");
+            if (changed) RedrawWindow(window, 0, 0, 0x0585); // INVALIDATE | ERASE | ALLCHILDREN | UPDATENOW | FRAME.
+            if (TaskbarNativeRegion.AutoHideStrip(item.Clip, item.Target, edge) && !TaskbarNativeRegion.FullSurface(TaskbarNativeRegion.Read(window), item.Target))
+                throw new IOException("Taskbar content remains clipped.");
         }
         _appliedToken = state.Token;
+    }
+
+    private static bool NeedsStacking(nint taskbar, nint launcher, TaskbarBounds tray)
+    {
+        // The walls normally reserve the complete tray rectangle. Relative
+        // stacking cannot occlude a tray when these native bounds are disjoint.
+        if (Bounds(launcher, out var wall) && (wall.X >= tray.X + tray.Width || tray.X >= wall.X + wall.Width ||
+            wall.Y >= tray.Y + tray.Height || tray.Y >= wall.Y + wall.Height)) return false;
+        return !IsAbove(taskbar, launcher);
+    }
+
+    private void PlaceScopedTray(TaskbarWindowState item, int edge)
+    {
+        var window = (nint)item.Window;
+        // App activation can leave an Explorer hide animation in flight. Give
+        // that transition time to settle before one last scoped placement.
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            RequireRequest();
+            RequireMenuIdle(window);
+            if (!Matches(item) || !AutoHideEnabled || AutoHideEdge(window, item.Monitor) != edge)
+                throw new IOException("Taskbar identity or preference changed during scoped reveal.");
+            Position(window, item.Target, show: true, topmost: true);
+            if (Bounds(window, out var current) && current == item.Target) return;
+            if (attempt < 2) Thread.Sleep(attempt == 0 ? 180 : 300);
+        }
     }
 
     private void WaitForNativeReveal(TaskbarWindowState item, int edge)
@@ -253,23 +331,29 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
             if (Bounds(window, out var current) && current == item.Target && IsWindowVisible(window)
                 && TaskbarNativeRegion.FullSurface(TaskbarNativeRegion.Read(window), current)) return;
             if (deadline.Elapsed >= TimeSpan.FromSeconds(2))
-                throw new IOException("Explorer did not complete the native taskbar reveal.");
+                throw new IOException($"Explorer did not complete the native taskbar reveal at {item.Monitor.X},{item.Monitor.Y}.");
             Thread.Sleep(20);
         }
     }
 
     public void Restore(TaskbarLeaseState state)
     {
+        if (_releasedToken != state.Token)
+        {
+            _releasedToken = state.Token;
+            _releasedWindows.Clear();
+        }
         foreach (var item in state.Windows)
         {
-            if (!Matches(item)) continue; // Dead Explorer / reused HWND is not owned.
+            if (state.ArmedWindows?.Contains(item.Window) == false || !Matches(item)) continue;
             var window = (nint)item.Window;
-            if (item.HoldAutoHide && window == FindWindow("Shell_TrayWnd", null) && _releasedToken != state.Token)
+            if (item.HoldAutoHide && !IsCurrentTaskbar(window)) continue;
+            if (item.HoldAutoHide && !_releasedWindows.Contains(item.Window))
             {
                 ReleaseTimer(window, TaskbarInteraction(window, item.Target, item.Monitor), GetForegroundWindow());
-                _releasedToken = state.Token;
+                _releasedWindows.Add(item.Window);
             }
-            if (state.Mode == TaskbarLeaseMode.Reveal && item.HoldAutoHide && window == FindWindow("Shell_TrayWnd", null))
+            if (state.Mode == TaskbarLeaseMode.Reveal && item.HoldAutoHide)
             {
                 // A foreign WINDOWPOSCHANGING can restore Explorer's docked
                 // visible rectangle even after its own auto-hide has completed.
@@ -308,12 +392,12 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
     }
 
-    internal void HoldTimer(nint window, bool reveal, Action armRecovery)
+    internal void HoldTimer(nint window, nint launcherWindow, bool reveal, Action armRecovery)
     {
         RequireMenuIdle(window);
         RequireRequest();
         armRecovery();
-        if (reveal) TrayMessage(window, 0x0006, 0x10001, LauncherWindow);
+        if (reveal) TrayMessage(window, 0x0006, 0x10001, launcherWindow);
         RequireMenuIdle(window);
         RequireRequest();
         TrayMessage(window, 0x0211, 1, 0);
@@ -348,11 +432,11 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
 
     private static void SendTrayMessage(nint window, uint message, nint wParam, nint lParam)
     {
-        if (SendMessageTimeout(window, message, wParam, lParam, 0x0022, 250, out _) == 0)
+        if (SendMessageTimeout(window, message, wParam, lParam, 0x0022, 600, out _) == 0)
         {
             var error = Marshal.GetLastWin32Error();
-            if (error == 0) throw new IOException("Explorer did not acknowledge the taskbar lifecycle message.");
-            throw new System.ComponentModel.Win32Exception(error);
+            var detail = error == 0 ? null : new System.ComponentModel.Win32Exception(error);
+            throw new IOException($"Explorer tray {window} did not acknowledge lifecycle message 0x{message:X4}.", detail);
         }
     }
 
@@ -378,6 +462,18 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
     {
         var primary = FindWindow("Shell_TrayWnd", null);
         if (primary != 0) yield return primary;
+        foreach (var window in SecondaryTaskbars()) yield return window;
+    }
+
+    private static IEnumerable<nint> SecondaryTaskbars()
+    {
+        nint window = 0;
+        for (var count = 0; count < 31; count++)
+        {
+            window = FindWindowEx(0, window, "Shell_SecondaryTrayWnd", null);
+            if (window == 0) yield break;
+            yield return window;
+        }
     }
     private static bool Identity(nint window, out int pid, out long started)
     {
@@ -531,25 +627,29 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
         var rect = data.Monitor; bounds = new(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
         return success;
     }
-    private static int? AutoHideEdge(nint window, TaskbarBounds monitor)
+    private static int? AutoHideEdge(nint window, TaskbarBounds monitor, bool allowUnregisteredSecondary = true)
     {
-        for (uint edge = 0; edge < 4; edge++)
-        {
-            var query = new AppBarData
-            {
-                Size = (uint)Marshal.SizeOf<AppBarData>(),
-                Edge = edge,
-                Rect = new() { Left = monitor.X, Top = monitor.Y, Right = monitor.X + monitor.Width, Bottom = monitor.Y + monitor.Height }
-            };
-            if ((nint)SHAppBarMessage(11, ref query) == window) return (int)edge;
-        }
+        for (var edge = 0; edge < 4; edge++)
+            if (RegisteredAutoHideWindow(monitor, edge) == window) return edge;
         // Some secondary Explorer trays do not appear in the appbar registry,
         // despite Windows' global auto-hide preference being enabled. Accept
         // only their exact visible/hidden edge geometry, never an arbitrary
         // nearby window or a partially animated rectangle.
+        if (!allowUnregisteredSecondary) return null;
         var name = new StringBuilder(64); GetClassName(window, name, name.Capacity);
-        return AutoHideEnabled && name.ToString() == "Shell_SecondaryTrayWnd" && Bounds(window, out var bar)
+        return name.ToString() == "Shell_SecondaryTrayWnd" && AutoHideEnabled && Bounds(window, out var bar)
             ? SecondaryEdge(monitor, bar) : null;
+    }
+
+    private static nint RegisteredAutoHideWindow(TaskbarBounds monitor, int edge)
+    {
+        var query = new AppBarData
+        {
+            Size = (uint)Marshal.SizeOf<AppBarData>(),
+            Edge = (uint)edge,
+            Rect = new() { Left = monitor.X, Top = monitor.Y, Right = monitor.X + monitor.Width, Bottom = monitor.Y + monitor.Height }
+        };
+        return (nint)SHAppBarMessage(11, ref query);
     }
 
     /// <summary>Resolves an unregistered secondary tray only at an exact full-length visible or two-pixel hidden edge.</summary>
@@ -653,7 +753,6 @@ internal sealed class TaskbarActivationBackend(Func<IEnumerable<TaskbarWindowSta
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool ShowWindow(nint window, int command);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetWindowRect(nint window, out Rect rect);
     [DllImport("user32.dll")] private static extern nint MonitorFromWindow(nint window, uint flags);
-    [DllImport("user32.dll")] private static extern nint MonitorFromPoint(Point point, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)][return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetMonitorInfo(nint monitor, ref MonitorData data);
     [DllImport("user32.dll", SetLastError = true)][return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);
     [DllImport("shell32.dll")] private static extern nuint SHAppBarMessage(uint message, ref AppBarData data);

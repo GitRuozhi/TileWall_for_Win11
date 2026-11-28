@@ -21,7 +21,6 @@ internal sealed record ContextMenuUserCommand(ContextMenuUserAction Action, stri
     internal const int QueryOwnedOn = 11;
     internal const int QueryOtherOrConflict = 12;
     internal const int QueryReadFailed = 13;
-    internal const int EnableDeferred = 14;
 
     internal bool Enable => Action == ContextMenuUserAction.Enable;
 
@@ -79,7 +78,6 @@ internal sealed record ContextMenuUserCommand(ContextMenuUserAction Action, stri
                 _ => QueryOtherOrConflict
             };
         var result = operation(command!);
-        if (command!.Enable && result.Success && result.Deferred) return EnableDeferred;
         return result.Success ? Success : result.RollbackIncomplete ? RollbackIncomplete : OperationFailed;
     }
 

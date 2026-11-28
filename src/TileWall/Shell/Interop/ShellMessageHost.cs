@@ -39,6 +39,7 @@ public sealed class ShellMessageHost : IDisposable
 
     /// <summary>二次启动激活注册消息（"TileWall.SingleInstance.Activate"）。</summary>
     public uint SingleInstanceActivateMessage { get; }
+    private uint UninstallCloseMessage { get; }
 
     /// <summary>Explorer 重启广播（"TaskbarCreated"，系统分配值）。</summary>
     public uint TaskbarCreatedMessage { get; }
@@ -54,6 +55,7 @@ public sealed class ShellMessageHost : IDisposable
 
     /// <summary>二次启动汇入 → Router.ShowOrFocus（与托盘双击同一条命令）。</summary>
     public event Action? ActivateRequested;
+    internal event Action? ExitRequested;
 
     internal Func<ExplorerAddMessage, bool>? AcceptPaths { get; set; }
 
@@ -68,6 +70,7 @@ public sealed class ShellMessageHost : IDisposable
     {
         TrayCallbackMessage = Win32Api.RegisterWindowMessageW("TileWall.Tray.Callback");
         SingleInstanceActivateMessage = Win32Api.RegisterWindowMessageW("TileWall.SingleInstance.Activate");
+        UninstallCloseMessage = Win32Api.RegisterWindowMessageW("TileWall.SingleInstance.CloseForUninstall");
         TaskbarCreatedMessage = Win32Api.RegisterWindowMessageW("TaskbarCreated");
 
         _wndProc = WndProc;
@@ -144,6 +147,13 @@ public sealed class ShellMessageHost : IDisposable
             {
                 self.ActivateRequested?.Invoke();
                 return IntPtr.Zero;
+            }
+
+            if (self.UninstallCloseMessage != 0 && msg == self.UninstallCloseMessage &&
+                wParam == IntPtr.Zero && lParam == IntPtr.Zero && self.ExitRequested is { } exit)
+            {
+                exit();
+                return (IntPtr)1;
             }
 
             if (msg == Win32Api.WmDisplaychange || msg == Win32Api.WmSettingchange)

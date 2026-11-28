@@ -36,6 +36,7 @@
   <x:String x:Key="Settings.System">Sistema</x:String>
   <x:String x:Key="Settings.Invocation">Mostrar TileWall</x:String>
   <x:String x:Key="Settings.ExperimentalFeature">Esta es una función experimental.</x:String>
+  <x:String x:Key="Settings.MultiDisplaySummon">Mostrar en todas las pantallas</x:String>
   <x:String x:Key="Settings.KeyBehavior">Acciones de las teclas</x:String>
   <x:String x:Key="Settings.KeyBehaviorKey">Tecla</x:String>
   <x:String x:Key="Settings.KeyBehaviorAction">Acción</x:String>
@@ -918,4 +919,10 @@ Nuevo destino:
   <x:String x:Key="Batch.SelectionCount">{0} en total, {1} seleccionados</x:String>
   <x:String x:Key="Batch.SelectNone">Deseleccionar todo</x:String>
   <x:String x:Key="Batch.Mixed">Mixto</x:String>
+    <x:String x:Key="Wall.MultiDisplayCaptureFailed">El fondo estático no está disponible en esta apertura en varias pantallas. {0}</x:String>
+    <x:String x:Key="Wall.CaptureGeometry">Los límites de la pantalla no son válidos.</x:String>
+    <x:String x:Key="Wall.CaptureAllocation">No se pudo asignar el búfer de captura.</x:String>
+    <x:String x:Key="Wall.CaptureRead">No se pudo leer la imagen del escritorio.</x:String>
+    <x:String x:Key="Wall.CaptureCrop">No se pudieron recortar los fondos de las pantallas.</x:String>
+    <x:String x:Key="Wall.CapturePresentation">No se pudo preparar el fondo acrílico simulado.</x:String>
 </ResourceDictionary>

@@ -36,6 +36,7 @@
   <x:String x:Key="Settings.System">System</x:String>
   <x:String x:Key="Settings.Invocation">Show TileWall</x:String>
   <x:String x:Key="Settings.ExperimentalFeature">This is an experimental feature.</x:String>
+  <x:String x:Key="Settings.MultiDisplaySummon">Show on all displays</x:String>
   <x:String x:Key="Settings.KeyBehavior">Key actions</x:String>
   <x:String x:Key="Settings.KeyBehaviorKey">Key</x:String>
   <x:String x:Key="Settings.KeyBehaviorAction">Action</x:String>
@@ -914,4 +915,10 @@
   <x:String x:Key="Batch.SelectionCount">{0} total, {1} selected</x:String>
   <x:String x:Key="Batch.SelectNone">Deselect all</x:String>
   <x:String x:Key="Batch.Mixed">Mixed</x:String>
+    <x:String x:Key="Wall.MultiDisplayCaptureFailed">Static backgrounds are unavailable for this multi-display opening. {0}</x:String>
+    <x:String x:Key="Wall.CaptureGeometry">The display bounds are invalid.</x:String>
+    <x:String x:Key="Wall.CaptureAllocation">The capture buffer could not be allocated.</x:String>
+    <x:String x:Key="Wall.CaptureRead">The desktop image could not be read.</x:String>
+    <x:String x:Key="Wall.CaptureCrop">The display backgrounds could not be cropped.</x:String>
+    <x:String x:Key="Wall.CapturePresentation">The simulated acrylic background could not be prepared.</x:String>
 </ResourceDictionary>

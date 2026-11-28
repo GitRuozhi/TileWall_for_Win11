@@ -36,6 +36,7 @@
   <x:String x:Key="Settings.System">시스템</x:String>
   <x:String x:Key="Settings.Invocation">TileWall 표시</x:String>
   <x:String x:Key="Settings.ExperimentalFeature">실험적 기능입니다.</x:String>
+  <x:String x:Key="Settings.MultiDisplaySummon">모든 디스플레이에 표시</x:String>
   <x:String x:Key="Settings.KeyBehavior">키 동작</x:String>
   <x:String x:Key="Settings.KeyBehaviorKey">키</x:String>
   <x:String x:Key="Settings.KeyBehaviorAction">동작</x:String>
@@ -918,4 +919,10 @@
   <x:String x:Key="Batch.SelectionCount">전체 {0}개, 선택 {1}개</x:String>
   <x:String x:Key="Batch.SelectNone">모두 선택 해제</x:String>
   <x:String x:Key="Batch.Mixed">혼합</x:String>
+    <x:String x:Key="Wall.MultiDisplayCaptureFailed">이번 다중 화면 열기에서 정적 배경을 사용할 수 없습니다. {0}</x:String>
+    <x:String x:Key="Wall.CaptureGeometry">화면 범위가 유효하지 않습니다.</x:String>
+    <x:String x:Key="Wall.CaptureAllocation">캡처 버퍼를 할당하지 못했습니다.</x:String>
+    <x:String x:Key="Wall.CaptureRead">바탕 화면 이미지를 읽지 못했습니다.</x:String>
+    <x:String x:Key="Wall.CaptureCrop">화면별 배경을 잘라내지 못했습니다.</x:String>
+    <x:String x:Key="Wall.CapturePresentation">시뮬레이션한 아크릴 배경을 준비하지 못했습니다.</x:String>
 </ResourceDictionary>

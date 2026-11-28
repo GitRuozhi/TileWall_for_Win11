@@ -15,6 +15,8 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
 {
     internal const string Argument = "--uninstall-current-user";
     internal const string UninstallRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{55D7663D-DFB4-4735-B28A-2EF358DB19F4}_is1";
+    private const string SilentArguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART";
+    private const string WizardArguments = SilentArguments + " /TILEWALLWIZARD";
     // Legacy management activation is only a handoff; Inno owns the final result.
     internal const int Accepted = 10;
     internal const int Cancelled = 21;
@@ -128,17 +130,17 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
         // Compatibility activation only: release the installed runtime and let
         // the native Inno clone own confirmation, cleanup and the final result.
         var executable = Path.GetFullPath(Environment.ProcessPath ?? throw new IOException("Missing executable."));
-        var uninstaller = ReadInstalledUninstaller(executable);
+        var (uninstaller, wizard) = ReadInstalledUninstaller(executable);
         using var child = Process.Start(new ProcessStartInfo
         {
             FileName = uninstaller,
-            Arguments = command.Quiet ? "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" : string.Empty,
+            Arguments = command.Quiet ? SilentArguments : wizard ? WizardArguments : string.Empty,
             WorkingDirectory = Path.GetDirectoryName(uninstaller)!, UseShellExecute = true, Verb = "runas"
         }) ?? throw new IOException("The native uninstaller did not start.");
         return Accepted;
     }
     [SupportedOSPlatform("windows")]
-    private static string ReadInstalledUninstaller(string executable)
+    private static (string Path, bool Wizard) ReadInstalledUninstaller(string executable)
     {
         if (!string.Equals(Path.GetFileName(executable), "TileWall.exe", StringComparison.OrdinalIgnoreCase))
             throw new IOException("This is not the installed TileWall executable.");
@@ -162,7 +164,9 @@ internal sealed record CurrentUserUninstallCommand(bool Quiet, bool FromDesktop 
             if (!ancestor.Exists || (ancestor.Attributes & FileAttributes.ReparsePoint) != 0)
                 throw new IOException("The installation uses an unsafe directory.");
         }
-        return uninstaller;
+        var registeredCommand = registration.GetValue("UninstallString", null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+        return (uninstaller, registeredCommand is string command &&
+            string.Equals(command, $"\"{uninstaller}\" {WizardArguments}", StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool SameDirectory(string left, string right) => string.Equals(

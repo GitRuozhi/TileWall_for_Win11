@@ -35,7 +35,7 @@ internal static class TaskbarRecovery
             backend.Restore(state);
             // Checkpoint completion before deleting. A different watchdog can
             // then retry a failed deletion without replaying shell messages.
-            if (state.Version >= 2) store.Update(state with { Version = 3, Phase = TaskbarRecoveryPhase.Restored });
+            if (state.Version >= 2) store.Update(state with { Version = Math.Max(3, state.Version), Phase = TaskbarRecoveryPhase.Restored });
         }
         store.Delete(state.Token);
     }

@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using TileWall.ApplicationModel;
@@ -16,7 +15,7 @@ public sealed partial class MainWindow
     private WorkAreaRect _screenArea;
     private RectInt32? _taskbarPlacementArea;
     private WallPresentationBounds _taskbarPlacementScreen;
-    private nint _taskbarWindow;
+    private TaskbarWindowAnchor _taskbarAnchor;
     private bool _presentationHorizontalOverflow, _presentationVerticalOverflow;
     private WallPresentationBounds ScreenPresentationBounds => new(_screenArea.Left, _screenArea.Top,
         Math.Max(1, _screenArea.Right - _screenArea.Left), Math.Max(1, _screenArea.Bottom - _screenArea.Top));
@@ -26,13 +25,13 @@ public sealed partial class MainWindow
 
     // Observe/apply callers own Explorer effects. This entry only changes this window's
     // presentation and must never show, activate, capture, or publish a layout proposal.
-    internal void SetTaskbarPlacement(RectInt32? area, nint taskbarWindow)
+    internal void SetTaskbarPlacement(RectInt32? area, TaskbarWindowAnchor anchor)
     {
         var previous = PresentationBounds;
         ReadPrimaryScreen();
         _taskbarPlacementArea = area;
         _taskbarPlacementScreen = ScreenPresentationBounds;
-        _taskbarWindow = area is not null ? taskbarWindow : 0;
+        _taskbarAnchor = area is not null ? anchor : default;
         if (previous != PresentationBounds)
         {
             CancelTransientState();
@@ -213,18 +212,14 @@ public sealed partial class MainWindow
         var expanded = PresentedViewportSettings.ExpandColumns;
         var scrolling = expanded || _environmentOverflow || _presentationHorizontalOverflow;
         var vertical = _environmentOverflow || _presentationVerticalOverflow;
-        if (_scrollMode != scrolling || _verticalScrollMode != vertical)
+        if (_verticalScrollMode != vertical)
         {
-            _scrollMode = scrolling;
             _verticalScrollMode = vertical;
-            WallScroll.HorizontalScrollMode = scrolling ? ScrollMode.Enabled : ScrollMode.Disabled;
             WallScroll.VerticalScrollMode = vertical ? ScrollMode.Enabled : ScrollMode.Disabled;
             WallScroll.VerticalScrollBarVisibility = vertical ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
-            if (!scrolling || !vertical) WallScroll.ChangeView(scrolling ? null : 0, vertical ? null : 0, null, disableAnimation: true);
+            if (!vertical) WallScroll.ChangeView(null, 0, null, disableAnimation: true);
         }
-        WallScroll.HorizontalScrollBarVisibility = expanded ? ScrollBarVisibility.Hidden :
-            scrolling ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled;
-        WallHorizontalScrollBar.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+        HorizontalRail.Place(WallScroll, region, scrolling);
         if (_scrollRegion != region)
         {
             _scrollRegion = region;
@@ -232,9 +227,6 @@ public sealed partial class MainWindow
             WallScroll.VerticalAlignment = Microsoft.UI.Xaml.VerticalAlignment.Top;
             WallScroll.Width = region.Width; WallScroll.Height = region.Height;
             WallScroll.Margin = new Microsoft.UI.Xaml.Thickness(region.X, region.Y, 0, 0);
-            WallHorizontalScrollBar.Width = region.Width;
-            WallHorizontalScrollBar.Margin = new Thickness(region.X,
-                region.Y + Math.Max(0, region.Height - WallHorizontalScrollBar.Height), 0, 0);
             PositionStatusViewport();
         }
         // The document owns its complete row budget. A larger clip must not create phantom rows.
@@ -244,40 +236,6 @@ public sealed partial class MainWindow
         QueueExpansionReveal();
     }
 
-    private bool _syncingWallScrollBar;
-
-    private void InitializeWallScrollRail()
-    {
-        AutomationProperties.SetName(WallHorizontalScrollBar, ProductStrings.Get("Settings.ExpandColumns"));
-        WallScroll.RegisterPropertyChangedCallback(ScrollViewer.ScrollableWidthProperty, (_, _) => SyncWallScrollRail());
-        WallScroll.RegisterPropertyChangedCallback(ScrollViewer.ViewportWidthProperty, (_, _) => SyncWallScrollRail());
-        WallScroll.ViewChanged += (_, _) => SyncWallScrollRail();
-        WallHorizontalScrollBar.ValueChanged += (_, args) =>
-        {
-            if (_syncingWallScrollBar) return;
-            _pendingExpansionLane = null;
-            _pendingCommittedScrollAnchor = null;
-            WallScroll.ChangeView(Math.Clamp(args.NewValue, 0, WallScroll.ScrollableWidth), null, null, disableAnimation: true);
-        };
-    }
-
-    private void SyncWallScrollRail()
-    {
-        _syncingWallScrollBar = true;
-        try
-        {
-            var width = WallScroll.ScrollableWidth;
-            WallHorizontalScrollBar.Maximum = width;
-            WallHorizontalScrollBar.ViewportSize = WallScroll.ViewportWidth;
-            WallHorizontalScrollBar.SmallChange = _metrics.Pitch;
-            WallHorizontalScrollBar.LargeChange = Math.Max(_metrics.Pitch, WallScroll.ViewportWidth - _metrics.ColumnGap);
-            WallHorizontalScrollBar.Value = Math.Clamp(WallScroll.HorizontalOffset, 0, width);
-            WallHorizontalScrollBar.IsEnabled = width > ScrollAnchorEpsilon;
-        }
-        finally { _syncingWallScrollBar = false; }
-    }
-
-    private bool? _scrollMode;
     private bool _verticalScrollMode;
     private Rect _scrollRegion;
     private WallSettings? _presentedViewportSettings;
@@ -337,7 +295,7 @@ public sealed partial class MainWindow
         var revision = ++_scrollAnchorRevision;
         _pendingCommittedScrollAnchor = null;
         if (_windowClosing || !_hasDocument || _viewBlocked || !_committedScrollExpanded ||
-            !next.Settings.ExpandColumns || _scrollMode != true ||
+            !next.Settings.ExpandColumns || WallScroll.HorizontalScrollMode != ScrollMode.Enabled ||
             _resizing || _gesture.Phase != ApplicationModel.GesturePhase.Idle ||
             _committedScrollGeometry is not { } previous || Surface.Geometry is not { } displayed)
             return null;
@@ -394,7 +352,7 @@ public sealed partial class MainWindow
     }
 
     private bool CommittedScrollAnchorIsCurrent(CommittedScrollAnchor anchor) =>
-        !_windowClosing && _hasDocument && !_viewBlocked && _scrollMode == true &&
+        !_windowClosing && _hasDocument && !_viewBlocked && WallScroll.HorizontalScrollMode == ScrollMode.Enabled &&
         !_resizing && _gesture.Phase == ApplicationModel.GesturePhase.Idle &&
         anchor.Revision == _scrollAnchorRevision && _session.Current.Generation == anchor.Generation &&
         Scale == anchor.RasterizationScale && Settings.ExpandColumns;

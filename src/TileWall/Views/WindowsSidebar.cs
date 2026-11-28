@@ -31,6 +31,7 @@ internal sealed class WindowsSidebar : Panel
     private readonly Action<string> _status;
     private readonly Action<bool> _menuVisibility;
     private readonly Func<bool> _showUnavailableControls;
+    private readonly Func<bool>? _canInteract;
     private readonly AccessibilitySettings _accessibility = new();
     private readonly UISettings _colors = new();
     private UIElement? _pointerTrackingRoot;
@@ -39,9 +40,11 @@ internal sealed class WindowsSidebar : Panel
     private WallLanguageMode? _language;
     private bool _expanded, _pointerInside, _menuOpen;
 
-    internal WindowsSidebar(Action<string> status, Action<bool> menuVisibility, Func<bool> showUnavailableControls)
+    internal WindowsSidebar(Action<string> status, Action<bool> menuVisibility, Func<bool> showUnavailableControls,
+        Func<bool>? canInteract = null)
     {
         _status = status; _menuVisibility = menuVisibility; _showUnavailableControls = showUnavailableControls;
+        _canInteract = canInteract;
         Width = CollapsedWidth;
         AutomationProperties.SetAutomationId(this, "windows-sidebar");
         _itemsHost.Children.Add(_items);
@@ -267,7 +270,7 @@ internal sealed class WindowsSidebar : Panel
         };
         menu.Opened += (_, _) =>
         {
-            if (menu.Items.All(item => item.Visibility == Visibility.Collapsed)) menu.Hide();
+            if (_canInteract?.Invoke() == false || menu.Items.All(item => item.Visibility == Visibility.Collapsed)) menu.Hide();
         };
         menu.Closed += (_, _) =>
         {
@@ -279,6 +282,7 @@ internal sealed class WindowsSidebar : Panel
 
     private async Task InvokeAsync(WindowsShortcut action)
     {
+        if (_canInteract?.Invoke() == false) return;
         var error = await WindowsShortcutLauncher.OpenAsync(action);
         if (error is not null) _status(string.Format(ProductStrings.Get("Sidebar.OpenFailed"), error));
     }

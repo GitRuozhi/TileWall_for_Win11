@@ -13,8 +13,7 @@ internal sealed record ContextMenuState(ContextMenuStatus Status, IReadOnlyList<
 {
     public bool IsCurrentExecutableComplete => Status == ContextMenuStatus.CurrentExecutable;
 }
-internal sealed record ContextMenuRegistrationResult(bool Success, bool RollbackIncomplete = false, string? Error = null,
-    bool Deferred = false);
+internal sealed record ContextMenuRegistrationResult(bool Success, bool RollbackIncomplete = false, string? Error = null);
 
 /// <summary>Current-user, 64-bit classic-menu registration for unpackaged distributions.</summary>
 [SupportedOSPlatform("windows")]
